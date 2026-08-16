@@ -222,6 +222,10 @@
         "arktype": "2.2.3",
       },
     },
+    "packages/rlm": {
+      "name": "@oh-my-pi/pi-rlm",
+      "version": "0.1.0",
+    },
     "packages/snapcompact": {
       "name": "@oh-my-pi/snapcompact",
       "version": "17.3.8",
@@ -744,6 +748,8 @@
     "@oh-my-pi/pi-mnemopi": ["@oh-my-pi/pi-mnemopi@workspace:packages/mnemopi"],
 
     "@oh-my-pi/pi-natives": ["@oh-my-pi/pi-natives@workspace:packages/natives"],
+
+    "@oh-my-pi/pi-rlm": ["@oh-my-pi/pi-rlm@workspace:packages/rlm"],
 
     "@oh-my-pi/pi-tui": ["@oh-my-pi/pi-tui@workspace:packages/tui"],
 
