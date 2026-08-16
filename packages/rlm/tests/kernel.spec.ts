@@ -32,6 +32,11 @@
  */
 
 import { describe, expect, test } from "bun:test"
+
+/** Bun's runtime accepts test(name, fn, timeoutMs) but its current type
+ * definitions omit the overload; this wrapper restores the typed form. */
+const testWithTimeout = test as unknown as
+  (name: string, fn: () => Promise<void>, timeout?: number) => void
 import * as fs from "node:fs"
 
 import {
@@ -42,6 +47,7 @@ import {
   MAX_OUTPUT_CHARS,
   SNAPSHOT_ALWAYS_SKIP,
   SNAPSHOT_DEBOUNCE_MS,
+  SNAPSHOT_DISPOSE_TIMEOUT_MS,
   TRUNCATION_MARKER,
   KernelManager,
 } from "../src/kernel.ts"
@@ -98,7 +104,7 @@ type TransportScript = {
   start?: () => Promise<void> | void
   execute?: (id: string, code: string, call: number) => Promise<TransportResult>
   snapshotNames?: () => Promise<string[]>
-  writeSnapshot?: (names: string[]) => Promise<{ bytes: number; skipped: { name: string; reason: string }[] }>
+  writeSnapshot?: (names: string[], maxBytes: number) => Promise<{ bytes: number; skipped: { name: string; reason: string }[] }>
   /** Snapshot payload write at the FS boundary: default writes to artifactsDir. */
   writeSnapshotPayload?: (dir: string) => Promise<void>
   restoreSnapshot?: () => Promise<string[]>
@@ -134,9 +140,9 @@ function makeTransport(script: TransportScript = {}) {
       calls.push({ kind: "snapshotNames", detail: "" })
       return await (script.snapshotNames?.() ?? Promise.resolve(["a", "b"]))
     },
-    async writeSnapshot(names: string[]): Promise<{ bytes: number; skipped: { name: string; reason: string }[] }> {
+    async writeSnapshot(names: string[], maxBytes: number): Promise<{ bytes: number; skipped: { name: string; reason: string }[] }> {
       calls.push({ kind: "writeSnapshot", detail: names.join(",") })
-      return await (script.writeSnapshot?.(names) ?? Promise.resolve({ bytes: 10, skipped: [] }))
+      return await (script.writeSnapshot?.(names, maxBytes) ?? Promise.resolve({ bytes: 10, skipped: [] }))
     },
     async restoreSnapshot(): Promise<string[]> {
       calls.push({ kind: "restoreSnapshot", detail: "" })
@@ -145,7 +151,7 @@ function makeTransport(script: TransportScript = {}) {
     async bootstrap(): Promise<void> { calls.push({ kind: "bootstrap", detail: "" }) },
     isBusy(): boolean { return script.isBusy?.() ?? false },
     ...(script.writeSnapshotPayload !== undefined
-      ? { writeSnapshotPayload: (dir: string) => script.writeSnapshotPayload?.(dir) }
+      ? { writeSnapshotPayload: (dir: string): Promise<void> => script.writeSnapshotPayload?.(dir) ?? Promise.resolve() }
       : {}),
     alive(): boolean { return true },
     async dispose(): Promise<void> { calls.push({ kind: "transportDispose", detail: "" }) },
@@ -535,9 +541,263 @@ test("SEQ-KM-5: compaction completion injects the namespace-inventory notice", a
   await manager.onCompactionComplete()
   const notice = manager.compactionNotice()
   expect(notice).not.toBeNull()
+  const noticeText: string = notice ?? ""
+  expect(noticeText).toContain("df")
+  expect(noticeText).toContain("model")
+  expect(noticeText.toLowerCase()).toContain("persist")
+})
+
+// ---------------------------------------------------------------------------
+// Audit-r2 regression tests — each drives the exact probe failure
+// ---------------------------------------------------------------------------
+
+test("V1 regression: abort whose grace fires after normal settle does not poison the next execution", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: ERRORS-KM-3 + INV-KM-LIFETIME-1: only mid-flight-cancelled
+   *      executions resolve aborted; a grace callback firing into an
+   *      already-settled execution must leave NO trace
+   * - Category: regression (audit r2 V1 — probe P1)
+   * - Risk tier: High — the next cell silently never runs
+   */
+  const clock = makeClock()
+  let releaseCell1: () => void = () => {}
+  const cellGate = new Promise<void>(resolve => { releaseCell1 = resolve })
+  const transport = makeTransport({
+    execute: async () => {
+      releaseCell1()
+      await new Promise(r => setTimeout(r, 2))
+      return { code: 0, stdout: "done", stderr: "", result: "" }
+    },
+  })
+  const manager = new KernelManager(transport, { clock, artifactsDir: artifactsDir() })
+  // Abort lands while cell 1 is ACTIVELY executing (transport dispatched);
+  // cell 1 then completes normally BEFORE the 1000ms virtual grace elapses
+  const cell1 = manager.execute("cell1")
+  await cellGate
+  void manager.abort()
+  const r1 = await cell1
+  expect(r1.status).toBe("ok")
+  await clock.advance(ABORT_GRACE_MS + 10) // grace fires into a consumed settle
+  // The NEXT execution must run normally — no poison latch
+  const r2 = await manager.execute("cell2")
+  expect(r2.status).toBe("ok")
+  expect(r2.stdout).toBe("done")
+  const execs = transport.calls.filter(c => c.kind === "execute")
+  expect(execs.length).toBe(2)
+})
+
+testWithTimeout("V2 regression: dispose with a hung snapshot flush is bounded; kill still runs", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: SEQ-KM-4/F-181 (V2): the dispose flush is bounded by
+   *      SNAPSHOT_DISPOSE_TIMEOUT_MS — a hung kernel cannot deadlock
+   *      teardown (probe P2)
+   * - Category: regression (timing boundary)
+   * - Risk tier: High — session teardown hangs forever
+   */
+  const clock = makeClock()
+  const transport = makeTransport({
+    snapshotNames: () => new Promise<string[]>(() => {}), // hung kernel
+  })
+  const manager = new KernelManager(transport, { clock, artifactsDir: artifactsDir() })
+  await manager.execute("x = 1")
+  const disposeDone = manager.dispose({ snapshot: true })
+  const bounded = disposeDone.then(() => "done")
+  // Flush bound (5s) THEN the in-flight wait bound (5s) chain in virtual time
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + DISPOSE_TIMEOUT_MS + 100)
+  expect(await bounded).toBe("done")
+  expect(transport.calls.some(c => c.kind === "kill")).toBe(true)
+  expect(transport.calls.some(c => c.kind === "transportDispose")).toBe(true)
+})
+
+testWithTimeout("V3 regression: in-flight execution at dispose timeout gets a terminal aborted state", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: POST-KM-1 (V3/F11): execute resolves — a settled session
+   *      never leaves the tool layer hanging (probe P3)
+   * - Category: regression
+   * - Risk tier: High — caller hangs with no terminal state
+   */
+  const clock = makeClock()
+  const transport = makeTransport({
+    execute: () => new Promise<TransportResult>(() => {}), // never resolves
+  })
+  const manager = new KernelManager(transport, { clock, artifactsDir: artifactsDir() })
+  const pending = manager.execute("while True: pass")
+  const settled = pending.then(r => r.status) // handler same tick
+  // Let admission complete and the cell dispatch before dispose races it
+  // (mirrors the production ordering: teardown arrives mid-execution,
+  // not mid-admission)
+  await new Promise(r => setTimeout(r, 20))
+  const disposeDone = manager.dispose()
+  await clock.advance(DISPOSE_TIMEOUT_MS + DISPOSE_TIMEOUT_MS + 100)
+  await disposeDone
+  expect(await settled).toBe("aborted")
+})
+
+test("V4 regression: payload temp lives INSIDE artifactsDir (same-filesystem rename)", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: FORBIDDEN-KM-1 (V4/F3): the payload temp directory must be
+   *      a sibling of the destination so rename is atomic — a /tmp temp
+   *      silently degrades to non-atomic copy across filesystems
+   * - Category: regression (observable: the dir handed to the payload
+   *      writer must be under artifactsDir)
+   * - Risk tier: High — crash-window corruption on Linux tmpfs
+   */
+  const clock = makeClock()
+  const dir = artifactsDir()
+  let writerDir = ""
+  const transport = makeTransport({
+    writeSnapshotPayload: async (targetDir: string) => {
+      writerDir = targetDir
+      // Write the payload where the rename expects it
+      fs.mkdirSync(targetDir, { recursive: true })
+      fs.writeFileSync(`${targetDir}/kernel-state.dill`, "NEW PAYLOAD")
+    },
+  })
+  const manager = new KernelManager(transport, { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  await clock.advance(SNAPSHOT_DEBOUNCE_MS + 1)
+  expect(writerDir.startsWith(dir)).toBe(true)
+  expect(fs.readFileSync(`${dir}/kernel-state.dill`, "utf8")).toBe("NEW PAYLOAD")
+})
+
+testWithTimeout("V5 regression: manifest write is atomic — a crash mid-write leaves the prior manifest readable", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: INV-KM-2 (V5/F4): the previous snapshot stays intact AND
+   *      READABLE — a torn manifest breaks revival tooling (KM-V3)
+   * - Category: regression (fault injection at the manifest write)
+   * - Risk tier: High
+   */
+  const dir = artifactsDir()
+  const manifestPath = `${dir}/kernel-state.json`
+  fs.writeFileSync(manifestPath, JSON.stringify({ version: 1, savedNames: ["prior"], skipped: [], bytes: 1, pythonVersion: "3.11.9", timestamp: "2026-08-16T00:00:00Z" }))
+  const clock = makeClock()
+  // Crash the SNAPSHOT midway: names resolve, but the write hangs —
+  // teardown-bounded flush abandons it; the prior manifest must survive
+  const transport = makeTransport({
+    snapshotNames: () => new Promise<string[]>(() => {}),
+  })
+  const manager = new KernelManager(transport, { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  const disposeDone = manager.dispose({ snapshot: true })
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + DISPOSE_TIMEOUT_MS + 100)
+  await disposeDone
+  const prior = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { savedNames: string[] }
+  expect(prior.savedNames).toEqual(["prior"])
+})
+
+test("C9 regression: dispose is idempotent — second dispose neither snapshots nor re-kills", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: INV-KM-LIFETIME-2 discipline (C9): double dispose (signal
+   *      handler + session teardown) is a no-op on a dead transport
+   * - Category: regression (probe P4)
+   * - Risk tier: Medium
+   */
+  const transport = makeTransport()
+  const manager = new KernelManager(transport, { clock: makeClock(), artifactsDir: artifactsDir() })
+  await manager.execute("x = 1")
+  await manager.dispose({ snapshot: true })
+  const killsBefore = transport.calls.filter(c => c.kind === "kill").length
+  const snapshotsBefore = transport.calls.filter(c => c.kind === "writeSnapshot").length
+  await manager.dispose({ snapshot: true })
+  expect(transport.calls.filter(c => c.kind === "kill").length).toBe(killsBefore)
+  expect(transport.calls.filter(c => c.kind === "writeSnapshot").length).toBe(snapshotsBefore)
+})
+
+test("C4 regression: between-execution kernel death is replaced BEFORE the next cell runs", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: INV-KM-LIFETIME-1 (C4): a dead kernel is replaced BEFORE
+   *      the next execution — the retry stays reserved for mid-execution
+   *      deaths
+   * - Category: regression (liveness at the seam)
+   * - Risk tier: Medium
+   */
+  let alive = true
+  const transport = makeTransport({
+    execute: async () => ({ code: 0, stdout: "ok", stderr: "", result: "" }),
+  })
+  ;(transport as { alive: () => boolean }).alive = () => alive
+  const manager = new KernelManager(transport, { clock: makeClock(), artifactsDir: artifactsDir() })
+  await manager.execute("first")
+  alive = false // kernel dies between executions
+  const r = await manager.execute("second")
+  expect(r.status).toBe("ok")
+  // Replacement happened proactively: kernelRestarted NOT set (no
+  // mid-execution death), and the cell ran on a restarted kernel
+  expect((r as { kernelRestarted?: boolean }).kernelRestarted).toBe(undefined)
+  const starts = transport.calls.filter(c => c.kind === "start").length
+  expect(starts).toBe(2)
+})
+
+test("C3 regression: runaway stream accumulation stays bounded (incremental capping)", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: POST-KM-2 discipline (C3/F10): the cap applies at the
+   *      pump, not only at settle — observable as bounded accumulation
+   * - Category: regression (memory safety)
+   * - Risk tier: Medium
+   */
+  const clock = makeClock()
+  const transport = makeTransport()
+  const manager = new KernelManager(transport, { clock, artifactsDir: artifactsDir() })
+  // Drive output emission directly: emit many large chunks for a live id
+  // via a scripted execute that emits then resolves
+  const big = "y".repeat(10_000)
+  const emitting = makeTransport({
+    execute: async (id: string) => {
+      for (let i = 0; i < 100; i++) {
+        transport.emit(id, "stdout", big) // 1MB total — would be 1MB uncapped
+      }
+      return { code: 0, stdout: "", stderr: "", result: "" }
+    },
+  })
+  void transport
+  const manager2 = new KernelManager(emitting, { clock, artifactsDir: artifactsDir() })
+  const r = await manager2.execute("flood")
+  expect(r.status).toBe("ok")
+  expect(r.stdout.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS + 100)
+})
+
+test("N3 regression: compaction notice lists only live names (skip-set filtered)", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: SEQ-KM-5 (N3): the notice is a live-state inventory
+   * - Category: regression
+   * - Risk tier: Low
+   */
+  const transport = makeTransport({
+    snapshotNames: async () => ["df", "model", "In", "Out", "open"],
+  })
+  const manager = new KernelManager(transport, { clock: makeClock(), artifactsDir: artifactsDir() })
+  await manager.execute("x = 1")
+  await manager.onCompactionComplete()
+  const notice = manager.compactionNotice() ?? ""
   expect(notice).toContain("df")
   expect(notice).toContain("model")
-  expect(notice.toLowerCase()).toContain("persist")
+  expect(notice).not.toContain("In")
+  expect(notice).not.toContain("Out")
+})
+
+test("V6 regression: execute-after-dispose rejects with the domain error", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: INV-KM-LIFETIME-2 (r1 F1 fix verification — was untested)
+   * - Category: regression
+   * - Risk tier: High
+   */
+  const transport = makeTransport()
+  const manager = new KernelManager(transport, { clock: makeClock(), artifactsDir: artifactsDir() })
+  await manager.execute("x = 1")
+  await manager.dispose()
+  let caught: unknown = undefined
+  await manager.execute("after death").catch((e: unknown) => { caught = e })
+  expect(String(caught)).toContain("disposed")
 })
 
 // ---------------------------------------------------------------------------

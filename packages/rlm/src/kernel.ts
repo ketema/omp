@@ -135,11 +135,15 @@ export interface KernelTransport {
   start(): Promise<void> | void
   execute(id: string, code: string): Promise<KernelTransportExecuteResult>
   interrupt(): Promise<void> | void
+  /** F-011 graceful shutdown request before the hard kill. */
+  shutdown?(): Promise<void> | void
   kill(): Promise<void> | void
   onOutput(cb: (event: KernelOutputEvent) => void): void
   snapshotNames(): Promise<string[]>
-  writeSnapshot(names: readonly string[]): Promise<KernelSnapshotWriteResult>
+  writeSnapshot(names: readonly string[], maxBytes: number): Promise<KernelSnapshotWriteResult>
   writeSnapshotPayload?(dir: string): Promise<void>
+  /** C6: reports the kernel's Python version for the snapshot manifest. */
+  pythonVersion?(): Promise<string>
   restoreSnapshot(): Promise<string[]>
   bootstrap(): Promise<void> | void
   isBusy(): boolean
@@ -157,6 +161,34 @@ function truncateStream(text: string): string {
     text.slice(0, MAX_OUTPUT_CHARS) +
     TRUNCATION_MARKER.replace('%d', String(MAX_OUTPUT_CHARS))
   )
+}
+
+/** C3/F-10: incrementally cap accumulated streams so a runaway cell cannot
+ * grow memory without bound before settle-time truncation. */
+function appendCapped(current: string, chunk: string): string {
+  // Keep a small margin beyond the cap so the final truncation applies the
+  // exact marker; the bound is cap + marker length, not the raw stream
+  const markerLength = TRUNCATION_MARKER.replace('%d', String(MAX_OUTPUT_CHARS)).length
+  const next = current + chunk
+  if (next.length <= MAX_OUTPUT_CHARS + markerLength) return next
+  return next.slice(0, MAX_OUTPUT_CHARS + markerLength)
+}
+
+/** V4/V5/F3/F4: atomic file write — temp file in the SAME directory as the
+ * destination, then rename (POSIX same-filesystem rename is atomic). A
+ * crash mid-write leaves the prior file intact and readable. */
+function atomicWriteFileSync(destPath: string, content: string): void {
+  const tempPath = `${destPath}.tmp-${process.pid}-${Date.now()}`
+  fs.writeFileSync(tempPath, content)
+  fs.renameSync(tempPath, destPath)
+}
+
+/** C1/F-017: stderr tails quoted in errors are bounded to
+ * STDERR_TAIL_CHARS (prime-agent slices the last 1024 at throw sites). */
+function boundedStderrTail(stderr: string): string {
+  return stderr.length <= STDERR_TAIL_CHARS
+    ? stderr
+    : stderr.slice(stderr.length - STDERR_TAIL_CHARS)
 }
 
 function utcIsoTimestamp(clock: KernelClock): string {
@@ -181,6 +213,10 @@ export class KernelManager {
 
   private started = false
   private disposed = false
+  /** C9: dispose completed — later dispose calls are no-ops. */
+  private disposeCompleted = false
+  /** F8: teardown-time observability (snapshot flush failures). */
+  private teardownNotice: string | null = null
   private execCounter = 0
 
   // Execution serialization (PRE-KM-1/INV-KM-1)
@@ -197,7 +233,6 @@ export class KernelManager {
 
   // Pending abort: abort() called before executeInternal set up active state
   private pendingAbort = false
-  private abortGraceFired = false
 
   // Snapshot debounce timer (SEQ-KM-3)
   private snapshotCancel: (() => void) | null = null
@@ -220,9 +255,9 @@ export class KernelManager {
         event.id === this.activeExecutionId
       ) {
         if (event.stream === 'stdout') {
-          this.activeStdout += event.data
+          this.activeStdout = appendCapped(this.activeStdout, event.data)
         } else {
-          this.activeStderr += event.data
+          this.activeStderr = appendCapped(this.activeStderr, event.data)
         }
       }
     })
@@ -287,9 +322,13 @@ export class KernelManager {
       this.pendingAbort = true
     }
 
+    // The grace callback may only settle a THEN-ACTIVE execution. An
+    // execution that already settled normally (or was never started)
+    // must not latch a poison flag for the next one (audit r2 V1:
+    // grace firing into a consumed settle re-created the poisoning).
     this.clock.schedule(() => {
       const settle = this.activeSettle
-      if (settle !== null) {
+      if (settle !== null && this.activeExecutionId !== null) {
         this.activeSettle = null
         this.activeExecutionId = null
         settle({
@@ -301,9 +340,9 @@ export class KernelManager {
           errorEname: undefined,
           durationMs: this.clock.now() - this.activeStartTime,
         })
-      } else {
-        this.abortGraceFired = true
       }
+      // No active execution at grace time: nothing to settle — an idle
+      // abort must leave NO trace for subsequent executions
     }, ABORT_GRACE_MS)
 
     return Promise.resolve()
@@ -320,6 +359,9 @@ export class KernelManager {
    * executions, then calls kill() and transport dispose.
    */
   async dispose(options?: { readonly snapshot?: boolean }): Promise<void> {
+    // C9: idempotent — second dispose (signal handler + session teardown)
+    // is a no-op, never re-snapshotting or re-killing a dead transport
+    if (this.disposeCompleted) return
     this.disposed = true
 
     // Cancel any pending debounced snapshot
@@ -328,9 +370,20 @@ export class KernelManager {
       this.snapshotCancel = null
     }
 
-    // SEQ-KM-4: flush snapshot before teardown if requested
+    // SEQ-KM-4/F-181 (V2): flush snapshot before teardown if requested —
+    // bounded by SNAPSHOT_DISPOSE_TIMEOUT_MS so a hung kernel cannot
+    // deadlock teardown (prime-agent flushSnapshotForDispose shape)
     if (options?.snapshot === true) {
-      await this.runSnapshot()
+      await Promise.race([
+        this.runSnapshot().catch((error: unknown) => {
+          // Snapshot failure at teardown is observable, not silent (F8):
+          // the durability loss is named; teardown proceeds
+          this.teardownNotice = `snapshot flush failed during dispose: ${String(error)}`
+        }),
+        new Promise<void>(resolve => {
+          this.clock.schedule(() => resolve(), SNAPSHOT_DISPOSE_TIMEOUT_MS)
+        }),
+      ])
     }
 
     // INV-KM-LIFETIME-2: wait for in-flight executions with timeout
@@ -343,10 +396,38 @@ export class KernelManager {
       }),
     ])
 
+    // V3/F11: any execution still in flight at teardown gets a terminal
+    // state — the future tool layer must never hang on a settled session
+    // (prime-agent rejectActiveExecution shape)
+    const stranded = this.activeSettle
+    if (stranded !== null) {
+      this.activeSettle = null
+      this.activeExecutionId = null
+      stranded({
+        status: 'aborted',
+        stdout: truncateStream(this.activeStdout),
+        stderr: truncateStream(this.activeStderr),
+        result: '',
+        traceback: undefined,
+        errorEname: undefined,
+        durationMs: this.clock.now() - this.activeStartTime,
+      })
+    }
+
+    // N2: graceful shutdown request before the hard kill (F-011):
+    // shutdown_request, wait SHUTDOWN_GRACE_MS, then kill
+    const shutdownResult = this.transport.shutdown?.()
+    if (shutdownResult instanceof Promise) await shutdownResult
+    if (this.transport.shutdown !== undefined) {
+      await new Promise<void>(resolve => {
+        this.clock.schedule(() => resolve(), SHUTDOWN_GRACE_MS)
+      })
+    }
     const killResult = this.transport.kill()
     if (killResult instanceof Promise) await killResult
     const disposeResult = this.transport.dispose()
     if (disposeResult instanceof Promise) await disposeResult
+    this.disposeCompleted = true
   }
 
   // ---- Internal: start sequence (SEQ-KM-1/SEQ-KM-2) ----
@@ -355,12 +436,32 @@ export class KernelManager {
    * SEQ-KM-1: admits the kernel BEFORE any cell execution.
    * SEQ-KM-2: start -> restoreSnapshot -> bootstrap.
    */
-  private async ensureStarted(): Promise<void> {
+  async ensureStarted(): Promise<void> {
     if (this.started) return
-    await this.transport.start()
+    try {
+      await this.transport.start()
+    } catch (error) {
+      // C1/ERRORS-KM-2: start failures surface as the readiness error
+      // with the kernel's stderr tail bounded to STDERR_TAIL_CHARS
+      const tail = boundedStderrTail(error instanceof Error ? error.message : String(error))
+      throw new KernelUnresponsiveError(tail)
+    }
     await this.transport.restoreSnapshot()
     await this.transport.bootstrap()
     this.started = true
+  }
+
+  /** C4/INV-KM-LIFETIME-1: a kernel that died BETWEEN executions is
+   * replaced BEFORE the next execution runs — reactive retry stays as the
+   * mid-execution safety net, but the common idle-death case never burns
+   * it. */
+  private async ensureAlive(): Promise<void> {
+    if (this.started && !this.transport.alive()) {
+      this.started = false
+      const killResult = this.transport.kill()
+      if (killResult instanceof Promise) await killResult.catch(() => undefined)
+      await this.ensureStarted()
+    }
   }
 
   // ---- Internal: busy-wait (ERRORS-KM-1) ----
@@ -403,6 +504,10 @@ export class KernelManager {
     // SEQ-KM-1/SEQ-KM-2: admit kernel before execution
     await this.ensureStarted()
 
+    // C4: idle death replaced reactively above; between-execution death
+    // replaced HERE, before the cell is dispatched
+    await this.ensureAlive()
+
     const id = this.generateExecId()
     const startTime = this.clock.now()
 
@@ -412,10 +517,10 @@ export class KernelManager {
     this.aborted = false
     this.activeStartTime = startTime
 
-    // Check if abort grace timer already fired while we were in
-    // waitForNotBusy / ensureStarted
-    if (this.abortGraceFired) {
-      this.abortGraceFired = false
+    // An abort requested during waitForNotBusy/ensureStarted applies to
+    // THIS execution only (it was mid-flight in the serialization chain);
+    // it must never poison executions that start after this one
+    if (this.pendingAbort) {
       this.pendingAbort = false
       this.activeExecutionId = null
       return {
@@ -462,12 +567,12 @@ export class KernelManager {
         if (execResult.code === 0) {
           this.scheduleSnapshot()
         }
-      }).catch(() => {
+      }).catch((deathCause: unknown) => {
         // If aborted, do not restart
         if (this.aborted) return
 
         // INV-KM-LIFETIME-1/3: kernel death — restart and retry once
-        this.handleKernelDeath(code, startTime).then((result) => {
+        this.handleKernelDeath(code, startTime, deathCause).then((result) => {
           const settle = this.activeSettle
           if (settle === null) return
           this.activeSettle = null
@@ -500,10 +605,20 @@ export class KernelManager {
   private async handleKernelDeath(
     code: string,
     startTime: number,
+    deathCause: unknown,
   ): Promise<KernelExecutionResult> {
     // Restart kernel: full start sequence (SEQ-KM-2)
     this.started = false
-    await this.ensureStarted()
+    try {
+      await this.ensureStarted()
+    } catch (restartError) {
+      // F8: double-death diagnostics surface — a blank error for the
+      // model is worse than the failure itself
+      throw new RlmKernelContractError(
+        `kernel died mid-execution and restart also failed: ${String(deathCause)}; restart error: ${String(restartError)}`,
+        { cause: restartError },
+      )
+    }
 
     // Retry the cell ONCE with a fresh execution id
     const id = this.generateExecId()
@@ -561,10 +676,20 @@ export class KernelManager {
 
     this.snapshotCancel = this.clock.schedule(() => {
       this.snapshotCancel = null
-      void this.runSnapshot().catch(() => {
-        // Snapshot write failed; previous snapshot remains intact (FORBIDDEN-KM-1)
+      void this.runSnapshot().catch((error: unknown) => {
+        // F8: snapshot failure is observable, never silent — the previous
+        // snapshot remains intact (FORBIDDEN-KM-1) and the loss is named
+        this.teardownNotice = `debounced snapshot failed: ${String(error)}`
       })
     }, SNAPSHOT_DEBOUNCE_MS)
+  }
+
+  /** F8: observable failures (snapshot loss at teardown or debounce);
+   * cleared on read so each notice is delivered once. */
+  takeTeardownNotice(): string | null {
+    const notice = this.teardownNotice
+    this.teardownNotice = null
+    return notice
   }
 
   /**
@@ -572,64 +697,83 @@ export class KernelManager {
    * SNAPSHOT_ALWAYS_SKIP → writeSnapshot → atomic payload write → manifest.
    */
   private async runSnapshot(): Promise<void> {
-    // Gather all names from the kernel
-    const allNames = await this.transport.snapshotNames()
+    // C5: snapshots run through the serialization chain — a snapshot cell
+    // concurrent with an active cell races kernel state (prime-agent
+    // enqueues snapshot cells; same discipline here)
+    const run = (async (): Promise<void> => {
+      // Gather all names from the kernel
+      const allNames = await this.transport.snapshotNames()
 
-    // Filter out always-skip names
-    const skipSet = new Set<string>(SNAPSHOT_ALWAYS_SKIP)
-    const filteredNames = allNames.filter(
-      (n: string) => !skipSet.has(n),
-    )
-
-    // Write snapshot (serialization in kernel process)
-    const writeResult = await this.transport.writeSnapshot(filteredNames)
-
-    // Atomic payload write: write to temp dir, then move to artifactsDir
-    // FORBIDDEN-KM-1: crash mid-write must leave prior artifacts intact
-    const payloadFn = this.transport.writeSnapshotPayload
-    if (typeof payloadFn === 'function') {
-      const tempDir = join(
-        tmpdir(),
-        `kernel-snapshot-${this.clock.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      // Filter out always-skip names (FORBIDDEN-KM-3)
+      const skipSet = new Set<string>(SNAPSHOT_ALWAYS_SKIP)
+      const filteredNames = allNames.filter(
+        (n: string) => !skipSet.has(n),
       )
-      try {
-        fs.mkdirSync(tempDir, { recursive: true })
-        await payloadFn(tempDir)
 
-        // On success, move payload to artifactsDir
-        const payloadSrc = join(tempDir, SNAPSHOT_PAYLOAD_FILE)
-        fs.mkdirSync(this.artifactsDir, { recursive: true })
-        const payloadDest = join(this.artifactsDir, SNAPSHOT_PAYLOAD_FILE)
-        // Try atomic rename; fall back to copy for cross-filesystem
+      // Write snapshot (serialization in kernel process); C2/F-174: the
+      // byte cap flows through the seam — the writer is TOLD the budget
+      const writeResult = await this.transport.writeSnapshot(
+        filteredNames,
+        SNAPSHOT_MAX_BYTES,
+      )
+
+      // Atomic payload write: write to a temp dir INSIDE artifactsDir,
+      // then rename within the same filesystem (V4/F3: a cross-filesystem
+      // temp location silently degrades to non-atomic copy — same-dir
+      // rename is atomic on POSIX)
+      // FORBIDDEN-KM-1: crash mid-write must leave prior artifacts intact
+      const payloadFn = this.transport.writeSnapshotPayload
+      if (typeof payloadFn === 'function') {
+        const tempDir = join(
+          this.artifactsDir,
+          `.kernel-snapshot-tmp-${this.clock.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        )
         try {
+          fs.mkdirSync(this.artifactsDir, { recursive: true })
+          fs.mkdirSync(tempDir, { recursive: true })
+          await payloadFn(tempDir)
+
+          // Same-filesystem rename: atomic
+          const payloadSrc = join(tempDir, SNAPSHOT_PAYLOAD_FILE)
+          const payloadDest = join(this.artifactsDir, SNAPSHOT_PAYLOAD_FILE)
           fs.renameSync(payloadSrc, payloadDest)
-        } catch {
-          fs.copyFileSync(payloadSrc, payloadDest)
-        }
-      } finally {
-        // Clean up temp dir regardless of success/failure
-        try {
-          fs.rmSync(tempDir, { recursive: true, force: true })
-        } catch {
-          // Ignore cleanup errors
+        } finally {
+          // Clean up temp dir regardless of success/failure
+          try {
+            fs.rmSync(tempDir, { recursive: true, force: true })
+          } catch {
+            // temp cleanup failure never affects the committed payload
+          }
         }
       }
-    }
 
-    // Write manifest (SEQ-KM-5)
-    fs.mkdirSync(this.artifactsDir, { recursive: true })
-    const manifest: KernelSnapshotManifest = {
-      version: SNAPSHOT_MANIFEST_VERSION,
-      savedNames: filteredNames,
-      skipped: writeResult.skipped,
-      bytes: writeResult.bytes,
-      pythonVersion: '',
-      timestamp: utcIsoTimestamp(this.clock),
-    }
-    fs.writeFileSync(
-      join(this.artifactsDir, SNAPSHOT_MANIFEST_FILE),
-      JSON.stringify(manifest),
-    )
+      // C6: the manifest's pythonVersion comes from the kernel when the
+      // transport can report it (prime-agent writes sys.version)
+      const pythonVersion = await (this.transport.pythonVersion?.()
+        ?? Promise.resolve(''))
+
+      // V5/F4: the manifest gets the same atomicity guarantee as the
+      // payload — temp file in artifactsDir + rename (a torn manifest
+      // makes the prior snapshot unreadable per INV-KM-2)
+      const manifest: KernelSnapshotManifest = {
+        version: SNAPSHOT_MANIFEST_VERSION,
+        savedNames: filteredNames,
+        skipped: writeResult.skipped,
+        bytes: writeResult.bytes,
+        pythonVersion,
+        timestamp: utcIsoTimestamp(this.clock),
+      }
+      atomicWriteFileSync(
+        join(this.artifactsDir, SNAPSHOT_MANIFEST_FILE),
+        JSON.stringify(manifest),
+      )
+    })()
+    // The chain tail carries this snapshot; a cell submitted meanwhile
+    // serializes AFTER it (chain discipline preserved)
+    const prev = this.chainTail
+    const next = (prev ?? Promise.resolve()).then(() => run, () => run)
+    this.chainTail = next.then(() => undefined, () => undefined)
+    await next
   }
 
   /**
@@ -640,8 +784,10 @@ export class KernelManager {
    */
   async onCompactionComplete(): Promise<void> {
     const allNames = await this.transport.snapshotNames()
+    const skipSet = new Set<string>(SNAPSHOT_ALWAYS_SKIP)
+    const liveNames = allNames.filter((n: string) => !skipSet.has(n))
     this.compactionNoticeValue =
-      `Kernel state persisted. Namespace inventory: ${allNames.join(', ')}`
+      `Kernel state persisted. Namespace inventory: ${liveNames.join(', ')}`
   }
 
   // ---- Internal: id generation ----
