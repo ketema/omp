@@ -177,6 +177,29 @@ class _Store:
                 continue
             for entry_id, entry_data in kind_entries.items():
                 if isinstance(entry_data, dict):
+                    version = entry_data.get("version", ENTRY_VERSION_DEFAULT)
+                    if isinstance(version, bool) or not isinstance(version, int):
+                        _logger.warning(
+                            "dropping entry with malformed version %r: %s/%s",
+                            version,
+                            kind,
+                            entry_id,
+                        )
+                        continue
+                    for text_field in ("title", "content", "path"):
+                        value = entry_data.get(text_field)
+                        if not isinstance(value, str):
+                            _logger.warning(
+                                "dropping entry with malformed %s %r: %s/%s",
+                                text_field,
+                                value,
+                                kind,
+                                entry_id,
+                            )
+                            entry_data = None
+                            break
+                    if entry_data is None:
+                        continue
                     self._entries[kind][entry_id] = dict(entry_data)
 
         for ref in refinements:
@@ -248,10 +271,10 @@ class HarnessState:
         else:
             global_file = local_dir.parent / "global-rlm-state" / GLOBAL_FILE
 
-        if global_file == local_file:
+        if global_file.resolve() == local_file.resolve():
             raise RlmLedgerError(
                 "INV-LED-LIFETIME-2 violation: local and global state files must be "
-                f"distinct paths (both resolve to {local_file})"
+                f"distinct paths (both resolve to {local_file.resolve()})"
             )
 
         self._local = _Store(local_file)
@@ -367,6 +390,10 @@ class HarnessState:
                 )
         else:
             id = id[:ID_MAX_CHARS]
+            if not id:
+                raise RlmLedgerError(
+                    "INV-LED-1 violation: explicit id must be non-empty"
+                )
 
         store = self._store_for_scope(scope)
 
@@ -401,8 +428,20 @@ class HarnessState:
 
         return dict(entry)
 
+    _RESERVED_FIELDS: Final[frozenset[str]] = frozenset(
+        {"kind", "id", "version", "created_at", "updated_at", "source"}
+    )
+
     def _update(self, kind: str, id: str, **fields: object) -> dict[str, object]:
         self._validate_kind(kind)
+        # ERRORS-LED-1: reserved-field collisions raise the domain error, not
+        # a raw TypeError from argument binding
+        reserved = sorted(self._RESERVED_FIELDS & fields.keys())
+        if reserved:
+            raise RlmLedgerError(
+                "ERRORS-LED-1 violation: cannot update reserved field(s) "
+                f"{', '.join(reserved)} on entry {id!r}"
+            )
         # INV-LED-2: mutations reload external state before saving
         self._reload_all()
 
@@ -422,7 +461,7 @@ class HarnessState:
                 )
 
         version = entry.get("version", ENTRY_VERSION_DEFAULT)
-        if not isinstance(version, int):
+        if isinstance(version, bool) or not isinstance(version, int):
             raise RlmLedgerError(
                 f"ERRORS-LED-1 violation: entry {id!r} has malformed on-disk "
                 f"version {version!r}; refusing update"
@@ -485,8 +524,19 @@ class HarnessState:
     ) -> dict[str, object]:
         return self._create("memory", title, content, **kwargs)  # type: ignore[arg-type]
 
+    def _guard_reserved(self, kind: str, id: str, fields: dict) -> dict:
+        """ERRORS-LED-1: reserved-field collisions raise the domain error
+        instead of TypeError at **fields binding time."""
+        reserved = sorted(self._RESERVED_FIELDS & fields.keys())
+        if reserved:
+            raise RlmLedgerError(
+                "ERRORS-LED-1 violation: cannot update reserved field(s) "
+                f"{', '.join(reserved)} on entry {id!r}"
+            )
+        return fields
+
     def update_memory(self, id: str, /, **fields: object) -> dict[str, object]:
-        return self._update("memory", id, **fields)
+        return self._update("memory", id, **self._guard_reserved("memory", id, fields))
 
     def delete_memory(self, id: str, /) -> None:
         self._delete("memory", id)
@@ -497,7 +547,7 @@ class HarnessState:
         return self._create("skill", title, content, **kwargs)  # type: ignore[arg-type]
 
     def update_skill(self, id: str, /, **fields: object) -> dict[str, object]:
-        return self._update("skill", id, **fields)
+        return self._update("skill", id, **self._guard_reserved("skill", id, fields))
 
     def delete_skill(self, id: str, /) -> None:
         self._delete("skill", id)
@@ -508,7 +558,9 @@ class HarnessState:
         return self._create("subagent", title, content, **kwargs)  # type: ignore[arg-type]
 
     def update_subagent(self, id: str, /, **fields: object) -> dict[str, object]:
-        return self._update("subagent", id, **fields)
+        return self._update(
+            "subagent", id, **self._guard_reserved("subagent", id, fields)
+        )
 
     def delete_subagent(self, id: str, /) -> None:
         self._delete("subagent", id)
@@ -519,7 +571,7 @@ class HarnessState:
         return self._create("prompt", title, content, **kwargs)  # type: ignore[arg-type]
 
     def update_prompt_note(self, id: str, /, **fields: object) -> dict[str, object]:
-        return self._update("prompt", id, **fields)
+        return self._update("prompt", id, **self._guard_reserved("prompt", id, fields))
 
     def delete_prompt_note(self, id: str, /) -> None:
         self._delete("prompt", id)

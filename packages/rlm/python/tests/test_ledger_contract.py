@@ -152,6 +152,36 @@ def test_post_led_1_every_mutation_persists_immediately(tmp_path):
             f"ACTUAL: keys == {sorted(on_disk['entries'][kind])}\n"
             f"GUIDANCE: each mutation MUST write the state file before returning"
         )
+        create(f"{kind} Second", f"{kind} v1", id=f"{kind}2")
+
+    # update surface: new content on disk immediately (audit re-run F5)
+    state.update_memory("memory1", content="memory v2")
+    assert json.loads(state_file.read_text())["entries"]["memory"]["memory1"]["content"] == "memory v2", (
+        f"test_post_led_1 FAILED\n"
+        f"WHY: POST-LED-1 violation — update did not persist immediately\n"
+        f"EXPECTED: content == 'memory v2'\nACTUAL: stale on disk\n"
+        f"GUIDANCE: updates MUST hit disk before returning"
+    )
+
+    # delete surface: gone from disk immediately
+    state.delete_memory("memory2")
+    assert "memory2" not in json.loads(state_file.read_text())["entries"]["memory"], (
+        f"test_post_led_1 FAILED\n"
+        f"WHY: POST-LED-1 violation — delete did not persist immediately\n"
+        f"EXPECTED: memory2 absent on disk\nACTUAL: still present\n"
+        f"GUIDANCE: deletes MUST hit disk before returning"
+    )
+
+    # refinement surface: refine_0001 on disk immediately
+    state.record_refinement("t", "c", "e", "o")
+    on_disk = json.loads(state_file.read_text())
+    assert any(r["id"] == "refine_0001" for r in on_disk["refinements"]), (
+        f"test_post_led_1 FAILED\n"
+        f"WHY: POST-LED-1 violation — refinement did not persist immediately\n"
+        f"EXPECTED: refine_0001 in on-disk refinements\n"
+        f"ACTUAL: {on_disk['refinements']!r}\n"
+        f"GUIDANCE: refinements MUST hit disk before returning"
+    )
 
 
 # ============================================================================
@@ -621,8 +651,7 @@ def test_errors_led_1_hostile_on_disk_version_raises_domain_error(tmp_path):
     """
     CONTRACT TRACEABILITY:
     - Enforces: ERRORS-LED-1: malformed on-disk entry fields (non-integer
-      version) raise the domain error, not a raw TypeError (LED-V5 load
-      coercion)
+      version, booleans included) raise the domain error, not a raw TypeError
     - Category: error (durable-file boundary)
     - Risk tier: Medium — hostile/corrupt-but-parseable files are a durable
       trust boundary
@@ -647,6 +676,80 @@ def test_errors_led_1_hostile_on_disk_version_raises_domain_error(tmp_path):
     state = HarnessState(session_dir=str(session_dir), global_state_dir=str(tmp_path / "g"))
     with pytest.raises(RlmLedgerError):
         state.update_memory("bad1", title="x")
+
+
+def test_errors_led_1_bool_version_rejected(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: ERRORS-LED-1 — version `true` (bool ⊂ int) is malformed, not 1
+    - Category: boundary
+    - Risk tier: Medium
+    """
+    session_dir = tmp_path / "session"
+    harness_dir = session_dir / "harness"
+    harness_dir.mkdir(parents=True)
+    state_file = harness_dir / "harness_state.json"
+    state_file.write_text(json.dumps({
+        "schema": 1,
+        "entries": {"memory": {"boolver": {
+            "id": "boolver", "kind": "memory", "title": "Bool",
+            "content": "c", "path": "general", "scope": "local",
+            "reference": None, "arguments": None, "metadata": None,
+            "source": "agent", "version": True,
+            "created_at": "2026-08-15T00:00:00Z", "updated_at": "2026-08-15T00:00:00Z",
+        }}},
+        "refinements": [],
+    }))
+    state = HarnessState(session_dir=str(session_dir), global_state_dir=str(tmp_path / "g"))
+    with pytest.raises(RlmLedgerError):
+        state.update_memory("boolver", title="x")
+
+
+def test_errors_led_1_reserved_update_field_raises_domain_error(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: ERRORS-LED-1 — invalid update arguments (reserved-field
+      collisions) raise the domain error, not a raw TypeError
+    - Category: negative
+    - Risk tier: Medium
+    """
+    state = make_state(tmp_path)
+    state.create_memory("T", "c", id="t1")
+    with pytest.raises(RlmLedgerError, match="reserved"):
+        state.update_memory("t1", kind="skill")
+    with pytest.raises(RlmLedgerError, match="reserved"):
+        state.update_memory("t1", version=5)
+
+
+def test_inv_led_1_explicit_empty_id_rejected(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: INV-LED-1 — explicit empty id is equally invalid
+    - Category: negative
+    - Risk tier: Medium
+    """
+    state = make_state(tmp_path)
+    with pytest.raises(RlmLedgerError):
+        state.create_memory("T", "c", id="")
+    assert all(e["id"] for e in state.list("memory"))
+
+
+def test_inv_led_lifetime_2_symlinked_same_file_raises(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: INV-LED-LIFETIME-2 — path RESOLUTION, not lexical comparison;
+      symlink-aliased dirs cannot alias one state file
+    - Category: negative
+    - Risk tier: High — inode-level aliasing self-clobbers
+    """
+    import os
+
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    os.symlink(real, link)
+    with pytest.raises(RlmLedgerError):
+        HarnessState(session_dir=str(real), global_state_dir=str(link))
 
 
 # ============================================================================
