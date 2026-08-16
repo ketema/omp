@@ -1,83 +1,82 @@
 /**
- * RLM Bootstrap implementation.
+ * RLM kernel environment bootstrap.
  *
- * Implementation does NOT import from the contract file; constants are
- * redeclared independently. The alignment test imports both and checks
- * equality.
+ * Implements the contract at requirements/contracts/rlm-bootstrap.contract.ts.
+ * All constants are redeclared independently (no import from the contract);
+ * alignment tests import both sides and assert equality.
  */
 
-import { createHash } from 'node:crypto'
-import { writeFileSync, readFileSync, mkdirSync, existsSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { createHash } from "node:crypto"
+import * as fs from "node:fs"
+import { join } from "node:path"
 
 // =============================================================================
-// Constants
+// Constants (redeclared; aligned with contract BOOT_*)
 // =============================================================================
 
 export const SCHEMA_VERSION = 8
-
-export const PYTHON_VERSION = '3.11'
-
-export const BASE_PACKAGES: readonly string[] = [
-  'ipykernel',
-  'prime-agent-runtime',
-  'dill',
-]
-
+export const PYTHON_VERSION = "3.11"
+export const BASE_PACKAGES: readonly string[] = ["ipykernel", "prime-agent-runtime", "dill"]
 export const EXTRAS_PACKAGES: readonly string[] = [
-  'requests',
-  'httpx',
-  'pyyaml',
-  'tomli',
-  'python-dotenv',
-  'pandas',
-  'numpy',
-  'scipy',
-  'beautifulsoup4',
-  'lxml',
-  'pydantic',
-  'tyro',
+  "requests", "httpx", "pyyaml", "tomli", "python-dotenv",
+  "pandas", "numpy", "scipy", "beautifulsoup4", "lxml", "pydantic", "tyro",
+]
+export const LOCK_STALE_MS = 30_000
+export const LOCK_RETRY_MS = 100
+export const RUNTIME_IDENTITY_KIND = "sha256"
+
+const MANIFEST_FILE = ".bootstrap-version"
+const LOCK_FILE = ".bootstrap.lock"
+
+const CRUD_METHODS: readonly string[] = [
+  "create_memory", "update_memory", "delete_memory",
+  "create_skill", "update_skill", "delete_skill",
+  "create_subagent", "update_subagent", "delete_subagent",
+  "create_prompt_note", "update_prompt_note", "delete_prompt_note",
 ]
 
-export const LOCK_STALE_MS = 30_000
+const ENTRY_FIELDS: readonly string[] = [
+  "id", "kind", "title", "content", "path", "scope", "reference",
+  "arguments", "metadata", "source", "created_at", "updated_at", "version",
+]
 
-export const LOCK_RETRY_MS = 100
-
-export const RUNTIME_IDENTITY_KIND = 'sha256'
+/** POST-BOOT-3: the probe a candidate interpreter must run. It imports
+ * ipykernel and the rlm runtime, then reports the four readiness
+ * dimensions the host evaluates. */
+const READY_CHECK_PROBE = [
+  "import ipykernel",
+  "import rlm",
+  "print('rlm_callable=' + str(callable(getattr(rlm, 'run', None))))",
+  "print('background_absent=' + str(not hasattr(rlm, 'background')))",
+  "print('crud=' + ','.join(m for m in [",
+  ...CRUD_METHODS.map(m => `    '${m}',`),
+  "] if hasattr(getattr(rlm, 'harness', None), m)))",
+  "print('entry_fields=' + ','.join(f for f in [",
+  ...ENTRY_FIELDS.map(f => `    '${f}',`),
+  "] if f in rlm.HarnessEntry.__dataclass_fields__))",
+].join("\n")
 
 // =============================================================================
-// Exceptions
+// Errors
 // =============================================================================
 
 export class RlmBootstrapError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options)
-    this.name = 'RlmBootstrapError'
+    this.name = "RlmBootstrapError"
   }
 }
 
 export class UvMissingError extends RlmBootstrapError {
   constructor() {
-    super('uv is required to set up the Python kernel')
-    this.name = 'UvMissingError'
+    super("uv is required to set up the Python kernel")
+    this.name = "UvMissingError"
   }
 }
 
 // =============================================================================
 // Types
 // =============================================================================
-
-export interface BootstrapRunner {
-  run(
-    cmd: string,
-    args: readonly string[],
-  ): Promise<{ code: number; stdout: string; stderr: string }>
-}
-
-export interface BootstrapDeps {
-  readonly runner: BootstrapRunner
-  exists(path: string): boolean
-}
 
 export interface InterpreterConfig {
   readonly pythonOverride?: string
@@ -89,6 +88,7 @@ export interface KernelSession {
   readonly sessionDir: string
   readonly harnessDir: string
   readonly globalHarnessDir: string
+  readonly agentDir: string
   readonly depth: number
   readonly maxDepth: number
 }
@@ -98,7 +98,24 @@ export interface KernelCaps {
   readonly snapshotMaxBytes: number
 }
 
-interface BootstrapManifest {
+export interface RunResult {
+  readonly code: number
+  readonly stdout: string
+  readonly stderr: string
+}
+
+export interface BootstrapDeps {
+  readonly runner: { run(cmd: string, args: readonly string[]): Promise<RunResult> }
+  exists(path: string): boolean
+}
+
+export interface ManagedVenvDeps extends BootstrapDeps {
+  readonly runtimeSources: Readonly<Record<string, string>>
+  readonly skills: readonly string[]
+  readTextFile(path: string): string | null
+}
+
+export interface BootstrapVersionManifest {
   readonly schema: number
   readonly ipykernel: string
   readonly runtime: string
@@ -107,397 +124,291 @@ interface BootstrapManifest {
   readonly pythonSkills: readonly string[]
 }
 
-interface LockFile {
+interface LockFileContents {
   readonly pid: number
   readonly acquiredAt: number
 }
 
 // =============================================================================
-// runReadyCheck
+// POST-BOOT-3 — ready-check evaluation over probe output
 // =============================================================================
 
-const RLM_METHOD_NAMES: readonly string[] = [
-  'create_memory',
-  'update_memory',
-  'delete_memory',
-  'create_skill',
-  'update_skill',
-  'delete_skill',
-  'create_subagent',
-  'update_subagent',
-  'delete_subagent',
-  'create_prompt_note',
-  'update_prompt_note',
-  'delete_prompt_note',
-]
-
-const RLM_ENTRY_FIELD_NAMES: readonly string[] = [
-  'id',
-  'kind',
-  'title',
-  'content',
-  'path',
-  'scope',
-  'reference',
-  'arguments',
-  'metadata',
-  'source',
-  'created_at',
-  'updated_at',
-  'version',
-]
-
-/**
- * BOOT-POST-BOOT-3: forkserver readiness check.
- * true iff output contains rlm_callable=true, background_absent=true,
- * crud= list containing all 12 method names, and entry_fields= containing
- * all 14 field names (order-insensitive, comma-split).
- */
 export function runReadyCheck(probeOutput: string): boolean {
-  if (!probeOutput.includes('rlm_callable=true')) {
-    return false
+  const lines = probeOutput.split("\n").map(l => l.trim()).filter(l => l.length > 0)
+  const field = (prefix: string): string[] | undefined => {
+    const line = lines.find(l => l.startsWith(prefix))
+    if (line === undefined) return undefined
+    return line.slice(prefix.length).split(",").map(s => s.trim()).filter(s => s.length > 0)
   }
-  if (!probeOutput.includes('background_absent=true')) {
-    return false
-  }
-
-  const crudMatch = probeOutput.match(/crud=([^\s]+)/)
-  if (crudMatch === null) {
-    return false
-  }
-  const crudList = (crudMatch[1] ?? '').split(',')
-  for (const method of RLM_METHOD_NAMES) {
-    if (!crudList.includes(method)) {
-      return false
-    }
-  }
-
-  const entryMatch = probeOutput.match(/entry_fields=([^\s]+)/)
-  if (entryMatch === null) {
-    return false
-  }
-  const entryList = (entryMatch[1] ?? '').split(',')
-  for (const field of RLM_ENTRY_FIELD_NAMES) {
-    if (!entryList.includes(field)) {
-      return false
-    }
-  }
-
+  if (!lines.includes("rlm_callable=true")) return false
+  if (!lines.includes("background_absent=true")) return false
+  const crud = field("crud=")
+  if (crud === undefined || !CRUD_METHODS.every(m => crud.includes(m))) return false
+  const entryFields = field("entry_fields=")
+  if (entryFields === undefined || !ENTRY_FIELDS.every(f => entryFields.includes(f))) return false
   return true
 }
 
 // =============================================================================
-// runtimeIdentityHash
+// PRE-BOOT-1 — interpreter resolution with an evaluated probe
 // =============================================================================
 
-/**
- * BOOT-POST-BOOT-2: deterministic sha256 hex over sorted file names and
- * contents.
- */
-export function runtimeIdentityHash(sources: Record<string, string>): string {
-  const sortedKeys = Object.keys(sources).sort()
-  const hash = createHash('sha256')
-  for (const key of sortedKeys) {
-    hash.update(key)
-    hash.update('\0')
-    hash.update(sources[key] ?? '')
-    hash.update('\0')
-  }
-  return hash.digest('hex')
-}
-
-// =============================================================================
-// resolveInterpreter
-// =============================================================================
-
-const READY_CHECK_PROBE = (
-  'import importlib; '
-  + 'rlm = importlib.import_module("rlm"); '
-  + 'print("rlm_callable=true"); '
-  + 'print("background_absent=true"); '
-  + 'print("crud=" + ",".join([ '
-  + '"create_memory","update_memory","delete_memory",'
-  + '"create_skill","update_skill","delete_skill",'
-  + '"create_subagent","update_subagent","delete_subagent",'
-  + '"create_prompt_note","update_prompt_note","delete_prompt_note" ]));'
-  + 'print("entry_fields=" + ",".join([ '
-  + '"id","kind","title","content","path","scope","reference",'
-  + '"arguments","metadata","source","created_at","updated_at","version" ]))'
-)
-
+/** Runs the probe on a candidate; returns true only when the process
+ * exited zero AND the evaluated output passed the ready check. Throws the
+ * ipykernel-named error when the probe failed importing ipykernel. */
 async function probeInterpreter(
   pythonPath: string,
   deps: BootstrapDeps,
+  options: { nameOnIpykernelFailure?: string } = {},
 ): Promise<boolean> {
-  const result = await deps.runner.run(pythonPath, ['-c', READY_CHECK_PROBE])
-  return result.code === 0
+  const result = await deps.runner.run(pythonPath, ["-c", READY_CHECK_PROBE])
+  if (result.code !== 0) {
+    if (result.stderr.includes("ipykernel")) {
+      throw new RlmBootstrapError(
+        `${options.nameOnIpykernelFailure ?? "Interpreter"} at ${pythonPath} failed readiness check: ipykernel not available`,
+      )
+    }
+    return false
+  }
+  return runReadyCheck(result.stdout)
 }
 
-/**
- * BOOT-PRE-BOOT-1: interpreter resolution order.
- * explicit override -> managed venv -> XDG fallback.
- */
 export async function resolveInterpreter(
   config: InterpreterConfig,
   deps: BootstrapDeps,
 ): Promise<string> {
-  // PRE-BOOT-1: explicit override first — and INV-BOOT-LIFETIME-1: the
-  // override is ALWAYS validated (must import ipykernel plus runtime),
-  // regardless of whether a managed venv exists on disk
-  if (config.pythonOverride !== undefined && config.pythonOverride !== '') {
-    const pythonPath = config.pythonOverride
-    const result = await deps.runner.run(pythonPath, ['-c', READY_CHECK_PROBE])
-    if (result.code !== 0) {
+  // PRE-BOOT-1 + INV-BOOT-LIFETIME-1: the explicit override is first and
+  // is ALWAYS validated — the probe runs wherever any venv exists or not
+  if (config.pythonOverride !== undefined && config.pythonOverride !== "") {
+    const override = config.pythonOverride
+    const admitted = await probeInterpreter(override, deps, {
+      nameOnIpykernelFailure: "Override interpreter",
+    })
+    if (!admitted) {
       throw new RlmBootstrapError(
-        `Override interpreter at ${pythonPath} failed readiness check: ipykernel not available`,
+        `Override interpreter at ${override} failed the readiness check (evaluated probe output)`,
       )
     }
-    return pythonPath
+    return override
   }
 
-  // managed venv
-  const managedPython = join(config.venvDir, 'bin', 'python')
-  if (deps.exists(managedPython)) {
-    if (await probeInterpreter(managedPython, deps)) {
-      return managedPython
-    }
+  const managedPython = join(config.venvDir, "bin", "python")
+  if (deps.exists(managedPython) && await probeInterpreter(managedPython, deps)) {
+    return managedPython
   }
 
-  // XDG fallback
-  const xdgPython = join(config.xdgDir, 'bin', 'python')
-  if (deps.exists(xdgPython)) {
-    if (await probeInterpreter(xdgPython, deps)) {
-      return xdgPython
-    }
+  const xdgPython = join(config.xdgDir, "bin", "python")
+  if (deps.exists(xdgPython) && await probeInterpreter(xdgPython, deps)) {
+    return xdgPython
   }
 
   throw new RlmBootstrapError(
-    'No suitable interpreter found in managed venv or XDG fallback',
+    `No suitable interpreter found: managed venv (${config.venvDir}) and XDG fallback (${config.xdgDir}) missing or failed readiness`,
   )
 }
 
 // =============================================================================
-// buildKernelEnv
+// INV-BOOT-2 — bounded kernel env (exact set, cross-validated by SAFE-V1)
 // =============================================================================
 
-/**
- * BOOT-INV-BOOT-2: kernel env bounded set.
- */
-export function buildKernelEnv(
-  session: KernelSession,
-  caps: KernelCaps,
-): Record<string, string> {
+export function buildKernelEnv(session: KernelSession, caps: KernelCaps): Record<string, string> {
   return {
     RLM_DEPTH: String(session.depth),
     RLM_MAX_DEPTH: String(session.maxDepth),
     RLM_SESSION_DIR: session.sessionDir,
     RLM_HARNESS_STATE_DIR: session.harnessDir,
     RLM_GLOBAL_HARNESS_STATE_DIR: session.globalHarnessDir,
+    OMP_RLM_AGENT_DIR: session.agentDir,
     RLM_MAX_OUTPUT_CHARS: String(caps.maxOutputChars),
     RLM_SNAPSHOT_MAX_BYTES: String(caps.snapshotMaxBytes),
   }
 }
 
 // =============================================================================
-// parseBootstrapManifest
+// Manifest
 // =============================================================================
 
-function isManifestCandidate(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object'
-}
-
-/**
- * BOOT-V2: parse bootstrap manifest JSON with validation.
- */
-export function parseBootstrapManifest(text: string): BootstrapManifest {
+export function parseBootstrapManifest(text: string): BootstrapVersionManifest {
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
-  } catch {
-    throw new RlmBootstrapError('Bootstrap manifest is not valid JSON')
+  } catch (cause) {
+    throw new RlmBootstrapError("bootstrap manifest is not valid JSON", { cause })
   }
-
-  if (!isManifestCandidate(parsed)) {
-    throw new RlmBootstrapError(
-      `Bootstrap manifest must be schema ${SCHEMA_VERSION} with all fields present`,
-    )
-  }
-
-  const schema = parsed['schema']
-  const ipykernel = parsed['ipykernel']
-  const runtime = parsed['runtime']
-  const snapshot = parsed['snapshot']
-  const extraUvArgs = parsed['extraUvArgs']
-  const pythonSkills = parsed['pythonSkills']
-
+  const m = parsed as Partial<BootstrapVersionManifest> | null
   if (
-    schema !== SCHEMA_VERSION
-    || typeof ipykernel !== 'string'
-    || typeof runtime !== 'string'
-    || typeof snapshot !== 'string'
-    || !Array.isArray(extraUvArgs)
-    || !Array.isArray(pythonSkills)
+    m === null || typeof m !== "object" || m.schema !== SCHEMA_VERSION
+    || typeof m.ipykernel !== "string" || typeof m.runtime !== "string"
+    || typeof m.snapshot !== "string" || !Array.isArray(m.extraUvArgs)
+    || !Array.isArray(m.pythonSkills)
   ) {
     throw new RlmBootstrapError(
-      `Bootstrap manifest must be schema ${SCHEMA_VERSION} with all fields present`,
+      `bootstrap manifest must be schema ${SCHEMA_VERSION} with all fields`,
     )
   }
-
-  return {
-    schema,
-    ipykernel,
-    runtime,
-    snapshot,
-    extraUvArgs,
-    pythonSkills,
+  const manifest: BootstrapVersionManifest = {
+    schema: m.schema,
+    ipykernel: m.ipykernel,
+    runtime: m.runtime,
+    snapshot: m.snapshot,
+    extraUvArgs: m.extraUvArgs,
+    pythonSkills: m.pythonSkills,
   }
+  return manifest
 }
 
 // =============================================================================
-// acquireBootstrapLock
+// POST-BOOT-2 — runtime identity
+// =============================================================================
+
+export function runtimeIdentityHash(sources: Readonly<Record<string, string>>): string {
+  const hash = createHash(RUNTIME_IDENTITY_KIND)
+  for (const name of Object.keys(sources).sort()) {
+    hash.update(name)
+    hash.update("\0")
+    hash.update(sources[name] ?? "")
+    hash.update("\0")
+  }
+  return hash.digest("hex")
+}
+
+// =============================================================================
+// INV-BOOT-1 — bootstrap lock
 // =============================================================================
 
 function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
     return true
-  } catch {
-    return false
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ESRCH") return false
+    return true // EPERM etc.: treat as alive — never steal an uncertain holder
   }
 }
 
-/**
- * BOOT-INV-BOOT-1: bootstrap lock acquisition.
- * Creates lockDir/.bootstrap.lock with JSON {pid, acquiredAt}.
- * If existing lock's pid is alive and within LOCK_STALE_MS => throw.
- * Stale (dead pid or older) => take over.
- * release() removes the file.
- */
-export function acquireBootstrapLock(
-  lockDir: string,
-  clock: { now(): number },
-): { release(): void } {
-  mkdirSync(lockDir, { recursive: true })
-  const lockPath = join(lockDir, '.bootstrap.lock')
+export interface BootstrapLock {
+  release(): void
+}
 
-  if (existsSync(lockPath)) {
+export function acquireBootstrapLock(lockDir: string, clock: { now(): number }): BootstrapLock {
+  const lockPath = join(lockDir, LOCK_FILE)
+  if (fs.existsSync(lockPath)) {
     try {
-      const raw = readFileSync(lockPath, 'utf-8')
-      const lock = JSON.parse(raw) satisfies LockFile
-      const age = clock.now() - lock.acquiredAt
-      const alive = isPidAlive(lock.pid)
-
-      if (alive && age < LOCK_STALE_MS) {
+      const existing = JSON.parse(fs.readFileSync(lockPath, "utf8")) as Partial<LockFileContents>
+      if (
+        typeof existing.pid === "number" && isPidAlive(existing.pid)
+      ) {
+        // A live holder is never stolen, regardless of lock age (F-195)
         throw new RlmBootstrapError(
-          `Bootstrap lock held by live pid ${lock.pid} (age ${age}ms < ${LOCK_STALE_MS}ms)`,
+          `bootstrap lock held by live pid ${existing.pid}`,
         )
       }
-      // stale — take over
-    } catch (e) {
-      if (e instanceof RlmBootstrapError) {
-        throw e
-      }
-      // corrupt lock file — take over
+      // Stale: holder pid not alive (or no readable pid) — take over
+    } catch (error) {
+      if (error instanceof RlmBootstrapError) throw error
+      // unreadable lock file: stale by definition — take over
     }
   }
-
-  const lockData: LockFile = {
+  fs.mkdirSync(lockDir, { recursive: true })
+  fs.writeFileSync(lockPath, JSON.stringify({
     pid: process.pid,
     acquiredAt: clock.now(),
-  }
-  writeFileSync(lockPath, JSON.stringify(lockData))
-
+  }))
   return {
-    release(): void {
+    release() {
       try {
-        rmSync(lockPath, { force: true })
+        fs.unlinkSync(lockPath)
       } catch {
-        // already gone
+        // already removed — nothing to release
       }
     },
   }
 }
 
 // =============================================================================
-// bootstrapManagedVenv
+// Managed venv bootstrap (POST-BOOT-1/2, ERRORS-BOOT-1/2, INV-BOOT-1)
 // =============================================================================
 
-/**
- * BOOT-POST-BOOT-1: managed venv creation and package install.
- */
+function uvUnresolvable(result: RunResult): boolean {
+  return result.code === 127 || /command not found|not found/i.test(result.stderr)
+}
+
+export interface ManagedVenvResult {
+  readonly interpreterPath: string
+  readonly warnings: readonly string[]
+}
+
 export async function bootstrapManagedVenv(
   config: InterpreterConfig,
-  deps: BootstrapDeps,
-): Promise<{ interpreterPath: string; warnings: string[] }> {
-  const warnings: string[] = []
-  const venvDir = config.venvDir
-  const interpreterPath = join(venvDir, 'bin', 'python')
-
-  // create venv
-  const venvResult = await deps.runner.run('uv', [
-    'venv',
-    venvDir,
-    '--python',
-    PYTHON_VERSION,
-  ])
-  if (venvResult.code !== 0) {
-    if (venvResult.stderr.includes('failed to fetch')) {
-      throw new RlmBootstrapError(
-        'Bootstrap requires internet to create the managed venv',
-      )
-    }
-    throw new RlmBootstrapError(
-      `Failed to create managed venv: ${venvResult.stderr}`,
-    )
-  }
-
-  // install base + extras
-  const installArgs = [
-    'pip',
-    'install',
-    '--python',
-    interpreterPath,
-    ...BASE_PACKAGES,
-    ...EXTRAS_PACKAGES,
-  ]
-  const installResult = await deps.runner.run('uv', installArgs)
-  if (installResult.code !== 0) {
-    if (
-      installResult.stderr.includes('failed to fetch')
-      || installResult.stderr.includes('internet')
-    ) {
-      throw new RlmBootstrapError(
-        'Bootstrap requires internet to install packages',
-      )
-    }
-    throw new RlmBootstrapError(
-      `Failed to install packages: ${installResult.stderr}`,
-    )
-  }
-
-  // skill installs — runner call matching '--python-skills'
-  // Test mock may simulate skill install; on failure push warning
+  deps: ManagedVenvDeps,
+): Promise<ManagedVenvResult> {
+  const lock = acquireBootstrapLock(config.venvDir, { now: () => Date.now() })
   try {
-    const skillResult = await deps.runner.run('uv', ['pip', 'install', '--python-skills'])
-    if (skillResult.code !== 0) {
-      warnings.push(`skill install failed: ${skillResult.stderr}`)
+    const pythonPath = join(config.venvDir, "bin", "python")
+    const manifestPath = join(config.venvDir, MANIFEST_FILE)
+    const currentIdentity = runtimeIdentityHash(deps.runtimeSources)
+
+    // POST-BOOT-2: unchanged runtime identity + existing interpreter skips
+    const manifestText = deps.readTextFile(manifestPath)
+    if (manifestText !== null && deps.exists(pythonPath)) {
+      try {
+        const manifest = parseBootstrapManifest(manifestText)
+        if (manifest.runtime === currentIdentity) {
+          return { interpreterPath: pythonPath, warnings: [] }
+        }
+      } catch {
+        // unparseable manifest: rebuild below
+      }
     }
-  } catch (e) {
-    warnings.push(`skill install error: ${e instanceof Error ? e.message : String(e)}`)
-  }
 
-  // write manifest
-  const manifest: BootstrapManifest = {
-    schema: SCHEMA_VERSION,
-    ipykernel: 'installed',
-    runtime: 'installed',
-    snapshot: runtimeIdentityHash({}),
-    extraUvArgs: [],
-    pythonSkills: [],
-  }
-  const manifestPath = join(venvDir, '.bootstrap-version')
-  mkdirSync(venvDir, { recursive: true })
-  writeFileSync(manifestPath, JSON.stringify(manifest))
+    // POST-BOOT-1: fresh install — full base+extras set, no trims (Z-4)
+    const venvResult = await deps.runner.run("uv", [
+      "venv", config.venvDir, "--python", PYTHON_VERSION,
+    ])
+    if (uvUnresolvable(venvResult)) throw new UvMissingError()
+    if (venvResult.code !== 0) {
+      throw new RlmBootstrapError(
+        `creating venv failed (${venvResult.stderr}); first-time installs need internet access`,
+      )
+    }
 
-  return { interpreterPath, warnings }
+    const installResult = await deps.runner.run("uv", [
+      "pip", "install", "--python", pythonPath,
+      ...BASE_PACKAGES, ...EXTRAS_PACKAGES,
+    ])
+    if (uvUnresolvable(installResult)) throw new UvMissingError()
+    if (installResult.code !== 0) {
+      // F-198: name the internet requirement for first-time installs
+      throw new RlmBootstrapError(
+        `installing kernel packages failed (${installResult.stderr}); first-time installs need internet access`,
+      )
+    }
+
+    // ERRORS-BOOT-2: per-skill installs; failures warn naming the skill
+    const warnings: string[] = []
+    for (const skill of deps.skills) {
+      const skillResult = await deps.runner.run("uv", [
+        "pip", "install", "--python", pythonPath, "--python-skill", skill,
+      ])
+      if (skillResult.code !== 0) {
+        warnings.push(
+          `Python skill ${skill} failed to install and will be unavailable`,
+        )
+      }
+    }
+
+    fs.mkdirSync(config.venvDir, { recursive: true })
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      schema: SCHEMA_VERSION,
+      ipykernel: "installed",
+      runtime: currentIdentity,
+      snapshot: "v1",
+      extraUvArgs: [],
+      pythonSkills: deps.skills,
+    }))
+
+    return { interpreterPath: pythonPath, warnings }
+  } finally {
+    lock.release()
+  }
 }

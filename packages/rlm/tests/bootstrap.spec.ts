@@ -1,49 +1,24 @@
 /**
- * RED PHASE — bootstrap implementation tests (SLICE-2).
+ * RED→GREEN — bootstrap implementation tests (SLICE-2), behavior-driven.
  *
  * Targets the IMPLEMENTATION artifact packages/rlm/src/bootstrap.ts, not
- * the contract. At RED time the module does not exist; every test fails
- * with a module-resolution error. Contract verification lives in
- * test_bootstrap_alignment.test.ts (supporting, labeled).
+ * the contract. Every test drives a contract clause's OBSERVABLE
+ * behavior (runner argv, thrown errors, returned values, files on disk) —
+ * a stub-shaped implementation that satisfies signatures but not clauses
+ * fails these tests.
  *
  * CONTRACT AUTHORITY RECORD:
  * - File: requirements/contracts/rlm-bootstrap.contract.ts
  * - PRE: 1, POST: 3, INV: 2, INV-LIFETIME: 1, SEQ: 2, ERRORS: 2, FORBIDDEN: 2
- *
- * TSR (coordinator-issued, reference-faithful): module at
- * packages/rlm/src/bootstrap.ts exports:
- * - class RlmBootstrapError extends Error
- * - class UvMissingError extends RlmBootstrapError
- * - constants: SCHEMA_VERSION=8, PYTHON_VERSION='3.11', BASE_PACKAGES,
- *   EXTRAS_PACKAGES, LOCK_STALE_MS=30000, LOCK_RETRY_MS=100,
- *   RUNTIME_IDENTITY_KIND='sha256'
- * - resolveInterpreter(config, deps): Promise<string>
- *     config: {pythonOverride?: string; venvDir: string; xdgDir: string}
- *     deps: {runner: {run(cmd, args): Promise<{code; stdout; stderr}>};
- *            exists(path): boolean}
- * - buildKernelEnv(session, caps): Record<string, string>
- *     session: {depth: number; maxDepth: number; sessionDir: string;
- *               harnessDir: string; globalHarnessDir?: string}
- *     caps: {maxOutputChars: number; snapshotMaxBytes: number}
- * - parseBootstrapManifest(text): BootstrapVersionManifest  (throws on bad)
- * - runtimeIdentityHash(sources: Record<string, string>): string  (sha256 hex)
- * - acquireBootstrapLock(lockDir, clock: {now(): number}):
- *     {release(): void}  — throws RlmBootstrapError when lock held by a
- *     live holder; a stale lock (no live pid / older than LOCK_STALE_MS)
- *     is taken over
- * - runReadyCheck(probeOutput: string): boolean  (RUNTIME_READY_CHECK)
- * - bootstrapManagedVenv(config, deps): Promise<string> — creates venv
- *   via uv, installs packages, writes manifest; skill failures degrade to
- *   warnings collected on result.warnings
  */
 
 import { describe, expect, test } from "bun:test"
 import * as fs from "node:fs"
+import { fileURLToPath } from "node:url"
 
 import {
   BASE_PACKAGES,
   EXTRAS_PACKAGES,
-  LOCK_RETRY_MS,
   LOCK_STALE_MS,
   PYTHON_VERSION,
   RlmBootstrapError,
@@ -58,292 +33,434 @@ import {
 } from "../src/bootstrap.ts"
 
 // ---------------------------------------------------------------------------
-// Helpers (Object Mother; injected doubles — no real uv/network/fs)
+// Shared doubles (Stub; return-value control — runner argv recorded for
+// behavioral assertions). Mock derives from PRE-BOOT-1/POST-BOOT-1.
 // ---------------------------------------------------------------------------
 
-function makeConfig(overrides: Partial<{
-  pythonOverride: string
-  venvDir: string
-  xdgDir: string
-}> = {}) {
-  return {
-    venvDir: "/tmp/rlm-test-venv",
-    xdgDir: "/tmp/rlm-test-xdg",
-    ...overrides,
-  }
-}
+/** Output a genuinely ready interpreter's probe produces. */
+const READY_PROBE_STDOUT = [
+  "rlm_callable=true",
+  "background_absent=true",
+  "crud=create_memory,update_memory,delete_memory,create_skill,update_skill,delete_skill,create_subagent,update_subagent,delete_subagent,create_prompt_note,update_prompt_note,delete_prompt_note",
+  "entry_fields=id,kind,title,content,path,scope,reference,arguments,metadata,source,created_at,updated_at,version",
+].join("\n")
 
-/** Stub runner: records commands; answers by script. Double type: Stub
- * (return-value control; no call verification except where a SEQ test
- * asserts order explicitly). Mock derives from PRE-BOOT-1/POST-BOOT-1. */
-function makeRunner(script: Array<{ match: string; code: number; stdout: string; stderr?: string }>) {
+type RunResult = { code: number; stdout: string; stderr: string }
+
+function makeRunner(script: Array<{ match: string; result: RunResult }>) {
   const calls: Array<{ cmd: string; args: string[] }> = []
   return {
     calls,
-    async run(cmd: string, args: string[]) {
+    async run(cmd: string, args: string[]): Promise<RunResult> {
       calls.push({ cmd, args })
       const joined = `${cmd} ${args.join(" ")}`
       for (const entry of script) {
-        if (joined.includes(entry.match)) {
-          return { code: entry.code, stdout: entry.stdout, stderr: entry.stderr ?? "" }
-        }
+        if (joined.includes(entry.match)) return entry.result
       }
       return { code: 0, stdout: "", stderr: "" }
     },
   }
 }
 
+function tmpDir(): string {
+  return fs.mkdtempSync("/tmp/rlm-boot-test-")
+}
+
 // ---------------------------------------------------------------------------
-// PRE-BOOT-1 — interpreter resolution order
+// PRE-BOOT-1 + POST-BOOT-3 + INV-BOOT-LIFETIME-1 — resolution order and a
+// REAL readiness gate
 // ---------------------------------------------------------------------------
 
-describe("PRE-BOOT-1 resolution order", () => {
-  test("explicit override wins after passing its own runtime probe", async () => {
+describe("PRE-BOOT-1 resolution order with evaluated probe", () => {
+  test("override admitted after its own probe passes; exactly one runner call", async () => {
     /**
      * CONTRACT TRACEABILITY:
-     * - Enforces: PRE-BOOT-1: explicit override first (F-205) — AND
-     *   INV-BOOT-LIFETIME-1: the override is always validated (must import
-     *   ipykernel plus runtime), regardless of whether a managed venv
-     *   exists on disk
-     * - Category: positive (override class)
-     * - Risk tier: Medium — wrong order silently picks the wrong
-     *   interpreter; an unprobed override defers failure to kernel spawn
+     * - Enforces: PRE-BOOT-1 (override first) + INV-BOOT-LIFETIME-1
+     *   (override ALWAYS validated) + POST-BOOT-3 (evaluated probe output)
+     * - Category: positive
+     * - Risk tier: High — resolution mistakes surface as spawn failures
      * - Adversarial: Implementation-blind
      *
-     * FOUR-CRITERIA GATE: C1 PRE-BOOT-1/INV-BOOT-LIFETIME-1 · C2 an impl
-     * that skips the override probe (0 runner calls) fails — the probe
-     * call is asserted · C3 only test asserting override short-circuit ·
-     * C4 contracted order and override validation
+     * FOUR-CRITERIA GATE: C1 three clauses cited · C2 impl skipping the
+     * probe (0 calls) or ignoring output fails · C3 only override-order
+     * test · C4 contracted order + validation
      */
     const runner = makeRunner([
-      { match: "/opt/special/python", code: 0, stdout: "rlm_callable=true" },
+      { match: "/opt/special/python", result: { code: 0, stdout: READY_PROBE_STDOUT, stderr: "" } },
     ])
-    const exists = (path: string) => !path.includes("venv")
     const result = await resolveInterpreter(
-      makeConfig({ pythonOverride: "/opt/special/python" }),
-      { runner, exists },
+      { pythonOverride: "/opt/special/python", venvDir: "/tmp/none-venv", xdgDir: "/tmp/none-xdg" },
+      { runner, exists: () => false },
     )
     expect(result).toBe("/opt/special/python")
-    // INV-BOOT-LIFETIME-1: exactly one runner call — the override's own
-    // probe. No venv resolution, no other checks.
     expect(runner.calls.length).toBe(1)
-    expect(runner.calls[0].cmd).toBe("/opt/special/python")
   })
 
-  test("managed venv used when it exists and passes the ready check", async () => {
+  test("REJECTED: exit 0 but probe output fails the ready check — the gate must evaluate output", async () => {
     /**
      * CONTRACT TRACEABILITY:
-     * - Enforces: PRE-BOOT-1: managed venv second in the order
-     * - Category: positive (venv class)
-     * - Risk tier: Medium
-     */
-    const venvPython = "/tmp/rlm-test-venv/bin/python"
-    const runner = makeRunner([
-      { match: venvPython, code: 0, stdout: "READY" },
-    ])
-    const exists = (path: string) => path.includes("rlm-test-venv") || path.includes("rlm-test-xdg")
-    const result = await resolveInterpreter(makeConfig(), { runner, exists })
-    expect(result).toBe(venvPython)
-  })
-
-  test("XDG fallback third when managed venv absent", async () => {
-    /**
-     * CONTRACT TRACEABILITY:
-     * - Enforces: PRE-BOOT-1: XDG fallback last
-     * - Category: positive (fallback class)
-     * - Risk tier: Medium
-     */
-    const xdgPython = "/tmp/rlm-test-xdg/bin/python"
-    const runner = makeRunner([
-      { match: xdgPython, code: 0, stdout: "READY" },
-    ])
-    const exists = (path: string) => path.includes("rlm-test-xdg")
-    const result = await resolveInterpreter(makeConfig(), { runner, exists })
-    expect(result).toBe(xdgPython)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// INV-BOOT-LIFETIME-1 — override must be validated (imports runtime)
-// ---------------------------------------------------------------------------
-
-test("override that fails the runtime probe is rejected, not silently used", async () => {
-  /**
-   * CONTRACT TRACEABILITY:
-   * - Enforces: INV-BOOT-LIFETIME-1: an explicit interpreter override skips
-   *   managed bootstrap AND must import ipykernel plus runtime plus defaults
-   *   (F-252) — observed as: a probe failure rejects the override
-   * - Category: negative
-   * - Risk tier: High — a broken override means every later kernel spawn
-   *   fails far from the cause
-   * - Adversarial: Implementation-blind
-   */
-  const runner = makeRunner([
-    { match: "/opt/broken/python", code: 1, stdout: "", stderr: "ModuleNotFoundError: No module named 'ipykernel'" },
-  ])
-  const exists = () => true
-  try {
-    await resolveInterpreter(makeConfig({ pythonOverride: "/opt/broken/python" }), { runner, exists })
-    throw new Error("expected resolveInterpreter to reject the broken override")
-  } catch (error) {
-    expect(error).toBeInstanceOf(RlmBootstrapError)
-    expect(String(error)).toContain("ipykernel")
-  }
-})
-
-// ---------------------------------------------------------------------------
-// POST-BOOT-1 — venv contents / manifest
-// ---------------------------------------------------------------------------
-
-describe("POST-BOOT-1 venv manifest", () => {
-  test("manifest carries schema 8 and the full package set installs are requested", () => {
-    /**
-     * CONTRACT TRACEABILITY:
-     * - Enforces: POST-BOOT-1: managed venv carries Python 3.11 with every
-     *   base and extras package (F-191/F-192, BOOT-V1, Z-4)
-     * - Category: positive
-     * - Risk tier: High — missing packages surface as kernel import errors
-     *   far from bootstrap (FORBIDDEN-BOOT-1 silent trim)
+     * - Enforces: POST-BOOT-3: admission requires the EVALUATED output to
+     *   pass; zero exit with failing or garbage output rejects (F-193)
+     * - Category: negative — THE fake-gate killer
+     * - Risk tier: High — an unevaluated gate admits broken interpreters
      * - Adversarial: Implementation-blind
+     *
+     * FOUR-CRITERIA GATE: C1 POST-BOOT-3 · C2 an impl checking only exit
+     * codes passes this test's twin but FAILS here · C3 only test feeding
+     * failing stdout on a zero exit · C4 contracted evaluation semantics
      */
-    expect(SCHEMA_VERSION).toBe(8)
-    expect(PYTHON_VERSION).toBe("3.11")
-    const manifest = parseBootstrapManifest(JSON.stringify({
-      schema: 8,
-      ipykernel: "8.0.0",
-      runtime: "sha256:abc",
-      snapshot: "sha256:def",
-      extraUvArgs: [],
-      pythonSkills: [],
-    }))
-    expect(manifest.schema).toBe(8)
-    // Z-4: the FULL extras set — every name from the contract's F-192 list
-    expect(EXTRAS_PACKAGES).toEqual([
-      "requests", "httpx", "pyyaml", "tomli", "python-dotenv",
-      "pandas", "numpy", "scipy", "beautifulsoup4", "lxml", "pydantic", "tyro",
+    const runner = makeRunner([
+      { match: "/opt/special/python", result: { code: 0, stdout: "rlm_callable=true\nbackground_absent=false\ncrud=\nentry_fields=", stderr: "" } },
     ])
-    expect(BASE_PACKAGES).toEqual(["ipykernel", "prime-agent-runtime", "dill"])
+    try {
+      await resolveInterpreter(
+        { pythonOverride: "/opt/special/python", venvDir: "/tmp/none-venv", xdgDir: "/tmp/none-xdg" },
+        { runner, exists: () => false },
+      )
+      throw new Error("expected rejection: probe output failed the ready check")
+    } catch (error) {
+      expect(error).toBeInstanceOf(RlmBootstrapError)
+    }
   })
 
-  test("manifest with wrong schema or missing fields is rejected", () => {
+  test("REJECTED: probe exits non-zero naming a missing ipykernel module", async () => {
     /**
      * CONTRACT TRACEABILITY:
-     * - Enforces: POST-BOOT-1/BOOT-V2: manifest must be schema 8 with all
-     *   fields — a stale/foreign manifest forces a rebuild, never a
-     *   half-trusted venv
-     * - Category: negative (boundary: schema 7 = one off)
+     * - Enforces: INV-BOOT-LIFETIME-1: the override must import ipykernel
+     *   plus runtime (F-252) — observed as rejection with ipykernel named
+     * - Category: negative
+     * - Risk tier: High
+     */
+    const runner = makeRunner([
+      { match: "/opt/broken/python", result: { code: 1, stdout: "", stderr: "ModuleNotFoundError: No module named 'ipykernel'" } },
+    ])
+    try {
+      await resolveInterpreter(
+        { pythonOverride: "/opt/broken/python", venvDir: "/tmp/none-venv", xdgDir: "/tmp/none-xdg" },
+        { runner, exists: () => true },
+      )
+      throw new Error("expected rejection: ipykernel missing")
+    } catch (error) {
+      expect(error).toBeInstanceOf(RlmBootstrapError)
+      expect(String(error)).toContain("ipykernel")
+    }
+  })
+
+  test("managed venv second: exists + probe passes; probe actually invoked", async () => {
+    /**
+     * CONTRACT TRACEABILITY:
+     * - Enforces: PRE-BOOT-1 (managed venv second) + POST-BOOT-3
+     * - Category: positive — probe-call asserted (audit: path-exists
+     *   short-circuit without probe must fail)
      * - Risk tier: Medium
      */
-    expect(() => parseBootstrapManifest(JSON.stringify({
-      schema: 7, ipykernel: "x", runtime: "x", snapshot: "x",
-      extraUvArgs: [], pythonSkills: [],
-    }))).toThrow(RlmBootstrapError)
-    expect(() => parseBootstrapManifest(JSON.stringify({
-      schema: 8, runtime: "x", snapshot: "x", extraUvArgs: [], pythonSkills: [],
-    }))).toThrow(RlmBootstrapError)
+    const venvDir = tmpDir()
+    fs.mkdirSync(`${venvDir}/bin`, { recursive: true })
+    const venvPython = `${venvDir}/bin/python`
+    const runner = makeRunner([
+      { match: venvPython, result: { code: 0, stdout: READY_PROBE_STDOUT, stderr: "" } },
+    ])
+    const result = await resolveInterpreter(
+      { venvDir, xdgDir: "/tmp/none-xdg" },
+      { runner, exists: (p: string) => p === venvPython },
+    )
+    expect(result).toBe(venvPython)
+    expect(runner.calls.length).toBe(1)
+    expect(runner.calls[0].cmd).toBe(venvPython)
+    fs.rmSync(venvDir, { recursive: true, force: true })
+  })
+
+  test("XDG fallback third; exhaustion raises the domain error", async () => {
+    /**
+     * CONTRACT TRACEABILITY:
+     * - Enforces: PRE-BOOT-1 (XDG last; exhaustion errors loudly)
+     * - Category: positive + negative pair
+     * - Risk tier: Medium
+     */
+    const xdgDir = tmpDir()
+    fs.mkdirSync(`${xdgDir}/bin`, { recursive: true })
+    const xdgPython = `${xdgDir}/bin/python`
+    const runner = makeRunner([
+      { match: xdgPython, result: { code: 0, stdout: READY_PROBE_STDOUT, stderr: "" } },
+    ])
+    const found = await resolveInterpreter(
+      { venvDir: "/tmp/none-venv", xdgDir },
+      { runner, exists: (p: string) => p === xdgPython },
+    )
+    expect(found).toBe(xdgPython)
+    fs.rmSync(xdgDir, { recursive: true, force: true })
+
+    const none = makeRunner([])
+    try {
+      await resolveInterpreter(
+        { venvDir: "/tmp/none-venv", xdgDir: "/tmp/none-xdg" },
+        { runner: none, exists: () => false },
+      )
+      throw new Error("expected exhaustion error")
+    } catch (error) {
+      expect(error).toBeInstanceOf(RlmBootstrapError)
+    }
   })
 })
 
 // ---------------------------------------------------------------------------
-// POST-BOOT-2 — runtime identity hash
+// POST-BOOT-3 — ready-check evaluation over probe output classes
 // ---------------------------------------------------------------------------
 
-test("runtime identity hash is sha256 over runtime sources; any change invalidates", () => {
+test("runReadyCheck admits full reports and rejects each failing class", () => {
   /**
    * CONTRACT TRACEABILITY:
-   * - Enforces: POST-BOOT-2: identity hash covers rlm runtime sources plus
-   *   pyproject; a content change changes the hash (F-194)
-   * - Category: invariant (deterministic exact values)
-   * - Risk tier: High — stale venvs run old kernel semantics silently
-   * - Adversarial: Implementation-blind
+   * - Enforces: POST-BOOT-3 — the four report dimensions (callable,
+   *   background absence, 12 CRUD methods, 14 entry fields), each
+   *   independently rejection-capable
+   * - Category: equivalence-class matrix (one failing dimension per case)
+   * - Risk tier: High
    */
-  const sources = { "rlm/__init__.py": "print('a')", "pyproject.toml": "[project]" }
-  const h1 = runtimeIdentityHash(sources)
-  const h2 = runtimeIdentityHash({ ...sources })
-  const h3 = runtimeIdentityHash({ ...sources, "rlm/__init__.py": "print('b')" })
-  expect(h1).toBe(h2)          // deterministic
-  expect(h1).toMatch(/^[0-9a-f]{64}$/) // sha256 hex
-  expect(h1).not.toBe(h3)      // content change invalidates
-})
-
-// ---------------------------------------------------------------------------
-// POST-BOOT-3 — RUNTIME_READY_CHECK gate
-// ---------------------------------------------------------------------------
-
-test("ready check admits a kernel reporting callable rlm, CRUD methods, entry fields, no background", () => {
-  /**
-   * CONTRACT TRACEABILITY:
-   * - Enforces: POST-BOOT-3: RUNTIME_READY_CHECK admits only interpreters
-   *   whose probe confirms callable rlm + harness CRUD + HarnessEntry
-   *   fields + no background attr (F-193)
-   * - Category: positive/negative pair (equivalence classes of probe output)
-   * - Risk tier: High — a wrong venv passes the gate and fails at runtime
-   * - Adversarial: Implementation-blind
-   */
-  const good = [
-    "rlm_callable=true",
-    "crud=create_memory,update_memory,delete_memory,create_skill,update_skill,delete_skill,create_subagent,update_subagent,delete_subagent,create_prompt_note,update_prompt_note,delete_prompt_note",
-    "entry_fields=id,kind,title,content,path,scope,reference,arguments,metadata,source,created_at,updated_at,version",
-    "background_absent=true",
-  ].join("\n")
+  const good = READY_PROBE_STDOUT
   expect(runReadyCheck(good)).toBe(true)
-
   expect(runReadyCheck(good.replace("rlm_callable=true", "rlm_callable=false"))).toBe(false)
   expect(runReadyCheck(good.replace("create_memory,", ""))).toBe(false)
   expect(runReadyCheck(good.replace("background_absent=true", "background_absent=false"))).toBe(false)
+  expect(runReadyCheck(good.replace(",version", ""))).toBe(false)
   expect(runReadyCheck("")).toBe(false)
 })
 
 // ---------------------------------------------------------------------------
-// INV-BOOT-1 — bootstrap lock
+// POST-BOOT-1 + POST-BOOT-2 + ERRORS-BOOT-1/2 + INV-BOOT-1 — managed
+// bootstrap behavior through the runner/filesystem surface
 // ---------------------------------------------------------------------------
 
-describe("INV-BOOT-1 bootstrap lock", () => {
-  test("stale lock (older than LOCK_STALE_MS, no live pid) is taken over", () => {
-    /**
-     * CONTRACT TRACEABILITY:
-     * - Enforces: INV-BOOT-1: only the lock holder rebuilds; stale locks
-     *      age out after BOOT_LOCK_STALE_MS (F-195)
-     * - Category: boundary (on-point: exactly stale; off: 1ms fresh)
-     * - Risk tier: Medium — a wedged lock blocks every future bootstrap
-     * - Adversarial: Implementation-blind
-     */
+/** Deps for managed-bootstrap behavior tests: injectable runtime sources,
+ * per-skill installs, and a uv that exists (or not). */
+function makeVenvDeps(options: {
+  uvWorks?: boolean
+  installFails?: boolean
+  skills?: string[]
+  runtimeSources?: Record<string, string>
+  manifestOnDisk?: string | null
+} = {}) {
+  const venvDir = tmpDir()
+  const runner = makeRunner([
+    ...(options.uvWorks === false
+      ? [{ match: "uv", result: { code: 127, stdout: "", stderr: "command not found: uv" } as RunResult }]
+      : []),
+    ...(options.installFails
+      ? [{ match: "uv pip install", result: { code: 2, stdout: "", stderr: "error: failed to fetch" } as RunResult }]
+      : []),
+  ])
+  const deps = {
+    runner,
+    exists: (p: string) => p.startsWith(venvDir),
+    runtimeSources: options.runtimeSources ?? { "rlm/__init__.py": "v1", "pyproject.toml": "[project]" },
+    skills: options.skills ?? [],
+    readTextFile: (p: string) => {
+      try {
+        return fs.readFileSync(p, "utf8")
+      } catch {
+        return null
+      }
+    },
+  }
+  return { venvDir, deps }
+}
+
+test("fresh install requests EVERY base and extras package in the install argv (Z-4 full set)", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: POST-BOOT-1 + FORBIDDEN-BOOT-1: the venv carries the FULL
+   *   base+extras set — observed at the runner argv surface (silent trims
+   *   fail here)
+   * - Category: positive (exact set assertion)
+   * - Risk tier: High — trimmed packages surface as kernel import errors
+   * - Adversarial: Implementation-blind
+   */
+  const { bootstrapManagedVenv } = await import("../src/bootstrap.ts")
+  const { venvDir, deps } = makeVenvDeps()
+  const result = await bootstrapManagedVenv({ venvDir, xdgDir: "/tmp/none-xdg" }, deps)
+  expect(result.interpreterPath).toBe(`${venvDir}/bin/python`)
+
+  const installCalls = deps.runner.calls.filter(c => c.args.join(" ").includes("pip install"))
+  expect(installCalls.length).toBeGreaterThanOrEqual(1)
+  const allArgs = installCalls.map(c => c.args.join(" ")).join(" ")
+  for (const pkg of [...BASE_PACKAGES, ...EXTRAS_PACKAGES]) {
+    expect(allArgs.includes(pkg)).toBe(true)
+  }
+  // Python 3.11 requested for the venv (F-191)
+  const venvCall = deps.runner.calls.find(c => c.args.join(" ").includes("venv"))
+  expect(venvCall?.args.join(" ")).toContain("3.11")
+  fs.rmSync(venvDir, { recursive: true, force: true })
+})
+
+test("uv unresolvable raises UvMissingError from the real path", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: ERRORS-BOOT-1: uv that cannot run raises UvMissingError
+   *   (F-239) — the throw site, not the class shape
+   * - Category: error
+   * - Risk tier: Medium — silent uv failure hangs first-run onboarding
+   */
+  const { bootstrapManagedVenv } = await import("../src/bootstrap.ts")
+  const { venvDir, deps } = makeVenvDeps({ uvWorks: false })
+  try {
+    await bootstrapManagedVenv({ venvDir, xdgDir: "/tmp/none-xdg" }, deps)
+    throw new Error("expected UvMissingError")
+  } catch (error) {
+    expect(error).toBeInstanceOf(UvMissingError)
+  }
+  fs.rmSync(venvDir, { recursive: true, force: true })
+})
+
+test("install failure names the internet requirement (first-time install)", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: ERRORS-BOOT-1: install failures raise the domain error
+   *   naming the internet requirement (F-198)
+   * - Category: error
+   * - Risk tier: Medium
+   */
+  const { bootstrapManagedVenv } = await import("../src/bootstrap.ts")
+  const { venvDir, deps } = makeVenvDeps({ installFails: true })
+  try {
+    await bootstrapManagedVenv({ venvDir, xdgDir: "/tmp/none-xdg" }, deps)
+    throw new Error("expected install failure")
+  } catch (error) {
+    expect(error).toBeInstanceOf(RlmBootstrapError)
+    expect(String(error).toLowerCase()).toContain("internet")
+  }
+  fs.rmSync(venvDir, { recursive: true, force: true })
+})
+
+test("per-skill install failure warns NAMING the skill; bootstrap succeeds", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: ERRORS-BOOT-2: skill install failures downgrade to a
+   *      warning naming the unavailable skill (F-199) — per-skill installs
+   * - Category: positive degradation path
+   * - Risk tier: Medium
+   */
+  const { bootstrapManagedVenv } = await import("../src/bootstrap.ts")
+  const venvDir = tmpDir()
+  const runner = makeRunner([
+    { match: "release_audit", result: { code: 1, stdout: "", stderr: "build failed" } },
+  ])
+  const deps = {
+    runner,
+    exists: (p: string) => p.startsWith(venvDir),
+    runtimeSources: { "rlm/__init__.py": "v1" },
+    skills: ["release_audit"],
+    readTextFile: () => null,
+  }
+  const result = await bootstrapManagedVenv({ venvDir, xdgDir: "/tmp/none-xdg" }, deps)
+  expect(result.warnings.some(w => w.includes("release_audit"))).toBe(true)
+  fs.rmSync(venvDir, { recursive: true, force: true })
+})
+
+test("unchanged runtime identity skips reinstall; changed identity REBUILDS (POST-BOOT-2)", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: POST-BOOT-2: identity hash compared to the recorded
+   *      manifest; mismatch rebuilds, match skips reinstall (F-194)
+   * - Category: invariant pair (fast path + rebuild path)
+   * - Risk tier: High — stale venvs silently run old kernel semantics
+   * - Adversarial: Implementation-blind
+   */
+  const { bootstrapManagedVenv } = await import("../src/bootstrap.ts")
+  const sources = { "rlm/__init__.py": "print('a')", "pyproject.toml": "[project]" }
+
+  // Fast path: manifest on disk matches the current runtime identity
+  const fresh = makeVenvDeps({ runtimeSources: sources })
+  await bootstrapManagedVenv({ venvDir: fresh.venvDir, xdgDir: "/tmp/none-xdg" }, fresh.deps)
+  const manifest = fresh.deps.readTextFile(`${fresh.venvDir}/.bootstrap-version`)
+  expect(manifest).not.toBeNull()
+
+  const rerunDeps = {
+    ...fresh.deps,
+    runner: makeRunner([]),
+    readTextFile: () => manifest,
+  }
+  const rerun = await bootstrapManagedVenv({ venvDir: fresh.venvDir, xdgDir: "/tmp/none-xdg" }, rerunDeps)
+  expect(rerun.interpreterPath).toBe(`${fresh.venvDir}/bin/python`)
+  expect(rerunDeps.runner.calls.length).toBe(0) // no reinstall
+
+  // Rebuild path: identity changed → install runs again
+  const changedDeps = {
+    ...fresh.deps,
+    runtimeSources: { ...sources, "rlm/__init__.py": "print('CHANGED')" },
+    readTextFile: () => manifest,
+  }
+  await bootstrapManagedVenv({ venvDir: fresh.venvDir, xdgDir: "/tmp/none-xdg" }, changedDeps)
+  const rebuildInstalls = changedDeps.runner.calls.filter(c => c.args.join(" ").includes("pip install"))
+  expect(rebuildInstalls.length).toBeGreaterThanOrEqual(1)
+  fs.rmSync(fresh.venvDir, { recursive: true, force: true })
+})
+
+test("bootstrap runs under the lock: a live foreign holder blocks with the domain error", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: INV-BOOT-1: managed bootstrap runs under the lock — a
+   *      pre-existing LIVE holder blocks it (F-195)
+   * - Category: negative (integration through the real lock surface)
+   * - Risk tier: Medium — concurrent bootstraps corrupt the venv
+   */
+  const { bootstrapManagedVenv } = await import("../src/bootstrap.ts")
+  const venvDir = tmpDir()
+  fs.mkdirSync(venvDir, { recursive: true })
+  fs.writeFileSync(`${venvDir}/.bootstrap.lock`, JSON.stringify({
+    pid: process.pid, // guaranteed-live foreign holder (not us)
+    acquiredAt: Date.now(),
+  }))
+  const runner = makeRunner([])
+  const deps = {
+    runner,
+    exists: (p: string) => p.startsWith(venvDir),
+    runtimeSources: { "rlm/__init__.py": "v1" },
+    skills: [],
+    readTextFile: () => null,
+  }
+  try {
+    await bootstrapManagedVenv({ venvDir, xdgDir: "/tmp/none-xdg" }, deps)
+    throw new Error("expected live-holder lock error")
+  } catch (error) {
+    expect(error).toBeInstanceOf(RlmBootstrapError)
+  }
+  // No bootstrap work ran while blocked
+  expect(deps.runner.calls.length).toBe(0)
+  fs.rmSync(venvDir, { recursive: true, force: true })
+})
+
+// ---------------------------------------------------------------------------
+// INV-BOOT-1 — lock primitives
+// ---------------------------------------------------------------------------
+
+describe("INV-BOOT-1 lock primitives", () => {
+  test("stale lock (dead pid, old stamp) is taken over", () => {
     expect(LOCK_STALE_MS).toBe(30_000)
-    expect(LOCK_RETRY_MS).toBe(100)
-    let now = 1_000_000
+    const now = 1_000_000
     const clock = { now: () => now }
-    const lockDir = `/tmp/rlm-lock-${crypto.randomUUID()}`
-
-    // Holder acquires, then dies; time passes past the stale threshold
-    const first = acquireBootstrapLock(lockDir, clock)
-    first.release()
-
-    // A foreign stale lock file (pid 999999 — not us, long dead, old mtime)
-    fs.mkdirSync(lockDir, { recursive: true })
+    const lockDir = tmpDir()
     fs.writeFileSync(`${lockDir}/.bootstrap.lock`, JSON.stringify({
-      pid: 999999, acquiredAt: now - LOCK_STALE_MS - 1,
+      pid: 999999, // not a live process
+      acquiredAt: now - LOCK_STALE_MS - 1,
     }))
-
     const taken = acquireBootstrapLock(lockDir, clock) // must NOT throw
     taken.release()
     fs.rmSync(lockDir, { recursive: true, force: true })
   })
 
-  test("live foreign lock holder blocks acquisition with the domain error", () => {
+  test("LIVE holder is never stolen, regardless of age", () => {
     /**
      * CONTRACT TRACEABILITY:
-     * - Enforces: INV-BOOT-1: only the holder rebuilds — a LIVE holder
-     *   blocks; acquisition raises the domain error instead of clobbering
-     * - Category: negative
-     * - Risk tier: Medium
+     * - Enforces: INV-BOOT-1 (amended): a live holder is never stolen
+     *      regardless of age — only stale locks age out
+     * - Category: boundary (live + old stamp = still blocked)
+     * - Risk tier: Medium — stealing a live holder's lock double-builds
      */
     const now = 5_000_000
     const clock = { now: () => now }
-    const lockDir = `/tmp/rlm-lock2-${crypto.randomUUID()}`
-    fs.mkdirSync(lockDir, { recursive: true })
-    // Live: OUR pid as holder (guaranteed alive), fresh timestamp
+    const lockDir = tmpDir()
     fs.writeFileSync(`${lockDir}/.bootstrap.lock`, JSON.stringify({
-      pid: process.pid, acquiredAt: now - 100,
+      pid: process.pid, // live
+      acquiredAt: now - LOCK_STALE_MS * 10, // old, but holder ALIVE
     }))
     expect(() => acquireBootstrapLock(lockDir, clock)).toThrow(RlmBootstrapError)
     fs.rmSync(lockDir, { recursive: true, force: true })
@@ -351,22 +468,57 @@ describe("INV-BOOT-1 bootstrap lock", () => {
 })
 
 // ---------------------------------------------------------------------------
-// INV-BOOT-2 + FORBIDDEN-BOOT-2 + SEQ-BOOT-2 — kernel env assembly
+// POST-BOOT-1 manifest + constants
 // ---------------------------------------------------------------------------
 
-test("kernel env carries RLM identity vars, caps, and depth — and nothing else", () => {
+test("manifest schema gate: schema 8 with all fields; wrong schema rejected", () => {
+  expect(SCHEMA_VERSION).toBe(8)
+  expect(PYTHON_VERSION).toBe("3.11")
+  expect(EXTRAS_PACKAGES).toEqual([
+    "requests", "httpx", "pyyaml", "tomli", "python-dotenv",
+    "pandas", "numpy", "scipy", "beautifulsoup4", "lxml", "pydantic", "tyro",
+  ])
+  expect(BASE_PACKAGES).toEqual(["ipykernel", "prime-agent-runtime", "dill"])
+  const manifest = parseBootstrapManifest(JSON.stringify({
+    schema: 8, ipykernel: "8.0.0", runtime: "sha256:abc", snapshot: "sha256:def",
+    extraUvArgs: [], pythonSkills: [],
+  }))
+  expect(manifest.schema).toBe(8)
+  expect(() => parseBootstrapManifest(JSON.stringify({
+    schema: 7, ipykernel: "x", runtime: "x", snapshot: "x", extraUvArgs: [], pythonSkills: [],
+  }))).toThrow(RlmBootstrapError)
+})
+
+// ---------------------------------------------------------------------------
+// POST-BOOT-2 identity hash
+// ---------------------------------------------------------------------------
+
+test("runtime identity hash: sha256 hex, deterministic, content-sensitive", () => {
+  const sources = { "rlm/__init__.py": "print('a')", "pyproject.toml": "[project]" }
+  const h1 = runtimeIdentityHash(sources)
+  expect(h1).toBe(runtimeIdentityHash({ ...sources }))
+  expect(h1).toMatch(/^[0-9a-f]{64}$/)
+  expect(h1).not.toBe(runtimeIdentityHash({ ...sources, "rlm/__init__.py": "print('b')" }))
+})
+
+// ---------------------------------------------------------------------------
+// INV-BOOT-2 + FORBIDDEN-BOOT-2 + SEQ-BOOT-2 — bounded env set
+// ---------------------------------------------------------------------------
+
+test("kernel env is EXACTLY the bounded session+caps set (cross-validated with SAFE-V1)", async () => {
   /**
    * CONTRACT TRACEABILITY:
-   * - Enforces: INV-BOOT-2: kernel env carries RLM_DEPTH, RLM_MAX_DEPTH,
-   *      session-dir and harness-dir variables (F-206, A-011)
-   * - Enforces: FORBIDDEN-BOOT-2: only the bounded, capability-gated set
-   *      crosses — no credential keys in the assembled env (F-207, REQ-N-3)
-   * - Enforces: SEQ-BOOT-2: caps and depth are delivered IN the env the
-   *      same call returns (config delivered before kernel start)
-   * - Category: invariant (exact set equality — deterministic)
+   * - Enforces: INV-BOOT-2: kernel env carries exactly the bounded set
+   *      (F-206, A-011, SEQ-BOOT-2) — exact key-set equality, not prefix
+   * - Enforces: FORBIDDEN-BOOT-2: no key outside the bounded set crosses
+   *   (F-207, REQ-N-3) — enforced via the SAFETY contract's own
+   *   validateKernelEnv (SAFE-V1) over the bootstrap output
+   * - Category: invariant (cross-contract coherence)
    * - Risk tier: High — env assembly is the credential boundary
-   * - Adversarial: Implementation-blind
    */
+  const { validateKernelEnv, SAFE_SESSION_ENV_KEYS } = await import(
+    "../../../requirements/contracts/rlm-safety.contract.ts"
+  )
   const env = buildKernelEnv(
     {
       depth: 1,
@@ -374,77 +526,19 @@ test("kernel env carries RLM identity vars, caps, and depth — and nothing else
       sessionDir: "/tmp/sess",
       harnessDir: "/tmp/sess/harness",
       globalHarnessDir: "/tmp/global/harness",
+      agentDir: "/tmp/agent",
     },
     { maxOutputChars: 65536, snapshotMaxBytes: 268435456 },
   )
+  expect(Object.keys(env).sort()).toEqual([...SAFE_SESSION_ENV_KEYS].sort())
   expect(env["RLM_DEPTH"]).toBe("1")
   expect(env["RLM_MAX_DEPTH"]).toBe("2")
   expect(env["RLM_SESSION_DIR"]).toBe("/tmp/sess")
   expect(env["RLM_HARNESS_STATE_DIR"]).toBe("/tmp/sess/harness")
   expect(env["RLM_GLOBAL_HARNESS_STATE_DIR"]).toBe("/tmp/global/harness")
+  expect(env["OMP_RLM_AGENT_DIR"]).toBe("/tmp/agent")
   expect(env["RLM_MAX_OUTPUT_CHARS"]).toBe("65536")
   expect(env["RLM_SNAPSHOT_MAX_BYTES"]).toBe("268435456")
-  // FORBIDDEN-BOOT-2: the assembled env contains ONLY RLM_* keys — the
-  // bounded set. Any credential-shaped key is a violation.
-  for (const key of Object.keys(env)) {
-    expect(key.startsWith("RLM_")).toBe(true)
-  }
-})
-
-// ---------------------------------------------------------------------------
-// ERRORS-BOOT-1 — uv missing + internet-naming failure
-// ---------------------------------------------------------------------------
-
-test("missing uv raises UvMissingError; bootstrap failure names internet need", async () => {
-  /**
-   * CONTRACT TRACEABILITY:
-   * - Enforces: ERRORS-BOOT-1: UvMissingError when no uv resolves (F-239);
-   *      first-time-install failure messages name the internet requirement
-   *      (F-198)
-   * - Category: error
-   * - Risk tier: Medium — silent uv failure hangs first-run onboarding
-   * - Adversarial: Implementation-blind
-   */
-  expect(new UvMissingError().message).toContain("uv")
-  // First-time venv creation failing (non-zero pip exit) must name internet
-  const { bootstrapManagedVenv } = await import("../src/bootstrap.ts")
-  const runner = makeRunner([
-    { match: "uv venv", code: 0, stdout: "" },
-    { match: "uv pip install", code: 2, stdout: "", stderr: "error: failed to fetch" },
-  ])
-  try {
-    await bootstrapManagedVenv(makeConfig(), { runner, exists: () => false })
-    throw new Error("expected bootstrapManagedVenv to fail")
-  } catch (error) {
-    expect(error).toBeInstanceOf(RlmBootstrapError)
-    expect(String(error).toLowerCase()).toContain("internet")
-  }
-})
-
-// ---------------------------------------------------------------------------
-// ERRORS-BOOT-2 — skill install failures degrade to warnings
-// ---------------------------------------------------------------------------
-
-test("python-skill install failure downgrades to a warning, bootstrap succeeds", async () => {
-  /**
-   * CONTRACT TRACEABILITY:
-   * - Enforces: ERRORS-BOOT-2: Python-skill install failures downgrade to a
-   *      warning naming the unavailable skill, never abort the bootstrap
-   *      (F-199)
-   * - Category: positive (degradation path)
-   * - Risk tier: Medium — one broken skill must not brick the kernel env
-   * - Adversarial: Implementation-blind
-   */
-  const { bootstrapManagedVenv } = await import("../src/bootstrap.ts")
-  const runner = makeRunner([
-    { match: "uv venv", code: 0, stdout: "" },
-    { match: "uv pip install ipykernel", code: 0, stdout: "" },
-    { match: "--python-skills", code: 1, stdout: "", stderr: "skill build failed" },
-  ])
-  const result = await bootstrapManagedVenv(
-    makeConfig(),
-    { runner, exists: () => false },
-  )
-  expect(result.warnings.length).toBeGreaterThan(0)
-  expect(result.warnings[0]).toContain("skill")
+  // SAFE-V1 over the bootstrap output: the safety contract accepts it
+  expect(() => validateKernelEnv(env, { websearchLoaded: false })).not.toThrow()
 })
