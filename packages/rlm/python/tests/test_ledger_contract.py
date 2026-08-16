@@ -65,6 +65,9 @@ def test_pre_led_1_create_each_kind_persists_entry(tmp_path, kind):
     [x] C2 VALUABLE: wrong kind routing (entry under wrong kind) fails this test
     [x] C3 NON-DUPLICATIVE: only test asserting per-kind persistence
     [x] C4 NOT FUTURE-EDIT: enforces current contracted kind set
+
+    Audit F7: persistence checked per kind here too — a return-shaped dict
+    with no store now fails (was left only to POST-LED-1's memory path).
     """
     state = make_state(tmp_path)
     method = getattr(state, f"create_{kind}" if kind != "prompt" else "create_prompt_note")
@@ -75,6 +78,14 @@ def test_pre_led_1_create_each_kind_persists_entry(tmp_path, kind):
         f"EXPECTED: kind == {kind!r}\n"
         f"ACTUAL: kind == {entry.get('kind')!r}\n"
         f"GUIDANCE: each create_<kind> MUST persist the entry under its own kind"
+    )
+    fetched = state.get(kind, entry["id"])
+    assert fetched is not None and fetched["kind"] == kind, (
+        f"test_pre_led_1 FAILED\n"
+        f"WHY: PRE-LED-1 violation — {kind} entry not persisted\n"
+        f"EXPECTED: get('{kind}', id) returns the entry\n"
+        f"ACTUAL: {fetched!r}\n"
+        f"GUIDANCE: create MUST persist, not just return a shaped dict"
     )
 
 
@@ -118,39 +129,29 @@ def test_post_led_1_every_mutation_persists_immediately(tmp_path):
 
     FOUR-CRITERIA GATE: C1 POST-LED-1 · C2 save-deferral bug fails ·
     C3 single pipeline observation (not three duplicate tests) · C4 contracted
+
+    Exercises all four kinds (audit F8: memory-only coverage was a theater
+    gap — a kind-specific save omission now fails this test).
     """
     state = make_state(tmp_path)
     state_file = tmp_path / "session" / "harness" / "harness_state.json"
 
-    state.create_memory("First", "v1 content", id="mem1")
-    on_disk = json.loads(state_file.read_text())
-    assert on_disk["schema"] == 1 and "mem1" in on_disk["entries"]["memory"], (
-        f"test_post_led_1 FAILED\n"
-        f"WHY: POST-LED-1 violation — create did not persist immediately\n"
-        f"EXPECTED: schema 1 file with entries.memory containing 'mem1'\n"
-        f"ACTUAL: {on_disk!r}\n"
-        f"GUIDANCE: each mutation MUST write the state file before returning"
-    )
-
-    state.update_memory("mem1", content="v2 content")
-    on_disk = json.loads(state_file.read_text())
-    assert on_disk["entries"]["memory"]["mem1"]["content"] == "v2 content", (
-        f"test_post_led_1 FAILED\n"
-        f"WHY: POST-LED-1 violation — update did not persist immediately\n"
-        f"EXPECTED: content == 'v2 content'\n"
-        f"ACTUAL: {on_disk['entries']['memory']['mem1'].get('content')!r}\n"
-        f"GUIDANCE: updates MUST hit disk before returning"
-    )
-
-    state.delete_memory("mem1")
-    on_disk = json.loads(state_file.read_text())
-    assert "mem1" not in on_disk["entries"]["memory"], (
-        f"test_post_led_1 FAILED\n"
-        f"WHY: POST-LED-1 violation — delete did not persist immediately\n"
-        f"EXPECTED: 'mem1' absent from entries.memory\n"
-        f"ACTUAL: keys == {sorted(on_disk['entries']['memory'])}\n"
-        f"GUIDANCE: deletes MUST hit disk before returning"
-    )
+    creators = {
+        "memory": state.create_memory,
+        "skill": state.create_skill,
+        "subagent": state.create_subagent,
+        "prompt": state.create_prompt_note,
+    }
+    for kind, create in creators.items():
+        entry = create(f"{kind} Entry", f"{kind} content", id=f"{kind}1")
+        on_disk = json.loads(state_file.read_text())
+        assert entry["id"] in on_disk["entries"][kind], (
+            f"test_post_led_1 FAILED\n"
+            f"WHY: POST-LED-1 violation — {kind} create did not persist immediately\n"
+            f"EXPECTED: {entry['id']} in on-disk entries.{kind}\n"
+            f"ACTUAL: keys == {sorted(on_disk['entries'][kind])}\n"
+            f"GUIDANCE: each mutation MUST write the state file before returning"
+        )
 
 
 # ============================================================================
@@ -327,6 +328,94 @@ def test_inv_led_1_auto_id_slug_and_cap(tmp_path):
     )
 
 
+def test_inv_led_1_non_alnum_title_rejected_not_empty_id(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: INV-LED-1: a title that slugifies to the empty string SHALL
+      be rejected, never persisted under an empty id
+    - Category: negative (equivalence class: no [a-z0-9] content at all)
+    - Risk tier: Medium — empty id corrupts the id space silently
+    - Adversarial: Implementation-blind
+    """
+    state = make_state(tmp_path)
+    with pytest.raises(RlmLedgerError):
+        state.create_memory("!!!", "c")
+    persisted = state.list("memory")
+    assert all(e["id"] for e in persisted), (
+        f"test_inv_led_1 FAILED\n"
+        f"WHY: INV-LED-1 violation — entry persisted under an empty id\n"
+        f"EXPECTED: no empty-id entries\nACTUAL: {persisted!r}\n"
+        f"GUIDANCE: non-slug titles must be rejected, not persisted"
+    )
+
+
+def test_inv_led_3_scope_immutable_on_update(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: INV-LED-3: scope is immutable post-create; update SHALL NOT
+      relabel or move stores
+    - Category: negative
+    - Risk tier: High — scope/field divergence is silent state corruption
+    - Adversarial: Implementation-blind
+    """
+    state = make_state(tmp_path)
+    state.create_memory("LocalOne", "c", id="loc1")
+    with pytest.raises(RlmLedgerError):
+        state.update_memory("loc1", scope="global")
+    fetched = state.get("memory", "loc1")
+    assert fetched is not None and fetched["scope"] == "local", (
+        f"test_inv_led_3 FAILED\n"
+        f"WHY: INV-LED-3 violation — scope changed via update\n"
+        f"EXPECTED: scope == 'local' after rejected update\n"
+        f"ACTUAL: {fetched.get('scope')!r}\n"
+        f"GUIDANCE: scope is chosen at creation and immutable afterward"
+    )
+
+
+def test_inv_led_4_list_and_overview_render_global_entries(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: INV-LED-4: list(kind) and overview() render both scopes;
+      global entries appear as [global:id] lines
+    - Category: positive
+    - Risk tier: Medium — invisible global memory is silent data loss at the
+      read surface
+    - Adversarial: Implementation-blind
+    """
+    state = make_state(tmp_path)
+    state.create_memory("Shared Thing", "gc", global_=True, id="shared1")
+    listed = state.list("memory")
+    listed_ids = {e["id"] for e in listed}
+    assert "shared1" in listed_ids, (
+        f"test_inv_led_4 FAILED\n"
+        f"WHY: INV-LED-4 violation — global entry missing from list('memory')\n"
+        f"EXPECTED: shared1 in list output\nACTUAL: {sorted(listed_ids)}\n"
+        f"GUIDANCE: list renders both scopes"
+    )
+    text = state.overview()
+    assert "[global:shared1] Shared Thing" in text, (
+        f"test_inv_led_4 FAILED\n"
+        f"WHY: INV-LED-4 violation — global entry missing from overview\n"
+        f"EXPECTED: '[global:shared1] Shared Thing' line\n"
+        f"ACTUAL: overview lacks the global line\n"
+        f"GUIDANCE: overview renders global entries with the [global:id] prefix"
+    )
+
+
+def test_inv_led_lifetime_2_same_file_configuration_raises(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: INV-LED-LIFETIME-2: local and global stores SHALL have
+      distinct files; same-path construction is a configuration error
+    - Category: negative
+    - Risk tier: High — aliasing one file as two stores self-clobbers
+    - Adversarial: Implementation-blind
+    """
+    one_dir = tmp_path / "one"
+    with pytest.raises(RlmLedgerError):
+        HarnessState(session_dir=str(one_dir), global_state_dir=str(one_dir))
+
+
 # ============================================================================
 # INV-LED-2 — external modification reflected before next kernel access
 # ============================================================================
@@ -336,33 +425,75 @@ def test_inv_led_2_external_write_visible_on_next_access(tmp_path):
     CONTRACT TRACEABILITY:
     - Enforces: INV-LED-2: host-written and kernel-written state never clobber
       each other; external modification visible before next kernel-side access
+      — reads AND mutations
     - Category: invariant (fault injection at the enforcement boundary: the
-      external file write happens between two kernel-side accesses)
+      external file write happens between kernel-side operations)
     - Risk tier: High — split-brain ledger loses host /refine writes
     - Adversarial: Implementation-blind
+
+    Four surfaces in one pipeline: read (get), then each mutation kind —
+    a store that reloads only on reads (the audited defect) fails at the
+    create step because saving without reloading wipes the host entry.
     """
     state = make_state(tmp_path)
-    state.create_memory("Mine", "kernel-side")
+    state.create_memory("Mine", "kernel-side", id="mine1")
     state_file = tmp_path / "session" / "harness" / "harness_state.json"
 
-    # Host /refine rewrites the file underneath the kernel-side store
-    on_disk = json.loads(state_file.read_text())
-    on_disk["entries"]["memory"]["host1"] = {
-        "id": "host1", "kind": "memory", "title": "HostWrite",
-        "content": "host-side", "path": "general", "scope": "local",
-        "reference": None, "arguments": None, "metadata": None,
-        "source": "agent", "version": 1,
-        "created_at": "2026-08-15T00:00:00Z", "updated_at": "2026-08-15T00:00:00Z",
-    }
-    state_file.write_text(json.dumps(on_disk))
+    def inject_host_entry(marker: str) -> None:
+        on_disk = json.loads(state_file.read_text())
+        on_disk["entries"]["memory"][f"host_{marker}"] = {
+            "id": f"host_{marker}", "kind": "memory", "title": f"Host {marker}",
+            "content": "host-side", "path": "general", "scope": "local",
+            "reference": None, "arguments": None, "metadata": None,
+            "source": "agent", "version": 1,
+            "created_at": "2026-08-15T00:00:00Z", "updated_at": "2026-08-15T00:00:00Z",
+        }
+        state_file.write_text(json.dumps(on_disk))
 
-    seen = state.get("memory", "host1")
-    assert seen is not None and seen["title"] == "HostWrite", (
+    # READ surface: external write visible at next get
+    inject_host_entry("read")
+    assert state.get("memory", "host_read") is not None, (
         f"test_inv_led_2 FAILED\n"
-        f"WHY: INV-LED-2 violation — external write invisible at next access\n"
-        f"EXPECTED: get('memory','host1').title == 'HostWrite'\n"
-        f"ACTUAL: {seen!r}\n"
+        f"WHY: INV-LED-2 violation — external write invisible at next read\n"
+        f"EXPECTED: get('memory','host_read') returns the host entry\n"
+        f"ACTUAL: None\n"
         f"GUIDANCE: the store MUST reflect external file modification before the next read"
+    )
+
+    # CREATE surface: a create after an external write must not wipe it
+    inject_host_entry("create")
+    state.create_memory("AfterHost", "c")
+    survived = state.get("memory", "host_create")
+    assert survived is not None and survived["title"] == "Host create", (
+        f"test_inv_led_2 FAILED\n"
+        f"WHY: INV-LED-2 violation — create clobbered a concurrent external write\n"
+        f"EXPECTED: host_create entry survives the create + save round-trip\n"
+        f"ACTUAL: {survived!r}\n"
+        f"GUIDANCE: mutations MUST reload external state before saving"
+    )
+
+    # UPDATE surface
+    inject_host_entry("update")
+    state.update_memory("mine1", content="updated kernel-side")
+    survived = state.get("memory", "host_update")
+    assert survived is not None, (
+        f"test_inv_led_2 FAILED\n"
+        f"WHY: INV-LED-2 violation — update clobbered a concurrent external write\n"
+        f"EXPECTED: host_update entry survives\nACTUAL: gone\n"
+        f"GUIDANCE: mutations MUST reload external state before saving"
+    )
+
+    # DELETE surface: deleting one entry must not wipe others the deleter
+    # never saw
+    inject_host_entry("delete")
+    state.delete_memory("mine1")
+    survived = state.get("memory", "host_delete")
+    assert survived is not None, (
+        f"test_inv_led_2 FAILED\n"
+        f"WHY: INV-LED-2 violation — delete clobbered a concurrent external write\n"
+        f"EXPECTED: host_delete entry survives deletion of a different entry\n"
+        f"ACTUAL: gone\n"
+        f"GUIDANCE: mutations MUST reload external state before saving"
     )
 
 
@@ -438,13 +569,14 @@ def test_inv_led_lifetime_2_global_kwarg_routes_to_global_file(tmp_path):
         f"ACTUAL: global file missing or lacks the entry\n"
         f"GUIDANCE: global_=True MUST persist under the global state file"
     )
-    local_ids = state.list("memory")
-    assert entry["id"] not in [e["id"] for e in local_ids], (
+    listed = state.list("memory")
+    listed_scopes = {e["id"]: e["scope"] for e in listed}
+    assert listed_scopes.get(entry["id"]) == "global", (
         f"test_inv_led_lifetime_2 FAILED\n"
-        f"WHY: INV-LED-LIFETIME-2 violation — global entry leaked into local scope\n"
-        f"EXPECTED: {entry['id']} absent from local list\n"
-        f"ACTUAL: {local_ids!r}\n"
-        f"GUIDANCE: global entries live only in the global store"
+        f"WHY: INV-LED-4 violation — global entry missing scope-true rendering in list\n"
+        f"EXPECTED: {entry['id']} listed with scope 'global' (both scopes render)\n"
+        f"ACTUAL: {listed_scopes!r}\n"
+        f"GUIDANCE: list renders both scopes; global entries carry scope 'global'"
     )
     fetched = state.get("memory", f"[global:{entry['id']}]")
     assert fetched is not None and fetched["scope"] == "global", (
@@ -468,6 +600,9 @@ def test_errors_led_1_duplicate_create_and_missing_update_delete(tmp_path):
     - Category: error
     - Risk tier: Medium
     - Adversarial: Implementation-blind
+
+    Audit F9: message content enforced for all three cases, not just
+    duplicate.
     """
     state = make_state(tmp_path)
     state.create_memory("Once", "c", id="dup1")
@@ -475,11 +610,43 @@ def test_errors_led_1_duplicate_create_and_missing_update_delete(tmp_path):
     with pytest.raises(RlmLedgerError, match="already exists"):
         state.create_memory("Again", "c", id="dup1")
 
-    with pytest.raises(RlmLedgerError):
+    with pytest.raises(RlmLedgerError, match="not found"):
         state.update_memory("missing1", title="x")
 
-    with pytest.raises(RlmLedgerError):
+    with pytest.raises(RlmLedgerError, match="not found"):
         state.delete_memory("missing1")
+
+
+def test_errors_led_1_hostile_on_disk_version_raises_domain_error(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: ERRORS-LED-1: malformed on-disk entry fields (non-integer
+      version) raise the domain error, not a raw TypeError (LED-V5 load
+      coercion)
+    - Category: error (durable-file boundary)
+    - Risk tier: Medium — hostile/corrupt-but-parseable files are a durable
+      trust boundary
+    - Adversarial: Implementation-blind
+    """
+    session_dir = tmp_path / "session"
+    harness_dir = session_dir / "harness"
+    harness_dir.mkdir(parents=True)
+    state_file = harness_dir / "harness_state.json"
+    state_file.write_text(json.dumps({
+        "schema": 1,
+        "entries": {"memory": {"bad1": {
+            "id": "bad1", "kind": "memory", "title": "Bad",
+            "content": "c", "path": "general", "scope": "local",
+            "reference": None, "arguments": None, "metadata": None,
+            "source": "agent", "version": "one",
+            "created_at": "2026-08-15T00:00:00Z", "updated_at": "2026-08-15T00:00:00Z",
+        }}},
+        "refinements": [],
+    }))
+
+    state = HarnessState(session_dir=str(session_dir), global_state_dir=str(tmp_path / "g"))
+    with pytest.raises(RlmLedgerError):
+        state.update_memory("bad1", title="x")
 
 
 # ============================================================================

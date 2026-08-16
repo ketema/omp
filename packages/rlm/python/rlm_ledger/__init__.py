@@ -69,7 +69,11 @@ def _utc_now_iso() -> str:
 
 
 def _slugify(title: str) -> str:
-    """Convert title to a slug of [a-z0-9_] capped at ID_MAX_CHARS."""
+    """Convert title to a slug of [a-z0-9_] capped at ID_MAX_CHARS.
+
+    Returns "" when the title carries no slug characters — callers MUST
+    reject that (INV-LED-1), never persist an empty id.
+    """
     slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
     if len(slug) > ID_MAX_CHARS:
         slug = slug[:ID_MAX_CHARS]
@@ -242,7 +246,13 @@ class HarnessState:
         elif agent_dir is not None:
             global_file = Path(agent_dir) / GLOBAL_FILE
         else:
-            global_file = local_dir / GLOBAL_FILE
+            global_file = local_dir.parent / "global-rlm-state" / GLOBAL_FILE
+
+        if global_file == local_file:
+            raise RlmLedgerError(
+                "INV-LED-LIFETIME-2 violation: local and global state files must be "
+                f"distinct paths (both resolve to {local_file})"
+            )
 
         self._local = _Store(local_file)
         self._global = _Store(global_file)
@@ -337,6 +347,9 @@ class HarnessState:
         global_: bool = False,
     ) -> dict[str, object]:
         self._validate_kind(kind)
+        # INV-LED-2: mutations reload external state before saving so a
+        # concurrent host write is never clobbered by a stale save
+        self._reload_all()
 
         if global_:
             scope = "global"
@@ -347,6 +360,11 @@ class HarnessState:
 
         if id is None:
             id = _slugify(title)
+            if not id:
+                raise RlmLedgerError(
+                    "INV-LED-1 violation: title carries no slug characters; "
+                    f"auto id would be empty (title={title!r})"
+                )
         else:
             id = id[:ID_MAX_CHARS]
 
@@ -385,6 +403,8 @@ class HarnessState:
 
     def _update(self, kind: str, id: str, **fields: object) -> dict[str, object]:
         self._validate_kind(kind)
+        # INV-LED-2: mutations reload external state before saving
+        self._reload_all()
 
         store, entry = self._resolve_get(kind, id)
         if store is None or entry is None:
@@ -392,11 +412,26 @@ class HarnessState:
                 f"LED-V2 violation: update on a missing entry — {id!r} not found"
             )
 
+        if "scope" in fields and fields["scope"] is not None:
+            _, bare_id = self._parse_id(id)
+            current = entry.get("scope", "local")
+            if fields["scope"] != current:
+                raise RlmLedgerError(
+                    "INV-LED-3 violation: scope is immutable after creation "
+                    f"(entry {bare_id!r} is {current!r}; refusing to set {fields['scope']!r})"
+                )
+
+        version = entry.get("version", ENTRY_VERSION_DEFAULT)
+        if not isinstance(version, int):
+            raise RlmLedgerError(
+                f"ERRORS-LED-1 violation: entry {id!r} has malformed on-disk "
+                f"version {version!r}; refusing update"
+            )
+
         for key in (
             "title",
             "content",
             "path",
-            "scope",
             "reference",
             "arguments",
             "metadata",
@@ -404,7 +439,7 @@ class HarnessState:
             if key in fields and fields[key] is not None:
                 entry[key] = fields[key]
 
-        entry["version"] = entry["version"] + 1  # type: ignore[operator]
+        entry["version"] = version + 1
         entry["updated_at"] = _utc_now_iso()
 
         store.save()
@@ -413,6 +448,8 @@ class HarnessState:
 
     def _delete(self, kind: str, id: str) -> None:
         self._validate_kind(kind)
+        # INV-LED-2: mutations reload external state before saving
+        self._reload_all()
 
         store, entry = self._resolve_get(kind, id)
         if store is None or entry is None:
@@ -434,7 +471,10 @@ class HarnessState:
     def _list(self, kind: str) -> list[dict[str, object]]:
         self._validate_kind(kind)
         self._reload_all()
-        return [dict(e) for e in self._local.entries[kind].values()]
+        # INV-LED-4: list renders both scopes — local entries first, then global
+        combined = [dict(e) for e in self._local.entries[kind].values()]
+        combined.extend(dict(e) for e in self._global.entries[kind].values())
+        return combined
 
     # ------------------------------------------------------------------
     # Kind-specific CRUD dispatchers
@@ -564,9 +604,19 @@ class HarnessState:
 
         lines: list[str] = []
 
-        # Show local entries
+        # INV-LED-4: overview renders both scopes; global entries carry the
+        # [global:id] prefix in their scope lines
+        combined: dict[str, list[dict[str, object]]] = {k: [] for k in KINDS}
+        for store in (self._local, self._global):
+            for kind in KINDS:
+                for entry in store.entries[kind].values():
+                    rendered = dict(entry)
+                    if store is self._global:
+                        rendered["scope"] = "global"
+                    combined[kind].append(rendered)
+
         for kind in KINDS:
-            entries = list(self._local.entries[kind].values())
+            entries = combined[kind]
             if not entries:
                 continue
             shown = entries[:OVERVIEW_PER_KIND]
