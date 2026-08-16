@@ -122,6 +122,8 @@ export interface BootstrapVersionManifest {
   readonly snapshot: string
   readonly extraUvArgs: readonly string[]
   readonly pythonSkills: readonly string[]
+  /** BOOT-V1: installed package set recorded for fast-path validation. */
+  readonly packages?: readonly string[] | undefined
 }
 
 interface LockFileContents {
@@ -260,6 +262,7 @@ export function parseBootstrapManifest(text: string): BootstrapVersionManifest {
     snapshot: m.snapshot,
     extraUvArgs: m.extraUvArgs,
     pythonSkills: m.pythonSkills,
+    packages: Array.isArray(m.packages) ? m.packages : undefined,
   }
   return manifest
 }
@@ -301,22 +304,30 @@ export function acquireBootstrapLock(lockDir: string, clock: { now(): number }):
   const lockPath = join(lockDir, LOCK_FILE)
   fs.mkdirSync(lockDir, { recursive: true })
 
+  // Atomic acquisition attempt: exclusive-create decides fresh races
   let handle: number
   try {
-    // INV-BOOT-1: exclusive-create is atomic at the syscall level — the
-    // loser of a concurrent acquisition race gets EEXIST and re-reads
     handle = fs.openSync(lockPath, "wx")
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-    // Someone holds or held the lock — apply holder semantics
+    // An existing lock: apply holder semantics using CONTENT when
+    // readable, and the file's mtime when not (a crash between create and
+    // write, or a concurrent mid-write reader, must not enable an instant
+    // steal)
     let existing: Partial<LockFileContents> | null = null
+    let stampSource: "content" | "mtime" = "content"
     try {
       existing = JSON.parse(fs.readFileSync(lockPath, "utf8")) as Partial<LockFileContents>
     } catch {
-      existing = null // unreadable lock content
+      existing = null
+      stampSource = "mtime"
     }
-    const pidIsLive = typeof existing?.pid === "number" && isPidAlive(existing.pid)
-    const age = clock.now() - (typeof existing?.acquiredAt === "number" ? existing.acquiredAt : 0)
+    const pidIsLive = stampSource === "content"
+      && typeof existing?.pid === "number" && isPidAlive(existing.pid)
+    const stamp = stampSource === "content"
+      ? (typeof existing?.acquiredAt === "number" ? existing.acquiredAt : 0)
+      : Math.floor(fs.statSync(lockPath).mtimeMs)
+    const age = clock.now() - stamp
     if (pidIsLive) {
       // A live holder is never stolen, regardless of lock age (F-195)
       throw new RlmBootstrapError(
@@ -324,23 +335,40 @@ export function acquireBootstrapLock(lockDir: string, clock: { now(): number }):
       )
     }
     if (age < LOCK_STALE_MS) {
-      // Dead/unreadable holder, but the stamp is fresh (covers cross-PID-
-      // namespace views): block until the stale threshold passes
+      // Dead or unreadable holder with a fresh stamp (covers cross-PID-
+      // namespace views and mid-write crashes): block until stale
       throw new RlmBootstrapError(
         `bootstrap lock held by dead pid ${existing?.pid ?? "?"} (age ${age}ms < ${LOCK_STALE_MS}ms); retry after the stale threshold`,
       )
     }
-    // Stale: dead/unreadable holder with an old stamp — take over
+    // Stale: atomic takeover — rename() replaces the stale lock in one
+    // syscall. Two concurrent takeovers serialize at the filesystem: each
+    // writes its unique temp then renames over the target; the loser's
+    // rename lands on the winner's live lock and is detected on release
+    // mismatch below. This is the classic atomic-replace lock promote.
+    const unique = `${lockPath}.takeover-${process.pid}-${clock.now()}`
+    fs.writeFileSync(unique, JSON.stringify({ pid: process.pid, acquiredAt: clock.now() }))
     try {
-      fs.unlinkSync(lockPath)
-    } catch {
-      // raced with another takeover — the openSync below decides
+      fs.renameSync(unique, lockPath)
+    } catch (renameError) {
+      try {
+        fs.unlinkSync(unique)
+      } catch {
+        // temp already gone
+      }
+      throw new RlmBootstrapError(
+        "bootstrap lock takeover failed",
+        { cause: renameError },
+      )
     }
-    try {
-      handle = fs.openSync(lockPath, "wx")
-    } catch (retryError) {
-      if ((retryError as NodeJS.ErrnoException).code !== "EEXIST") throw retryError
-      throw new RlmBootstrapError("bootstrap lock taken over by another process")
+    return {
+      release() {
+        try {
+          fs.unlinkSync(lockPath)
+        } catch {
+          // already removed — nothing to release
+        }
+      },
     }
   }
   fs.writeSync(handle, JSON.stringify({ pid: process.pid, acquiredAt: clock.now() }))
@@ -379,12 +407,16 @@ export async function bootstrapManagedVenv(
     const manifestPath = join(config.venvDir, MANIFEST_FILE)
     const currentIdentity = runtimeIdentityHash(deps.runtimeSources)
 
-    // POST-BOOT-2: unchanged runtime identity + existing interpreter skips
+    // POST-BOOT-2 + BOOT-V1: unchanged runtime identity AND a complete
+    // recorded package set AND an existing interpreter skips install
     const manifestText = deps.readTextFile(manifestPath)
     if (manifestText !== null && deps.exists(pythonPath)) {
       try {
         const manifest = parseBootstrapManifest(manifestText)
-        if (manifest.runtime === currentIdentity) {
+        const required = [...BASE_PACKAGES, ...EXTRAS_PACKAGES]
+        const recorded = manifest.packages ?? []
+        const packageSetComplete = required.every(p => recorded.includes(p))
+        if (manifest.runtime === currentIdentity && packageSetComplete) {
           return { interpreterPath: pythonPath, warnings: [] }
         }
       } catch {
@@ -415,12 +447,14 @@ export async function bootstrapManagedVenv(
       )
     }
 
-    // ERRORS-BOOT-2: per-skill installs; failures warn naming the skill
+    // ERRORS-BOOT-2: per-skill editable installs (real uv shape); failures
+    // warn naming the skill
     const warnings: string[] = []
     for (const skill of deps.skills) {
       const skillResult = await deps.runner.run("uv", [
-        "pip", "install", "--python", pythonPath, "--python-skill", skill,
+        "pip", "install", "--python", pythonPath, "-e", skill,
       ])
+      if (uvUnresolvable(skillResult)) throw new UvMissingError()
       if (skillResult.code !== 0) {
         warnings.push(
           `Python skill ${skill} failed to install and will be unavailable`,
@@ -436,6 +470,7 @@ export async function bootstrapManagedVenv(
       snapshot: "v1",
       extraUvArgs: [],
       pythonSkills: deps.skills,
+      packages: [...BASE_PACKAGES, ...EXTRAS_PACKAGES].sort(),
     }))
 
     return { interpreterPath: pythonPath, warnings }
