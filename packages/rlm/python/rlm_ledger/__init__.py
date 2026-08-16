@@ -59,6 +59,52 @@ class RlmLedgerError(ValueError):
     """Raised for all ledger contract violations."""
 
 
+def _require_str(value: object, name: str, *, method: str) -> str:
+    """ERRORS-LED-1 boundary gate: string arguments must be strings."""
+    if not isinstance(value, str):
+        raise RlmLedgerError(
+            f"ERRORS-LED-1 violation: {method} argument {name!r} must be a "
+            f"string, got {type(value).__name__}"
+        )
+    return value
+
+
+def _require_dict_or_none(
+    value: object, name: str, *, method: str
+) -> dict[str, object] | None:
+    """ERRORS-LED-1 boundary gate: struct arguments must be dicts or None."""
+    if value is not None and not isinstance(value, dict):
+        raise RlmLedgerError(
+            f"ERRORS-LED-1 violation: {method} argument {name!r} must be a "
+            f"dict or None, got {type(value).__name__}"
+        )
+    return value  # type: ignore[return-value]
+
+
+def _check_entry_health(entry: dict[str, object], kind: str, id: str) -> None:
+    """ERRORS-LED-1: retained malformed entries raise when accessed.
+
+    The load boundary validates file structure only; this check runs at
+    every access/mutation surface so a malformed on-disk entry is named,
+    never silently dropped and never a raw TypeError downstream.
+    """
+    version = entry.get("version", ENTRY_VERSION_DEFAULT)
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise RlmLedgerError(
+            f"ERRORS-LED-1 violation: malformed on-disk entry {kind}/{id!r} "
+            f"has version {version!r}"
+        )
+    for text_field in ("title", "content", "path"):
+        value = entry.get(text_field, "" if text_field == "content" else None)
+        if text_field == "path" and value is None:
+            value = "general"
+        if not isinstance(value, str):
+            raise RlmLedgerError(
+                f"ERRORS-LED-1 violation: malformed on-disk entry {kind}/{id!r} "
+                f"has {text_field} of type {type(value).__name__}"
+            )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -120,10 +166,11 @@ class RefinementEvent:
 class _Store:
     """Manages loading/saving a single state file."""
 
-    __slots__ = ("_entries", "_file", "_refinement_counter", "_refinements")
+    __slots__ = ("_entries", "_file", "_refinement_counter", "_refinements", "_scope")
 
-    def __init__(self, file_path: Path) -> None:
+    def __init__(self, file_path: Path, scope: str) -> None:
         self._file = file_path
+        self._scope = scope
         self._entries: dict[str, dict[str, dict[str, object]]] = {k: {} for k in KINDS}
         self._refinements: list[RefinementEvent] = []
         self._refinement_counter = 0
@@ -172,35 +219,18 @@ class _Store:
             )
             return
 
+        # ERRORS-LED-1: load validates FILE structure only; malformed entry
+        # FIELDS are retained and raise the domain error when accessed.
+        # INV-LED-4: the owning store stamps scope at load, so every read
+        # surface inherits it even for entries written without one.
         for kind, kind_entries in entries.items():
             if kind not in KINDS:
                 continue
             for entry_id, entry_data in kind_entries.items():
                 if isinstance(entry_data, dict):
-                    version = entry_data.get("version", ENTRY_VERSION_DEFAULT)
-                    if isinstance(version, bool) or not isinstance(version, int):
-                        _logger.warning(
-                            "dropping entry with malformed version %r: %s/%s",
-                            version,
-                            kind,
-                            entry_id,
-                        )
-                        continue
-                    for text_field in ("title", "content", "path"):
-                        value = entry_data.get(text_field)
-                        if not isinstance(value, str):
-                            _logger.warning(
-                                "dropping entry with malformed %s %r: %s/%s",
-                                text_field,
-                                value,
-                                kind,
-                                entry_id,
-                            )
-                            entry_data = None
-                            break
-                    if entry_data is None:
-                        continue
-                    self._entries[kind][entry_id] = dict(entry_data)
+                    loaded = dict(entry_data)
+                    loaded["scope"] = self._scope
+                    self._entries[kind][entry_id] = loaded
 
         for ref in refinements:
             if isinstance(ref, dict):
@@ -277,8 +307,8 @@ class HarnessState:
                 f"distinct paths (both resolve to {local_file.resolve()})"
             )
 
-        self._local = _Store(local_file)
-        self._global = _Store(global_file)
+        self._local = _Store(local_file, "local")
+        self._global = _Store(global_file, "global")
 
         self._local.load()
         self._global.load()
@@ -370,6 +400,13 @@ class HarnessState:
         global_: bool = False,
     ) -> dict[str, object]:
         self._validate_kind(kind)
+        # ERRORS-LED-1 boundary gate: argument types validated before any use
+        _require_str(title, "title", method="create")
+        _require_str(content, "content", method="create")
+        _require_str(path, "path", method="create")
+        _require_dict_or_none(reference, "reference", method="create")
+        _require_dict_or_none(arguments, "arguments", method="create")
+        _require_dict_or_none(metadata, "metadata", method="create")
         # INV-LED-2: mutations reload external state before saving so a
         # concurrent host write is never clobbered by a stale save
         self._reload_all()
@@ -382,6 +419,7 @@ class HarnessState:
             )
 
         if id is None:
+            _require_str(title, "title", method="create")
             id = _slugify(title)
             if not id:
                 raise RlmLedgerError(
@@ -389,11 +427,13 @@ class HarnessState:
                     f"auto id would be empty (title={title!r})"
                 )
         else:
-            id = id[:ID_MAX_CHARS]
-            if not id:
+            _require_str(id, "id", method="create")
+            if not id.strip():
                 raise RlmLedgerError(
-                    "INV-LED-1 violation: explicit id must be non-empty"
+                    "INV-LED-1 violation: explicit id must be non-empty, "
+                    f"non-whitespace (got {id!r})"
                 )
+            id = id[:ID_MAX_CHARS]
 
         store = self._store_for_scope(scope)
 
@@ -434,14 +474,17 @@ class HarnessState:
 
     def _update(self, kind: str, id: str, **fields: object) -> dict[str, object]:
         self._validate_kind(kind)
-        # ERRORS-LED-1: reserved-field collisions raise the domain error, not
-        # a raw TypeError from argument binding
-        reserved = sorted(self._RESERVED_FIELDS & fields.keys())
-        if reserved:
-            raise RlmLedgerError(
-                "ERRORS-LED-1 violation: cannot update reserved field(s) "
-                f"{', '.join(reserved)} on entry {id!r}"
-            )
+        # ERRORS-LED-1 boundary gate (dispatcher-side guard already rejected
+        # reserved-field collisions before **fields binding)
+        _require_str(id, "id", method="update")
+        for field_name, value in fields.items():
+            if (
+                field_name in ("title", "content", "path", "scope")
+                and value is not None
+            ):
+                _require_str(value, field_name, method="update")
+            elif field_name in ("reference", "arguments", "metadata"):
+                _require_dict_or_none(value, field_name, method="update")
         # INV-LED-2: mutations reload external state before saving
         self._reload_all()
 
@@ -450,6 +493,8 @@ class HarnessState:
             raise RlmLedgerError(
                 f"LED-V2 violation: update on a missing entry — {id!r} not found"
             )
+        # ERRORS-LED-1: retained malformed entries raise when touched
+        _check_entry_health(entry, kind, id)
 
         if "scope" in fields and fields["scope"] is not None:
             _, bare_id = self._parse_id(id)
@@ -487,6 +532,7 @@ class HarnessState:
 
     def _delete(self, kind: str, id: str) -> None:
         self._validate_kind(kind)
+        _require_str(id, "id", method="delete")
         # INV-LED-2: mutations reload external state before saving
         self._reload_all()
 
@@ -495,16 +541,21 @@ class HarnessState:
             raise RlmLedgerError(
                 f"LED-V2 violation: delete on a missing entry — {id!r} not found"
             )
+        # ERRORS-LED-1: retained malformed entries raise when touched
+        _check_entry_health(entry, kind, id)
 
         del store.entries[kind][id]
         store.save()
 
     def _get(self, kind: str, id: str) -> dict[str, object] | None:
         self._validate_kind(kind)
+        _require_str(id, "id", method="get")
         self._reload_all()
         _store, entry = self._resolve_get(kind, id)
         if entry is None:
             return None
+        # ERRORS-LED-1: retained malformed entries raise when accessed
+        _check_entry_health(entry, kind, id)
         return dict(entry)
 
     def _list(self, kind: str) -> list[dict[str, object]]:
@@ -526,7 +577,8 @@ class HarnessState:
 
     def _guard_reserved(self, kind: str, id: str, fields: dict) -> dict:
         """ERRORS-LED-1: reserved-field collisions raise the domain error
-        instead of TypeError at **fields binding time."""
+        here, at the dispatcher boundary, because expanding **fields with a
+        reserved key would collide with _update's own parameter names."""
         reserved = sorted(self._RESERVED_FIELDS & fields.keys())
         if reserved:
             raise RlmLedgerError(
@@ -629,6 +681,14 @@ class HarnessState:
         outcome: str,
     ) -> str:
         """Record a refinement event and return its id."""
+        # ERRORS-LED-1 boundary gate
+        for name, value in (
+            ("trigger", trigger),
+            ("changes", changes),
+            ("evidence", evidence),
+            ("outcome", outcome),
+        ):
+            _require_str(value, name, method="record_refinement")
         # Reload to pick up any external writes
         self._reload_all()
 

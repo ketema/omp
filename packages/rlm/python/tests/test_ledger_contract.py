@@ -650,11 +650,11 @@ def test_errors_led_1_duplicate_create_and_missing_update_delete(tmp_path):
 def test_errors_led_1_hostile_on_disk_version_raises_domain_error(tmp_path):
     """
     CONTRACT TRACEABILITY:
-    - Enforces: ERRORS-LED-1: malformed on-disk entry fields (non-integer
-      version, booleans included) raise the domain error, not a raw TypeError
+    - Enforces: ERRORS-LED-1: malformed on-disk entry fields are retained on
+      load and raise the domain error naming the entry when accessed or
+      mutated (message asserted — a not-found error must NOT satisfy this)
     - Category: error (durable-file boundary)
-    - Risk tier: Medium — hostile/corrupt-but-parseable files are a durable
-      trust boundary
+    - Risk tier: Medium
     - Adversarial: Implementation-blind
     """
     session_dir = tmp_path / "session"
@@ -674,14 +674,18 @@ def test_errors_led_1_hostile_on_disk_version_raises_domain_error(tmp_path):
     }))
 
     state = HarnessState(session_dir=str(session_dir), global_state_dir=str(tmp_path / "g"))
-    with pytest.raises(RlmLedgerError):
+    # Retained, not dropped: access raises the malformed-field domain error
+    with pytest.raises(RlmLedgerError, match="bad1.*version|version.*bad1|malformed"):
         state.update_memory("bad1", title="x")
+    with pytest.raises(RlmLedgerError, match="bad1.*version|version.*bad1|malformed"):
+        state.get("memory", "bad1")
 
 
 def test_errors_led_1_bool_version_rejected(tmp_path):
     """
     CONTRACT TRACEABILITY:
-    - Enforces: ERRORS-LED-1 — version `true` (bool ⊂ int) is malformed, not 1
+    - Enforces: ERRORS-LED-1 — version `true` (bool ⊂ int) is malformed, not 1;
+      retained on load, domain error on access (message asserted)
     - Category: boundary
     - Risk tier: Medium
     """
@@ -701,8 +705,54 @@ def test_errors_led_1_bool_version_rejected(tmp_path):
         "refinements": [],
     }))
     state = HarnessState(session_dir=str(session_dir), global_state_dir=str(tmp_path / "g"))
-    with pytest.raises(RlmLedgerError):
+    with pytest.raises(RlmLedgerError, match="boolver.*version|version.*boolver|malformed"):
         state.update_memory("boolver", title="x")
+
+
+@pytest.mark.parametrize("bad_call", [
+    lambda s: s.create_memory(123, "c"),                    # non-str title
+    lambda s: s.create_memory("T", 123),                    # non-str content
+    lambda s: s.create_memory("T", "c", path=123),          # non-str path
+    lambda s: s.create_memory("T", "c", id=123),            # non-str id
+    lambda s: s.create_memory("T", "c", id="   "),          # whitespace-only id
+    lambda s: s.create_memory("T", "c", reference="not-a-dict"),
+    lambda s: s.get("memory", 123),                         # non-str id on read
+    lambda s: s.get("memory", ["unhashable"]),              # unhashable selector
+    lambda s: s.update_memory(123, title="x"),              # non-str id on update
+    lambda s: s.delete_memory(["unhashable"]),              # unhashable id on delete
+])
+def test_errors_led_1_argument_type_gate_domain_error(tmp_path, bad_call):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: ERRORS-LED-1: every public method validates argument types
+      and raises the domain error — never a raw TypeError/AttributeError
+    - Category: negative (equivalence matrix over the argument-type class)
+    - Risk tier: Medium — boundary robustness
+    - Adversarial: Implementation-blind
+
+    Class test, not spot tests: one matrix covering the whole family of
+    type-invalid arguments across create/get/update/delete surfaces.
+    """
+    state = make_state(tmp_path)
+    state.create_memory("Seed", "c", id="seed1")
+    with pytest.raises(RlmLedgerError, match="must be|invalid|malformed"):
+        bad_call(state)
+
+
+def test_errors_led_1_update_field_value_types(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: ERRORS-LED-1: wrong-typed update field values raise the
+      domain error (never persisted to explode later)
+    - Category: negative
+    - Risk tier: Medium
+    """
+    state = make_state(tmp_path)
+    state.create_memory("T", "c", id="t1")
+    with pytest.raises(RlmLedgerError, match="must be|invalid|malformed"):
+        state.update_memory("t1", title=123)
+    with pytest.raises(RlmLedgerError, match="must be|invalid|malformed"):
+        state.update_memory("t1", metadata="not-a-dict")
 
 
 def test_errors_led_1_reserved_update_field_raises_domain_error(tmp_path):
@@ -750,6 +800,40 @@ def test_inv_led_lifetime_2_symlinked_same_file_raises(tmp_path):
     os.symlink(real, link)
     with pytest.raises(RlmLedgerError):
         HarnessState(session_dir=str(real), global_state_dir=str(link))
+
+
+def test_inv_led_4_scope_stamped_from_store_ownership(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: INV-LED-4 — the store stamps each loaded entry with its owning
+      store's scope, so every listed entry carries a scope field even when
+      the on-disk entry lacks one (legacy/external writes)
+    - Category: positive
+    - Risk tier: Medium
+    """
+    session_dir = tmp_path / "session"
+    harness_dir = session_dir / "harness"
+    harness_dir.mkdir(parents=True)
+    (harness_dir / "harness_state.json").write_text(json.dumps({
+        "schema": 1,
+        "entries": {"memory": {"legacy1": {
+            "id": "legacy1", "kind": "memory", "title": "Legacy",
+            "content": "no scope field", "path": "general",
+            "reference": None, "arguments": None, "metadata": None,
+            "source": "agent", "version": 1,
+            "created_at": "2026-08-15T00:00:00Z", "updated_at": "2026-08-15T00:00:00Z",
+        }}},
+        "refinements": [],
+    }))
+    state = HarnessState(session_dir=str(session_dir), global_state_dir=str(tmp_path / "g"))
+    listed = {e["id"]: e for e in state.list("memory")}
+    assert "legacy1" in listed and listed["legacy1"].get("scope") == "local", (
+        f"test_inv_led_4 FAILED\n"
+        f"WHY: INV-LED-4 violation — scope not stamped from store ownership at load\n"
+        f"EXPECTED: legacy1 listed with scope 'local'\n"
+        f"ACTUAL: {listed.get('legacy1')!r}\n"
+        f"GUIDANCE: the owning store stamps scope at load; read surfaces inherit it"
+    )
 
 
 # ============================================================================
