@@ -10,8 +10,9 @@ import {
 	parseNumstat,
 } from "../commit/git/diff";
 import type { FileDiff, FileHunks, NumstatEntry } from "../commit/types";
-import { REJECT_PROMPT_COMMAND } from "../exec/non-interactive-env";
 import { ToolAbortError, ToolError, throwIfAborted } from "../tools/tool-errors";
+import { resolveSshAskpass } from "../exec/non-interactive-env";
+
 
 // ════════════════════════════════════════════════════════════════════════════
 // Types
@@ -226,7 +227,8 @@ const GIT_NON_INTERACTIVE_ENV = {
 	GIT_TERMINAL_PROMPT: "0",
 	LC_ALL: undefined,
 	LC_MESSAGES: "C",
-	SSH_ASKPASS: REJECT_PROMPT_COMMAND,
+	// SSH_ASKPASS applied in buildGitEnv / buildGhEnv via resolveSshAskpass —
+	// hardcoding /usr/bin/false suppressed YubiKey GUI prompts for ed25519-sk.
 } satisfies Record<string, string | undefined>;
 const GH_NON_INTERACTIVE_ENV = {
 	...GIT_NON_INTERACTIVE_ENV,
@@ -428,16 +430,25 @@ function normalizeStdin(input: CommandOptions["stdin"]): "ignore" | Uint8Array {
 	return new Uint8Array(input);
 }
 
+
 function buildNonInteractiveEnv(
 	env: Record<string, string | undefined>,
 	pinnedEnv: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
 	const preservedCharacterLocale =
 		env.LC_ALL !== undefined && /(?:^|[._-])utf-?8(?:$|[.@_-])/i.test(env.LC_ALL) ? env.LC_ALL : undefined;
+	const sshAskpass = resolveSshAskpass(pinnedEnv, env);
 	return {
 		...env,
 		...(preservedCharacterLocale === undefined ? {} : { LC_CTYPE: preservedCharacterLocale }),
 		...pinnedEnv,
+		SSH_ASKPASS: sshAskpass,
+		...(sshAskpass !== "/usr/bin/false"
+			? {
+					SSH_ASKPASS_REQUIRE: env.SSH_ASKPASS_REQUIRE ?? "prefer",
+					DISPLAY: env.DISPLAY ?? "ssh-askpass",
+				}
+			: {}),
 	};
 }
 

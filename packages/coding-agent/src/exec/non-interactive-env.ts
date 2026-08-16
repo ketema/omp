@@ -1,4 +1,5 @@
 import { $which } from "@oh-my-pi/pi-utils";
+import { existsSync } from "node:fs";
 
 /** Portable command that rejects credential prompts without assuming an FHS layout. */
 export const REJECT_PROMPT_COMMAND = $which("false") ?? "false";
@@ -23,6 +24,8 @@ export const NON_INTERACTIVE_ENV: Readonly<Record<string, string>> = {
 	NO_COLOR: "1",
 	PYTHONUNBUFFERED: "1",
 	// Disable editor and terminal credential prompts.
+	// SSH_ASKPASS is resolved in buildNonInteractiveEnv: keep a real askpass
+	// (YubiKey / ed25519-sk GUI) from the parent; only force false when none exists.
 	GIT_EDITOR: "true",
 	VISUAL: "true",
 	EDITOR: "true",
@@ -106,6 +109,35 @@ function withoutCI(env: Readonly<Record<string, string>>): Record<string, string
 	const { CI: _ci, ...rest } = env;
 	return rest;
 }
+const DISABLED_ASKPASS = "/usr/bin/false";
+
+const KNOWN_ASKPASS_PATHS = [
+	"/opt/homebrew/opt/ssh-askpass/bin/ssh-askpass",
+	"/opt/homebrew/bin/ssh-askpass",
+	"/usr/local/opt/ssh-askpass/bin/ssh-askpass",
+] as const;
+
+/** True when path is a usable askpass binary (not the harness dummy). */
+export function isUsableSshAskpass(path: string | undefined): boolean {
+	if (!path) return false;
+	if (path === DISABLED_ASKPASS || path === "false" || path === "true") return false;
+	return existsSync(path);
+}
+
+/**
+ * Prefer parent/myomp/LaunchAgent askpass so ed25519-sk can show a GUI dialog.
+ * Fall back to known Homebrew paths, then the non-interactive dummy.
+ */
+export function resolveSshAskpass(...sources: Array<Record<string, string | undefined> | undefined>): string {
+	for (const source of sources) {
+		const candidate = source?.SSH_ASKPASS;
+		if (isUsableSshAskpass(candidate)) return candidate as string;
+	}
+	for (const path of KNOWN_ASKPASS_PATHS) {
+		if (existsSync(path)) return path;
+	}
+	return DISABLED_ASKPASS;
+}
 
 /** Builds the per-command environment for non-interactive child processes. */
 export function buildNonInteractiveEnv(
@@ -118,11 +150,26 @@ export function buildNonInteractiveEnv(
 	// reaches the per-command env, which otherwise overrides the session value.
 	const base =
 		baseEnv.PI_BASH_NO_CI || baseEnv.CLAUDE_BASH_NO_CI ? withoutCI(NON_INTERACTIVE_ENV) : NON_INTERACTIVE_ENV;
-	if (platform !== "win32") {
-		return overrides ? { ...base, ...overrides } : base;
+
+	const sshAskpass = resolveSshAskpass(overrides, baseEnv);
+	const withAskpass: Record<string, string> = { ...base, SSH_ASKPASS: sshAskpass };
+
+	// When a real askpass is active, prefer GUI prompts for FIDO/sk keys.
+	// Do not invent SSH_ASKPASS_REQUIRE if the parent already set it.
+	if (sshAskpass !== DISABLED_ASKPASS) {
+		const require = overrides?.SSH_ASKPASS_REQUIRE ?? baseEnv.SSH_ASKPASS_REQUIRE ?? "prefer";
+		withAskpass.SSH_ASKPASS_REQUIRE = require;
+		if (!withAskpass.DISPLAY && !overrides?.DISPLAY) {
+			const display = baseEnv.DISPLAY ?? "ssh-askpass";
+			withAskpass.DISPLAY = display;
+		}
 	}
 
-	const env: Record<string, string> = { ...base };
+	if (platform !== "win32") {
+		return overrides ? { ...withAskpass, ...overrides, SSH_ASKPASS: sshAskpass } : withAskpass;
+	}
+
+	const env: Record<string, string> = { ...withAskpass };
 	for (const group of WINDOWS_UTF8_ENV_DEFAULT_GROUPS) {
 		if (hasEnvGroupValue(baseEnv, group, platform) || hasEnvGroupValue(overrides, group, platform)) {
 			continue;
@@ -131,5 +178,5 @@ export function buildNonInteractiveEnv(
 			env[key] = value;
 		}
 	}
-	return overrides ? { ...env, ...overrides } : env;
+	return overrides ? { ...env, ...overrides, SSH_ASKPASS: sshAskpass } : env;
 }
