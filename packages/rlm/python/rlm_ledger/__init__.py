@@ -81,12 +81,24 @@ def _require_dict_or_none(
     return value  # type: ignore[return-value]
 
 
+def _require_bool(value: object, name: str, *, method: str) -> bool:
+    """ERRORS-LED-1 boundary gate: boolean arguments must be actual bools."""
+    if not isinstance(value, bool):
+        raise RlmLedgerError(
+            f"ERRORS-LED-1 violation: {method} argument {name!r} must be a "
+            f"bool, got {type(value).__name__}"
+        )
+    return value
+
+
 def _check_entry_health(entry: dict[str, object], kind: str, id: str) -> None:
     """ERRORS-LED-1: retained malformed entries raise when accessed.
 
     The load boundary validates file structure only; this check runs at
-    every access/mutation surface so a malformed on-disk entry is named,
-    never silently dropped and never a raw TypeError downstream.
+    every read/return/render/mutate surface (per SURFACE_INVENTORY) so a
+    malformed on-disk entry is named, never silently returned and never a
+    raw TypeError downstream. Delete does NOT call this — it is the
+    remediation path for toxic entries.
     """
     version = entry.get("version", ENTRY_VERSION_DEFAULT)
     if isinstance(version, bool) or not isinstance(version, int):
@@ -102,6 +114,13 @@ def _check_entry_health(entry: dict[str, object], kind: str, id: str) -> None:
             raise RlmLedgerError(
                 f"ERRORS-LED-1 violation: malformed on-disk entry {kind}/{id!r} "
                 f"has {text_field} of type {type(value).__name__}"
+            )
+    for struct_field in ("reference", "arguments", "metadata"):
+        value = entry.get(struct_field)
+        if value is not None and not isinstance(value, dict):
+            raise RlmLedgerError(
+                f"ERRORS-LED-1 violation: malformed on-disk entry {kind}/{id!r} "
+                f"has {struct_field} of type {type(value).__name__}"
             )
 
 
@@ -219,20 +238,42 @@ class _Store:
             )
             return
 
-        # ERRORS-LED-1: load validates FILE structure only; malformed entry
-        # FIELDS are retained and raise the domain error when accessed.
+        # ERRORS-LED-1: load validates FILE STRUCTURE at every level
+        # (file / kind bucket / entry / refinement row); corrupt units
+        # degrade to WARNING + skip, never a raw exception. Malformed entry
+        # FIELDS are retained and raise the domain error on access.
         # INV-LED-4: the owning store stamps scope at load, so every read
         # surface inherits it even for entries written without one.
         for kind, kind_entries in entries.items():
             if kind not in KINDS:
                 continue
+            if not isinstance(kind_entries, dict):
+                _logger.warning(
+                    "skipping malformed kind bucket %s (not a dict) in %s",
+                    kind,
+                    self._file,
+                )
+                continue
             for entry_id, entry_data in kind_entries.items():
-                if isinstance(entry_data, dict):
-                    loaded = dict(entry_data)
-                    loaded["scope"] = self._scope
-                    self._entries[kind][entry_id] = loaded
+                if not isinstance(entry_data, dict):
+                    _logger.warning(
+                        "skipping malformed entry %s/%s (not a dict) in %s",
+                        kind,
+                        entry_id,
+                        self._file,
+                    )
+                    continue
+                loaded = dict(entry_data)
+                loaded["scope"] = self._scope
+                self._entries[kind][entry_id] = loaded
 
         for ref in refinements:
+            if not isinstance(ref, dict):
+                _logger.warning(
+                    "skipping malformed refinement row (not a dict) in %s",
+                    self._file,
+                )
+                continue
             if isinstance(ref, dict):
                 event = RefinementEvent(
                     id=str(ref.get("id", "")),
@@ -412,6 +453,7 @@ class HarnessState:
         self._reload_all()
 
         if global_:
+            _require_bool(global_, "global_", method="create")
             scope = "global"
         if scope not in SCOPES:
             raise RlmLedgerError(
@@ -419,7 +461,6 @@ class HarnessState:
             )
 
         if id is None:
-            _require_str(title, "title", method="create")
             id = _slugify(title)
             if not id:
                 raise RlmLedgerError(
@@ -505,13 +546,6 @@ class HarnessState:
                     f"(entry {bare_id!r} is {current!r}; refusing to set {fields['scope']!r})"
                 )
 
-        version = entry.get("version", ENTRY_VERSION_DEFAULT)
-        if isinstance(version, bool) or not isinstance(version, int):
-            raise RlmLedgerError(
-                f"ERRORS-LED-1 violation: entry {id!r} has malformed on-disk "
-                f"version {version!r}; refusing update"
-            )
-
         for key in (
             "title",
             "content",
@@ -523,7 +557,8 @@ class HarnessState:
             if key in fields and fields[key] is not None:
                 entry[key] = fields[key]
 
-        entry["version"] = version + 1
+        # _check_entry_health has already validated version is a non-bool int
+        entry["version"] = entry.get("version", ENTRY_VERSION_DEFAULT) + 1
         entry["updated_at"] = _utc_now_iso()
 
         store.save()
@@ -541,8 +576,8 @@ class HarnessState:
             raise RlmLedgerError(
                 f"LED-V2 violation: delete on a missing entry — {id!r} not found"
             )
-        # ERRORS-LED-1: retained malformed entries raise when touched
-        _check_entry_health(entry, kind, id)
+        # ERRORS-LED-1: delete is the remediation path for malformed entries
+        # (SURFACE_INVENTORY) — no health check here by design
 
         del store.entries[kind][id]
         store.save()
@@ -564,6 +599,10 @@ class HarnessState:
         # INV-LED-4: list renders both scopes — local entries first, then global
         combined = [dict(e) for e in self._local.entries[kind].values()]
         combined.extend(dict(e) for e in self._global.entries[kind].values())
+        # ERRORS-LED-1: retained malformed entries raise when accessed —
+        # list is a read surface (SURFACE_INVENTORY)
+        for entry in combined:
+            _check_entry_health(entry, kind, str(entry.get("id", "?")))
         return combined
 
     # ------------------------------------------------------------------
@@ -725,6 +764,10 @@ class HarnessState:
                     rendered = dict(entry)
                     if store is self._global:
                         rendered["scope"] = "global"
+                    # ERRORS-LED-1: overview is a read surface; malformed
+                    # retained entries raise the domain error here, never a
+                    # raw TypeError from len()/format downstream
+                    _check_entry_health(rendered, kind, str(rendered.get("id", "?")))
                     combined[kind].append(rendered)
 
         for kind in KINDS:

@@ -755,6 +755,132 @@ def test_errors_led_1_update_field_value_types(tmp_path):
         state.update_memory("t1", metadata="not-a-dict")
 
 
+def test_errors_led_1_global_flag_type_gated(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: ERRORS-LED-1: global_ must be an actual bool; truthy
+      non-bools route by accident, not by contract
+    - Category: negative
+    - Risk tier: Medium
+    """
+    state = make_state(tmp_path)
+    with pytest.raises(RlmLedgerError, match="must be|invalid|malformed"):
+        state.create_memory("T", "c", global_=1)
+    with pytest.raises(RlmLedgerError, match="must be|invalid|malformed"):
+        state.create_memory("T2", "c", global_="yes")
+
+
+def test_errors_led_1_delete_is_remediation_path_for_malformed_entries(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: ERRORS-LED-1: delete SHALL succeed on malformed entries —
+      it is the specified remediation path (access raises, removal works)
+    - Category: positive (recovery)
+    - Risk tier: High — without this, a toxic entry bricks the store
+    - Adversarial: Implementation-blind
+    """
+    session_dir = tmp_path / "session"
+    harness_dir = session_dir / "harness"
+    harness_dir.mkdir(parents=True)
+    (harness_dir / "harness_state.json").write_text(json.dumps({
+        "schema": 1,
+        "entries": {"memory": {"toxic1": {
+            "id": "toxic1", "kind": "memory", "title": "Toxic",
+            "content": 12345, "path": "general", "scope": "local",
+            "reference": None, "arguments": None, "metadata": None,
+            "source": "agent", "version": 1,
+            "created_at": "2026-08-15T00:00:00Z", "updated_at": "2026-08-15T00:00:00Z",
+        }}},
+        "refinements": [],
+    }))
+    state = HarnessState(session_dir=str(session_dir), global_state_dir=str(tmp_path / "g"))
+
+    # Access surfaces raise...
+    with pytest.raises(RlmLedgerError, match="toxic1"):
+        state.get("memory", "toxic1")
+    with pytest.raises(RlmLedgerError, match="toxic1"):
+        state.list("memory")
+    with pytest.raises(RlmLedgerError, match="toxic1"):
+        state.overview()
+    # ...but removal succeeds and the store recovers
+    state.delete_memory("toxic1")
+    assert state.get("memory", "toxic1") is None
+    assert state.list("memory") == []
+    healthy = state.create_memory("Fresh", "after cleanup")
+    assert state.get("memory", healthy["id"]) is not None
+
+
+def test_inv_led_lifetime_1_hostile_nested_structure_degrades(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: INV-LED-LIFETIME-1 + ERRORS-LED-1: corrupt structure at ANY
+      level (non-dict kind bucket, non-dict entry, non-dict refinement row)
+      degrades to WARNING + skip — never a raw exception from construction
+    - Category: invariant (fault injection at the load boundary)
+    - Risk tier: High
+    """
+    session_dir = tmp_path / "session"
+    harness_dir = session_dir / "harness"
+    harness_dir.mkdir(parents=True)
+    (harness_dir / "harness_state.json").write_text(json.dumps({
+        "schema": 1,
+        "entries": {
+            "memory": "not-a-dict",
+            "skill": ["not", "a", "dict"],
+            "subagent": {"good1": {
+                "id": "good1", "kind": "subagent", "title": "Good",
+                "content": "c", "path": "general", "scope": "local",
+                "reference": None, "arguments": None, "metadata": None,
+                "source": "agent", "version": 1,
+                "created_at": "2026-08-15T00:00:00Z", "updated_at": "2026-08-15T00:00:00Z",
+            }, "badrow": 42},
+        },
+        "refinements": ["not-a-dict", {"id": "refine_0001", "trigger": "t", "changes": "c", "evidence": "e", "outcome": "o", "created_at": "2026-08-15T00:00:00Z"}],
+    }))
+    state = HarnessState(session_dir=str(session_dir), global_state_dir=str(tmp_path / "g"))
+    # Corrupt buckets skipped; good entry survives; bad row skipped
+    assert state.list("memory") == []
+    assert state.list("skill") == []
+    subagents = state.list("subagent")
+    assert [e["id"] for e in subagents] == ["good1"], (
+        f"WHY: ERRORS-LED-1 violation — malformed entry row not skipped\n"
+        f"EXPECTED: only good1\nACTUAL: {subagents!r}\n"
+        f"GUIDANCE: non-dict entries skip with a warning, healthy siblings load"
+    )
+    # Refinement rows: dict row survives, non-dict skipped
+    state.record_refinement("t2", "c2", "e2", "o2")
+    overview = state.overview()
+    assert "refine_0001" in overview and "refine_0002" in overview
+
+
+def test_errors_led_1_retained_structured_field_raises_on_read(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: ERRORS-LED-1: health check covers reference/arguments/
+      metadata — malformed structured fields raise on access, not just
+      version/title/content/path
+    - Category: error (durable-file boundary)
+    - Risk tier: Medium
+    """
+    session_dir = tmp_path / "session"
+    harness_dir = session_dir / "harness"
+    harness_dir.mkdir(parents=True)
+    (harness_dir / "harness_state.json").write_text(json.dumps({
+        "schema": 1,
+        "entries": {"memory": {"refbad": {
+            "id": "refbad", "kind": "memory", "title": "RefBad",
+            "content": "c", "path": "general", "scope": "local",
+            "reference": "not-a-dict", "arguments": None, "metadata": None,
+            "source": "agent", "version": 1,
+            "created_at": "2026-08-15T00:00:00Z", "updated_at": "2026-08-15T00:00:00Z",
+        }}},
+        "refinements": [],
+    }))
+    state = HarnessState(session_dir=str(session_dir), global_state_dir=str(tmp_path / "g"))
+    with pytest.raises(RlmLedgerError, match="refbad.*reference|reference.*refbad|malformed"):
+        state.get("memory", "refbad")
+
+
 def test_errors_led_1_reserved_update_field_raises_domain_error(tmp_path):
     """
     CONTRACT TRACEABILITY:
