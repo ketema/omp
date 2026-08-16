@@ -759,7 +759,9 @@ def test_errors_led_1_global_flag_type_gated(tmp_path):
     """
     CONTRACT TRACEABILITY:
     - Enforces: ERRORS-LED-1: global_ must be an actual bool; truthy
-      non-bools route by accident, not by contract
+      non-bools route by accident, not by contract — and the gate is
+      unconditional, so FALSY non-bools are equally rejected (audit5 F-02:
+      guard-behind-the-branch class)
     - Category: negative
     - Risk tier: Medium
     """
@@ -768,6 +770,29 @@ def test_errors_led_1_global_flag_type_gated(tmp_path):
         state.create_memory("T", "c", global_=1)
     with pytest.raises(RlmLedgerError, match="must be|invalid|malformed"):
         state.create_memory("T2", "c", global_="yes")
+    with pytest.raises(RlmLedgerError, match="must be|invalid|malformed"):
+        state.create_memory("T3", "c", global_=0)
+    with pytest.raises(RlmLedgerError, match="must be|invalid|malformed"):
+        state.create_memory("T4", "c", global_=[])
+
+
+def test_errors_led_1_constructor_dir_arguments_type_gated(tmp_path):
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: ERRORS-LED-1 (SURFACE_INVENTORY __init__ row): directory
+      arguments are str or None; wrong types raise the domain error, never
+      a raw TypeError from pathlib (audit5 F-01)
+    - Category: negative (equivalence matrix over the four dir args)
+    - Risk tier: Medium
+    """
+    with pytest.raises(RlmLedgerError, match="must be|invalid|malformed"):
+        HarnessState(session_dir=123, global_state_dir=str(tmp_path / "g"))
+    with pytest.raises(RlmLedgerError, match="must be|invalid|malformed"):
+        HarnessState(session_dir=str(tmp_path / "s"), global_state_dir=["dirs"])
+    with pytest.raises(RlmLedgerError, match="must be|invalid|malformed"):
+        HarnessState(harness_state_dir=42)
+    with pytest.raises(RlmLedgerError, match="must be|invalid|malformed"):
+        HarnessState(agent_dir=3.14)
 
 
 def test_errors_led_1_delete_is_remediation_path_for_malformed_entries(tmp_path):

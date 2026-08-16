@@ -274,23 +274,22 @@ class _Store:
                     self._file,
                 )
                 continue
-            if isinstance(ref, dict):
-                event = RefinementEvent(
-                    id=str(ref.get("id", "")),
-                    trigger=str(ref.get("trigger", "")),
-                    changes=str(ref.get("changes", "")),
-                    evidence=str(ref.get("evidence", "")),
-                    outcome=str(ref.get("outcome", "")),
-                    created_at=str(ref.get("created_at", "")),
-                )
-                self._refinements.append(event)
-                ref_id = event.id
-                if ref_id.startswith(REFINEMENT_PREFIX):
-                    try:
-                        num = int(ref_id[len(REFINEMENT_PREFIX) :])
-                        self._refinement_counter = max(self._refinement_counter, num)
-                    except ValueError:
-                        pass
+            event = RefinementEvent(
+                id=str(ref.get("id", "")),
+                trigger=str(ref.get("trigger", "")),
+                changes=str(ref.get("changes", "")),
+                evidence=str(ref.get("evidence", "")),
+                outcome=str(ref.get("outcome", "")),
+                created_at=str(ref.get("created_at", "")),
+            )
+            self._refinements.append(event)
+            ref_id = event.id
+            if ref_id.startswith(REFINEMENT_PREFIX):
+                try:
+                    num = int(ref_id[len(REFINEMENT_PREFIX) :])
+                    self._refinement_counter = max(self._refinement_counter, num)
+                except ValueError:
+                    pass
 
     def save(self) -> None:
         """Save to disk atomically."""
@@ -324,6 +323,22 @@ class HarnessState:
         global_state_dir: str | None = None,
         agent_dir: str | None = None,
     ) -> None:
+        # ERRORS-LED-1 boundary gate (SURFACE_INVENTORY __init__ row):
+        # directory arguments are str or None — validated before pathlib
+        # touches them so a wrong type is a domain error, never a raw
+        # TypeError from Path()
+        for name, value in (
+            ("session_dir", session_dir),
+            ("harness_state_dir", harness_state_dir),
+            ("global_state_dir", global_state_dir),
+            ("agent_dir", agent_dir),
+        ):
+            if value is not None and not isinstance(value, str):
+                raise RlmLedgerError(
+                    f"ERRORS-LED-1 violation: HarnessState argument {name!r} "
+                    f"must be a string path or None, got {type(value).__name__}"
+                )
+
         # Resolve local file path
         if harness_state_dir is not None:
             local_dir = Path(harness_state_dir)
@@ -452,8 +467,10 @@ class HarnessState:
         # concurrent host write is never clobbered by a stale save
         self._reload_all()
 
+        # ERRORS-LED-1 boundary gate: unconditional — falsy non-bools are
+        # wrong types, not silent local-routing (gate BEFORE any branching)
+        _require_bool(global_, "global_", method="create")
         if global_:
-            _require_bool(global_, "global_", method="create")
             scope = "global"
         if scope not in SCOPES:
             raise RlmLedgerError(
