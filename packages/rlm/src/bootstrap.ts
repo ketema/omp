@@ -193,8 +193,15 @@ export async function resolveInterpreter(
   }
 
   const managedPython = join(config.venvDir, "bin", "python")
-  if (deps.exists(managedPython) && await probeInterpreter(managedPython, deps)) {
-    return managedPython
+  if (deps.exists(managedPython)) {
+    // A candidate that cannot even be probed (EACCES, arch mismatch) or is
+    // rejected by the probe is demoted when a fallback exists; with no
+    // fallback the failure errors loudly with this candidate named
+    try {
+      if (await probeInterpreter(managedPython, deps)) return managedPython
+    } catch (candidateError) {
+      if (!deps.exists(join(config.xdgDir, "bin", "python"))) throw candidateError
+    }
   }
 
   const xdgPython = join(config.xdgDir, "bin", "python")
@@ -292,28 +299,52 @@ export interface BootstrapLock {
 
 export function acquireBootstrapLock(lockDir: string, clock: { now(): number }): BootstrapLock {
   const lockPath = join(lockDir, LOCK_FILE)
-  if (fs.existsSync(lockPath)) {
+  fs.mkdirSync(lockDir, { recursive: true })
+
+  let handle: number
+  try {
+    // INV-BOOT-1: exclusive-create is atomic at the syscall level — the
+    // loser of a concurrent acquisition race gets EEXIST and re-reads
+    handle = fs.openSync(lockPath, "wx")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+    // Someone holds or held the lock — apply holder semantics
+    let existing: Partial<LockFileContents> | null = null
     try {
-      const existing = JSON.parse(fs.readFileSync(lockPath, "utf8")) as Partial<LockFileContents>
-      if (
-        typeof existing.pid === "number" && isPidAlive(existing.pid)
-      ) {
-        // A live holder is never stolen, regardless of lock age (F-195)
-        throw new RlmBootstrapError(
-          `bootstrap lock held by live pid ${existing.pid}`,
-        )
-      }
-      // Stale: holder pid not alive (or no readable pid) — take over
-    } catch (error) {
-      if (error instanceof RlmBootstrapError) throw error
-      // unreadable lock file: stale by definition — take over
+      existing = JSON.parse(fs.readFileSync(lockPath, "utf8")) as Partial<LockFileContents>
+    } catch {
+      existing = null // unreadable lock content
+    }
+    const pidIsLive = typeof existing?.pid === "number" && isPidAlive(existing.pid)
+    const age = clock.now() - (typeof existing?.acquiredAt === "number" ? existing.acquiredAt : 0)
+    if (pidIsLive) {
+      // A live holder is never stolen, regardless of lock age (F-195)
+      throw new RlmBootstrapError(
+        `bootstrap lock held by live pid ${existing?.pid}`,
+      )
+    }
+    if (age < LOCK_STALE_MS) {
+      // Dead/unreadable holder, but the stamp is fresh (covers cross-PID-
+      // namespace views): block until the stale threshold passes
+      throw new RlmBootstrapError(
+        `bootstrap lock held by dead pid ${existing?.pid ?? "?"} (age ${age}ms < ${LOCK_STALE_MS}ms); retry after the stale threshold`,
+      )
+    }
+    // Stale: dead/unreadable holder with an old stamp — take over
+    try {
+      fs.unlinkSync(lockPath)
+    } catch {
+      // raced with another takeover — the openSync below decides
+    }
+    try {
+      handle = fs.openSync(lockPath, "wx")
+    } catch (retryError) {
+      if ((retryError as NodeJS.ErrnoException).code !== "EEXIST") throw retryError
+      throw new RlmBootstrapError("bootstrap lock taken over by another process")
     }
   }
-  fs.mkdirSync(lockDir, { recursive: true })
-  fs.writeFileSync(lockPath, JSON.stringify({
-    pid: process.pid,
-    acquiredAt: clock.now(),
-  }))
+  fs.writeSync(handle, JSON.stringify({ pid: process.pid, acquiredAt: clock.now() }))
+  fs.closeSync(handle)
   return {
     release() {
       try {
