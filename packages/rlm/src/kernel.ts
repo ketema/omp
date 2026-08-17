@@ -240,6 +240,9 @@ export class KernelManager {
   // Compaction notice (SEQ-KM-5)
   private compactionNoticeValue: string | null = null
 
+  // SLICE-4 additive: names restored by the last admission (for tool/extension)
+  private lastRestoredNames: readonly string[] = []
+
   constructor(
     transport: KernelTransport,
     options: { clock: KernelClock; artifactsDir: string },
@@ -354,6 +357,26 @@ export class KernelManager {
   }
 
   /**
+   * SLICE-4 additive: the names restored by the last admission, empty
+   * before first start. The tool/extension reads this for revival notices.
+   */
+  restoredNames(): readonly string[] {
+    return this.lastRestoredNames
+  }
+
+  /**
+   * SLICE-4 additive: user-initiated kernel kill (the tool's busy-restart
+   * path). Kills the transport and resets the started flag so the next
+   * admission runs the full start→restore→bootstrap sequence.
+   */
+  async kill(): Promise<void> {
+    this.started = false
+    this.lastRestoredNames = []
+    const killResult = this.transport.kill()
+    if (killResult instanceof Promise) await killResult.catch(() => undefined)
+  }
+
+  /**
    * SEQ-KM-4: dispose({snapshot:true}) flushes snapshot before teardown.
    * INV-KM-LIFETIME-2: waits at most DISPOSE_TIMEOUT_MS for in-flight
    * executions, then calls kill() and transport dispose.
@@ -435,10 +458,15 @@ export class KernelManager {
   /**
    * SEQ-KM-1: admits the kernel BEFORE any cell execution.
    * SEQ-KM-2: start -> restoreSnapshot -> bootstrap.
+   *
+   * SLICE-4 additive: onProgress callback reports phases ('starting',
+   * 'restoring', 'preparing') for the tool's working messages. Existing
+   * no-arg calls are unchanged.
    */
-  async ensureStarted(): Promise<void> {
+  async ensureStarted(onProgress?: (phase: 'starting' | 'restoring' | 'preparing') => void): Promise<void> {
     if (this.started) return
     try {
+      if (onProgress !== undefined) onProgress('starting')
       await this.transport.start()
     } catch (error) {
       // C1/ERRORS-KM-2: start failures surface as the readiness error
@@ -446,7 +474,9 @@ export class KernelManager {
       const tail = boundedStderrTail(error instanceof Error ? error.message : String(error))
       throw new KernelUnresponsiveError(tail)
     }
-    await this.transport.restoreSnapshot()
+    if (onProgress !== undefined) onProgress('restoring')
+    this.lastRestoredNames = await this.transport.restoreSnapshot()
+    if (onProgress !== undefined) onProgress('preparing')
     await this.transport.bootstrap()
     this.started = true
   }

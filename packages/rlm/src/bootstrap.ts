@@ -16,7 +16,7 @@ import { join } from "node:path"
 
 export const SCHEMA_VERSION = 8
 export const PYTHON_VERSION = "3.11"
-export const BASE_PACKAGES: readonly string[] = ["ipykernel", "prime-agent-runtime", "dill"]
+export const BASE_PACKAGES: readonly string[] = ["ipykernel", "rlm-runtime", "dill"]
 export const EXTRAS_PACKAGES: readonly string[] = [
   "requests", "httpx", "pyyaml", "tomli", "python-dotenv",
   "pandas", "numpy", "scipy", "beautifulsoup4", "lxml", "pydantic", "tyro",
@@ -112,6 +112,10 @@ export interface BootstrapDeps {
 export interface ManagedVenvDeps extends BootstrapDeps {
   readonly runtimeSources: Readonly<Record<string, string>>
   readonly skills: readonly string[]
+  /** When set, the rlm-runtime base package installs from this
+   * local package path instead of an index (the runtime is bundled with
+   * the repo, not published). */
+  readonly runtimePackagePath?: string
   readTextFile(path: string): string | null
 }
 
@@ -424,9 +428,13 @@ export async function bootstrapManagedVenv(
       }
     }
 
-    // POST-BOOT-1: fresh install — full base+extras set, no trims (Z-4)
+    // POST-BOOT-1: fresh install — full base+extras set, no trims (Z-4).
+    // --allow-existing: the bootstrap lock lives INSIDE venvDir (created by
+    // acquireBootstrapLock before this runs), so the directory already
+    // exists; uv must build into it rather than refuse it. Verified: the
+    // venv is created and the lock file survives (slice-4 live-tier fix).
     const venvResult = await deps.runner.run("uv", [
-      "venv", config.venvDir, "--python", PYTHON_VERSION,
+      "venv", config.venvDir, "--python", PYTHON_VERSION, "--allow-existing",
     ])
     if (uvUnresolvable(venvResult)) throw new UvMissingError()
     if (venvResult.code !== 0) {
@@ -435,9 +443,14 @@ export async function bootstrapManagedVenv(
       )
     }
 
+    const packages: string[] = [...BASE_PACKAGES, ...EXTRAS_PACKAGES].map(p =>
+      p === "rlm-runtime" && deps.runtimePackagePath !== undefined
+        ? deps.runtimePackagePath
+        : p,
+    )
     const installResult = await deps.runner.run("uv", [
       "pip", "install", "--python", pythonPath,
-      ...BASE_PACKAGES, ...EXTRAS_PACKAGES,
+      ...packages,
     ])
     if (uvUnresolvable(installResult)) throw new UvMissingError()
     if (installResult.code !== 0) {

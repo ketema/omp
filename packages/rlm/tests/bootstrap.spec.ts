@@ -719,7 +719,7 @@ test("manifest schema gate: schema 8 with all fields; wrong schema rejected", ()
     "requests", "httpx", "pyyaml", "tomli", "python-dotenv",
     "pandas", "numpy", "scipy", "beautifulsoup4", "lxml", "pydantic", "tyro",
   ])
-  expect(BASE_PACKAGES).toEqual(["ipykernel", "prime-agent-runtime", "dill"])
+  expect(BASE_PACKAGES).toEqual(["ipykernel", "rlm-runtime", "dill"])
   const manifest = parseBootstrapManifest(JSON.stringify({
     schema: 8, ipykernel: "8.0.0", runtime: "sha256:abc", snapshot: "sha256:def",
     extraUvArgs: [], pythonSkills: [],

@@ -5,6 +5,13 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./bootstrap": "./src/bootstrap.ts"
+    "./bootstrap": "./src/bootstrap.ts",
+    "./kernel": "./src/kernel.ts",
+    "./transport": "./src/transport.ts",
+    "./tool": "./src/tool.ts",
+    "./extension": "./src/extension.ts"
+  },
+  "dependencies": {
+    "@oh-my-pi/omptype": "catalog:"
   }
 }
