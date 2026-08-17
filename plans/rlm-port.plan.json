@@ -1,0 +1,338 @@
+{
+  "schema_version": "1.0",
+  "feature_name": "rlm-port-omp",
+  "manifest_path": "requirements/REQUIREMENT_MANIFEST.md",
+  "manifest_hash": "sha256:7cea922bc3919f07ccaa86bbe3f4e79ada3f401141e0595240c3aeeba5936517",
+  "created": "2026-08-15",
+  "last_updated": "2026-08-17",
+  "status": "ACTIVE",
+  "slices": [
+    {
+      "id": "SLICE-1",
+      "clauses_in_scope": [
+        "ERRORS-LED-1",
+        "FORBIDDEN-LED-1",
+        "FORBIDDEN-LED-2",
+        "INV-LED-1",
+        "INV-LED-2",
+        "INV-LED-3",
+        "INV-LED-4",
+        "INV-LED-LIFETIME-1",
+        "INV-LED-LIFETIME-2",
+        "POST-LED-1",
+        "POST-LED-2",
+        "POST-LED-3",
+        "POST-LED-4",
+        "PRE-LED-1",
+        "REQ-RLM-0018"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [
+        "FORBIDDEN-LED-1",
+        "FORBIDDEN-LED-2",
+        "REQ-RLM-0018"
+      ],
+      "status": "AUDITED",
+      "depends_on": [],
+      "issue": "TODO",
+      "pivot_note": "Python ledger package standalone-importable and independently testable; system coherent without any kernel (nothing mounts it yet)."
+    },
+    {
+      "id": "SLICE-2",
+      "clauses_in_scope": [
+        "ERRORS-BOOT-1",
+        "ERRORS-BOOT-2",
+        "FORBIDDEN-BOOT-1",
+        "FORBIDDEN-BOOT-2",
+        "INV-BOOT-1",
+        "INV-BOOT-2",
+        "INV-BOOT-LIFETIME-1",
+        "POST-BOOT-1",
+        "POST-BOOT-2",
+        "POST-BOOT-3",
+        "PRE-BOOT-1",
+        "REQ-RLM-0012"
+      ],
+      "clauses_deferred": [
+        "SEQ-BOOT-1",
+        "SEQ-BOOT-2"
+      ],
+      "negative_constraints": [
+        "FORBIDDEN-BOOT-1",
+        "FORBIDDEN-BOOT-2"
+      ],
+      "status": "AUDITED",
+      "depends_on": [
+        "SLICE-1"
+      ],
+      "issue": "TODO",
+      "pivot_note": "Venv bootstrap resolves/creates a compliant interpreter; shippable as tooling. Config-surface exposure (REQ-RLM-0014) and kernel-start ordering (SEQ-BOOT-1/2) land in SLICE-4 where the omp tool/config surface mounts (audit r3 F-06 rescope)."
+    },
+    {
+      "id": "SLICE-3",
+      "clauses_in_scope": [
+        "ERRORS-KM-1",
+        "ERRORS-KM-2",
+        "ERRORS-KM-3",
+        "FORBIDDEN-KM-1",
+        "FORBIDDEN-KM-2",
+        "FORBIDDEN-KM-3",
+        "INV-KM-1",
+        "INV-KM-2",
+        "INV-KM-3",
+        "INV-KM-LIFETIME-1",
+        "INV-KM-LIFETIME-2",
+        "INV-KM-LIFETIME-3",
+        "POST-KM-1",
+        "POST-KM-2",
+        "POST-KM-3",
+        "PRE-KM-1",
+        "SEQ-KM-1",
+        "SEQ-KM-2",
+        "SEQ-KM-3",
+        "SEQ-KM-4",
+        "SEQ-KM-5",
+        "REQ-RLM-0003",
+        "REQ-RLM-0004",
+        "REQ-RLM-0011"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [
+        "FORBIDDEN-KM-1",
+        "FORBIDDEN-KM-2",
+        "FORBIDDEN-KM-3"
+      ],
+      "status": "AUDITED",
+      "depends_on": [
+        "SLICE-2"
+      ],
+      "issue": "TODO",
+      "pivot_note": "Kernel manager admits/executes/snapshots against a real interpreter; still no model-facing surface."
+    },
+    {
+      "id": "SLICE-4",
+      "clauses_in_scope": [
+        "ERRORS-TOOL-1",
+        "ERRORS-TRANS-1",
+        "ERRORS-TRANS-2",
+        "ERRORS-TRANS-3",
+        "FORBIDDEN-TOOL-1",
+        "FORBIDDEN-TOOL-2",
+        "FORBIDDEN-TRANS-1",
+        "FORBIDDEN-TRANS-2",
+        "INV-TOOL-1",
+        "INV-TOOL-LIFETIME-1",
+        "INV-TRANS-1",
+        "POST-TOOL-1",
+        "POST-TOOL-2",
+        "POST-TOOL-3",
+        "POST-TOOL-4",
+        "POST-TOOL-5",
+        "POST-TRANS-1",
+        "POST-TRANS-2",
+        "POST-TRANS-3",
+        "POST-TRANS-4",
+        "POST-TRANS-5",
+        "PRE-TOOL-1",
+        "PRE-TRANS-1",
+        "REQ-N-1",
+        "REQ-N-2",
+        "REQ-RLM-0002",
+        "REQ-RLM-0005",
+        "REQ-RLM-0014",
+        "REQ-RLM-0019",
+        "SEQ-BOOT-1",
+        "SEQ-BOOT-2",
+        "SEQ-TOOL-1",
+        "SEQ-TRANS-1",
+        "SEQ-TRANS-2"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [
+        "FORBIDDEN-TOOL-1",
+        "FORBIDDEN-TOOL-2",
+        "FORBIDDEN-TRANS-1",
+        "FORBIDDEN-TRANS-2",
+        "REQ-N-1",
+        "REQ-N-2"
+      ],
+      "status": "PENDING",
+      "depends_on": [
+        "SLICE-3"
+      ],
+      "issue": "TODO",
+      "pivot_note": "First user-visible value: ipython tool registered in omp; eval kernel untouched; sessions usable end-to-end for single-kernel work. SLICE-4 owns the real kernel spawn: dedicated transport + runner (REQ-RLM-0019, TRANS-* clauses; constitutional-refactor re-assessment 2026-08-16)."
+    },
+    {
+      "id": "SLICE-5",
+      "clauses_in_scope": [
+        "ERRORS-BR-1",
+        "ERRORS-RT-1",
+        "ERRORS-RT-2",
+        "FORBIDDEN-BR-1",
+        "FORBIDDEN-BR-2",
+        "FORBIDDEN-RT-1",
+        "FORBIDDEN-RT-2",
+        "INV-BR-1",
+        "INV-BR-LIFETIME-1",
+        "INV-RT-LIFETIME-1",
+        "POST-BR-1",
+        "POST-BR-2",
+        "POST-BR-4",
+        "POST-BR-5",
+        "POST-BR-6",
+        "POST-RT-1",
+        "POST-RT-2",
+        "POST-RT-3",
+        "POST-RT-4",
+        "POST-RT-5",
+        "POST-TRANS-6",
+        "PRE-BR-1",
+        "PRE-RT-1",
+        "REQ-RLM-0006",
+        "REQ-RLM-0010",
+        "REQ-RLM-0017",
+        "REQ-RLM-0020",
+        "REQ-RLM-0021",
+        "REQ-RLM-0022",
+        "SEQ-BR-9"
+      ],
+      "clauses_deferred": [
+        "POST-BR-3"
+      ],
+      "negative_constraints": [
+        "FORBIDDEN-BR-1",
+        "FORBIDDEN-BR-2",
+        "FORBIDDEN-RT-1",
+        "FORBIDDEN-RT-2",
+        "REQ-RLM-0018"
+      ],
+      "status": "PENDING",
+      "depends_on": [
+        "SLICE-4"
+      ],
+      "issue": "TODO",
+      "pivot_note": "Bridge + always-on handlers + goal/compact live; kernel can drive host services from Python. SLICE-5 also owns the rlm-runtime Python surface: host_request caller over the NDJSON wire (POST-TRANS-6), in-kernel skill wrapping (F-026/F-027), and the REQ-N-3-compliant MCP integration (credentials host-side). Constitutional-refactor 2026-08-17 placement."
+    },
+    {
+      "id": "SLICE-6",
+      "clauses_in_scope": [
+        "ERRORS-REC-1",
+        "FORBIDDEN-REC-1",
+        "FORBIDDEN-REC-2",
+        "FORBIDDEN-REC-3",
+        "INV-REC-1",
+        "INV-REC-LIFETIME-1",
+        "INV-REC-LIFETIME-2",
+        "POST-REC-1",
+        "POST-REC-2",
+        "POST-REC-3",
+        "POST-REC-4",
+        "POST-REC-5",
+        "POST-REC-6",
+        "PRE-REC-1",
+        "SEQ-REC-6",
+        "SEQ-REC-7",
+        "SEQ-REC-8",
+        "REQ-RLM-0008",
+        "REQ-RLM-0009",
+        "REQ-RLM-0015",
+        "REQ-N-5"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [
+        "FORBIDDEN-REC-1",
+        "FORBIDDEN-REC-2",
+        "FORBIDDEN-REC-3",
+        "REQ-N-5"
+      ],
+      "status": "PENDING",
+      "depends_on": [
+        "SLICE-5"
+      ],
+      "issue": "TODO",
+      "pivot_note": "await rlm() recursion fully live: children, handles, registry, replies, attribution; the core RLM loop end-to-end."
+    },
+    {
+      "id": "SLICE-7",
+      "clauses_in_scope": [
+        "FORBIDDEN-BR-3",
+        "POST-BR-3",
+        "REQ-RLM-0010"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [
+        "FORBIDDEN-BR-3"
+      ],
+      "status": "PENDING",
+      "depends_on": [
+        "SLICE-6"
+      ],
+      "issue": "TODO",
+      "pivot_note": "The four ported engines (refine loop, heartbeat scheduler, agent_message bus, agent_observe reader) light up the remaining conditional handlers (Z-2 a-full)."
+    },
+    {
+      "id": "SLICE-8",
+      "clauses_in_scope": [
+        "ERRORS-SAFE-1",
+        "ERRORS-SAFE-2",
+        "FORBIDDEN-SAFE-1",
+        "FORBIDDEN-SAFE-2",
+        "FORBIDDEN-SAFE-3",
+        "FORBIDDEN-SAFE-4",
+        "INV-SAFE-1",
+        "INV-SAFE-LIFETIME-1",
+        "POST-SAFE-1",
+        "POST-SAFE-2",
+        "PRE-SAFE-1",
+        "REQ-RLM-0001",
+        "REQ-RLM-0013",
+        "REQ-RLM-0016",
+        "REQ-N-3",
+        "REQ-N-4",
+        "REQ-N-6"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [
+        "FORBIDDEN-SAFE-1",
+        "FORBIDDEN-SAFE-2",
+        "FORBIDDEN-SAFE-3",
+        "FORBIDDEN-SAFE-4",
+        "REQ-N-3",
+        "REQ-N-4",
+        "REQ-N-6"
+      ],
+      "status": "PENDING",
+      "depends_on": [
+        "SLICE-7"
+      ],
+      "issue": "TODO",
+      "pivot_note": "Safety enforcement + config surface + eval-untouched regression gate; plan terminal state = REQ-RLM-0001 evidence (byte-equivalent pre-port behavior)."
+    }
+  ],
+  "pivot_guidance": [
+    "After SLICE-3 AUDIT: verify snapshot/restore ordering (SEQ-KM-2) with a live interpreter before SLICE-4 mounts the tool.",
+    "SLICE-4 pivot is the first user-visible surface: run REQ-N-1/REQ-N-2 regression gate (eval tool + main context unchanged) before proceeding.",
+    "SLICE-5\u21926 boundary: FORBIDDEN-BR-2 (Python never runs an agent loop) must hold in the bridge tests before recursion mounts.",
+    "SLICE-7 carries Z-2 a-full: each of the four engines gets its own RED\u2192GREEN\u2192AUDIT sub-cycle inside the slice.",
+    "After SLICE-8 AUDIT: re-run omp full test suite + bun check to produce REQ-RLM-0001 evidence before M5.",
+    "SLICE-2 MUST test FORBIDDEN-BOOT-2 with the SAFE-V1 kernel-env validator before any spawn path exists \u2014 the SAFE contract audit at SLICE-8 is the terminal gate, not the first guard.",
+    "SLICE-4 MUST wire both durability surfaces with transcript evidence: session-resume hook (restore then revival notice) and compaction-complete notice (SEQ-KM-5); no later slice owns this wiring.",
+    "Dual-stack testing from SLICE-1: Python packages test under the omp python test lane; every slice ALSO runs alignment tests importing both contract (requirements/contracts) and implementation (packages/rlm) to assert value equality.",
+    "SLICE-7 sub-cycles: refine, heartbeat, and agent_observe engines may begin once SLICE-5 is AUDITED; the agent_message engine additionally requires SLICE-6 (children exist). Sequence sub-cycles inside the slice accordingly.",
+    "Phase-boundary rule: only modify this plan file when a slice transitions status."
+  ],
+  "forgotten_invariants": [
+    "REQ-N-1",
+    "REQ-N-2",
+    "REQ-N-3",
+    "REQ-N-4",
+    "REQ-N-5",
+    "REQ-N-6",
+    "REQ-RLM-0001",
+    "REQ-RLM-0018",
+    "INV-KM-3",
+    "FORBIDDEN-KM-1",
+    "INV-REC-LIFETIME-1"
+  ]
+}

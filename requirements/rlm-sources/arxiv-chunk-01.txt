@@ -1,0 +1,441 @@
+Continual Harness: Online Adaptation for Self-Improving Foundation Agents
+Report GitHub Issue
+×
+Title:
+Content selection saved. Describe the issue below:
+Description:
+Submit without GitHub
+Submit in GitHub
+arXiv is now an independent nonprofit!
+Learn more
+×
+Back to arXiv
+Why HTML?
+Report Issue
+Back to Abstract
+Download PDF
+1
+Introduction
+2
+Preliminaries
+2.1
+Embodied Agent Environments
+2.2
+Agentic Harnesses
+3
+Methodology
+3.1
+Overview and Two-Loop Architecture
+3.2
+Refinement Loop
+3.3
+Continual Model-Harness Co-Learning Loop
+4
+Experiments
+4.1
+Setup
+Environments and metric.
+Harness conditions.
+Models and seeds.
+4.2
+Gemini Plays Pokémon completes multiple RPGs
+Emergent Continual Harness behavior through skills.
+Quantitative harness growth.
+4.3
+Continual Harness closes the gap to a hand-engineered harness
+4.4
+Continual Harness gain depends on model capability
+4.5
+Open-source students co-learn with a refining harness
+4.6
+Skills measurably self-improve toward an oracle
+5
+Related Work
+5.1
+Agentic Harnesses and Scaffolding
+5.2
+Autonomous Agents in Games
+5.3
+Reset-Free Training, In-Context Learning, and Process Rewards
+6
+Discussion
+References
+A
+Pokémon Environment
+Interface.
+Text map.
+Milestones and the button-press metric.
+Memory reader.
+B
+Gemini Plays Pokémon: Additional Evidence
+Model comparison on Crystal.
+Failure modes that motivated automation.
+B.1
+Yellow Legacy Battle-Agent Evolution Checkpoints
+B.2
+Crystal Battle Advisor Evolution Checkpoints
+B.3
+Case Study: The Power Plant Route Loop
+Schema Mismatch and Execution Loop.
+Internal State vs. Execution Reality.
+Loop Termination.
+Observations.
+C
+Harness Ablations
+C.1
+Mechanism Attribution
+C.1.1
+Pathfinding skills
+C.1.2
+Skill debugging
+C.1.3
+Sub-agent handoffs
+C.1.4
+Memory reuse
+C.2
+Reset-Free Bootstrap Transfer
+C.2.1
+Red Bootstrap-Updating Regression
+D
+Training Setup and Results
+D.1
+Training Hyperparameters
+Supervised fine-tuning.
+Offline GRPO.
+Online co-learning loop.
+D.2
+Gemma-4 Full Eval Matrix
+D.3
+Training Curves and Reward Decomposition
+D.4
+Reset-Free DAgger+PRM Experiments
+Run variation.
+Cumulative game progress over training.
+Per-iteration PRM reward.
+Resume-checkpoint regression.
+E
+LLM Acknowledgments
+License: CC BY-NC-SA 4.0
+arXiv:2605.09998v1 [cs.LG] 11 May 2026
+Continual Harness: Online Adaptation for Self-Improving Foundation Agents
+Seth Karten
+Joel Zhang
+Affiliation:
+ARISE Foundation
+Tersoo Upaa Jr
+Ruirong Feng
+Wenzhe Li
+Chengshuai Shi
+Chi Jin
+Kiran Vodrahalli
+Affiliation:
+Google DeepMind
+[0.3em]
+Princeton University
+[0.2em]
+Equal contribution.
+Abstract.
+Coding harnesses such as Claude Code and OpenHands wrap foundation models with tools, memory, and planning, but no equivalent exists for embodied agents’ long-horizon partial-observability decision-making. We first report our Gemini Plays Pokémon (GPP) experiments. With iterative human-in-the-loop harness refinement, GPP became the first AI system to complete Pokémon Blue, Yellow Legacy on hard mode, and Crystal without a lost battle. In the hardest stages, the agent itself began iterating on its strategy through long-context memory, surfacing emergent self-improvement signals alongside human-in-the-loop refinement.
+Continual Harness
+removes the human fully from this loop: a reset-free self-improving harness for embodied agents that formalizes and automates what we observed. Starting from only a minimal environment interface, the agent alternates between acting and refining its own prompt, sub-agents, skills, and memory, drawing on any past trajectory data. Prompt-optimization methods require episode resets;
+Continual Harness
+adapts online within a single run. On Pokémon Red and Emerald across frontier models,
+Continual Harness
+starting from scratch substantially reduces button-press cost relative to the minimalist baseline and recovers a majority of the gap to a hand-engineered expert harness, with capability-dependent gains, despite starting from the same raw interface with no curated knowledge, no hand-crafted tools, and no domain scaffolding. We then close the loop with the model itself: an online process-reward co-learning loop, in which an open-source agent’s rollouts through the refining harness are relabeled by a frontier teacher and used to update the model, drives sustained in-game milestone progress on Pokémon Red without resetting the environment between training iterations.
+Date
+: August 11, 2026
+Correspondence
+:
+sethkarten@princeton.edu
+Website:
+https://sethkarten.ai/continual-harness
+1  Introduction
+Figure 1
+:
+Continual Harness
+automates the harness refinement performed manually in GPP, and extends to joint training of model weights and harness state.
+Each panel shares the same topology (
+environment
+,
+agent
+,
+harness
+,
+refiner
+); only the identity of the refiner changes. (1)
+Human-in-the-loop:
+in our Gemini Plays Pokémon (GPP) experiments, a human reads trajectories and rewrites the harness, producing the first AI system to complete Pokémon Blue, Yellow Legacy (hard mode), and Crystal. (2)
+Self-improving harness:
+Continual Harness
+replaces the human with an automated refiner that operates on trajectory data within a single continuous episode; evaluated on Red and Emerald across frontier models. (3)
+Model + harness co-learning:
+after warm-up stages, an open-source model’s weights and the harness state update jointly during online play.
+Agentic harnesses, the scaffolding that wraps a foundation model with tools, memory, and planning, are now standard infrastructure for autonomous coding agents. Claude Code
+[
+2
+]
+, OpenHands
+[
+21
+]
+, and OpenClaw
+[
+19
+]
+let models navigate codebases, run commands, and carry state across long interactions. No equivalent exists for embodied agents.
+The PokeAgent Challenge
+[
+5
+]
+reported that without domain-specific scaffolding, frontier vision-language models make almost no progress on RPG gameplay. Our Gemini Plays Pokémon (GPP) project shows that a human-supervised refinement loop can solve this scaffolding problem: across Pokémon Blue, Yellow Legacy, and Crystal, we iteratively refined the harness from a screenshot-and-buttons interface into a multi-agent system, and in later runs we removed the human-authored agents and handed the model meta-tools (
+define_agent
+,
+run_code
+, notepad edits, custom tool creation) so it could construct its own sub-agents and reusable scripts during play. Our agents beat Pokémon Blue in May 2025, defeated the Elite Four in Pokémon Yellow Legacy on hard mode in August 2025 and completed Pokémon Crystal in November 2025, making GPP the first AI system to complete multiple Pokémon RPGs. In the hardest stages of Yellow and Crystal, the model itself began iterating on its own strategy through long-context memory, an early emergent form of continual-harness behavior that we formalize and automate in the rest of the paper.
+We introduce
+Continual Harness
+, a reset-free framework that automates the manual harness refinement of GPP through
+online in-context learning over the harness state
+, and extends to joint training of an open-source model’s weights through the same loop. From a minimal environment interface (frame observations, an ASCII text map of the visible area, and button inputs), the agent alternates between acting in the environment and refining its own system prompt, sub-agents, skill library, and memory using trajectory data collected so far in the episode. Every
+F
+F
+steps, a Refiner reads the recent trajectory for failure signatures and runs four passes over the harness applying CRUD edits to system prompt, sub-agents, skills, and memories. Unlike prompt-optimization methods such as GEPA
+[
+1
+]
+that run complete episodes and reset between updates,
+Continual Harness
+updates mid-episode, so self-improvement continues without restarting.
+On Pokémon Red and Emerald across three Gemini 3 variants (Pro, Flash, Flash-Lite),
+Continual Harness
+substantially reduces button-press cost relative to the minimalist baseline and recovers a majority of the gap to a hand-engineered expert harness, with no curated knowledge, no hand-crafted tools, and no domain scaffolding. On the Emerald cost-vs-completion Pareto plane, the harness gain scales with model capability:
+Continual Harness
+is strictly Pareto-dominant on Pro, high-variance on Flash, and below the capability floor on Flash-Lite.
+We then transfer the refined harness to open-source models using an online co-learning loop that scores rollouts with a process reward model, relabeling low-reward windows via a frontier teacher, and updating the model via soft SFT. The online stage closes the loop between harness refinement and model training. The refined harness shapes the model’s trajectories, and the model’s gameplay surfaces new failure modes for the next refinement cycle. On Pokémon Red, this loop drives sustained in-game milestone progress in an open-source Gemma-4 model across training iterations, from both beginning and mid-game checkpoints. Both loops operate on the same trajectory data; together they produce continual model-harness co-learning.
+Our contributions are: (i) our GPP project results, the first AI system to complete multiple Pokémon RPGs through harness refinement; (ii)
+Continual Harness
+, a reset-free framework that assembles harnesses for embodied agents from a minimal environment interface through online in-context learning; (iii) on Pokémon Red and Emerald across Gemini 3 variants,
+Continual Harness
+recovers a majority of the gap to a hand-engineered expert harness, with capability-dependent gains on the cost-vs-completion Pareto plane; and (iv) an online co-learning pipeline that drives sustained in-game milestone progress in open-source models on Pokémon Red, producing continual model-harness co-learning.
+2  Preliminaries
+2.1  Embodied Agent Environments
+We consider an embodied agent that interacts with its environment through a minimal interface. At each timestep
+t
+t
+, the agent receives a frame observation
+o
+t
+o_{t}
+(a rendered image of the current environment state) together with a text map
+m
+t
+m_{t}
+that describes the visible tiles and nearby walkable positions in ASCII form, and selects an action
+a
+t
+a_{t}
+from a fixed set of button inputs
+𝒜
+\mathcal{A}
+. The text map is derived from game state that a human player can read off the screen, and compensates for the limited spatial reasoning of current vision-language models; it contains no walkthrough, no objective list, and no pathfinding. The environment is partially observable since the agent cannot access internal state such as NPC intent or battle mechanics beyond what the frame and map expose.
+2.2  Agentic Harnesses
+An
+agentic harness
+ℋ
+\mathcal{H}
+is the scaffolding layer between a foundation model
+M
+M
+and the environment. Following the decomposition from
+5
+, a harness mediates agent behavior through four components:
+•
+System prompt
+p
+p
+: the instructions and strategic guidance provided to the model at each reasoning step.
+•
+Sub-agents
+𝒢
+\mathcal{G}
+: specialized modules that can be invoked by the orchestrator for specific tasks (e.g., battle strategy, puzzle solving, self-reflection).
+•
+Skills
+𝒦
+\mathcal{K}
+: reusable routines available to the model, spanning both text-level behaviors (heuristics cited in reasoning) and executable programs (pathfinders, tool wrappers). Pre-built primitives such as
+press_buttons
+and
+get_game_state
+are skills the harness ships with; new skills can also be authored during play.
+•
+Memory
+ℳ
+\mathcal{M}
+: a persistent knowledge store that accumulates facts, strategies, and observations across the agent’s trajectory.
+In addition to these refined components, the harness exposes a fixed set of
+meta-tools
+(
+define_agent
+,
+run_code
+,
+process_memory
+, and similar primitives) through which the agent edits
+p
+,
+𝒢
+,
+𝒦
+,
+ℳ
+p,\mathcal{G},\mathcal{K},\mathcal{M}
+in place.
+A
+minimalist harness
+ℋ
+min
+\mathcal{H}_{\min}
+provides only the environment interface (
+o
+t
+o_{t}
+,
+m
+t
+m_{t}
+,
+a
+t
+∈
+𝒜
+a_{t}\in\mathcal{A}
+) with a generic system prompt and no sub-agents, memory, or authored skills. A
+hand-engineered harness
+ℋ
+expert
+\mathcal{H}_{\mathrm{expert}}
+populates all components through manual engineering. A meta-harness gives the model meta-tools (
+define_agent
+,
+run_code
+, etc.) to construct its own sub-agents, skills, and memory entries during play; this was the operating point of our later GPP runs, where the model built its own pathfinders, battle strategists, and reusable scripts without being asked to.
+Continual Harness
+starts from a minimal harness and adds an automated Refiner that rewrites
+p
+,
+𝒢
+,
+𝒦
+,
+ℳ
+p,\mathcal{G},\mathcal{K},\mathcal{M}
+in place from trajectory analysis. We write
+ℋ
+CH
+\mathcal{H}_{\mathrm{CH}}
+for the running harness state during a
+Continual Harness
+run, evolving with every refinement cycle.
+3  Methodology
+Figure 2
+:
+Methodology overview.
+(a)
+Harness refinement within one episode
+: the Agent reads
+(
+s
+t
+,
+ℋ
+,
+τ
+)
+(s_{t},\mathcal{H},\tau)
+and emits
+a
+t
+a_{t}
+; every
+F
+F
+steps the Refiner reads
+τ
+t
+−
+F
+:
+t
+\tau_{t-F:t}
+, emits per-component edits
+Δ
+=
+(
+Δ
+​
+p
+,
+Δ
+​
+𝒢
+,
+Δ
+​
+𝒦
+,
+Δ
+​
+ℳ
+)
+\Delta=(\Delta p,\Delta\mathcal{G},\Delta\mathcal{K},\Delta\mathcal{M})
+via the meta-tool API, and
+ℋ
+←
+ℋ
+⊕
+Δ
+\mathcal{H}\!\leftarrow\!\mathcal{H}\oplus\Delta
+.
+(b)
+Co-learning across DAgger+PRM iterations
+: each iteration runs
+π
+θ
+k
+\pi_{\theta_{k}}
+inside a live-refining
+ℋ
+t
+\mathcal{H}_{t}
+for
+K
+=
+256
+K{=}256
+steps. The trajectory is scored by a pairwise PRM, low-
+R
+R
+windows are relabeled by Gemini-3.1-pro, and a soft SFT update produces
+θ
+k
++
+1
+\theta_{k+1}
+. The loop is reset-free: a persistent state at the end of iter
+k
+k
+is loaded as the start of iter
+k
++
+1
+k{+}1
+.
+3.1  Overview and Two-Loop Architecture
+Continual Harness
+performs online in-context learning over the harness state
+ℋ
+\mathcal{H}
+from
+Section
+2

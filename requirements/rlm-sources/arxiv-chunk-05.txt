@@ -1,0 +1,471 @@
+shows this with two complementary views. The left panel is per-seed skill lifetime: each skill occupies one lane, markers are add/update/run/delete events, and the update-to-next-execute edge is drawn so each debug iteration reads as an update followed by a run. The right panel is the create-and-forget funnel: most authored skills are never invoked, a small working set absorbs the bulk of calls, and even fewer see success. The refinement loop therefore triages: it repairs the skills the agent depends on, tolerates regressions on unused ones, and accepts a long create-and-forget tail. This is the argument for reset-free operation over reset-based baselines: the failure record and the repair sit inside the same trajectory, so the loop closes within a run rather than across resets.
+C.1.3
+Sub-agent handoffs
+Figure 17
+:
+Sub-agent handoffs. (a) Cumulative approximate tokens by role (orchestrator solid, sub-agent dashed). (b) Cumulative
+execute_custom_subagent
+count. (c) Per-task-type handoff success:
+exit
+is the percent of spans ending via
+return_to_orchestrator
+;
+focus
+is the percent of returns where the orchestrator either pursued the pre-handoff objective or crossed a milestone within ten subsequent steps.
+We segment each run into spans of orchestrator execution and sub-agent execution, track approximate per-step input tokens from prompt length, and label each sub-agent span by task type. Sub-agent handoffs serve two roles for the harness: they keep per-step cost low by giving the sub-agent a narrow specialized context, and they let the orchestrator resume its prior objective after the sub-agent returns.
+Figure
+17
+makes both points visible. The left panel plots orchestrator tokens and sub-agent tokens on a shared step axis; the sub-agent curve sits about an order of magnitude below the orchestrator curve throughout, which is the per-step saving the harness buys by partitioning context. The middle panel tracks cumulative handoff counts per condition; bootstrap-updating tracks from-scratch closely throughout the run, with a small plateau gap by run end. The right panel scores post-return behavior per task type; clean-return and on-task-recovery rates sit near the top of the scale for navigation, dialogue, and menu tasks. The harness rather than the raw model carries most of the long-horizon performance: once the orchestrator can delegate to cheap specialized contexts and trust the return, long tasks become tractable with far fewer tokens than the raw context would imply.
+C.1.4
+Memory reuse
+Figure 18
+:
+process_memory
+use inside the first real bottleneck of each game: Mauville Gym (Emerald, left column) and Mt Moon (Red, right column). One representative seed per condition. Top row: per-run timeline where each marker is a
+process_memory
+tool call at the step it fired; color encodes provenance of the memory entry. Bottom row: the same ops aggregated into a stacked composition bar.
+Every orchestrator step prompt lists the IDs and titles of all stored memories under a
+LONG-TERM MEMORY OVERVIEW
+section, so the agent sees the full catalog for free. The question is whether the agent
+pulls
+on that catalog: requests the full content of an entry via
+process_memory
+, invokes a memorized skill, or cites an entry ID in its reasoning. We measure this pull rate as the fraction of available entries ever referenced in an episode, and we localize reads to the milestone windows where the agent should need them: Mauville Gym on Emerald, Mt Moon on Red. Memory is leveraged once the library is both mature and inherited (
+Figure
+18
+): bootstrap runs, which load a from-scratch memory store at the start, consult it actively inside the gym and cave segments, while from-scratch runs write many entries and rarely reach back for them. The reference rate remains low in absolute terms, which we report honestly; most authored entries sit unused. The transferable unit of the framework is therefore the harness across runs, not a single episode, and an explicit reuse prior is a natural next step.
+C.2  Reset-Free Bootstrap Transfer
+The bootstrap-updating variant tests whether the transferable unit is a single episode or the harness across episodes. On Emerald, every store the agent exercises during a bootstrap-updating run still targets the inherited harness. On Red, memory and skill invocations stay inherited, but the bootstrap-updating agent collapses its sub-agent budget to a handful of calls, and the few it makes cite IDs not present in the bootstrap. When that collapse happens, the milestone staircase regresses. The harness-as-transferable-unit claim therefore holds when the agent continues to exercise the inherited components and breaks when it abandons them: a reuse prior or a sub-agent deletion policy is the natural next step.
+Bootstrap runs load the final skills, sub-agents, and memory of a successful from-scratch run before any new play. For every invocation we classify whether the invoked entry originated in the bootstrap or was authored during the bootstrap run itself, using retrieval semantics that count actual use across stores rather than passive prompt inclusion. Bootstrap succeeds by leveraging the inherited harness, and regressions show up where the agent stops using it. The end-of-run inherited share per store is reported in
+Table
+2
+. On Emerald every store that the agent exercises targets the inherited harness, with substantial per-run invocation counts on skills and sub-agents. On Red, memory and skill shares also stay inherited, and the only anomaly is sub-agents: the Red bootstrap-updating agents collapse their sub-agent budget to a handful of calls and the few calls they make cite IDs not present in the bootstrap. The milestone staircase in
+Figure
+5
+reads this phenotypically: Emerald bootstrap tracks from-scratch closely, while Red bootstrap-updating drifts below from-scratch and then below
+ℋ
+min
+\mathcal{H}_{\min}
+in lockstep with the collapse of sub-agent use. The harness rather than the episode is the transferable unit: reset-free refinement carries across runs when the inherited components stay in play, and it breaks when the agent abandons them.
+Table 2:
+C5 inheritance: fraction of phase-2 invocations whose target was present in the phase-1 bootstrap. Mean across seeds (n=3 for each cell). “–” means no invocations of that store type in the run.
+Game
+Store
+Frozen
+Continued
+Emerald
+skills
+100.0%
+±
+\pm
+0.0
+99.6%
+±
+\pm
+0.6
+subagents
+100.0%
+±
+\pm
+0.0
+100.0%
+±
+\pm
+0.0
+memories
+98.2%
+±
+\pm
+1.9
+100.0%
+±
+\pm
+0.0
+Red
+skills
+100.0%
+±
+\pm
+0.0
+96.5%
+±
+\pm
+3.8
+subagents
+100.0%
+±
+\pm
+0.0
+6.4%
+±
+\pm
+5.7
+memories
+100.0%
+±
+\pm
+0.0
+100.0%
+±
+\pm
+0.0
+C.2.1
+Red Bootstrap-Updating Regression
+The Red bootstrap-updating regression visible in
+Figure
+5
+begins around step 213. Newly authored sub-agents overtake the inherited ones at that point. They have not gone through the repair cycle observed for from-scratch skills (
+Figure
+16
+), so their per-invocation success rate sits below what the bootstrap sub-agents reached before they were cached. A reuse prior on sub-agent selection, or a deletion rule that deprecates newly authored sub-agents whose task signature is covered by inherited ones, are natural follow-ups.
+Appendix D
+Training Setup and Results
+This appendix gives the full training details for the open-source transfer pipeline (
+Section
+3.3
+): SFT, offline GRPO, and online co-learning hyperparameters; the full evaluation matrix across Gemma-4 sizes; and training-curve diagnostics for the co-learning stages.
+D.1  Training Hyperparameters
+Supervised fine-tuning.
+We fine-tune Gemma-4 variants (E2B, E4B, 26B MoE, 31B dense) via LoRA with rank
+r
+=
+256
+r{=}256
+,
+α
+=
+256
+\alpha{=}256
+, bf16 precision, and an 8K-token context using Unsloth on H200 GPUs. Each example is a (screenshot, harness prompt, teacher response) tuple extracted from Gemini-3.1-pro
+Continual Harness
+gameplay. Learning rate
+2
+×
+10
+−
+5
+2\times 10^{-5}
+, linear warmup over 3% of training, cosine decay. We train for one pass over the teacher-trajectory set per model.
+Offline GRPO.
+For each state in the teacher-visited set, the SFT-initialized policy generates
+G
+=
+4
+G{=}4
+candidate completions. Each is scored independently by a Gemini-3-flash-preview per-step oracle on a composite of action correctness (binary, weight
+0.6
+0.6
+) and format compliance (binary, weight
+0.4
+0.4
+). Advantages are group-normalized within the
+G
+G
+samples per state and the policy is updated via standard GRPO
+[
+16
+]
+. Learning rate
+1
+×
+10
+−
+6
+1\times 10^{-6}
+, KL coefficient
+β
+=
+0.04
+\beta{=}0.04
+against the SFT reference, batch size 8 states per optimizer step, 590 total optimization steps.
+Online co-learning loop.
+Each online iteration is a
+K
+=
+256
+K{=}256
+-step DAgger
+[
+15
+,
+8
+]
+rollout through the full
+Continual Harness
+(memory, skills, sub-agents, and prompt all evolving via
+Figure
+2
+) on Pokémon Red. A pairwise process reward model
+[
+22
+]
+(Gemini-3-flash-preview) scores each transition over a sliding window; reward is a weighted combination of trajectory progress (
+0.4
+0.4
+), action correctness (
+0.3
+0.3
+), reasoning quality (
+0.2
+0.2
+), and format compliance (
+0.1
+0.1
+). Low-reward windows are relabeled by a Gemini-3.1-pro teacher, and a soft SFT update on the relabeled shard produces the next iteration’s checkpoint.
+D.2  Gemma-4 Full Eval Matrix
+The main-text claim that neither warm-up stage produces meaningful milestone advancement (
+Section
+4.5
+) is documented here per Gemma-4 size. The matrix covers E2B, E4B, 26B MoE, and 31B dense. Smaller sizes converge to low SFT training loss but collapse to
+tool_format
+=
+0
+\texttt{tool\_format}{=}0
+on the real harness prompt, consistent with an interaction between SFT signal strength and the 8K context needed to hold the full state plus reasoning. The 31B SFT Emerald model underperforms the 26B SFT Emerald model on most metrics in our runs.
+Table 3
+:
+Full Gemma-4 eval matrix on Emerald. SFT rows are fine-tuned on Gemini-3.1-pro
+Continual Harness
+trajectories. The GRPO column reports the offline-GRPO warm-up checkpoint, which emits degenerate completions on this prompt set. Smaller Gemma-4 sizes train to low loss but collapse under the full harness prompt.
+Metric
+Base
+SFT (emerald)
+GRPO
+26B
+31B
+e4b
+e2b
+26B
+31B
+e4b
+e2b
+26B
+tool_format
+0.00
+0.00
+0.00
+0.00
+0.95
+0.35
+0.00
+0.00
+0.00
+actionable
+0.20
+0.55
+0.55
+0.40
+0.95
+0.35
+0.40
+0.20
+0.00
+grounding
+0.15
+0.39
+0.54
+0.28
+0.72
+0.45
+0.52
+0.33
+0.40
+action_relevance
+0.15
+0.51
+0.38
+0.15
+0.50
+0.25
+0.35
+0.07
+0.00
+reasoning_similarity
+0.15
+0.45
+0.26
+0.10
+0.35
+0.05
+0.28
+0.05
+0.00
+hallucination
+0.05
+0.05
+0.30
+0.05
+0.55
+0.50
+0.30
+0.25
+0.00
+degenerate
+0.00
+0.00
+0.00
+0.05
+0.05
+0.10
+0.10
+0.00
+0.00
+tokens/s
+154
+18
+188
+221
+166
+27
+188
+221
+26
+Table 4
+:
+Full Gemma-4 eval matrix on Red. The 26B Red SFT row is omitted because the adapter was degenerate at eval time. 31B SFT is the viable Red checkpoint and is used as the initial policy for the online co-learning stage.
+Metric
+Base
+SFT (red)
+GRPO
+26B
+31B
+e4b
+e2b
+31B
+e4b
+26B
+tool_format
+0.05
+0.05
+0.10
+0.00
+0.50
+0.10
+0.50
+actionable
+0.25
+0.35
+0.45
+0.15
+0.50
+0.35
+0.50
+grounding
+0.23
+0.31
+0.40
+0.09
+0.44
+0.38
+0.44
+action_relevance
+0.33
+0.42
+0.33
+0.03
+0.75
+0.55
+0.65
+reasoning_similarity
+0.25
+0.40
+0.40
+0.00
+0.65
+0.45
+0.50
+hallucination
+0.05
+0.00
+0.25
+0.20
+0.30
+0.30
+0.40
+degenerate
+0.00
+0.00
+0.00
+0.05
+0.00
+0.00
+0.05
+tokens/s
+162
+21
+189
+233
+26
+101
+89
+Table 5:
+Progressive improvement across warm-up stages on Pokémon Red, evaluated on 20 held-out transitions. SFT lifts format compliance from near zero. Offline GRPO with a 4-component heuristic reward and offline GRPO with a Gemini-oracle reward both maintain format and shift action quality. The online co-learning stage produces sustained milestone progress in live gameplay; per-iteration progression and PRM rewards are reported in
+Section
+D.4
+. Qwen3.5 35B is shown as a cross-family baseline: it produces parseable tool calls through the harness but cannot advance in the game.
+Format (Tier 1)
+Action Quality (Tier 2)
+Stage
+Model
+tool_fmt
+act’ble
+act_rel
+reason
+ground
+Base
+Gemma-4 26B
+0.05
+0.25
+0.33
+0.25
+0.23
+SFT
+Gemma-4 31B
+0.50
+0.50
+0.75
+0.65
+0.44
+Offline GRPO (heuristic)
+Gemma-4 26B
+0.50
+0.50
+0.65
+0.50
+0.44
+Offline GRPO (Gemini oracle)
+Gemma-4 26B
+0.50
+0.50
+0.55
+0.30
+0.40
+Base
+Qwen3.5 35B
+parseable
+0 game progress (stuck)
+D.3  Training Curves and Reward Decomposition
+See
+Figure
+19
+.
+Figure 19
+:
+Gemma-4 tool-calling behavior across warm-up stages. (A) SFT on frontier
+Continual Harness
+trajectories lifts
+tool_format
+success from near zero. (B) Reward curves for the two offline GRPO variants (heuristic 4-component reward and Gemini-oracle reward); the dashed line marks the approximate SFT reward baseline.
+D.4  Reset-Free DAgger+PRM Experiments
+The online co-learning loop in
+Section
+3.3
+composes a DAgger-style teacher-relabel step
+[
+15
+,
+8
+]
+with a pairwise process reward model (PRM) and reset-free emulator-state propagation across iterations. Each iteration’s
+K
+K

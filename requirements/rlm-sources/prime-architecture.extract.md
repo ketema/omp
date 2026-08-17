@@ -1,0 +1,73 @@
+# Prime Agent — Architecture + RLM Runtime Extract (remote authority)
+
+Source: remote `packages/coding-agent/docs/architecture.md` (3916 B) and `docs/rlm-runtime.md` (13757 B) fetched to rlm-sources/architecture.remote.md and rlm-runtime.remote.md. Format: M-### | name | detail | §source.
+
+## architecture.md
+
+- M-001 | Separation of concerns | Prime Agent separates terminal presentation, process coordination, agent execution, model-facing Python, and persisted state; normal interactive sessions use the daemon-backed path; explicit SDK and fallback integrations can run the same AgentSessionRuntime in process. | architecture.md
+- M-002 | Interactive TUI client | Owns rendering, keyboard input, local UI preferences; does not own execution. | architecture.md
+- M-003 | Headless clients | Print / JSON / RPC clients talk to the supervisor over the local daemon protocol. | architecture.md
+- M-004 | AgentConnection | Client-side execution boundary; versioned commands flow Client→Supervisor; live stream or recovery snapshot flows back; renders updated state. | architecture.md
+- M-005 | Daemon supervisor | Owns discovery, routing, attachments, worker health, and cross-agent message delivery; spawns catalog process for saved-session scans. | architecture.md
+- M-006 | Session worker | One worker per root session tree: owns one AgentSessionRuntime, its Scheduler, root IPython kernel, and all RLM child runtimes (session + optional kernel). | architecture.md
+- M-007 | AgentSession ownership | Owns provider calls, queues, tools, compaction, goals, child lifecycles, and transcript writes. | architecture.md
+- M-008 | IPython role | Model-facing control environment; typed host requests return authoritative operations to the TypeScript session. | architecture.md
+- M-009 | Process isolation invariant | Workers and kernels are separate processes for lifecycle and failure containment, NOT security sandboxes; normally run with same OS permissions as the client. | architecture.md
+- M-010 | Prompt execution sequence | UI→AgentConnection (prompt/steer/follow-up) → supervisor (route to active session) → worker (enqueue) → AgentSession (stream model request) → provider (text or IPython tool call); IPython executes, with typed-host-request alt vs ordinary-result alt; transcript+artifacts appended to storage; session events → generation-aware events → live stream. | architecture.md
+- M-011 | Unified prompt sources | From the session queue onward, the same execution and persistence path serves prompts from heartbeat, cron schedule, goal continuation, autonomous mode, or another agent — not only attached users. | architecture.md
+- M-012 | Detailed-architecture references | Links out to agent-connection.md (boundary, snapshots, replay, reconnect), daemon.md (leases, scheduling, backpressure, crash recovery), rlm-runtime.md (IPython host requests, recursive child execution), long-running-agents.md (detached sessions, messages, goals, scheduled work). | architecture.md
+
+## rlm-runtime.md
+
+- M-013 | Core division | Each agent session gets a persistent IPython kernel + native recursive sub-agent interface; Python `rlm` package is the model-facing shim; TypeScript host owns child execution, persistence, usage accounting, lifecycle. | Architecture
+- M-014 | Architecture graph | AgentSession (TypeScript) owns KernelManager; KernelManager ↔ IPython kernel process over Jupyter protocol/ZeroMQ; kernel imports prime-agent-runtime (rlm module + Python skills) which runs model-executed code; code calls rlm.run/goal.*/agent_message.*; runtime sends comm target `host.request` to manager; manager does typed dispatch to session. | Architecture
+- M-015 | Delegation mechanics | `await rlm(prompt)` travels over comm `host.request`; KernelManager dispatches request type `rlm.run` to parent AgentSession, which starts a child through the same TS agent machinery as the parent; returns over comm immediately after admission with a child handle; never waits for or returns the answer; results only via `agent_message` replies or files. | Architecture
+- M-016 | Host-bridge generalization | Same bridge serves other typed host requests; bundled skills (e.g. goal) call `rlm.host_request("goal.get", ...)`; state and policy remain in the TypeScript host. | Architecture
+- M-017 | Delegation sequence | Model→IPython tool call→execute rlm()→kernel→host.request·rlm.run→host: depth check + model resolve→admit + registry update→RLMSpawnHandle→tool output→IPython result→create child runtime and prompt; child loop streams model request/response; child→parent explicit agent_message reply; host updates registry and attributes usage. | Delegation Flow
+- M-018 | Component: kernel/index.ts | ZeroMQ sockets, Jupyter framing, execution, comm dispatch, interrupt, shutdown. | Component Ownership
+- M-019 | Component: tools/ipython.ts | Agent tool wrapper, lazy kernel provisioning, namespace bootstrap, output shaping. | Component Ownership
+- M-020 | Component: agent-session.ts | RLM policy, child creation, registry, usage attribution, cancellation, goal handlers. | Component Ownership
+- M-021 | Component: rlm-runtime.ts | Typed request/spawn-handle validation for rlm.run, model discovery, list, delete. | Component Ownership
+- M-022 | Component: prime-agent-runtime/src/rlm/ | Python shim, handle types, callable rlm, session-backed harness state. Python side does not call providers or implement an agent loop. | Component Ownership
+- M-023 | Lazy kernel creation | Kernel created lazily on first IPython use. | Kernel Lifecycle
+- M-024 | Python resolution order | (1) PRIME_AGENT_KERNEL_PYTHON if it can import ipykernel; (2) ~/.prime/agent/kernel-venv/bin/python bootstrapped with uv; (3) XDG data location when ~/.prime not writable. | Kernel Lifecycle
+- M-025 | Managed environment | Python 3.11 + ipykernel + prime-agent-runtime; bootstrap marker detects stale environments. | Kernel Lifecycle
+- M-026 | Kernel startup | Temporary Jupyter connection file with loopback TCP ports + HMAC key; starts `python -m ipykernel_launcher`; connects shell, IOPub, control sockets; waits for subscription propagation; probes readiness via kernel_info_request. | Kernel Lifecycle
+- M-027 | Kernel ownership + shutdown | Manager owns child process, connection directory, ZeroMQ sockets, bounded stderr tail; shutdown sends shutdown_request, closes sockets, terminates process as fallback, removes temp connection data; persistent sessions may snapshot kernel namespace into session artifact dir for revival. | Kernel Lifecycle
+- M-028 | Jupyter channels | shell: execute_request/execute_reply/kernel_info_request; iopub: stdout/stderr/results/errors/status/comm_open; control: interrupt, shutdown, host-request replies during execution. | Jupyter Transport
+- M-029 | Framing + integrity | Multipart <IDS|MSG> framing (signature/header/parent_header/metadata/content); JSON frames HMAC-SHA256-signed. | Jupyter Transport
+- M-030 | Output + comm acceptance | Ordinary output accepted only when parent_header.msg_id matches active execution; comm messages handled before that filter (async Python tasks can open comms after their scheduling cell idles). | Jupyter Transport
+- M-031 | Serialized execution invariant | KernelManager.execute() serialized; one kernel, one shared namespace, no two ordinary cells concurrently; RLM children still run concurrently via distinct comms + child runtimes. | Jupyter Transport
+- M-032 | Control-channel deadlock rationale | IPython processes shell messages serially; shell-channel admission response would deadlock an awaiting execute_request; shim registers comm handlers on control channel; host sends admission responses there; completion scheduled via loop.call_soon_threadsafe(); child answers never use this path. | Control Channel
+- M-033 | Python API exports | rlm (run/find_models/list_subagents/delete_subagent/host_request), RLMSpawnHandle, RLMModel, RLMSubagent, TokenUsage; bootstrap places callable rlm in user namespace (await rlm("x") ≡ await rlm.run("x")). | Python API
+- M-034 | RLMSpawnHandle | Carries rlm_child_id, name, session_dir, model; confirms admission only, never the child's answer. | Python API
+- M-035 | rlm.run options | `name` (unique readable child session name), `model` (exact provider/model selector from rlm.find_models()); unknown options fail instead of ignored; model search bounded to active non-expired credentials; unavailable/exact-mismatch/failed-auth-preflight ⇒ spawn fails instead of silent fallback; otherwise child inherits parent model. | Python API
+- M-036 | Child execution sequence | runRlmChild(): check RLM_DEPTH < RLM_MAX_DEPTH → resolve/inherit model → create sub-xxxxxxxx dir under parent artifacts → admit to registry + return handle → in detached work create child SessionManager/Agent/AgentSession → reuse provider hooks, resource loader, model registry, tools, transport, retry settings, thinking config → run child prompt, retain session, update lifecycle → attribute child usage to parent assistant turn and persist. | Child Execution
+- M-037 | Depth semantics | Children receive incremented RLM_DEPTH, inherited max depth, own RLM_SESSION_DIR; default max depth 1: roots may spawn children, children may not spawn grandchildren unless configured higher. | Child Execution
+- M-038 | Independent delegation | Each direct call admits an independent child, returns handle immediately; end the turn instead of awaiting; children reply via agent_message.send(receiver_role="parent") or files; each admitted child runs as independent AgentSession; daemon-backed children retainable as addressable session workers. | Independent Delegation
+- M-039 | Parent-scoped registry | TS parent keeps authoritative direct-child registry; list_subagents() returns stable child IDs, active-session IDs (daemon-backed), session IDs, names, directories, running/completed status. | Registry
+- M-040 | Registry survival | Survives kernel restart, compaction, parent restore; completed daemon-backed children rehydrated from parent artifact registry; inline children inspectable in-process but have no active-session ID. | Registry
+- M-041 | Child continuation + deletion | Continue retained daemon child via agent_message.send(..., receiver_role="child", receiver_name=child.session_name); delete_subagent accepts exact child ID / active-session ID / session ID / unique name; deletion cancels/closes runtime, writes durable tombstone, removes from messaging+observation, does NOT erase transcript or artifacts. | Registry
+- M-042 | Registry scope | Follows the parent transcript; an unrelated new parent session does not inherit children. | Registry
+- M-043 | Usage attribution | Admission handle carries no usage/completion data; host asynchronously folds child assistant usage+cost into the parent assistant turn that launched it. | Usage
+- M-044 | Attribution persistence | Parent transcript persists child_usage_attributed entry: target parent assistant message ID, attributed child usage, resulting aggregate; on reload aggregate reapplied to parent message; context-tree reporting subtracts attributed child usage per node so own-usage and root aggregates reconcile; child work increases billable totals but not parent context-window measurement. | Usage
+- M-045 | Continual Harness ledger | rlm.harness = persisted state ledger for prompt notes, memories, reusable skill descriptions, sub-agent specifications, refinement events; NOT a second execution engine. | Continual Harness State
+- M-046 | Harness storage split | Session-local state in session artifacts under harness/harness_state.json; explicitly global entries under ~/.prime/agent/harness/; Python store reloads after external modification so host /refine writes and kernel writes don't overwrite each other. | Continual Harness State
+- M-047 | /refine semantics | Dedicated review over current trajectory applying small create/update/delete edits; rollback via recorded before/after snapshots; base system prompt immutable — refinements are supplemental state. | Continual Harness State
+- M-048 | Goal bridge | Bundled goal skill is thin host-bridge client: goal.get() / goal.create(text, token_budget=...) / goal.complete(); goal state, persistence, token + wall-clock accounting, continuation prompting live in AgentSession; when goals disabled, skill and goal.* handlers not registered. | Goal Requests
+- M-049 | Session artifact layout | ~/.prime/agent/: sessions/<root-id>.jsonl; session-artifacts/<root-id>/ { kernel-state.dill, kernel-state.json, scheduled-jobs.json, harness/harness_state.json, sub-xxxxxxxx/<child-id>.jsonl (+ sub-yyyyyyyy/) }. | Session Artifacts
+- M-050 | Artifact creation rule | Exact artifact files created only when their features are used; non-persistent sessions place RLM dirs under OS temp and gain no revivable artifacts. | Session Artifacts
+- M-051 | Trust boundary | IPython executes model-generated Python + shell magics with worker's OS permissions; kernel boundary isolates protocol/lifecycle, not a security sandbox; installed packages, skills, extensions are trusted code; use external sandbox/restricted env for untrusted workspace/generated code. | Trust Boundary
+- M-052 | Credential boundary | Provider credentials resolved by TypeScript host; bounded model catalog crosses into Python as metadata only, full auth store does not. | Trust Boundary
+- M-053 | Failure: missing runtime | Kernel bootstrap rebuilds it; custom Python without rlm fails clearly when recursion called. | Failure Modes
+- M-054 | Failure: depth limit | Python raises before opening a comm; host checks again. | Failure Modes
+- M-055 | Failure: unsupported options | Host rejects the request. | Failure Modes
+- M-056 | Failure: unavailable model | Spawn fails instead of substituting another model. | Failure Modes
+- M-057 | Failure: shell-channel reply | Deadlock risk; current replies use control channel. | Failure Modes
+- M-058 | Failure: child cancellation | Host aborts child, removes failed/cancelled registry entries. | Failure Modes
+- M-059 | Failure: parent teardown | Active descendants cancelled and their runtimes closed. | Failure Modes
+- M-060 | Focused validation | Covered by focused kernel, recursion, context-tree, daemon RLM, runtime tests; child creation/accounting changes ⇒ agent-session-recursion.test.ts; comm transport ⇒ kernel comm tests; daemon retention ⇒ daemon RLM lifecycle tests. | Focused Validation
+
+## Remote-vs-local drift
+
+No drift. `diff` exit 0 for both pairs; byte counts identical (architecture: 3916/3916; rlm-runtime: 13757/13757). Remote copies are authoritative; local siblings under /Users/kharri04/projects/prime-agent/packages/coding-agent/docs/ match them exactly.

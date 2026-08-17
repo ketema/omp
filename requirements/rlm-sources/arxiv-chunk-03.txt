@@ -1,0 +1,517 @@
+shows that the model’s live in-game position advances across training iterations on every plotted run, both from the beginning of the game and from mid-game checkpoints. Both staircase types share the same qualitative shape, indicating that the training signal that drives the model forward from the start of the game also drives it forward from advanced checkpoints; the training procedure is not specific to the early-game distribution. As a negative control, cross-family Qwen3.5 (27B, 35B) without the supervised warm-up stage produces parseable tool calls but cannot leave the starting area in a live rollout (Appendix
+D.2
+), ruling out a rollout-protocol artifact. Together with the cross-checkpoint generalization, these results support the co-learning claim: an open-source model trained on data collected from its own play through a continually refining harness improves its in-game position iteration over iteration, without ever resetting the environment. Per-run identifiers, hyperparameters, and the per-iteration process-reward decomposition are reported in Appendix
+D.4
+.
+4.6  Skills measurably self-improve toward an oracle
+Figure 8
+:
+Pathfinding skill mechanism. (Left) Path-cost deficit of the top-10% evolved navigation skill set (Gemini 3.1 Pro) relative to the Dijkstra oracle over a 24-hour run on warp-to-warp obstacle-navigation tasks; lower is better, dashed line at 0% marks the oracle. (Right) Cumulative navigation-skill invocations against button presses across the same conditions.
+We score refined navigation skills by their path cost relative to a Dijkstra oracle. This gives a direct measure of skill self-improvement, independent of end-task efficiency.
+Figure
+8
+reports this measurement on warp-to-warp obstacle-aware navigation between fixed map entry and exit points, where greedy open-field hopping fails. Sub-agents, memory, prompt, and reset-free bootstrap transfer are deferred to Appendices
+C.1
+and
+C.2
+.
+ℋ
+min
+\mathcal{H}_{\min}
+never invokes a navigation skill; every Continual Harness condition accumulates hundreds of invocations over a 24-hour run (
+Figure
+8
+, right). On from-scratch runs the path-cost deficit falls from a near-half-cost penalty at the start to single digits early on and stays there (
+Figure
+8
+, left). This improvement is in-loop and reset-free: failures from earlier invocations are diagnosed by the Refiner and the affected skills are repaired before later invocations within the same episode. Bootstrap-updating inherits a refined skill set and matches or outperforms bootstrap-frozen throughout, so continued refinement still adds value on top of an inherited set; bootstrap-frozen’s flat trajectory bounds inheritance without further refinement.
+5  Related Work
+5.1  Agentic Harnesses and Scaffolding
+Agentic harnesses for coding
+[
+2
+,
+21
+,
+19
+]
+and assistant tasks
+[
+13
+]
+stall on embodied RPGs without domain scaffolding
+[
+5
+]
+. Concurrent prompt-optimization
+[
+1
+,
+14
+,
+10
+]
+and reflective self-improvement
+[
+17
+,
+12
+]
+optimize harness components or reflect on trajectories between episodes;
+Continual Harness
+edits the full harness state
+(
+p
+,
+𝒢
+,
+𝒦
+,
+ℳ
+)
+(p,\mathcal{G},\mathcal{K},\mathcal{M})
+in place mid-episode from partial trajectory windows, without resets.
+5.2  Autonomous Agents in Games
+LLM-based game agents either build their own tooling during play
+[
+20
+,
+3
+]
+or pair the LLM with a hand-designed planner
+[
+7
+]
+. The PokeAgent Challenge
+[
+5
+]
+provides the canonical embodied-RPG benchmark and expert harness. Our Gemini Plays Pokémon (GPP) runs across Blue, Yellow Legacy, and Crystal show that human-supervised harness refinement completes multiple full RPGs;
+Continual Harness
+automates this process.
+5.3  Reset-Free Training, In-Context Learning, and Process Rewards
+Reset-free reinforcement learning
+[
+4
+]
+addresses environments without resets. In-context reinforcement learning
+[
+18
+,
+6
+]
+and recursive language model methods
+[
+25
+,
+23
+]
+perform implicit improvement and structured multi-call reasoning over context;
+Continual Harness
+writes structured edits to the full harness state at depth 1. Process reward models
+[
+22
+,
+11
+]
+, group-relative policy gradient
+[
+16
+]
+, and STaR-style self-training
+[
+24
+]
+provide finer-grained signals than sparse episode reward; our co-learning pipeline warms up via SFT and offline GRPO, then runs an online loop where a frontier teacher relabels low-reward windows of the model’s own rollouts inside a live-refining harness for soft SFT updates.
+6  Discussion
+Continual Harness
+builds and refines its own scaffolding from a minimal environment interface, without resets, and recovers a majority of the gap to a hand-engineered expert harness on embodied Pokémon play. The same alternation runs at both timescales: at inference the agent acts and the Refiner edits the harness in place; at training the online co-learning loop runs the model inside that same live-refining harness, so the trajectory distribution the model learns from co-adapts with its own policy.
+A capability floor exists below which the refinement loop cannot bootstrap: Flash-Lite stalls below
+20
+%
+20\%
+on Emerald, and every
+Continual Harness
+variant on Flash-Lite underperforms the minimalist baseline. Our co-learning experiments couple a frontier-model teacher to an open-source model; the framework extends to the same model serving both roles, but the open-source models we evaluated (Gemma-4 up to 31B) are not yet capable enough to act as both teacher and trainee.
+The co-learning loop is not saturated by our experiments: we report sustained milestone progress over the training horizon we ran but did not establish a convergence point. We restrict attention to reset-free training, where the emulator state at the end of iteration
+k
+k
+is loaded as the start of iteration
+k
++
+1
+k{+}1
+; the same loop applies to traditional batch accumulation with resets, and a head-to-head comparison between the two regimes on the same task remains open.
+Acknowledgement
+The authors acknowledge the support of National Science Foundation Graduate Research Fellowship Program under Grant No. DGE-2039656, computational resources from Princeton Language and Intelligence (PLI), and Google DeepMind.
+References
+[1]
+L. A. Agrawal, S. Tan, D. Soylu, N. Ziems, R. Khare, K. Opsahl-Ong, A. Singhvi, H. Shandilya, M. J. Ryan, M. Jiang,
+et al.
+(2025)
+Gepa: reflective prompt evolution can outperform reinforcement learning
+.
+arXiv preprint arXiv:2507.19457
+.
+Cited by:
+§1
+,
+§3.1
+,
+§5.1
+.
+[2]
+Anthropic
+(2025)
+Claude code
+.
+Note:
+https://docs.anthropic.com/en/docs/claude-code
+Cited by:
+§1
+,
+§5.1
+.
+[3]
+Anthropic
+(2025)
+Claude plays Pokémon
+.
+Note:
+https://www.twitch.tv/claudeplayspokemon
+Cited by:
+§5.2
+.
+[4]
+A. Gupta, J. Yu, T. Z. Zhao, V. Kumar, A. Rovinsky, K. Xu, T. Devlin, and S. Levine
+(2021)
+Reset-free reinforcement learning via multi-task learning: learning dexterous manipulation behaviors without human intervention
+.
+In
+2021 IEEE international conference on robotics and automation (ICRA)
+,
+pp. 6664–6671
+.
+Cited by:
+§5.3
+.
+[5]
+S. Karten, J. Grigsby, T. Upaa Jr, J. Bae, S. Hong, H. Jeong, J. Jung, K. Kerdthaisong, G. Kim, H. Kim,
+et al.
+(2026)
+The pokeagent challenge: competitive and long-context learning at scale
+.
+arXiv preprint arXiv:2603.15563
+.
+Cited by:
+Appendix A
+,
+§1
+,
+§2.2
+,
+§4.1
+,
+§4.1
+,
+§5.1
+,
+§5.2
+.
+[6]
+S. Karten, W. Li, Z. Ding, S. Kleiner, Y. Bai, and C. Jin
+(2025)
+Llm economist: large population models and mechanism design in multi-agent generative simulacra
+.
+arXiv preprint arXiv:2507.15815
+.
+Cited by:
+§5.3
+.
+[7]
+S. Karten, A. L. Nguyen, and C. Jin
+(2025)
+PokéChamp: an expert-level minimax language agent
+.
+arXiv preprint arXiv:2503.04094
+.
+Cited by:
+§5.2
+.
+[8]
+S. Karten, A. L. Nguyen, S. Milani, and C. Jin
+(2026)
+Small experts, big students: distilling long-horizon RL policies into LLM agents via imitation learning
+.
+Cited by:
+§D.1
+,
+§D.4
+,
+§4.5
+.
+[9]
+keepingiticy
+(2024)
+Pokémon Emerald any% glitchless speedrun (mgba)
+.
+Note:
+Speedrun.comAny% 2nd place record as of April 2026
+External Links:
+Link
+Cited by:
+Figure 9
+,
+Figure 9
+.
+[10]
+Y. Lee, R. Nair, Q. Zhang, K. Lee, O. Khattab, and C. Finn
+(2026)
+Meta-harness: end-to-end optimization of model harnesses
+.
+arXiv preprint arXiv:2603.28052
+.
+Cited by:
+§5.1
+.
+[11]
+H. Lightman, V. Kosaraju, Y. Burda, H. Edwards, B. Baker, T. Lee, J. Leike, J. Schulman, I. Sutskever, and K. Cobbe
+(2023)
+Let’s verify step by step
+.
+In
+The twelfth international conference on learning representations
+,
+Cited by:
+§5.3
+.
+[12]
+A. Madaan, N. Tandon, P. Gupta, S. Hallinan, L. Gao, S. Wiegreffe, U. Alon, N. Dziri, S. Prabhumoye, Y. Yang,
+et al.
+(2023)
+Self-refine: iterative refinement with self-feedback
+.
+Advances in neural information processing systems
+36
+,
+pp. 46534–46594
+.
+Cited by:
+§5.1
+.
+[13]
+Nous Research
+(2026)
+Hermes agent
+.
+Note:
+https://github.com/NousResearch/hermes-agent
+Accessed: 2026-03-22
+Cited by:
+§5.1
+.
+[14]
+K. Opsahl-Ong, M. J. Ryan, J. Purtell, D. Broman, C. Potts, M. Zaharia, and O. Khattab
+(2024)
+Optimizing instructions and demonstrations for multi-stage language model programs
+.
+In
+Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing
+,
+pp. 9340–9366
+.
+Cited by:
+§3.1
+,
+§5.1
+.
+[15]
+S. Ross, G. Gordon, and D. Bagnell
+(2011)
+A reduction of imitation learning and structured prediction to no-regret online learning
+.
+In
+Proceedings of the fourteenth international conference on artificial intelligence and statistics
+,
+pp. 627–635
+.
+Cited by:
+§D.1
+,
+§D.4
+,
+§4.5
+.
+[16]
+Z. Shao, P. Wang, Q. Zhu, R. Xu, J. Song, X. Bi, H. Zhang, M. Zhang, Y. Li, Y. Wu,
+et al.
+(2024)
+Deepseekmath: pushing the limits of mathematical reasoning in open language models
+.
+arXiv preprint arXiv:2402.03300
+.
+Cited by:
+§D.1
+,
+§5.3
+.
+[17]
+N. Shinn, F. Cassano, A. Gopinath, K. Narasimhan, and S. Yao
+(2023)
+Reflexion: language agents with verbal reinforcement learning
+.
+Advances in neural information processing systems
+36
+,
+pp. 8634–8652
+.
+Cited by:
+§5.1
+.
+[18]
+K. Song, A. Moeini, P. Wang, L. Gong, R. Chandra, S. Zhang, and Y. Qi
+(2025)
+Reward is enough: llms are in-context reinforcement learners
+.
+arXiv preprint arXiv:2506.06303
+.
+Cited by:
+§5.3
+.
+[19]
+P. Steinberger
+(2025)
+OpenClaw: an open-source autonomous AI agent
+.
+Note:
+https://github.com/psteinb/openclaw
+Originally released as Clawdbot, November 2025
+Cited by:
+§1
+,
+§5.1
+.
+[20]
+G. Wang, Y. Xie, Y. Jiang, A. Mandlekar, C. Xiao, Y. Zhu, L. Fan, and A. Anandkumar
+(2023)
+Voyager: an open-ended embodied agent with large language models
+.
+arXiv preprint arXiv:2305.16291
+.
+Cited by:
+§5.2
+.
+[21]
+X. Wang, B. Li, Y. Song, F. F. Xu, X. Tang, M. Zhuge, J. Pan, Y. Song, B. Li, J. Singh, H. H. Tran, F. Li, R. Ma, M. Zheng, B. Qian, Y. Shao, N. Muennighoff, Y. Zhang, B. Hui, J. Lin, R. Brennan, H. Peng, H. Ji, and G. Neubig
+(2024)
+Openhands: an open platform for ai software developers as generalist agents
+.
+arXiv preprint arXiv:2407.16741
+.
+Cited by:
+§1
+,
+§5.1
+.
+[22]
+Y. Wang, X. Chen, X. Jin, M. Wang, and L. Yang
+(2026)
+Openclaw-rl: train any agent simply by talking
+.
+arXiv preprint arXiv:2603.10165
+.
+Cited by:
+§D.1
+,
+§5.3
+.
+[23]
+S. Yao, J. Zhao, D. Yu, N. Du, I. Shafran, K. Narasimhan, and Y. Cao
+(2022)
+React: synergizing reasoning and acting in language models
+.
+arXiv preprint arXiv:2210.03629
+.
+Cited by:
+§5.3
+.
+[24]
+E. Zelikman, Y. Wu, J. Mu, and N. Goodman
+(2022)
+Star: bootstrapping reasoning with reasoning
+.
+Advances in Neural Information Processing Systems
+35
+,
+pp. 15476–15488
+.
+Cited by:
+§5.3
+.
+[25]
+A. L. Zhang, T. Kraska, and O. Khattab
+(2025)
+Recursive language models
+.
+arXiv preprint arXiv:2512.24601
+.
+Cited by:
+§5.3
+.
+Appendix Contents
+Appendix A
+Pokémon Environment
+We run experiments on three Pokémon titles: Pokémon Red (Game Boy, 1996; we use the re-release compatible with the Game Boy Advance emulator), Pokémon Crystal (Game Boy Color, 2000), and Pokémon Emerald (Game Boy Advance, 2004). All three are single-player, turn-based role-playing games with long-horizon structure: overworld navigation, NPC dialogue, turn-based Pokémon battles, inventory management, and gated objectives (badges, plot milestones).
+Interface.
+The emulator exposes a screen buffer (rendered at the native resolution of each game: 160
+×
+\times
+144 for Red/Crystal, 240
+×
+\times
+160 for Emerald), which we upscale
+2
+×
+2\times
+for the vision-language model, and a discrete button channel with eight inputs:
+UP
+,
+DOWN
+,
+LEFT
+,
+RIGHT
+,
+A
+,
+B
+,
+START
+,
+SELECT
+. Every observation step advances the emulator by a fixed number of frames (120) so that menu animations, battle text, and walking animations resolve between successive agent decisions.
+Text map.
+Because vision-language models have known difficulties with fine-grained spatial reasoning over pixel grids, we provide an ASCII text-map
+m
+t
+m_{t}
+alongside the frame observation
+o
+t
+o_{t}
+(
+Section
+2
+). The text map is derived from emulator memory and describes the visible tile grid around the player: walkable tiles (
+.
+), walls (
+#
+), interactable tiles (
+?
+, e.g., signs and talkable objects), NPCs (
+N
+), ledges, and the player’s position and facing. The map covers the current on-screen area plus a small margin of tiles just off-screen so the agent can plan one step ahead. The text map contains no walkthrough, no objective list, and no global map information beyond what is currently visible; it compensates for the VLM’s limited spatial reasoning, not for domain knowledge.
+Milestones and the button-press metric.
+We use the milestone sequence from the PokeAgent Challenge
+[
+5

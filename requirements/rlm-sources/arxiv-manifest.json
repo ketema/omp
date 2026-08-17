@@ -1,0 +1,20 @@
+{
+ "source": "https://arxiv.org/html/2605.09998v1",
+ "bytes": 72231,
+ "chunks": [
+  "arxiv-chunk-01.txt",
+  "arxiv-chunk-02.txt",
+  "arxiv-chunk-03.txt",
+  "arxiv-chunk-04.txt",
+  "arxiv-chunk-05.txt",
+  "arxiv-chunk-06.txt"
+ ],
+ "sections": [
+  "Continual Harness: Online Adaptation for",
+  ". An LLM Refiner edits",
+  "shows that the model\u2019s live in-game posi",
+  "]",
+  "shows this with two complementary views.",
+  "-step rollout begins from the saved emul"
+ ]
+}
