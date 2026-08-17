@@ -420,9 +420,13 @@ describe("transport live kernel (real spawn)", () => {
     interpreter = result.interpreterPath
   }, 240_000)
 
-  afterAll(() => {
-    if (workRoot !== "") fs.rmSync(workRoot, { recursive: true, force: true })
-  })
+  afterAll(async () => {
+    // Recoverable cleanup: move the work root to the system trash rather than
+    // permanently deleting it (no rm).
+    if (workRoot !== "") {
+      await Bun.spawn(["trash", workRoot], { stdout: "ignore", stderr: "ignore" }).exited
+    }
+  }, 120_000)
 
   function liveConfig(artifactsDir: string) {
     const session: KernelSession = {

@@ -503,9 +503,17 @@ export class RlmTransport implements KernelTransport {
   }
 
   /** POST-TRANS-3: interrupt the running cell; runner stays usable. */
+  /**
+   * POST-TRANS-3: interrupt aborts the in-flight cell. The runner's main
+   * loop is single-threaded and blocks inside cell execution, so it cannot
+   * read an op from stdin mid-cell — the interrupt is delivered as SIGINT to
+   * the process instead. The runner's SIGINT handler raises KeyboardInterrupt
+   * in the executing cell; the runner settles the cell as an interrupted
+   * error and stays usable.
+   */
   async interrupt(): Promise<void> {
     if (!this.started || this.process === null) return;
-    this.sendOp({ op: "interrupt" });
+    this.process.kill("SIGINT");
   }
 
   /**

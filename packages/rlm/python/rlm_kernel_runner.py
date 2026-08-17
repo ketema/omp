@@ -451,33 +451,42 @@ def main() -> None:
     # Ensure shell is initialized
     _ensure_shell()
 
-    # Read op lines from stdin
-    for line in sys.__stdin__:
-        line = line.strip()
-        if not line:
-            continue
+    # Read op lines from stdin. The loop is re-entered after an idle SIGINT
+    # (an interrupt delivered while no cell is executing) so the runner stays
+    # alive; a SIGINT that lands mid-cell is caught inside _execute_cell and
+    # settles that cell as an interrupted error instead.
+    while True:
         try:
-            op = json.loads(line)
-        except json.JSONDecodeError as exc:
-            _emit({
-                "type": "error",
-                "id": "",
-                "errorEname": "ProtocolError",
-                "data": f"invalid JSON: {exc}",
-            })
-            continue
+            for line in sys.__stdin__:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    op = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    _emit({
+                        "type": "error",
+                        "id": "",
+                        "errorEname": "ProtocolError",
+                        "data": f"invalid JSON: {exc}",
+                    })
+                    continue
 
-        try:
-            _handle_op(op)
-        except SystemExit:
-            raise
-        except BaseException as exc:
-            _emit({
-                "type": "error",
-                "id": op.get("id", ""),
-                "errorEname": type(exc).__name__,
-                "data": str(exc),
-            })
+                try:
+                    _handle_op(op)
+                except SystemExit:
+                    raise
+                except BaseException as exc:
+                    _emit({
+                        "type": "error",
+                        "id": op.get("id", ""),
+                        "errorEname": type(exc).__name__,
+                        "data": str(exc),
+                    })
+            break  # stdin closed (EOF)
+        except KeyboardInterrupt:
+            # Idle SIGINT with no cell in flight: absorb and keep serving.
+            continue
 
 
 if __name__ == "__main__":
