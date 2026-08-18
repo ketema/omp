@@ -253,7 +253,7 @@
         "FORBIDDEN-REC-3",
         "REQ-N-5"
       ],
-      "status": "PENDING",
+      "status": "AUDITED",
       "depends_on": [
         "SLICE-5"
       ],
