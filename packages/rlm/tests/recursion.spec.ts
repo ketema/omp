@@ -304,11 +304,11 @@ describe("RLM recursion engine (SLICE-6 RED)", () => {
   // INV-REC-LIFETIME-2 & SEQ-REC-8: Child Usage Attribution
   // ---------------------------------------------------------------------------
 
-  test("INV-REC-LIFETIME-2 + SEQ-REC-8: child usage is attributed to parent assistant turn", async () => {
+  test("INV-REC-LIFETIME-2 + SEQ-REC-8: child usage is attributed to parent assistant turn with correlation IDs", async () => {
     let attributedEvent: unknown = null;
     const engine = new RlmRecursionEngine({
-      parentSessionId: "parent-1",
-      parentArtifactsDir: "/tmp/artifacts/parent-1",
+      parentSessionId: "parent-session-xyz",
+      parentArtifactsDir: "/tmp/artifacts/parent-session-xyz",
       parentModel: "anthropic/claude-sonnet-5",
       onAttribution: (event) => {
         attributedEvent = event;
@@ -323,8 +323,12 @@ describe("RLM recursion engine (SLICE-6 RED)", () => {
     });
 
     expect(attributedEvent).toBeDefined();
-    expect((attributedEvent as Record<string, unknown>).parentMessageId).toBe("msg-turn-4");
-    expect((attributedEvent as Record<string, unknown>).attributedTokens).toEqual({ input: 1200, output: 400 });
+    const event = attributedEvent as Record<string, unknown>;
+    expect(event.parentMessageId).toBe("msg-turn-4");
+    expect(event.parentSessionId).toBe("parent-session-xyz");
+    expect(event.rlmChildId).toBe("sub-12345678");
+    expect(event.attributedTokens).toEqual({ input: 1200, output: 400 });
+    expect(event.childCost).toBe(0.012);
   });
   // ---------------------------------------------------------------------------
   // SEQ-REC-6 & SEQ-REC-7: Lifecycle Sequences
