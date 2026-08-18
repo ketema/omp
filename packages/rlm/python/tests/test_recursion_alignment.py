@@ -13,7 +13,8 @@ from pathlib import Path
 
 import rlm  # RED: hollow until GREEN
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
+_REPO_ROOT_DEPTH = 4  # packages/rlm/python/tests -> repo root
+REPO_ROOT = Path(__file__).resolve().parents[_REPO_ROOT_DEPTH]
 CONTRACT_TS = REPO_ROOT / "requirements" / "contracts" / "rlm-recursion.contract.ts"
 
 
@@ -33,6 +34,7 @@ def _ts_value_string(name: str) -> str:
             f"ACTUAL: not found\n"
         )
     return (m.group(1) or m.group(2)).strip()
+
 
 def _ts_value_number(name: str) -> int:
     """Extract an integer value from a TS const declaration."""

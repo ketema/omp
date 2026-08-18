@@ -27,25 +27,16 @@ import {
   REC_CHILD_DIR_PREFIX,
   REC_CHILD_ID_HEX_LEN,
   REC_DEFAULT_NAME_FALLBACK,
-  REC_DEPTH_DEFAULT,
-  REC_ERR_AMBIGUOUS,
   REC_ERR_DEPTH,
   REC_ERR_DISPOSED_PARENT,
-  REC_ERR_INVALID_HANDLE,
   REC_ERR_KWARGS,
   REC_ERR_MODEL_UNAVAILABLE,
-  REC_ERR_PREFLIGHT,
   REC_ERR_PROMPT_TYPE,
-  REC_ERR_UNKNOWN_TARGET,
-  REC_MAX_DEPTH_DEFAULT,
-  REC_MODEL_SEARCH_DEFAULT_LIMIT,
   REC_MODEL_SEARCH_MAX_LIMIT,
-  REC_NAME_MAX_CHARS,
   REC_TASK_PREFIX,
   RlmRecursionContractError,
   RlmRecursionEngine,
   RlmSubagentRegistry,
-  type RlmRecursionDeps,
   type RlmSpawnOptions,
 } from "../src/recursion.ts";
 
@@ -217,8 +208,8 @@ describe("RLM recursion engine (SLICE-6 RED)", () => {
   test("POST-REC-5: find_models caps results at max limit and ranks exact > prefix > substring", async () => {
     const catalog = [
       "openrouter/google/gemini-3.7-flash",
-      "google-antigravity/gemini-3.7-flash",
-      "google-antigravity/gemini-2.5-pro",
+      "gemini-3.7-flash-extra",
+      "gemini-3.7-flash",
       "anthropic/claude-sonnet-5",
       "anthropic/claude-opus-5",
       "xai-oauth/grok-4.6",
@@ -231,13 +222,17 @@ describe("RLM recursion engine (SLICE-6 RED)", () => {
       availableModels: catalog,
     });
 
-    const results = engine.findModels("gemini", 10);
+    const results = engine.findModels("gemini-3.7-flash", 10);
     expect(results.length).toBeLessThanOrEqual(REC_MODEL_SEARCH_MAX_LIMIT);
-    expect(results.every(m => m.toLowerCase().includes("gemini"))).toBe(true);
+    expect(results).toEqual([
+      "gemini-3.7-flash",
+      "gemini-3.7-flash-extra",
+      "openrouter/google/gemini-3.7-flash",
+    ]);
 
     // Exact search
     const exact = engine.findModels("xai-oauth/grok-4.6");
-    expect(exact[0]).toBe("xai-oauth/grok-4.6");
+    expect(exact).toEqual(["xai-oauth/grok-4.6"]);
   });
 
   // ---------------------------------------------------------------------------

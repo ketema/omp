@@ -229,9 +229,7 @@ export class RlmSubagentRegistry {
 	delete(target: string): RlmDeleteOutcome {
 		let match = this.entries.get(target);
 		if (match === undefined) {
-			const byName = [...this.entries.values()].filter(
-				entry => entry.session_name === target || entry.rlm_child_id === target,
-			);
+			const byName = [...this.entries.values()].filter(entry => entry.session_name === target);
 			if (byName.length === 0) {
 				throw new RlmRecursionContractError(REC_ERR_UNKNOWN_TARGET.replace("%s", target), {
 					clause: "ERRORS-REC-1",
@@ -313,16 +311,24 @@ export interface RlmRecursionEngineOptions {
 	/** Best-effort name derivation from the prompt; undefined triggers REC_DEFAULT_NAME_FALLBACK (POST-REC-6). */
 	readonly deriveName?: (prompt: string) => string | undefined;
 	/** Generates a fresh REC-V5-shaped child id; defaults to crypto randomness. */
-	readonly generateChildId?: () => string;
 	/**
 	 * Starts the child. Called but never awaited for its answer — the engine
 	 * never blocks admission on it (FORBIDDEN-REC-1).
 	 */
 	readonly childRunner?: (config: RlmRecursionChildConfig) => void | Promise<unknown>;
-	/** AP-1: optional error handler for asynchronous child runner failures. */
-	readonly onChildRunnerError?: (err: unknown, rlmChildId: string) => void;
-	/** SEQ-REC-7: fired when a child reaches a terminal status. */
-	readonly onTerminalNotice?: (event: { readonly rlmChildId: string; readonly status: "completed" | "error" }) => void;
+	readonly onChildRunnerError?: (
+		err: unknown,
+		rlmChildId: string,
+		context?: {
+			readonly rlmChildId: string;
+			readonly name: string;
+			readonly model: string;
+			readonly depth: number;
+			readonly maxDepth: number;
+			readonly sessionDir: string;
+			readonly parentSessionId: string;
+		},
+	) => void;
 	/** SEQ-REC-7/8: fired when the parent turn closes, after any terminal notice/attribution. */
 	readonly onTurnClose?: () => void;
 	/** SEQ-REC-8 / INV-REC-LIFETIME-2: fired when child usage is attributed. */
@@ -431,7 +437,6 @@ export class RlmRecursionEngine {
 		});
 
 		// POST-REC-2/3: children inherit depth+1 / max depth and a
-		// [task from parent]-prefixed task; FORBIDDEN-REC-1: never awaited here.
 		if (this.options.childRunner) {
 			void Promise.resolve(
 				this.options.childRunner({
@@ -445,7 +450,15 @@ export class RlmRecursionEngine {
 					parentSessionId: this.options.parentSessionId,
 				}),
 			).catch((err: unknown) => {
-				this.options.onChildRunnerError?.(err, rlmChildId);
+				this.options.onChildRunnerError?.(err, rlmChildId, {
+					rlmChildId,
+					name: finalName,
+					model,
+					depth: this.depth + 1,
+					maxDepth: this.maxDepth,
+					sessionDir,
+					parentSessionId: this.options.parentSessionId,
+				});
 			});
 		}
 		return handle;
