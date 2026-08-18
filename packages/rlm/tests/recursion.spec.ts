@@ -331,6 +331,78 @@ describe("RLM recursion engine (SLICE-6 RED)", () => {
     expect((attributedEvent as Record<string, unknown>).parentMessageId).toBe("msg-turn-4");
     expect((attributedEvent as Record<string, unknown>).attributedTokens).toEqual({ input: 1200, output: 400 });
   });
+  // ---------------------------------------------------------------------------
+  // SEQ-REC-6 & SEQ-REC-7: Lifecycle Sequences
+  // ---------------------------------------------------------------------------
+
+  test("SEQ-REC-6: depth gate executes BEFORE directory creation or admission", async () => {
+    let dirCreated = false;
+    const engine = new RlmRecursionEngine({
+      parentSessionId: "parent-1",
+      parentArtifactsDir: "/tmp/artifacts/parent-1",
+      parentModel: "anthropic/claude-sonnet-5",
+      depth: 1,
+      maxDepth: 1,
+      fs: {
+        mkdir: async () => {
+          dirCreated = true;
+        },
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await engine.spawn("nested task");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(RlmRecursionContractError);
+    expect(dirCreated).toBe(false);
+  });
+
+  test("SEQ-REC-7: terminal notice is emitted before parent turn closes on child completion", async () => {
+    const lifecycleEvents: string[] = [];
+    const engine = new RlmRecursionEngine({
+      parentSessionId: "parent-1",
+      parentArtifactsDir: "/tmp/artifacts/parent-1",
+      parentModel: "anthropic/claude-sonnet-5",
+      onTerminalNotice: (notice) => {
+        lifecycleEvents.push(`notice:${notice.status}`);
+      },
+      onTurnClose: () => {
+        lifecycleEvents.push("turn:close");
+      },
+    });
+
+    const handle = await engine.spawn("task");
+    await engine.notifyChildTerminal(handle.rlm_child_id, "completed");
+    await engine.closeTurn();
+
+    expect(lifecycleEvents).toEqual(["notice:completed", "turn:close"]);
+  });
+
+  test("INV-REC-LIFETIME-1: registry survives snapshot serialization and restore", () => {
+    const registry = new RlmSubagentRegistry({
+      storageDir: "/tmp/artifacts/parent-1/registry",
+    });
+
+    registry.register({
+      rlm_child_id: "sub-aabbccdd",
+      active_session_id: "sess-1",
+      session_id: "sess-1",
+      session_name: "worker",
+      session_dir: "/tmp/artifacts/sub-aabbccdd",
+      status: "running",
+    });
+
+    const snapshot = registry.serialize();
+    const restoredRegistry = RlmSubagentRegistry.deserialize(snapshot);
+    const listed = restoredRegistry.list();
+
+    expect(listed.length).toBe(1);
+    expect(listed[0].rlm_child_id).toBe("sub-aabbccdd");
+    expect(listed[0].session_name).toBe("worker");
+  });
 
   // ---------------------------------------------------------------------------
   // Disposed Parent Rejection (ERRORS-REC-1)

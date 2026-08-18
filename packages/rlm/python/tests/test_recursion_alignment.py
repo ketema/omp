@@ -58,11 +58,15 @@ def test_alignment_recursion_constants():
     assert rlm.REC_DEPTH_DEFAULT == _ts_value_number("REC_DEPTH_DEFAULT")
     assert rlm.REC_MAX_DEPTH_DEFAULT == _ts_value_number("REC_MAX_DEPTH_DEFAULT")
     assert rlm.REC_NAME_MAX_CHARS == _ts_value_number("REC_NAME_MAX_CHARS")
-    assert rlm.REC_MODEL_SEARCH_MAX_LIMIT == _ts_value_number("REC_MODEL_SEARCH_MAX_LIMIT")
+    assert rlm.REC_MODEL_SEARCH_MAX_LIMIT == _ts_value_number(
+        "REC_MODEL_SEARCH_MAX_LIMIT"
+    )
     assert rlm.REC_CHILD_DIR_PREFIX == _ts_value_string("REC_CHILD_DIR_PREFIX")
     assert rlm.REC_CHILD_ID_HEX_LEN == _ts_value_number("REC_CHILD_ID_HEX_LEN")
     assert rlm.REC_TASK_PREFIX == _ts_value_string("REC_TASK_PREFIX")
-    assert rlm.REC_DEFAULT_NAME_FALLBACK == _ts_value_string("REC_DEFAULT_NAME_FALLBACK")
+    assert rlm.REC_DEFAULT_NAME_FALLBACK == _ts_value_string(
+        "REC_DEFAULT_NAME_FALLBACK"
+    )
 
 
 def test_alignment_recursion_error_strings():
@@ -72,7 +76,9 @@ def test_alignment_recursion_error_strings():
     assert rlm.REC_ERR_DEPTH == _ts_value_string("REC_ERR_DEPTH")
     assert rlm.REC_ERR_KWARGS == _ts_value_string("REC_ERR_KWARGS")
     assert rlm.REC_ERR_PROMPT_TYPE == _ts_value_string("REC_ERR_PROMPT_TYPE")
-    assert rlm.REC_ERR_MODEL_UNAVAILABLE == _ts_value_string("REC_ERR_MODEL_UNAVAILABLE")
+    assert rlm.REC_ERR_MODEL_UNAVAILABLE == _ts_value_string(
+        "REC_ERR_MODEL_UNAVAILABLE"
+    )
     assert rlm.REC_ERR_PREFLIGHT == _ts_value_string("REC_ERR_PREFLIGHT")
     assert rlm.REC_ERR_INVALID_HANDLE == _ts_value_string("REC_ERR_INVALID_HANDLE")
     assert rlm.REC_ERR_UNKNOWN_TARGET == _ts_value_string("REC_ERR_UNKNOWN_TARGET")
@@ -86,6 +92,8 @@ def test_alignment_spawn_handle_fields():
     """
     handle_cls = getattr(rlm, "RLMSpawnHandle", None)
     assert handle_cls is not None, "RLMSpawnHandle must be exported by rlm"
-    assert hasattr(handle_cls, "__dataclass_fields__"), "RLMSpawnHandle must be a dataclass"
+    assert hasattr(handle_cls, "__dataclass_fields__"), (
+        "RLMSpawnHandle must be a dataclass"
+    )
     fields = tuple(handle_cls.__dataclass_fields__.keys())
     assert fields == ("rlm_child_id", "name", "session_dir", "model")

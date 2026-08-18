@@ -14,6 +14,7 @@ Traceability:
 
 import asyncio
 from dataclasses import is_dataclass
+
 import pytest
 import rlm
 
@@ -51,7 +52,12 @@ def test_post_rec_1_rlm_spawn_handle_is_frozen_dataclass():
         session_dir="/tmp/artifacts/sub-12345678",
         model="anthropic/claude-sonnet-5",
     )
-    assert handle.rlm_child_id == "sub-12345678"
+    assert handle.rlm_child_id == "sub-12345678", (
+        "POST-REC-1 violation: rlm_child_id mismatch\n"
+        "EXPECTED: 'sub-12345678'\n"
+        f"ACTUAL: {handle.rlm_child_id!r}\n"
+        "GUIDANCE: rlm_child_id must be populated from admission handle"
+    )
     assert handle.name == "api-reviewer"
     assert handle.session_dir == "/tmp/artifacts/sub-12345678"
     assert handle.model == "anthropic/claude-sonnet-5"
@@ -59,6 +65,31 @@ def test_post_rec_1_rlm_spawn_handle_is_frozen_dataclass():
     # Frozen: mutations raise
     with pytest.raises((AttributeError, TypeError)):
         handle.name = "mutated"
+
+
+def test_forbidden_rec_1_spawn_handle_never_contains_answer():
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: FORBIDDEN-REC-1 / REQ-N-5 (spawn handle never contains child answer)
+    - Category: negative-space
+    """
+    handle_cls = getattr(rlm, "RLMSpawnHandle", None)
+    assert handle_cls is not None, "RLMSpawnHandle must be exported"
+    handle = handle_cls(
+        rlm_child_id="sub-12345678",
+        name="worker",
+        session_dir="/tmp/artifacts/sub-12345678",
+        model="anthropic/claude-sonnet-5",
+    )
+    assert not hasattr(handle, "answer"), (
+        "FORBIDDEN-REC-1 violation: handle MUST NOT contain answer"
+    )
+    assert not hasattr(handle, "result"), (
+        "FORBIDDEN-REC-1 violation: handle MUST NOT contain result"
+    )
+    assert not hasattr(handle, "output"), (
+        "FORBIDDEN-REC-1 violation: handle MUST NOT contain output"
+    )
 
 
 def test_post_rec_1_rlm_run_and_callable_rlm_route_to_host_bridge():
@@ -84,9 +115,16 @@ def test_post_rec_1_rlm_run_and_callable_rlm_route_to_host_bridge():
         assert callable(run_fn), "rlm.run must be a callable function"
         handle = asyncio.run(run_fn("investigate performance", name="perf-worker"))
 
-        assert len(bridge.calls) == 1
+        assert len(bridge.calls) == 1, (
+            "POST-REC-1 violation: rlm.run did not call host bridge\n"
+            f"ACTUAL calls: {len(bridge.calls)}\n"
+            "GUIDANCE: rlm.run must dispatch host_request('rlm.run', payload)"
+        )
         assert bridge.calls[0][0] == "rlm.run"
-        assert bridge.calls[0][1] == {"prompt": "investigate performance", "name": "perf-worker"}
+        assert bridge.calls[0][1] == {
+            "prompt": "investigate performance",
+            "name": "perf-worker",
+        }
         assert handle.rlm_child_id == "sub-abcdef12"
         assert handle.name == "worker"
     finally:
@@ -116,6 +154,24 @@ def test_pre_rec_1_rlm_run_validates_prompt_and_kwargs():
         rlm._host_bridge = None
 
 
+def test_inv_rec_1_name_max_chars_validation():
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: PRE-REC-1 / F-257 (child name length cap: REC_NAME_MAX_CHARS = 64)
+    """
+    bridge = _FakeHostBridge()
+    rlm._host_bridge = bridge
+    try:
+        run_fn = getattr(rlm, "run", None)
+        assert callable(run_fn), "rlm.run must be callable"
+
+        with pytest.raises((ValueError, TypeError)) as excinfo:
+            asyncio.run(run_fn("prompt", name="x" * 65))
+        assert "64" in str(excinfo.value) or "name" in str(excinfo.value)
+    finally:
+        rlm._host_bridge = None
+
+
 def test_post_rec_4_find_models_routes_to_host_bridge():
     """
     CONTRACT TRACEABILITY:
@@ -124,7 +180,10 @@ def test_post_rec_4_find_models_routes_to_host_bridge():
     bridge = _FakeHostBridge(
         reply={
             "status": "ok",
-            "data": ["anthropic/claude-sonnet-5", "google-antigravity/gemini-3.7-flash"],
+            "data": [
+                "anthropic/claude-sonnet-5",
+                "google-antigravity/gemini-3.7-flash",
+            ],
         }
     )
     rlm._host_bridge = bridge
@@ -136,7 +195,10 @@ def test_post_rec_4_find_models_routes_to_host_bridge():
         assert len(bridge.calls) == 1
         assert bridge.calls[0][0] == "rlm.find_models"
         assert bridge.calls[0][1] == {"query": "sonnet", "limit": 5}
-        assert models == ["anthropic/claude-sonnet-5", "google-antigravity/gemini-3.7-flash"]
+        assert models == [
+            "anthropic/claude-sonnet-5",
+            "google-antigravity/gemini-3.7-flash",
+        ]
     finally:
         rlm._host_bridge = None
 
@@ -169,5 +231,27 @@ def test_post_rec_5_list_and_delete_subagents_route_to_host_bridge():
         assert outcome == "deleted"
         assert bridge.calls[0][0] == "rlm.delete_subagent"
         assert bridge.calls[0][1] == {"selector": "sub-11223344"}
+    finally:
+        rlm._host_bridge = None
+
+
+def test_errors_rec_1_host_error_propagates_exact_exception():
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: ERRORS-REC-1 (host errors raise RuntimeError with exact message)
+    """
+    bridge = _FakeHostBridge(
+        reply={
+            "status": "error",
+            "error": "RLM recursion depth limit reached (RLM_DEPTH=1, RLM_MAX_DEPTH=1)",
+        }
+    )
+    rlm._host_bridge = bridge
+    try:
+        run_fn = getattr(rlm, "run", None)
+        assert callable(run_fn), "rlm.run must be callable"
+        with pytest.raises(RuntimeError) as excinfo:
+            asyncio.run(run_fn("nested call"))
+        assert "RLM recursion depth limit reached" in str(excinfo.value)
     finally:
         rlm._host_bridge = None
