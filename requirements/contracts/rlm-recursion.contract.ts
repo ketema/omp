@@ -89,10 +89,26 @@ export interface RlmSubagentEntry {
   readonly session_dir: string
   readonly status: RlmSubagentStatus
 }
-
 /** F-144: delete outcome. */
 export type RlmDeleteOutcome = 'deleted' | 'skipped_running'
 
+/** F-131/F-132: caller-supplied usage input correlated to child subagent and parent session. */
+export interface RlmRecursionUsageInput {
+  readonly parentMessageId: string
+  readonly parentSessionId?: string
+  readonly rlmChildId: string
+  readonly childTokens: { readonly input: number; readonly output: number }
+  readonly childCost: number
+}
+
+/** F-131/F-132 / INV-REC-LIFETIME-2: usage folded into parent assistant turn, correlated by rlmChildId. */
+export interface RlmRecursionAttributionEvent {
+  readonly parentMessageId: string
+  readonly parentSessionId: string
+  readonly rlmChildId: string
+  readonly attributedTokens: { readonly input: number; readonly output: number }
+  readonly childCost: number
+}
 // =============================================================================
 // Artifact 4: Validators
 // =============================================================================
@@ -206,10 +222,10 @@ export const RLM_RECURSION_CONTRACT = {
   'POST-REC-6': 'When name derivation fails, the admission handle carries the fallback name REC_DEFAULT_NAME_FALLBACK so the fallback is observable in the returned handle, never silent (F-114, CL15-D).',
   'INV-REC-1': 'Sibling names are unique within the parent, including pending spawns (F-115).',
   'INV-REC-LIFETIME-1': 'The parent-scoped registry survives kernel restart, compaction, and parent restore (F-146, A-014).',
-  'INV-REC-LIFETIME-2': 'Child usage is folded into the parent assistant turn and persisted as child_usage_attributed (F-131/F-132, A-013).',
+  'INV-REC-LIFETIME-2': 'Child usage is folded into the parent assistant turn and persisted as child_usage_attributed, correlated by rlmChildId and parentSessionId (F-131/F-132, A-013).',
   'SEQ-REC-6': 'The TypeScript host SHALL run the depth gate and model resolution BEFORE child admission (SEQ-6, IP-3, F-110).',
   'SEQ-REC-7': 'A finishing child SHALL deliver a parent reply or a terminal notice BEFORE parent turn accounting closes (SEQ-7, IP-4, F-129).',
-  'SEQ-REC-8': 'The TypeScript host SHALL attribute child usage into the parent assistant turn BEFORE transcript finalization (SEQ-8, IP-4, F-131).',
+  'SEQ-REC-8': 'The TypeScript host SHALL attribute child usage carrying rlmChildId and parentSessionId into the parent assistant turn BEFORE transcript finalization (SEQ-8, IP-4, F-131).',
   'ERRORS-REC-1': 'Depth exhaustion, unsupported kwargs, invalid names, unavailable models, failed preflight, invalid handles, unknown/ambiguous delete targets, and disposed parents raise with the exact REC_ERR_* strings (F-226..F-234).',
   'FORBIDDEN-REC-1': 'The TypeScript host SHALL NOT return a child answer as the spawn return value (REQ-N-5).',
   'FORBIDDEN-REC-2': 'Deletion SHALL NOT erase child transcripts or artifacts; it tombstones and removes from messaging/observation only (F-144, REQ-RLM-0009, A-014).',
