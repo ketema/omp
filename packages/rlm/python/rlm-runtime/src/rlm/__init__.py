@@ -12,6 +12,7 @@ SLICE-5 surface:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import sys
 import types
@@ -36,6 +37,33 @@ MCP_LAZY_EXPORTS: tuple[str, ...] = ("McpIntegration", "McpToolError", "NotEnabl
 
 # POST-RT-5 / REQ-RLM-0006 / F-071
 HOST_REPLY_STATUSES: tuple[str, ...] = ("ok", "error", "unexpected")
+
+# Constants redeclared independently; aligned with rlm-recursion.contract.ts
+# (SLICE-6, F-250..F-258).
+REC_DEPTH_DEFAULT = 0
+REC_MAX_DEPTH_DEFAULT = 1
+REC_NAME_MAX_CHARS = 64
+REC_MODEL_SEARCH_DEFAULT_LIMIT = 8
+REC_MODEL_SEARCH_MAX_LIMIT = 20
+REC_CHILD_DIR_PREFIX = "sub-"
+REC_CHILD_ID_HEX_LEN = 8
+REC_TASK_PREFIX = "[task from parent]"
+REC_DEFAULT_NAME_FALLBACK = "worker"
+
+# Exact error strings (F-226..F-234)
+REC_ERR_DEPTH = "RLM recursion depth limit reached (RLM_DEPTH=%d, RLM_MAX_DEPTH=%d)"
+REC_ERR_KWARGS = "Unsupported rlm.run kwargs: %s"
+REC_ERR_PROMPT_TYPE = "rlm.run prompt must be a string"
+REC_ERR_MODEL_UNAVAILABLE = (
+    'Requested subagent model "%s" is unavailable, unauthenticated, or expired'
+)
+REC_ERR_PREFLIGHT = 'Requested subagent model "%s" failed authentication preflight'
+REC_ERR_INVALID_HANDLE = "rlm.run returned an invalid spawn handle"
+REC_ERR_UNKNOWN_TARGET = (
+    'No direct RLM subagent matches "%s" in the current parent session'
+)
+REC_ERR_AMBIGUOUS = 'RLM subagent selector "%s" is ambiguous'
+REC_ERR_DISPOSED_PARENT = "Cannot spawn a subagent after its parent was disposed"
 
 
 # =============================================================================
@@ -267,15 +295,136 @@ def __getattr__(name: str) -> object:
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
+# =============================================================================
+# Recursion — await rlm(prompt, **kwargs) admission (SLICE-6)
+# =============================================================================
+
+
+@dataclasses.dataclass(frozen=True)
+class RLMSpawnHandle:
+    """F-070: the admission handle returned by a successful spawn."""
+
+    rlm_child_id: str
+    name: str
+    session_dir: str
+    model: str
+
+
+_RUN_KWARGS_ALLOWED = frozenset({"name", "model"})
+
+
+def _validate_spawn_handle(candidate: object) -> RLMSpawnHandle:
+    """REC-V4 / POST-REC-1: the four handle fields must be non-empty strings."""
+    if isinstance(candidate, RLMSpawnHandle):
+        return candidate
+    if not isinstance(candidate, dict):
+        raise RuntimeError(REC_ERR_INVALID_HANDLE)
+    fields = ("rlm_child_id", "name", "session_dir", "model")
+    if not all(
+        isinstance(candidate.get(field), str) and candidate.get(field)
+        for field in fields
+    ):
+        raise RuntimeError(REC_ERR_INVALID_HANDLE)
+    return RLMSpawnHandle(**{field: candidate[field] for field in fields})
+
+
+async def run(prompt: object, **kwargs: object) -> RLMSpawnHandle:
+    """PRE-REC-1: prompt is a string; kwargs are a subset of {name, model}.
+
+    POST-REC-1: delegates admission to the host recursion engine and
+    returns only the 4-field handle — the child's answer never appears in
+    the return.
+    """
+    if not isinstance(prompt, str):
+        raise TypeError(REC_ERR_PROMPT_TYPE)
+    unsupported = sorted(k for k in kwargs if k not in _RUN_KWARGS_ALLOWED)
+    if unsupported:
+        raise TypeError(REC_ERR_KWARGS % ", ".join(unsupported))
+    name = kwargs.get("name")
+    if name is not None and (
+        not isinstance(name, str)
+        or len(name.strip()) == 0
+        or len(name) > REC_NAME_MAX_CHARS
+    ):
+        raise ValueError(
+            "REC-V3 violation: rlm.run name must be a non-empty string of at "
+            f"most {REC_NAME_MAX_CHARS} characters"
+        )
+    payload: dict[str, object] = {"prompt": prompt, **kwargs}
+    result = await host_request("rlm.run", payload)
+    return _validate_spawn_handle(result)
+
+
+async def find_models(query: str = "", **kwargs: object) -> list[object]:
+    """POST-REC-5: ranked model search via the host catalog, capped at
+    REC_MODEL_SEARCH_MAX_LIMIT."""
+    result = await host_request("rlm.find_models", {"query": query, **kwargs})
+    models = result if isinstance(result, list) else []
+    return models[:REC_MODEL_SEARCH_MAX_LIMIT]
+
+
+async def list_subagents(**kwargs: object) -> list[object]:
+    """POST-REC-5: this parent's registry entries via the host registry."""
+    result = await host_request("rlm.list_subagents", dict(kwargs))
+    return result if isinstance(result, list) else []
+
+
+async def delete_subagent(selector: str, **kwargs: object) -> str:
+    """FORBIDDEN-REC-2: tombstones/removes from messaging only; never
+    erases transcripts or artifacts."""
+    result = await host_request("rlm.delete_subagent", {"selector": selector, **kwargs})
+    if isinstance(result, dict) and "outcome" in result:
+        return str(result["outcome"])
+    return str(result)
+
+
 __all__ = [
     "__version__",
     "UNAVAILABLE_RUN_ERROR",
     "UNAVAILABLE_REPR_PREFIX",
     "MCP_LAZY_EXPORTS",
     "HOST_REPLY_STATUSES",
+    "REC_DEPTH_DEFAULT",
+    "REC_MAX_DEPTH_DEFAULT",
+    "REC_NAME_MAX_CHARS",
+    "REC_MODEL_SEARCH_DEFAULT_LIMIT",
+    "REC_MODEL_SEARCH_MAX_LIMIT",
+    "REC_CHILD_DIR_PREFIX",
+    "REC_CHILD_ID_HEX_LEN",
+    "REC_TASK_PREFIX",
+    "REC_DEFAULT_NAME_FALLBACK",
+    "REC_ERR_DEPTH",
+    "REC_ERR_KWARGS",
+    "REC_ERR_PROMPT_TYPE",
+    "REC_ERR_MODEL_UNAVAILABLE",
+    "REC_ERR_PREFLIGHT",
+    "REC_ERR_INVALID_HANDLE",
+    "REC_ERR_UNKNOWN_TARGET",
+    "REC_ERR_AMBIGUOUS",
+    "REC_ERR_DISPOSED_PARENT",
     "wrap_skill_module",
     "UnavailableSkill",
     "host_request",
     "set_host_bridge",
     "get_host_bridge",
+    "RLMSpawnHandle",
+    "run",
+    "find_models",
+    "list_subagents",
+    "delete_subagent",
 ]
+
+
+# =============================================================================
+# Module callable — `await rlm(prompt, **kwargs)` sugar for `await rlm.run(...)`
+# =============================================================================
+
+
+class _CallableRlmModule(types.ModuleType):
+    """POST-REC-1: makes this module itself callable."""
+
+    async def __call__(self, prompt: object, **kwargs: object) -> RLMSpawnHandle:
+        return await run(prompt, **kwargs)
+
+
+sys.modules[__name__].__class__ = _CallableRlmModule
