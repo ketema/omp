@@ -162,8 +162,9 @@ async def host_request(request_type: str, payload: dict[str, Any] | None = None)
         return reply
 
     status = reply.get("status")
-    if status not in HOST_REPLY_STATUSES and status is not None:
-        raise RuntimeError(f"Unexpected host reply status: {status}")
+    # Finding #3: status must be explicit and in HOST_REPLY_STATUSES
+    if status not in HOST_REPLY_STATUSES:
+        raise RuntimeError(f"POST-RT-5: unexpected host status: {status}")
 
     if status == "error":
         error_msg = reply.get("error", "Host request failed")
@@ -173,69 +174,68 @@ async def host_request(request_type: str, payload: dict[str, Any] | None = None)
         error_msg = reply.get("error", "Host request encountered unexpected condition")
         raise RuntimeError(f"POST-RT-5: unexpected host status: {error_msg}")
 
-    # status is 'ok' or not specified
+    # status == "ok"
+    # Finding #2: unwrap contract-standard data field, or value field if present
+    if "data" in reply:
+        return reply["data"]
     if "value" in reply and len(reply) <= 2:
         return reply["value"]
 
-    # If dict contains other keys, strip status key if present
-    if status is not None:
-        return {k: v for k, v in reply.items() if k != "status"}
-    return reply
+    return {k: v for k, v in reply.items() if k != "status"}
 
 
 # =============================================================================
 # MCP Lazy Integration (POST-RT-3 / POST-RT-4 / FORBIDDEN-RT-1)
 # =============================================================================
 
-class McpToolError(Exception):
-    """Raised when an MCP tool call fails."""
-
-
-class NotEnabled(McpToolError):
-    """Raised when MCP integration is not enabled in this session."""
-
-
-class McpIntegration:
-    """Discovers and invokes MCP tools through host_request (no direct credentials in Python)."""
-
-    def __init__(self, server_name: str | None = None, **kwargs: Any):
-        self.server_name = server_name
-
-    async def list_tools(self, **kwargs: Any) -> Any:
-        return await host_request("mcp.list_tools", {"server": self.server_name, **kwargs})
-
-    async def call_tool(
-        self, tool_name: str, arguments: dict[str, Any] | None = None, **kwargs: Any
-    ) -> Any:
-        return await host_request(
-            "mcp.call_tool",
-            {
-                "server": self.server_name,
-                "tool": tool_name,
-                "arguments": arguments if arguments is not None else {},
-                **kwargs,
-            },
-        )
-
-    async def config(self, **kwargs: Any) -> Any:
-        return await host_request("mcp.config", {"server": self.server_name, **kwargs})
-
-    async def resolve_config(self, **kwargs: Any) -> Any:
-        return await host_request("mcp.config", {"server": self.server_name, **kwargs})
-
-    async def refresh(self, **kwargs: Any) -> Any:
-        return await host_request("mcp.refresh", {"server": self.server_name, **kwargs})
-
+# Finding #5: Define classes lazily within __getattr__ so top-level __dict__
+# remains free of eager exports, fulfilling PEP 562 / F-080.
 
 def __getattr__(name: str) -> Any:
-    # POST-RT-3: expose McpIntegration, McpToolError, NotEnabled lazily
-    if name in MCP_LAZY_EXPORTS:
-        if name == "McpIntegration":
-            return McpIntegration
-        if name == "McpToolError":
-            return McpToolError
-        if name == "NotEnabled":
-            return NotEnabled
+    """POST-RT-3: expose McpIntegration, McpToolError, NotEnabled lazily."""
+    if name == "McpIntegration":
+        class McpIntegration:
+            """Discovers and invokes MCP tools through host_request (no direct credentials in Python)."""
+
+            def __init__(self, server_name: str | None = None, **kwargs: Any):
+                self.server_name = server_name
+
+            async def list_tools(self, **kwargs: Any) -> Any:
+                return await host_request("mcp.list_tools", {"server": self.server_name, **kwargs})
+
+            async def call_tool(
+                self, tool_name: str, arguments: dict[str, Any] | None = None, **kwargs: Any
+            ) -> Any:
+                return await host_request(
+                    "mcp.call_tool",
+                    {
+                        "server": self.server_name,
+                        "tool": tool_name,
+                        "arguments": arguments if arguments is not None else {},
+                        **kwargs,
+                    },
+                )
+
+            async def config(self, **kwargs: Any) -> Any:
+                return await host_request("mcp.config", {"server": self.server_name, **kwargs})
+
+            async def resolve_config(self, **kwargs: Any) -> Any:
+                return await self.config(**kwargs)
+
+            async def refresh(self, **kwargs: Any) -> Any:
+                return await host_request("mcp.refresh", {"server": self.server_name, **kwargs})
+
+        return McpIntegration
+    if name == "McpToolError":
+        class McpToolError(Exception):
+            """Raised when an MCP tool call fails."""
+        return McpToolError
+
+    if name == "NotEnabled":
+        class NotEnabled(Exception):
+            """Raised when MCP integration is not enabled in this session."""
+        return NotEnabled
+
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 

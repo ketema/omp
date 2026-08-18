@@ -61,9 +61,19 @@ export const TRANS_RUNNER_FILE = "rlm_kernel_runner.py";
 export const TRANS_PROTOCOL_VERSION = 1;
 export const TRANS_READY_TIMEOUT_MS = 5000;
 export const TRANS_KILL_GRACE_MS = 200;
+export const TRANS_KILL_WAIT_BUFFER_MS = 50;
 export const TRANS_STDERR_TAIL_CHARS = 1024;
 
-// =============================================================================
+export const TRANS_FRAMES = [
+  "ready",
+  "started",
+  "stdout",
+  "stderr",
+  "result",
+  "error",
+  "done",
+  "host_request",
+] as const;
 // Structural types
 // =============================================================================
 
@@ -134,16 +144,7 @@ interface WireOp {
   readonly [key: string]: unknown;
 }
 
-type FrameType =
-  | "ready"
-  | "started"
-  | "stdout"
-  | "stderr"
-  | "result"
-  | "error"
-  | "done"
-  | "host_request";
-
+type FrameType = (typeof TRANS_FRAMES)[number];
 interface WireFrame {
   readonly type: FrameType;
   readonly id?: string;
@@ -179,19 +180,9 @@ function boundedStderrTail(stderr: string): string {
 function isKnownFrameType(type: unknown): type is FrameType {
   return (
     typeof type === "string" &&
-    [
-      "ready",
-      "started",
-      "stdout",
-      "stderr",
-      "result",
-      "error",
-      "done",
-      "host_request",
-    ].includes(type)
+    (TRANS_FRAMES as readonly string[]).includes(type)
   );
 }
-
 // =============================================================================
 // Default process wrapper (Bun.spawn)
 // =============================================================================
@@ -480,7 +471,7 @@ export class RlmTransport implements KernelTransport {
     });
 
     // Process exit handler
-    process.onExit((code: number | null, _signal: string | null) => {
+    process.onExit((code: number | null, signal: string | null) => {
       if (this.readyReject !== null) {
         this.readyReject(
           new TransportUnresponsiveError(boundedStderrTail(this.stderrAccum)),
@@ -488,6 +479,26 @@ export class RlmTransport implements KernelTransport {
         this.readyResolve = null;
         this.readyReject = null;
       }
+      // Settle active execution if process died unexpectedly
+      if (this.activeExecPending !== null) {
+        const pending = this.activeExecPending;
+        this.activeExecId = null;
+        this.activeExecPending = null;
+        pending.reject(
+          new TransportProtocolError(
+            `runner process exited unexpectedly (code: ${code}, signal: ${signal}) during execution`,
+          ),
+        );
+      }
+      // Reject all pending ops if process died
+      for (const [id, op] of this.pendingOps.entries()) {
+        op.reject(
+          new TransportProtocolError(
+            `runner process exited unexpectedly (code: ${code}, signal: ${signal}) during op ${id}`,
+          ),
+        );
+      }
+      this.pendingOps.clear();
     });
 
     try {
@@ -545,18 +556,11 @@ export class RlmTransport implements KernelTransport {
   }
 
   /**
-   * SEQ-TRANS-2: kill sends SIGTERM; escalate SIGKILL after
-   * TRANS_KILL_GRACE_MS (clock-scheduled).
+   * SEQ-TRANS-2: Helper to escalate from SIGTERM to SIGKILL after TRANS_KILL_GRACE_MS.
    */
-  async kill(): Promise<void> {
-    if (this.process === null) return;
-    this.started = false;
-    const proc = this.process;
-
+  private async escalateKill(proc: RlmTransportProcess): Promise<void> {
     const exitPromise = new Promise<boolean>((resolve) => {
       proc.onExit((_code, _signal) => resolve(true));
-      // If already exited
-      // (onExit fires immediately if already exited in the default wrapper)
     });
 
     proc.kill("SIGTERM");
@@ -565,9 +569,27 @@ export class RlmTransport implements KernelTransport {
       proc.kill("SIGKILL");
     }, TRANS_KILL_GRACE_MS);
 
-    await Promise.race([exitPromise, new Promise<void>(r => this.clock.schedule(() => r(), TRANS_KILL_GRACE_MS + 50))]);
+    await Promise.race([
+      exitPromise,
+      new Promise<void>((r) =>
+        this.clock.schedule(
+          () => r(),
+          TRANS_KILL_GRACE_MS + TRANS_KILL_WAIT_BUFFER_MS,
+        ),
+      ),
+    ]);
 
     cancelEscalation();
+  }
+
+  /**
+   * SEQ-TRANS-2: kill sends SIGTERM; escalate SIGKILL after
+   * TRANS_KILL_GRACE_MS (clock-scheduled).
+   */
+  async kill(): Promise<void> {
+    if (this.process === null) return;
+    this.started = false;
+    await this.escalateKill(this.process);
   }
 
   onOutput(cb: (event: KernelOutputEvent) => void): void {
@@ -694,21 +716,7 @@ export class RlmTransport implements KernelTransport {
         // process may already be dead
       }
 
-      // Wait briefly for graceful exit, then kill
-      const proc = this.process;
-      const cancelKill = this.clock.schedule(() => {
-        proc.kill("SIGTERM");
-      }, 50);
-
-      const cancelEscalation = this.clock.schedule(() => {
-        proc.kill("SIGKILL");
-      }, TRANS_KILL_GRACE_MS + 50);
-
-      // Give a moment for graceful exit
-      await new Promise<void>(r => this.clock.schedule(() => r(), 100));
-
-      cancelKill();
-      cancelEscalation();
+      await this.escalateKill(this.process);
     }
 
     this.process = null;
@@ -905,26 +913,25 @@ export class RlmTransport implements KernelTransport {
             ...(frame.data !== undefined ? { traceback: frame.data } : {}),
             ...(frame.errorEname !== undefined ? { errorEname: frame.errorEname } : {}),
           });
+        } else {
+          // Unmatched error frame — route to output callback if active
+          if (this.outputCallback !== null && frame.data) {
+            this.outputCallback({
+              id: frame.id ?? "unmatched",
+              stream: "stderr",
+              data: `[runner error] ${frame.errorEname ?? "unknown"}: ${frame.data}\n`,
+            });
+          }
         }
         return;
       }
 
       case "host_request": {
         if (this.hostRequestHandler !== null) {
-          const rawFrame = frame as Record<string, unknown>;
-          const reqType =
-            (rawFrame.requestType as string | undefined) ??
-            (rawFrame.request_type as string | undefined) ??
-            (rawFrame.reqType as string | undefined) ??
-            frame.type;
+          const reqType = frame.requestType ?? frame.type;
           const normalizedType =
-            reqType === "host_request"
-              ? ((rawFrame.requestType as string | undefined) ??
-                (rawFrame.name as string | undefined) ??
-                "")
-              : reqType;
-          const reqPayload =
-            (frame.payload as Record<string, unknown> | undefined) ?? {};
+            reqType === "host_request" ? (frame.requestType ?? "") : reqType;
+          const reqPayload = frame.payload ?? {};
           Promise.resolve(
             this.hostRequestHandler({
               type: normalizedType,
