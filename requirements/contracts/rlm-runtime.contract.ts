@@ -173,7 +173,7 @@ export const RLM_RUNTIME_CONTRACT = {
   'INV-RT-LIFETIME-1': 'Every host_request future settles (ok, error, or unexpected) from first use through kernel shutdown; no future is left pending (cross-ref INV-BR-LIFETIME-1).',
   'ERRORS-RT-1': 'host_request with a non-str/empty type or a non-dict payload raises TypeError; a host error or unexpected reply raises RuntimeError (F-071/F-073).',
   'ERRORS-RT-2': 'Calling an unavailable skill run/__call__ raises RuntimeError carrying the recorded import error (F-027).',
-  'FORBIDDEN-RT-1': 'The rlm runtime and McpIntegration SHALL NOT read credentials, auth stores, or tokens from the filesystem or environment in the Python process; all credential resolution routes through host_request to the host (REQ-N-3, F-207, cross-ref FORBIDDEN-BR-2).',
+  'FORBIDDEN-RT-1': 'The rlm runtime and McpIntegration SHALL NOT read credentials, auth stores, or tokens from the filesystem or environment in the Python process; all credential resolution routes through host_request to the host (REQ-N-3, REQ-RLM-0017, F-207, cross-ref FORBIDDEN-BR-2).',
   'FORBIDDEN-RT-2': 'Skill wrapping SHALL NOT alter a module that has no callable run and SHALL NOT re-wrap an already-wrapped module (F-026 idempotence).',
 } as const
 
