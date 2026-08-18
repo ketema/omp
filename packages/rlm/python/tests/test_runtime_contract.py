@@ -46,8 +46,8 @@ def make_skill_module(name="demo_skill", run=None, doc="demo skill doc"):
     mod = types.ModuleType(name)
     if run is not None:
         mod.run = run
-    if doc is not None:
-        mod.run.__doc__ = doc if run is not None else None
+    if doc is not None and run is not None:
+        mod.run.__doc__ = doc
     return mod
 
 
@@ -224,8 +224,9 @@ def test_errors_rt_2_unavailable_shim_run_raises_with_import_error():
     with pytest.raises(RuntimeError) as excinfo:
         asyncio.run(shim.run())
     message = str(excinfo.value)
-    expected = rlm.UNAVAILABLE_RUN_ERROR.replace("%s", "broken_skill").replace(
-        "%s", "No module named 'broken_skill'"
+    expected = rlm.UNAVAILABLE_RUN_ERROR % (
+        "broken_skill",
+        "No module named 'broken_skill'",
     )
     assert message == expected, (
         "ERRORS-RT-2 violation: unavailable-skill run error mismatch\n"

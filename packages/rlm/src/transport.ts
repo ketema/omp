@@ -117,7 +117,8 @@ type OpName =
   | "snapshot_write"
   | "snapshot_restore"
   | "bootstrap"
-  | "shutdown";
+  | "shutdown"
+  | "host_reply";
 
 interface WireOp {
   readonly op: OpName;
@@ -126,6 +127,11 @@ interface WireOp {
   readonly path?: string;
   readonly manifestPath?: string;
   readonly maxBytes?: number;
+  readonly requestId?: string;
+  readonly status?: string;
+  readonly value?: unknown;
+  readonly error?: string;
+  readonly [key: string]: unknown;
 }
 
 type FrameType =
@@ -135,7 +141,8 @@ type FrameType =
   | "stderr"
   | "result"
   | "error"
-  | "done";
+  | "done"
+  | "host_request";
 
 interface WireFrame {
   readonly type: FrameType;
@@ -153,6 +160,10 @@ interface WireFrame {
   readonly restoredNames?: string[];
   readonly protocol?: number;
   readonly pythonVersion?: string;
+  readonly requestType?: string;
+  readonly requestId?: string;
+  readonly payload?: Record<string, unknown>;
+  readonly [key: string]: unknown;
 }
 
 // =============================================================================
@@ -168,7 +179,16 @@ function boundedStderrTail(stderr: string): string {
 function isKnownFrameType(type: unknown): type is FrameType {
   return (
     typeof type === "string" &&
-    ["ready", "started", "stdout", "stderr", "result", "error", "done"].includes(type)
+    [
+      "ready",
+      "started",
+      "stdout",
+      "stderr",
+      "result",
+      "error",
+      "done",
+      "host_request",
+    ].includes(type)
   );
 }
 
@@ -381,6 +401,14 @@ export class RlmTransport implements KernelTransport {
   private readyResolve: ((frame: TransReadyFrame) => void) | null = null;
   private readyReject: ((error: unknown) => void) | null = null;
 
+  private hostRequestHandler:
+    | ((request: {
+        type: string;
+        payload: Record<string, unknown>;
+        requestId?: string;
+        id?: string;
+      }) => Promise<Record<string, unknown>>)
+    | null = null;
   constructor(config: RlmTransportConfig, deps?: RlmTransportDeps) {
     this.config = config;
     this.clock = deps?.clock ?? {
@@ -546,6 +574,19 @@ export class RlmTransport implements KernelTransport {
     this.outputCallback = cb;
   }
 
+  /** POST-TRANS-6: register host request handler for mid-execute requests. */
+  onHostRequest(
+    handler:
+      | ((request: {
+          type: string;
+          payload: Record<string, unknown>;
+          requestId?: string;
+          id?: string;
+        }) => Promise<Record<string, unknown>>)
+      | null,
+  ): void {
+    this.hostRequestHandler = handler;
+  }
   /** POST-TRANS-4: snapshotNames → runner-reported name list. */
   async snapshotNames(): Promise<string[]> {
     this.assertNotDisposed();
@@ -864,6 +905,61 @@ export class RlmTransport implements KernelTransport {
             ...(frame.data !== undefined ? { traceback: frame.data } : {}),
             ...(frame.errorEname !== undefined ? { errorEname: frame.errorEname } : {}),
           });
+        }
+        return;
+      }
+
+      case "host_request": {
+        if (this.hostRequestHandler !== null) {
+          const rawFrame = frame as Record<string, unknown>;
+          const reqType =
+            (rawFrame.requestType as string | undefined) ??
+            (rawFrame.request_type as string | undefined) ??
+            (rawFrame.reqType as string | undefined) ??
+            frame.type;
+          const normalizedType =
+            reqType === "host_request"
+              ? ((rawFrame.requestType as string | undefined) ??
+                (rawFrame.name as string | undefined) ??
+                "")
+              : reqType;
+          const reqPayload =
+            (frame.payload as Record<string, unknown> | undefined) ?? {};
+          Promise.resolve(
+            this.hostRequestHandler({
+              type: normalizedType,
+              payload: reqPayload,
+            }),
+          )
+            .then(reply => {
+              try {
+                const status =
+                  (reply.status as string | undefined) ??
+                  (reply.error ? "error" : "ok");
+                this.sendOp({
+                  op: "host_reply",
+                  ...(frame.id !== undefined ? { id: frame.id } : {}),
+                  ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+                  status,
+                  ...reply,
+                });
+              } catch {
+                // Ignore if disposed
+              }
+            })
+            .catch(err => {
+              try {
+                this.sendOp({
+                  op: "host_reply",
+                  ...(frame.id !== undefined ? { id: frame.id } : {}),
+                  ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+                  status: "error",
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              } catch {
+                // Ignore if disposed
+              }
+            });
         }
         return;
       }
