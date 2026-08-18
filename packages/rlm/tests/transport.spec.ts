@@ -183,16 +183,20 @@ describe("transport wire protocol", () => {
     const pending = transport.start()
     pending.catch(() => undefined)
     await new Promise(r => setTimeout(r, 0))
-    fake.emitStderr("x".repeat(TRANS_STDERR_TAIL_CHARS + 4000))
+
+    const discardPrefix = "DISCARDED_PREFIX_OVER_BUDGET_".repeat(200)
+    const rawTail = "EXPECTED_DISTINGUISHABLE_TAIL_TOKEN_".repeat(100)
+    const expectedTail = rawTail.slice(rawTail.length - TRANS_STDERR_TAIL_CHARS)
+    fake.emitStderr(discardPrefix + expectedTail)
+
     await clock.advance(TRANS_READY_TIMEOUT_MS + 1)
     let caught: unknown
     await pending.catch(e => { caught = e })
     expect(caught).toBeInstanceOf(TransportUnresponsiveError)
     const message = (caught as Error).message
-    const tail = message.slice(message.length - TRANS_STDERR_TAIL_CHARS)
-    expect(tail.length).toBe(TRANS_STDERR_TAIL_CHARS)
+    expect(message.endsWith(expectedTail)).toBe(true)
+    expect(message.includes("DISCARDED_PREFIX_OVER_BUDGET_")).toBe(false)
   })
-
   test("ERRORS-TRANS-3: a malformed frame fails loud, never degrades silently", async () => {
     // Risk tier: HIGH — CL15-B: silent wire corruption would poison results.
     const fake = makeFakeProcess()

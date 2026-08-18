@@ -438,11 +438,12 @@ def test_post_rt_4_mcp_integration_routes_through_host_request():
     - Double type: Stub (_FakeBridge — return-value control + call recording;
       derives from the host_request contract POST-RT-5 reply semantics).
     """
-    bridge = _FakeBridge(reply={"status": "ok", "url": "https://mcp.example", "headers": {}})
+    expected_cfg = {"status": "ok", "url": "https://mcp.example", "headers": {"Authorization": "Bearer tok"}}
+    bridge = _FakeBridge(reply=expected_cfg)
     rlm._host_bridge = bridge
     try:
         integration = rlm.McpIntegration(server="linear")
-        asyncio.run(integration.resolve_config())
+        resolved = asyncio.run(integration.config())
     finally:
         rlm._host_bridge = None
     assert len(bridge.calls) >= 1, (
@@ -451,13 +452,54 @@ def test_post_rt_4_mcp_integration_routes_through_host_request():
         f"ACTUAL: {bridge.calls!r}\n"
         "GUIDANCE: MCP requests must go through host_request to the host bridge"
     )
-    assert all(call[0].startswith("mcp.") for call in bridge.calls), (
-        "POST-RT-4 violation: MCP host_request types must be mcp.*\n"
-        f"ACTUAL: {[c[0] for c in bridge.calls]!r}\n"
-        "GUIDANCE: use mcp.* request types for MCP host calls"
+    assert bridge.calls[0][0] == "mcp.config", (
+        "POST-RT-4 violation: config must route to mcp.config\n"
+        f"ACTUAL: {bridge.calls[0][0]!r}\n"
+    )
+    assert resolved == {"url": "https://mcp.example", "headers": {"Authorization": "Bearer tok"}}, (
+        "POST-RT-4 violation: config must return resolved url/headers\n"
+        f"ACTUAL: {resolved!r}\n"
     )
 
 
+def test_post_rt_4_mcp_refresh_failure_throws():
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: POST-RT-4 (mcp.refresh failure throws)
+    - Category: error (refresh failure raises)
+    - Risk tier: HIGH — credential refresh failure must propagate.
+    """
+    bridge = _FakeBridge(reply={"status": "error", "error": "token refresh failed"})
+    rlm._host_bridge = bridge
+    try:
+        integration = rlm.McpIntegration(server="linear")
+        with pytest.raises(RuntimeError) as excinfo:
+            asyncio.run(integration.refresh())
+        assert "token refresh failed" in str(excinfo.value)
+    finally:
+        rlm._host_bridge = None
+
+def test_post_rt_4_mcp_tools_and_call_route_through_host_request():
+    """
+    CONTRACT TRACEABILITY:
+    - Enforces: POST-RT-4 (list_tools and call_tool route through host_request)
+    - Category: positive (MCP discovery and tool invocation)
+    """
+    bridge = _FakeBridge(reply={"status": "ok", "tools": [{"name": "search"}]})
+    rlm._host_bridge = bridge
+    try:
+        integration = rlm.McpIntegration(server="linear")
+        tools = asyncio.run(integration.list_tools())
+        assert tools == {"tools": [{"name": "search"}]}
+        assert bridge.calls[0][0] == "mcp.list_tools"
+
+        bridge.calls.clear()
+        bridge.reply = {"status": "ok", "content": "result"}
+        result = asyncio.run(integration.call_tool("search", {"q": "test"}))
+        assert result == {"content": "result"}
+        assert bridge.calls[0][0] == "mcp.call_tool"
+    finally:
+        rlm._host_bridge = None
 def test_forbidden_rt_1_mcp_integration_does_not_read_local_credentials():
     """
     CONTRACT TRACEABILITY:
