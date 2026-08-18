@@ -191,6 +191,12 @@ export function validateDeleteOutcome(
 // =============================================================================
 
 export const RLM_RECURSION_CONTRACT = {
+  'REC-V1': 'validateDepth: depth gate throws the exact F-228 string when depth is exhausted (F-110).',
+  'REC-V2': 'validateRunKwargs: kwargs whitelist limited to name and model, sorted in the error (F-111/F-227).',
+  'REC-V3': 'validateChildName: child name is a trimmed, non-empty string of at most REC_NAME_MAX_CHARS characters (F-113).',
+  'REC-V4': 'validateSpawnHandle: all four RlmSpawnHandle fields are non-empty strings (F-124/F-226).',
+  'REC-V5': 'validateChildId: child id matches REC_CHILD_DIR_PREFIX + exactly REC_CHILD_ID_HEX_LEN lowercase hex chars (F-122).',
+  'REC-V6': 'validateDeleteOutcome: a running child yields skipped_running, anything else must be deleted (F-144).',
   'PRE-REC-1': 'rlm.run prompt is a string; kwargs ⊆ { name, model } (F-112/F-111, REC-V1/V2).',
   'POST-REC-1': 'A successful spawn returns after admission with a 4-field handle; the child answer never appears in the return (F-123, REQ-N-5).',
   'POST-REC-2': 'Children receive RLM_DEPTH+1, inherited max depth, and their own session dir (F-127).',

@@ -252,7 +252,7 @@
         "SLICE-5"
       ],
       "issue": "TODO",
-      "pivot_note": "await rlm() recursion fully live: children, handles, registry, replies, attribution; the core RLM loop end-to-end."
+      "pivot_note": "await rlm() recursion fully live: children, handles, registry, replies, attribution; the core RLM loop end-to-end. REQ-RLM-0015 paradigm-feature mapping realized here: P-005 (sub-LLM token accounting) maps to INV-REC-LIFETIME-2 child usage attribution; P-011/P-012 (recursion depth, prime-agent subagent CRUD) map to SEQ-REC-6 depth gating and the list/delete subagent APIs. Remaining P-001..P-013 features (REPL semantics, answer-variable, engines) are realized in SLICE-5 (Python surface) and SLICE-7 (engines), not here."
     },
     {
       "id": "SLICE-7",

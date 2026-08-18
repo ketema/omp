@@ -319,6 +319,8 @@ export interface RlmRecursionEngineOptions {
 	 * never blocks admission on it (FORBIDDEN-REC-1).
 	 */
 	readonly childRunner?: (config: RlmRecursionChildConfig) => void | Promise<unknown>;
+	/** AP-1: optional error handler for asynchronous child runner failures. */
+	readonly onChildRunnerError?: (err: unknown, rlmChildId: string) => void;
 	/** SEQ-REC-7: fired when a child reaches a terminal status. */
 	readonly onTerminalNotice?: (event: { readonly rlmChildId: string; readonly status: "completed" | "error" }) => void;
 	/** SEQ-REC-7/8: fired when the parent turn closes, after any terminal notice/attribution. */
@@ -430,17 +432,22 @@ export class RlmRecursionEngine {
 
 		// POST-REC-2/3: children inherit depth+1 / max depth and a
 		// [task from parent]-prefixed task; FORBIDDEN-REC-1: never awaited here.
-		this.options.childRunner?.({
-			rlmChildId,
-			name: finalName,
-			model,
-			depth: this.depth + 1,
-			maxDepth: this.maxDepth,
-			sessionDir,
-			initialPrompt: `${REC_TASK_PREFIX} ${prompt}`,
-			parentSessionId: this.options.parentSessionId,
-		});
-
+		if (this.options.childRunner) {
+			void Promise.resolve(
+				this.options.childRunner({
+					rlmChildId,
+					name: finalName,
+					model,
+					depth: this.depth + 1,
+					maxDepth: this.maxDepth,
+					sessionDir,
+					initialPrompt: `${REC_TASK_PREFIX} ${prompt}`,
+					parentSessionId: this.options.parentSessionId,
+				}),
+			).catch((err: unknown) => {
+				this.options.onChildRunnerError?.(err, rlmChildId);
+			});
+		}
 		return handle;
 	}
 

@@ -276,6 +276,7 @@ def __getattr__(name: str) -> object:
                     "mcp.refresh", {"server": self.server_name, **kwargs}
                 )
 
+        setattr(sys.modules[__name__], name, McpIntegration)
         return McpIntegration
 
     if name == "McpToolError":
@@ -283,6 +284,7 @@ def __getattr__(name: str) -> object:
         class McpToolError(Exception):
             """Raised when an MCP tool call fails."""
 
+        setattr(sys.modules[__name__], name, McpToolError)
         return McpToolError
 
     if name == "NotEnabled":
@@ -290,6 +292,7 @@ def __getattr__(name: str) -> object:
         class NotEnabled(Exception):
             """Raised when MCP integration is not enabled in this session."""
 
+        setattr(sys.modules[__name__], name, NotEnabled)
         return NotEnabled
 
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
