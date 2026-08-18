@@ -285,6 +285,8 @@ export interface RlmRecursionChildConfig {
 /** Caller-supplied usage to fold into the parent turn (F-131/F-132). */
 export interface RlmRecursionUsageInput {
 	readonly parentMessageId: string;
+	readonly parentSessionId?: string;
+	readonly rlmChildId: string;
 	readonly childTokens: { readonly input: number; readonly output: number };
 	readonly childCost: number;
 }
@@ -292,6 +294,8 @@ export interface RlmRecursionUsageInput {
 /** Usage folded into the parent's assistant turn, persisted as child_usage_attributed (INV-REC-LIFETIME-2). */
 export interface RlmRecursionAttributionEvent {
 	readonly parentMessageId: string;
+	readonly parentSessionId: string;
+	readonly rlmChildId: string;
 	readonly attributedTokens: { readonly input: number; readonly output: number };
 	readonly childCost: number;
 }
@@ -506,10 +510,12 @@ export class RlmRecursionEngine {
 		this.options.onTurnClose?.();
 	}
 
-	/** SEQ-REC-8 / INV-REC-LIFETIME-2: folds child usage into the parent assistant turn. */
+	/** SEQ-REC-8 / INV-REC-LIFETIME-2: folds child usage into the parent assistant turn with correlation IDs. */
 	attributeChildUsage(usage: RlmRecursionUsageInput): void {
 		const event: RlmRecursionAttributionEvent = {
 			parentMessageId: usage.parentMessageId,
+			parentSessionId: usage.parentSessionId ?? this.options.parentSessionId,
+			rlmChildId: usage.rlmChildId,
 			attributedTokens: usage.childTokens,
 			childCost: usage.childCost,
 		};
