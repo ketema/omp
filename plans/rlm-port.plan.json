@@ -212,7 +212,7 @@
         "SLICE-4"
       ],
       "issue": "TODO",
-      "pivot_note": "Bridge + always-on handlers + goal/compact live; kernel can drive host services from Python. SLICE-5 also owns the rlm-runtime Python surface: host_request caller over the NDJSON wire (POST-TRANS-6), in-kernel skill wrapping (F-026/F-027), and the REQ-N-3-compliant MCP integration (credentials host-side). Constitutional-refactor 2026-08-17 placement."
+      "pivot_note": "Bridge + always-on handlers + goal/compact live; kernel can drive host services from Python. SLICE-5 owns the rlm-runtime Python surface: host_request caller over the NDJSON wire (POST-TRANS-6 / REQ-RLM-0006 host_request sub-surface), in-kernel skill wrapping (F-026/F-027), and the REQ-N-3-compliant MCP integration (credentials host-side). Full 19-name rlm API and frozen dataclasses (F-070, F-074..F-082) delivered across SLICE-6 (recursion handles) and SLICE-7 (engines). Constitutional-refactor 2026-08-17 placement."
     },
     {
       "id": "SLICE-6",
@@ -234,6 +234,7 @@
         "SEQ-REC-6",
         "SEQ-REC-7",
         "SEQ-REC-8",
+        "REQ-RLM-0006",
         "REQ-RLM-0008",
         "REQ-RLM-0009",
         "REQ-RLM-0015",

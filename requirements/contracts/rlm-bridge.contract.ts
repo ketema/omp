@@ -154,8 +154,25 @@ export function validateMessageRole(role: string): string {
   return role
 }
 
-// =============================================================================
-// Artifact 5: Traceability
+/**
+ * BR-V5: goal.create argument validation (POST-BR-5 / F-151).
+ */
+export function validateGoalCreate(
+  objective: unknown,
+  tokenBudget: unknown,
+): { objective: string; tokenBudget: number } {
+  if (typeof objective !== 'string' || objective.trim().length === 0) {
+    throw new RlmBridgeContractError(
+      'POST-BR-5 violation: goal.create objective must be a non-empty string',
+    )
+  }
+  if (typeof tokenBudget !== 'number' || !Number.isInteger(tokenBudget) || tokenBudget <= 0) {
+    throw new RlmBridgeContractError(
+      'POST-BR-5 violation: goal.create token_budget must be a positive integer',
+    )
+  }
+  return { objective, tokenBudget }
+}
 // =============================================================================
 
 export const RLM_BRIDGE_CONTRACT = {
