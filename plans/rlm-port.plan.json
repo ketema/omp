@@ -156,7 +156,7 @@
         "REQ-N-1",
         "REQ-N-2"
       ],
-      "status": "PENDING",
+      "status": "AUDITED",
       "depends_on": [
         "SLICE-3"
       ],
@@ -207,7 +207,7 @@
         "FORBIDDEN-RT-2",
         "REQ-RLM-0018"
       ],
-      "status": "PENDING",
+      "status": "AUDITED",
       "depends_on": [
         "SLICE-4"
       ],
@@ -231,6 +231,12 @@
         "POST-REC-5",
         "POST-REC-6",
         "PRE-REC-1",
+        "REC-V1",
+        "REC-V2",
+        "REC-V3",
+        "REC-V4",
+        "REC-V5",
+        "REC-V6",
         "SEQ-REC-6",
         "SEQ-REC-7",
         "SEQ-REC-8",

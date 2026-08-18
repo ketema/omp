@@ -117,7 +117,27 @@ describe("RLM recursion engine (SLICE-6 RED)", () => {
 
   // ---------------------------------------------------------------------------
   // POST-REC-2 & ERRORS-REC-1: Depth Gate & Directory Partitioning
-  // ---------------------------------------------------------------------------
+  test("POST-REC-2: child inherits depth+1, maxDepth, and dedicated child session dir", async () => {
+    let capturedConfig: unknown = null;
+    const engine = new RlmRecursionEngine({
+      parentSessionId: "parent-session-1",
+      parentArtifactsDir: "/tmp/artifacts/parent-1",
+      parentModel: "anthropic/claude-sonnet-5",
+      depth: 0,
+      maxDepth: 2,
+      childRunner: async (config) => {
+        capturedConfig = config;
+      },
+    });
+
+    const handle = await engine.spawn("child task");
+    expect(capturedConfig).toBeDefined();
+    const config = capturedConfig as Record<string, unknown>;
+    expect(config.depth).toBe(1);
+    expect(config.maxDepth).toBe(2);
+    expect(config.sessionDir).toBe(`/tmp/artifacts/parent-1/${handle.rlm_child_id}`);
+    expect(config.parentSessionId).toBe("parent-session-1");
+  });
 
   test("POST-REC-2 + ERRORS-REC-1: depth exhaustion throws exact REC_ERR_DEPTH", async () => {
     const engine = new RlmRecursionEngine({
@@ -139,7 +159,6 @@ describe("RLM recursion engine (SLICE-6 RED)", () => {
       REC_ERR_DEPTH.replace("%d", "1").replace("%d", "1"),
     );
   });
-
   // ---------------------------------------------------------------------------
   // POST-REC-3: Task Seeding Prefix
   // ---------------------------------------------------------------------------
@@ -270,21 +289,20 @@ describe("RLM recursion engine (SLICE-6 RED)", () => {
     expect(h2.name.startsWith("reviewer-")).toBe(true);
   });
 
-  // ---------------------------------------------------------------------------
-  // Registry Operations & FORBIDDEN-REC-2: Tombstone Deletion
-  // ---------------------------------------------------------------------------
-
-  test("POST-REC-5 + FORBIDDEN-REC-2: registry tracks children; delete tombstones without erasing files", async () => {
-    const registry = new RlmSubagentRegistry({
-      storageDir: "/tmp/artifacts/parent-1/registry",
-    });
+  test("POST-REC-5 + FORBIDDEN-REC-2: delete tombstones from registry without deleting on-disk files", async () => {
+    const registry = new RlmSubagentRegistry();
+    const testDir = `/tmp/artifacts/test-delete-${Date.now()}`;
+    const testFile = `${testDir}/output.txt`;
+    const { mkdirSync, writeFileSync, existsSync } = await import("node:fs");
+    mkdirSync(testDir, { recursive: true });
+    writeFileSync(testFile, "transcripts must never be erased");
 
     registry.register({
       rlm_child_id: "sub-12345678",
       active_session_id: "sess-child-1",
       session_id: "sess-1",
       session_name: "reviewer",
-      session_dir: "/tmp/artifacts/parent-1/sub-12345678",
+      session_dir: testDir,
       status: "completed",
     });
 
@@ -292,35 +310,41 @@ describe("RLM recursion engine (SLICE-6 RED)", () => {
     expect(listed.length).toBe(1);
     expect(listed[0].session_name).toBe("reviewer");
 
-    // Deletion tombstones entry
+    // Deletion tombstones entry from active registry
     const outcome = registry.delete("sub-12345678");
     expect(outcome).toBe("deleted");
-
-    // Active listing no longer includes tombstoned subagent
     expect(registry.list().length).toBe(0);
-  });
 
+    // FORBIDDEN-REC-2: files/transcripts remain on disk
+    expect(existsSync(testFile)).toBe(true);
+  });
   // ---------------------------------------------------------------------------
   // INV-REC-LIFETIME-2 & SEQ-REC-8: Child Usage Attribution
   // ---------------------------------------------------------------------------
 
-  test("INV-REC-LIFETIME-2 + SEQ-REC-8: child usage is attributed to parent assistant turn with correlation IDs", async () => {
+  test("INV-REC-LIFETIME-2 + SEQ-REC-8: child usage is attributed to parent assistant turn before turn close", async () => {
+    const lifecycle: string[] = [];
     let attributedEvent: unknown = null;
     const engine = new RlmRecursionEngine({
       parentSessionId: "parent-session-xyz",
       parentArtifactsDir: "/tmp/artifacts/parent-session-xyz",
       parentModel: "anthropic/claude-sonnet-5",
       onAttribution: (event) => {
+        lifecycle.push(`attribution:${event.rlmChildId}`);
         attributedEvent = event;
+      },
+      onTurnClose: () => {
+        lifecycle.push("turn:close");
       },
     });
 
-    await engine.attributeChildUsage({
+    engine.attributeChildUsage({
       parentMessageId: "msg-turn-4",
       rlmChildId: "sub-12345678",
       childTokens: { input: 1200, output: 400 },
       childCost: 0.012,
     });
+    engine.closeTurn();
 
     expect(attributedEvent).toBeDefined();
     const event = attributedEvent as Record<string, unknown>;
@@ -329,23 +353,23 @@ describe("RLM recursion engine (SLICE-6 RED)", () => {
     expect(event.rlmChildId).toBe("sub-12345678");
     expect(event.attributedTokens).toEqual({ input: 1200, output: 400 });
     expect(event.childCost).toBe(0.012);
+
+    // SEQ-REC-8: attribution occurs before turn close
+    expect(lifecycle).toEqual(["attribution:sub-12345678", "turn:close"]);
   });
-  // ---------------------------------------------------------------------------
   // SEQ-REC-6 & SEQ-REC-7: Lifecycle Sequences
   // ---------------------------------------------------------------------------
 
   test("SEQ-REC-6: depth gate executes BEFORE directory creation or admission", async () => {
-    let dirCreated = false;
+    let runnerCalled = false;
     const engine = new RlmRecursionEngine({
       parentSessionId: "parent-1",
       parentArtifactsDir: "/tmp/artifacts/parent-1",
       parentModel: "anthropic/claude-sonnet-5",
       depth: 1,
       maxDepth: 1,
-      fs: {
-        mkdir: async () => {
-          dirCreated = true;
-        },
+      childRunner: async () => {
+        runnerCalled = true;
       },
     });
 
@@ -356,7 +380,9 @@ describe("RLM recursion engine (SLICE-6 RED)", () => {
       caught = e;
     }
     expect(caught).toBeInstanceOf(RlmRecursionContractError);
-    expect(dirCreated).toBe(false);
+    // Depth gate threw before runner invocation or registration
+    expect(runnerCalled).toBe(false);
+    expect(engine.listSubagents().length).toBe(0);
   });
 
   test("SEQ-REC-7: terminal notice is emitted before parent turn closes on child completion", async () => {

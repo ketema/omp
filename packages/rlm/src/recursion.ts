@@ -310,11 +310,8 @@ export interface RlmRecursionEngineOptions {
 	readonly maxDepth?: number;
 	/** Model ids the host can admit a subagent onto; defaults to [parentModel]. */
 	readonly availableModels?: readonly string[];
-	/** Authentication preflight for a resolved model id; defaults to always-ok. */
-	readonly preflightModel?: (modelId: string) => boolean | Promise<boolean>;
-	/** Best-effort name derivation from the prompt; undefined triggers REC_DEFAULT_NAME_FALLBACK (POST-REC-6). */
-	readonly deriveName?: (prompt: string) => string | undefined;
 	/** Generates a fresh REC-V5-shaped child id; defaults to crypto randomness. */
+	readonly generateChildId?: () => string;
 	/**
 	 * Starts the child. Called but never awaited for its answer — the engine
 	 * never blocks admission on it (FORBIDDEN-REC-1).
@@ -333,6 +330,8 @@ export interface RlmRecursionEngineOptions {
 			readonly parentSessionId: string;
 		},
 	) => void;
+	/** SEQ-REC-7: fired when a child reaches a terminal status. */
+	readonly onTerminalNotice?: (event: { readonly rlmChildId: string; readonly status: "completed" | "error" }) => void;
 	/** SEQ-REC-7/8: fired when the parent turn closes, after any terminal notice/attribution. */
 	readonly onTurnClose?: () => void;
 	/** SEQ-REC-8 / INV-REC-LIFETIME-2: fired when child usage is attributed. */
