@@ -21,8 +21,9 @@ def _ts_value_string(name: str) -> str:
     """Extract a single string value from a TS const declaration."""
     text = CONTRACT_TS.read_text()
     m = re.search(
-        rf"export const {name}\b[^=]*=\s*['\"]([^'\"]*)['\"]",
+        rf"export const {name}\b[^=]*=\s*[']([^']*)[']|export const {name}\b[^=]*=\s*[\"]([^\"]*)[\"]",
         text,
+        re.DOTALL,
     )
     if m is None:
         raise AssertionError(
@@ -31,8 +32,7 @@ def _ts_value_string(name: str) -> str:
             f"EXPECTED: export const {name} in rlm-recursion.contract.ts\n"
             f"ACTUAL: not found\n"
         )
-    return m.group(1)
-
+    return (m.group(1) or m.group(2)).strip()
 
 def _ts_value_number(name: str) -> int:
     """Extract an integer value from a TS const declaration."""
