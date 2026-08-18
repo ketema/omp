@@ -10,10 +10,10 @@
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import type {
-  KernelOutputEvent,
-  KernelSnapshotWriteResult,
-  KernelTransport,
-  KernelTransportExecuteResult,
+	KernelOutputEvent,
+	KernelSnapshotWriteResult,
+	KernelTransport,
+	KernelTransportExecuteResult,
 } from "./kernel";
 
 // =============================================================================
@@ -21,36 +21,34 @@ import type {
 // =============================================================================
 
 export class RlmTransportContractError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
-    this.name = "RlmTransportContractError";
-  }
+	constructor(message: string, options?: { cause?: unknown }) {
+		super(message, options);
+		this.name = "RlmTransportContractError";
+	}
 }
 
 /** ERRORS-TRANS-1: the runner process could not be spawned. */
 export class TransportSpawnError extends RlmTransportContractError {
-  constructor(detail: string, options?: { cause?: unknown }) {
-    super(`failed to spawn the RLM kernel runner: ${detail}`, options);
-    this.name = "TransportSpawnError";
-  }
+	constructor(detail: string, options?: { cause?: unknown }) {
+		super(`failed to spawn the RLM kernel runner: ${detail}`, options);
+		this.name = "TransportSpawnError";
+	}
 }
 
 /** ERRORS-TRANS-2: no readiness frame within the gate. */
 export class TransportUnresponsiveError extends RlmTransportContractError {
-  constructor(stderrTail: string) {
-    super(
-      `RLM kernel runner did not become ready within ${TRANS_READY_TIMEOUT_MS}ms; stderr tail: ${stderrTail}`,
-    );
-    this.name = "TransportUnresponsiveError";
-  }
+	constructor(stderrTail: string) {
+		super(`RLM kernel runner did not become ready within ${TRANS_READY_TIMEOUT_MS}ms; stderr tail: ${stderrTail}`);
+		this.name = "TransportUnresponsiveError";
+	}
 }
 
 /** ERRORS-TRANS-3: a frame violated the wire protocol. */
 export class TransportProtocolError extends RlmTransportContractError {
-  constructor(detail: string) {
-    super(`RLM kernel wire protocol violation: ${detail}`);
-    this.name = "TransportProtocolError";
-  }
+	constructor(detail: string) {
+		super(`RLM kernel wire protocol violation: ${detail}`);
+		this.name = "TransportProtocolError";
+	}
 }
 
 // =============================================================================
@@ -65,55 +63,55 @@ export const TRANS_KILL_WAIT_BUFFER_MS = 50;
 export const TRANS_STDERR_TAIL_CHARS = 1024;
 
 export const TRANS_FRAMES = [
-  "ready",
-  "started",
-  "stdout",
-  "stderr",
-  "result",
-  "error",
-  "done",
-  "host_request",
+	"ready",
+	"started",
+	"stdout",
+	"stderr",
+	"result",
+	"error",
+	"done",
+	"host_request",
 ] as const;
 // Structural types
 // =============================================================================
 
 /** PRE-TRANS-1: the transport's complete spawn configuration. */
 export interface RlmTransportConfig {
-  readonly interpreter: string;
-  readonly env: Readonly<Record<string, string>>;
-  readonly cwd: string;
-  readonly artifactsDir: string;
+	readonly interpreter: string;
+	readonly env: Readonly<Record<string, string>>;
+	readonly cwd: string;
+	readonly artifactsDir: string;
 }
 
 /** IP-9: the runner's readiness frame payload. */
 export interface TransReadyFrame {
-  readonly type: "ready";
-  readonly protocol: number;
-  readonly pythonVersion: string;
+	readonly type: "ready";
+	readonly protocol: number;
+	readonly pythonVersion: string;
 }
 
 /** Structural process interface — matches Bun.Subprocess shape but injectable. */
 export interface RlmTransportProcess {
-  readonly stdin: {
-    write(line: string): void;
-    end(): void;
-  };
-  onStdout(cb: (chunk: string) => void): void;
-  onStderr(cb: (chunk: string) => void): void;
-  kill(signal?: string): void;
-  onExit(cb: (code: number | null, signal: string | null) => void): void;
+	readonly stdin: {
+		write(line: string): void;
+		end(): void;
+	};
+	onStdout(cb: (chunk: string) => void): void;
+	onStderr(cb: (chunk: string) => void): void;
+	kill(signal?: string): void;
+	onExit(cb: (code: number | null, signal: string | null) => void): void;
 }
 
 export interface RlmTransportDeps {
-  readonly clock?: {
-    now(): number;
-    schedule(fn: () => void, ms: number): () => void;
-  };
-  readonly spawn?: (
-    cmd: string,
-    args: string[],
-    opts: { cwd: string; env: Record<string, string> },
-  ) => RlmTransportProcess;
+	readonly clock?: {
+		now(): number;
+		schedule(fn: () => void, ms: number): () => void;
+	};
+	readonly spawn?: (
+		cmd: string,
+		args: string[],
+		opts: { cwd: string; env: Record<string, string> },
+	) => RlmTransportProcess;
 }
 
 // =============================================================================
@@ -121,50 +119,50 @@ export interface RlmTransportDeps {
 // =============================================================================
 
 type OpName =
-  | "execute"
-  | "interrupt"
-  | "snapshot_names"
-  | "snapshot_write"
-  | "snapshot_restore"
-  | "bootstrap"
-  | "shutdown"
-  | "host_reply";
+	| "execute"
+	| "interrupt"
+	| "snapshot_names"
+	| "snapshot_write"
+	| "snapshot_restore"
+	| "bootstrap"
+	| "shutdown"
+	| "host_reply";
 
 interface WireOp {
-  readonly op: OpName;
-  readonly id?: string;
-  readonly code?: string;
-  readonly path?: string;
-  readonly manifestPath?: string;
-  readonly maxBytes?: number;
-  readonly requestId?: string;
-  readonly status?: string;
-  readonly value?: unknown;
-  readonly error?: string;
-  readonly [key: string]: unknown;
+	readonly op: OpName;
+	readonly id?: string;
+	readonly code?: string;
+	readonly path?: string;
+	readonly manifestPath?: string;
+	readonly maxBytes?: number;
+	readonly requestId?: string;
+	readonly status?: string;
+	readonly value?: unknown;
+	readonly error?: string;
+	readonly [key: string]: unknown;
 }
 
 type FrameType = (typeof TRANS_FRAMES)[number];
 interface WireFrame {
-  readonly type: FrameType;
-  readonly id?: string;
-  readonly data?: string;
-  readonly code?: number;
-  readonly stdout?: string;
-  readonly stderr?: string;
-  readonly result?: string;
-  readonly traceback?: string;
-  readonly errorEname?: string;
-  readonly names?: string[];
-  readonly bytes?: number;
-  readonly skipped?: { readonly name: string; readonly reason: string }[];
-  readonly restoredNames?: string[];
-  readonly protocol?: number;
-  readonly pythonVersion?: string;
-  readonly requestType?: string;
-  readonly requestId?: string;
-  readonly payload?: Record<string, unknown>;
-  readonly [key: string]: unknown;
+	readonly type: FrameType;
+	readonly id?: string;
+	readonly data?: string;
+	readonly code?: number;
+	readonly stdout?: string;
+	readonly stderr?: string;
+	readonly result?: string;
+	readonly traceback?: string;
+	readonly errorEname?: string;
+	readonly names?: string[];
+	readonly bytes?: number;
+	readonly skipped?: { readonly name: string; readonly reason: string }[];
+	readonly restoredNames?: string[];
+	readonly protocol?: number;
+	readonly pythonVersion?: string;
+	readonly requestType?: string;
+	readonly requestId?: string;
+	readonly payload?: Record<string, unknown>;
+	readonly [key: string]: unknown;
 }
 
 // =============================================================================
@@ -172,177 +170,167 @@ interface WireFrame {
 // =============================================================================
 
 function boundedStderrTail(stderr: string): string {
-  return stderr.length <= TRANS_STDERR_TAIL_CHARS
-    ? stderr
-    : stderr.slice(stderr.length - TRANS_STDERR_TAIL_CHARS);
+	return stderr.length <= TRANS_STDERR_TAIL_CHARS ? stderr : stderr.slice(stderr.length - TRANS_STDERR_TAIL_CHARS);
 }
 
 function isKnownFrameType(type: unknown): type is FrameType {
-  return (
-    typeof type === "string" &&
-    (TRANS_FRAMES as readonly string[]).includes(type)
-  );
+	return typeof type === "string" && (TRANS_FRAMES as readonly string[]).includes(type);
 }
 // =============================================================================
 // Default process wrapper (Bun.spawn)
 // =============================================================================
 
 interface DefaultProcessState {
-  proc: Subprocess<"pipe", "pipe", "pipe">;
-  stdin: Bun.FileSink;
-  stdoutReader: ReadableStreamDefaultReader<Uint8Array> | null;
-  stderrReader: ReadableStreamDefaultReader<Uint8Array> | null;
-  exited: boolean;
-  exitCode: number | null;
-  exitSignal: string | null;
-  exitCallbacks: Array<(code: number | null, signal: string | null) => void>;
+	proc: Subprocess<"pipe", "pipe", "pipe">;
+	stdin: Bun.FileSink;
+	stdoutReader: ReadableStreamDefaultReader<Uint8Array> | null;
+	stderrReader: ReadableStreamDefaultReader<Uint8Array> | null;
+	exited: boolean;
+	exitCode: number | null;
+	exitSignal: string | null;
+	exitCallbacks: Array<(code: number | null, signal: string | null) => void>;
 }
 
-function wrapBunSubprocess(
-  proc: Subprocess<"pipe", "pipe", "pipe">,
-): RlmTransportProcess {
-  const state: DefaultProcessState = {
-    proc,
-    stdin: proc.stdin,
-    stdoutReader: null,
-    stderrReader: null,
-    exited: false,
-    exitCode: null,
-    exitSignal: null,
-    exitCallbacks: [],
-  };
+function wrapBunSubprocess(proc: Subprocess<"pipe", "pipe", "pipe">): RlmTransportProcess {
+	const state: DefaultProcessState = {
+		proc,
+		stdin: proc.stdin,
+		stdoutReader: null,
+		stderrReader: null,
+		exited: false,
+		exitCode: null,
+		exitSignal: null,
+		exitCallbacks: [],
+	};
 
-  // Start the exit watcher
-  void proc.exited.then((code: number) => {
-    state.exited = true;
-    state.exitCode = code;
-    state.exitSignal = null;
-    for (const cb of state.exitCallbacks) {
-      cb(code, null);
-    }
-  });
+	// Start the exit watcher
+	void proc.exited.then((code: number) => {
+		state.exited = true;
+		state.exitCode = code;
+		state.exitSignal = null;
+		for (const cb of state.exitCallbacks) {
+			cb(code, null);
+		}
+	});
 
-  const wrapper: RlmTransportProcess = {
-    stdin: {
-      write(line: string): void {
-        state.stdin.write(line);
-        state.stdin.flush();
-      },
-      end(): void {
-        state.stdin.end();
-      },
-    },
-    onStdout(cb: (chunk: string) => void): void {
-      if (state.stdoutReader !== null) return;
-      const stream = proc.stdout as ReadableStream<Uint8Array>;
-      const reader = stream.getReader();
-      state.stdoutReader = reader;
-      const decoder = new TextDecoder();
-      void (async () => {
-        let buffer = "";
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            // Split on newlines — deliver complete lines
-            while (true) {
-              const nl = buffer.indexOf("\n");
-              if (nl < 0) break;
-              const line = buffer.slice(0, nl);
-              buffer = buffer.slice(nl + 1);
-              if (line.length > 0) cb(line);
-            }
-          }
-          // Flush remaining
-          buffer += decoder.decode();
-          if (buffer.length > 0) cb(buffer);
-        } catch {
-          // reader closed
-        } finally {
-          try {
-            reader.releaseLock();
-          } catch {
-            // already released
-          }
-        }
-      })();
-    },
-    onStderr(cb: (chunk: string) => void): void {
-      if (state.stderrReader !== null) return;
-      const stream = proc.stderr as ReadableStream<Uint8Array>;
-      const reader = stream.getReader();
-      state.stderrReader = reader;
-      const decoder = new TextDecoder();
-      void (async () => {
-        let buffer = "";
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            while (true) {
-              const nl = buffer.indexOf("\n");
-              if (nl < 0) break;
-              const line = buffer.slice(0, nl);
-              buffer = buffer.slice(nl + 1);
-              if (line.length > 0) cb(line);
-            }
-          }
-          buffer += decoder.decode();
-          if (buffer.length > 0) cb(buffer);
-        } catch {
-          // reader closed
-        } finally {
-          try {
-            reader.releaseLock();
-          } catch {
-            // already released
-          }
-        }
-      })();
-    },
-    kill(signal?: string): void {
-      try {
-        proc.kill(signal as unknown as number | undefined ?? "SIGTERM" as unknown as number);
-      } catch {
-        // already dead
-      }
-    },
-    onExit(cb: (code: number | null, signal: string | null) => void): void {
-      if (state.exited) {
-        cb(state.exitCode, state.exitSignal);
-      } else {
-        state.exitCallbacks.push(cb);
-      }
-    },
-  };
+	const wrapper: RlmTransportProcess = {
+		stdin: {
+			write(line: string): void {
+				state.stdin.write(line);
+				state.stdin.flush();
+			},
+			end(): void {
+				state.stdin.end();
+			},
+		},
+		onStdout(cb: (chunk: string) => void): void {
+			if (state.stdoutReader !== null) return;
+			const stream = proc.stdout as ReadableStream<Uint8Array>;
+			const reader = stream.getReader();
+			state.stdoutReader = reader;
+			const decoder = new TextDecoder();
+			void (async () => {
+				let buffer = "";
+				try {
+					while (true) {
+						const { done, value } = await reader.read();
+						if (done) break;
+						buffer += decoder.decode(value, { stream: true });
+						// Split on newlines — deliver complete lines
+						while (true) {
+							const nl = buffer.indexOf("\n");
+							if (nl < 0) break;
+							const line = buffer.slice(0, nl);
+							buffer = buffer.slice(nl + 1);
+							if (line.length > 0) cb(line);
+						}
+					}
+					// Flush remaining
+					buffer += decoder.decode();
+					if (buffer.length > 0) cb(buffer);
+				} catch {
+					// reader closed
+				} finally {
+					try {
+						reader.releaseLock();
+					} catch {
+						// already released
+					}
+				}
+			})();
+		},
+		onStderr(cb: (chunk: string) => void): void {
+			if (state.stderrReader !== null) return;
+			const stream = proc.stderr as ReadableStream<Uint8Array>;
+			const reader = stream.getReader();
+			state.stderrReader = reader;
+			const decoder = new TextDecoder();
+			void (async () => {
+				let buffer = "";
+				try {
+					while (true) {
+						const { done, value } = await reader.read();
+						if (done) break;
+						buffer += decoder.decode(value, { stream: true });
+						while (true) {
+							const nl = buffer.indexOf("\n");
+							if (nl < 0) break;
+							const line = buffer.slice(0, nl);
+							buffer = buffer.slice(nl + 1);
+							if (line.length > 0) cb(line);
+						}
+					}
+					buffer += decoder.decode();
+					if (buffer.length > 0) cb(buffer);
+				} catch {
+					// reader closed
+				} finally {
+					try {
+						reader.releaseLock();
+					} catch {
+						// already released
+					}
+				}
+			})();
+		},
+		kill(signal?: string): void {
+			try {
+				proc.kill((signal as unknown as number | undefined) ?? ("SIGTERM" as unknown as number));
+			} catch {
+				// already dead
+			}
+		},
+		onExit(cb: (code: number | null, signal: string | null) => void): void {
+			if (state.exited) {
+				cb(state.exitCode, state.exitSignal);
+			} else {
+				state.exitCallbacks.push(cb);
+			}
+		},
+	};
 
-  return wrapper;
+	return wrapper;
 }
 
 function defaultSpawn(
-  cmd: string,
-  args: string[],
-  opts: { cwd: string; env: Record<string, string> },
+	cmd: string,
+	args: string[],
+	opts: { cwd: string; env: Record<string, string> },
 ): RlmTransportProcess {
-  let proc: Subprocess<"pipe", "pipe", "pipe">;
-  try {
-    proc = Bun.spawn({
-      cmd: [cmd, ...args],
-      cwd: opts.cwd,
-      env: opts.env,
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-  } catch (error: unknown) {
-    throw new TransportSpawnError(
-      error instanceof Error ? error.message : String(error),
-      { cause: error },
-    );
-  }
-  return wrapBunSubprocess(proc);
+	let proc: Subprocess<"pipe", "pipe", "pipe">;
+	try {
+		proc = Bun.spawn({
+			cmd: [cmd, ...args],
+			cwd: opts.cwd,
+			env: opts.env,
+			stdin: "pipe",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+	} catch (error: unknown) {
+		throw new TransportSpawnError(error instanceof Error ? error.message : String(error), { cause: error });
+	}
+	return wrapBunSubprocess(proc);
 }
 
 // =============================================================================
@@ -350,15 +338,15 @@ function defaultSpawn(
 // =============================================================================
 
 interface PendingExecution {
-  resolve: (result: KernelTransportExecuteResult) => void;
-  reject: (error: unknown) => void;
-  stdout: string;
-  stderr: string;
+	resolve: (result: KernelTransportExecuteResult) => void;
+	reject: (error: unknown) => void;
+	stdout: string;
+	stderr: string;
 }
 
 interface PendingOp<T> {
-  resolve: (value: T) => void;
-  reject: (error: unknown) => void;
+	resolve: (value: T) => void;
+	reject: (error: unknown) => void;
 }
 
 /**
@@ -366,621 +354,596 @@ interface PendingOp<T> {
  * JSON-lines-over-stdio, and implements the KernelTransport interface.
  */
 export class RlmTransport implements KernelTransport {
-  private readonly config: RlmTransportConfig;
-  private readonly clock: { now(): number; schedule(fn: () => void, ms: number): () => void };
-  private readonly spawnFn: (
-    cmd: string,
-    args: string[],
-    opts: { cwd: string; env: Record<string, string> },
-  ) => RlmTransportProcess;
+	private readonly config: RlmTransportConfig;
+	private readonly clock: { now(): number; schedule(fn: () => void, ms: number): () => void };
+	private readonly spawnFn: (
+		cmd: string,
+		args: string[],
+		opts: { cwd: string; env: Record<string, string> },
+	) => RlmTransportProcess;
 
-  private process: RlmTransportProcess | null = null;
-  private started = false;
-  private disposed = false;
-  private stderrAccum = "";
-  private pyVersion = "";
+	private process: RlmTransportProcess | null = null;
+	private started = false;
+	private disposed = false;
+	private stderrAccum = "";
+	private pyVersion = "";
 
-  private outputCallback: ((event: KernelOutputEvent) => void) | null = null;
+	private outputCallback: ((event: KernelOutputEvent) => void) | null = null;
 
-  private activeExecId: string | null = null;
-  private activeExecPending: PendingExecution | null = null;
+	private activeExecId: string | null = null;
+	private activeExecPending: PendingExecution | null = null;
 
-  private pendingOps = new Map<string, PendingOp<unknown>>();
-  private opIdCounter = 0;
+	private pendingOps = new Map<string, PendingOp<unknown>>();
+	private opIdCounter = 0;
 
-  // Ready promise (resolved on 'ready' frame)
-  private readyResolve: ((frame: TransReadyFrame) => void) | null = null;
-  private readyReject: ((error: unknown) => void) | null = null;
+	// Ready promise (resolved on 'ready' frame)
+	private readyResolve: ((frame: TransReadyFrame) => void) | null = null;
+	private readyReject: ((error: unknown) => void) | null = null;
 
-  private hostRequestHandler:
-    | ((request: {
-        type: string;
-        payload: Record<string, unknown>;
-        requestId?: string;
-        id?: string;
-      }) => Promise<Record<string, unknown>>)
-    | null = null;
-  constructor(config: RlmTransportConfig, deps?: RlmTransportDeps) {
-    this.config = config;
-    this.clock = deps?.clock ?? {
-      now: () => Date.now(),
-      schedule(fn: () => void, ms: number): () => void {
-        const timer = setTimeout(fn, ms);
-        return () => clearTimeout(timer);
-      },
-    };
-    this.spawnFn = deps?.spawn ?? defaultSpawn;
-  }
+	private hostRequestHandler:
+		| ((request: {
+				type: string;
+				payload: Record<string, unknown>;
+				requestId?: string;
+				id?: string;
+		  }) => Promise<Record<string, unknown>>)
+		| null = null;
+	constructor(config: RlmTransportConfig, deps?: RlmTransportDeps) {
+		this.config = config;
+		this.clock = deps?.clock ?? {
+			now: () => Date.now(),
+			schedule(fn: () => void, ms: number): () => void {
+				const timer = setTimeout(fn, ms);
+				return () => clearTimeout(timer);
+			},
+		};
+		this.spawnFn = deps?.spawn ?? defaultSpawn;
+	}
 
-  // ---- KernelTransport implementation ----
+	// ---- KernelTransport implementation ----
 
-  /**
-   * POST-TRANS-1/SEQ-TRANS-1: spawn the runner and wait for the ready frame
-   * within TRANS_READY_TIMEOUT_MS. Any op attempted before start() rejects.
-   */
-  async start(): Promise<void> {
-    if (this.started) return;
-    if (this.disposed) throw new TransportSpawnError("transport has been disposed");
+	/**
+	 * POST-TRANS-1/SEQ-TRANS-1: spawn the runner and wait for the ready frame
+	 * within TRANS_READY_TIMEOUT_MS. Any op attempted before start() rejects.
+	 */
+	async start(): Promise<void> {
+		if (this.started) return;
+		if (this.disposed) throw new TransportSpawnError("transport has been disposed");
 
-    const runnerPath = join(
-      // packages/rlm/src/transport.ts → packages/rlm/python/rlm_kernel_runner.py
-      new URL("../python/rlm_kernel_runner.py", import.meta.url).pathname,
-    );
+		const runnerPath = join(
+			// packages/rlm/src/transport.ts → packages/rlm/python/rlm_kernel_runner.py
+			new URL("../python/rlm_kernel_runner.py", import.meta.url).pathname,
+		);
 
-    // POST-TRANS-1: spawn [interpreter, <absolute path of runner>]
-    let process: RlmTransportProcess;
-    try {
-      process = this.spawnFn(this.config.interpreter, [runnerPath], {
-        cwd: this.config.cwd,
-        // FORBIDDEN-TRANS-2: exactly the provided env, nothing added
-        env: { ...this.config.env },
-      });
-    } catch (error: unknown) {
-      throw new TransportSpawnError(
-        error instanceof Error ? error.message : String(error),
-        { cause: error },
-      );
-    }
-    this.process = process;
+		// POST-TRANS-1: spawn [interpreter, <absolute path of runner>]
+		let process: RlmTransportProcess;
+		try {
+			process = this.spawnFn(this.config.interpreter, [runnerPath], {
+				cwd: this.config.cwd,
+				// FORBIDDEN-TRANS-2: exactly the provided env, nothing added
+				env: { ...this.config.env },
+			});
+		} catch (error: unknown) {
+			throw new TransportSpawnError(error instanceof Error ? error.message : String(error), { cause: error });
+		}
+		this.process = process;
 
-    // Collect stderr for error reporting
-    process.onStderr((chunk: string) => {
-      this.stderrAccum += chunk;
-    });
+		// Collect stderr for error reporting
+		process.onStderr((chunk: string) => {
+			this.stderrAccum += chunk;
+		});
 
-    // Set up the ready frame promise with timeout
-    const readyPromise = new Promise<TransReadyFrame>((resolve, reject) => {
-      this.readyResolve = resolve;
-      this.readyReject = reject;
-    });
+		// Set up the ready frame promise with timeout
+		const readyPromise = new Promise<TransReadyFrame>((resolve, reject) => {
+			this.readyResolve = resolve;
+			this.readyReject = reject;
+		});
 
-    // Timeout gate (TRANS_READY_TIMEOUT_MS via clock)
-    const cancelTimeout = this.clock.schedule(() => {
-      if (this.readyReject !== null) {
-        this.readyReject(
-          new TransportUnresponsiveError(boundedStderrTail(this.stderrAccum)),
-        );
-        this.readyResolve = null;
-        this.readyReject = null;
-      }
-    }, TRANS_READY_TIMEOUT_MS);
+		// Timeout gate (TRANS_READY_TIMEOUT_MS via clock)
+		const cancelTimeout = this.clock.schedule(() => {
+			if (this.readyReject !== null) {
+				this.readyReject(new TransportUnresponsiveError(boundedStderrTail(this.stderrAccum)));
+				this.readyResolve = null;
+				this.readyReject = null;
+			}
+		}, TRANS_READY_TIMEOUT_MS);
 
-    // Wire up stdout handler
-    process.onStdout((line: string) => {
-      this.handleLine(line);
-    });
+		// Wire up stdout handler
+		process.onStdout((line: string) => {
+			this.handleLine(line);
+		});
 
-    // Process exit handler
-    process.onExit((code: number | null, signal: string | null) => {
-      if (this.readyReject !== null) {
-        this.readyReject(
-          new TransportUnresponsiveError(boundedStderrTail(this.stderrAccum)),
-        );
-        this.readyResolve = null;
-        this.readyReject = null;
-      }
-      // Settle active execution if process died unexpectedly
-      if (this.activeExecPending !== null) {
-        const pending = this.activeExecPending;
-        this.activeExecId = null;
-        this.activeExecPending = null;
-        pending.reject(
-          new TransportProtocolError(
-            `runner process exited unexpectedly (code: ${code}, signal: ${signal}) during execution`,
-          ),
-        );
-      }
-      // Reject all pending ops if process died
-      for (const [id, op] of this.pendingOps.entries()) {
-        op.reject(
-          new TransportProtocolError(
-            `runner process exited unexpectedly (code: ${code}, signal: ${signal}) during op ${id}`,
-          ),
-        );
-      }
-      this.pendingOps.clear();
-    });
+		// Process exit handler
+		process.onExit((code: number | null, signal: string | null) => {
+			if (this.readyReject !== null) {
+				this.readyReject(new TransportUnresponsiveError(boundedStderrTail(this.stderrAccum)));
+				this.readyResolve = null;
+				this.readyReject = null;
+			}
+			// Settle active execution if process died unexpectedly
+			if (this.activeExecPending !== null) {
+				const pending = this.activeExecPending;
+				this.activeExecId = null;
+				this.activeExecPending = null;
+				pending.reject(
+					new TransportProtocolError(
+						`runner process exited unexpectedly (code: ${code}, signal: ${signal}) during execution`,
+					),
+				);
+			}
+			// Reject all pending ops if process died
+			for (const [id, op] of this.pendingOps.entries()) {
+				op.reject(
+					new TransportProtocolError(
+						`runner process exited unexpectedly (code: ${code}, signal: ${signal}) during op ${id}`,
+					),
+				);
+			}
+			this.pendingOps.clear();
+		});
 
-    try {
-      const readyFrame = await readyPromise;
-      // Validate protocol version
-      if (readyFrame.protocol !== TRANS_PROTOCOL_VERSION) {
-        throw new TransportProtocolError(
-          `ready frame protocol version ${readyFrame.protocol} !== expected ${TRANS_PROTOCOL_VERSION}`,
-        );
-      }
-      this.pyVersion = readyFrame.pythonVersion;
-      this.started = true;
-    } finally {
-      cancelTimeout();
-    }
-  }
+		try {
+			const readyFrame = await readyPromise;
+			// Validate protocol version
+			if (readyFrame.protocol !== TRANS_PROTOCOL_VERSION) {
+				throw new TransportProtocolError(
+					`ready frame protocol version ${readyFrame.protocol} !== expected ${TRANS_PROTOCOL_VERSION}`,
+				);
+			}
+			this.pyVersion = readyFrame.pythonVersion;
+			this.started = true;
+		} finally {
+			cancelTimeout();
+		}
+	}
 
-  /**
-   * POST-TRANS-2: execute(id, code) sends the execute op, streams
-   * stdout/stderr through onOutput, settles from the done frame.
-   */
-  async execute(id: string, code: string): Promise<KernelTransportExecuteResult> {
-    this.assertNotDisposed();
-    this.assertStarted();
+	/**
+	 * POST-TRANS-2: execute(id, code) sends the execute op, streams
+	 * stdout/stderr through onOutput, settles from the done frame.
+	 */
+	async execute(id: string, code: string): Promise<KernelTransportExecuteResult> {
+		this.assertNotDisposed();
+		this.assertStarted();
 
-    return new Promise<KernelTransportExecuteResult>((resolve, reject) => {
-      this.activeExecId = id;
-      this.activeExecPending = {
-        resolve,
-        reject,
-        stdout: "",
-        stderr: "",
-      };
+		return new Promise<KernelTransportExecuteResult>((resolve, reject) => {
+			this.activeExecId = id;
+			this.activeExecPending = {
+				resolve,
+				reject,
+				stdout: "",
+				stderr: "",
+			};
 
-      this.sendOp({
-        op: "execute",
-        id,
-        code,
-      });
-    });
-  }
+			this.sendOp({
+				op: "execute",
+				id,
+				code,
+			});
+		});
+	}
 
-  /** POST-TRANS-3: interrupt the running cell; runner stays usable. */
-  /**
-   * POST-TRANS-3: interrupt aborts the in-flight cell. The runner's main
-   * loop is single-threaded and blocks inside cell execution, so it cannot
-   * read an op from stdin mid-cell — the interrupt is delivered as SIGINT to
-   * the process instead. The runner's SIGINT handler raises KeyboardInterrupt
-   * in the executing cell; the runner settles the cell as an interrupted
-   * error and stays usable.
-   */
-  async interrupt(): Promise<void> {
-    if (!this.started || this.process === null) return;
-    this.process.kill("SIGINT");
-  }
+	/** POST-TRANS-3: interrupt the running cell; runner stays usable. */
+	/**
+	 * POST-TRANS-3: interrupt aborts the in-flight cell. The runner's main
+	 * loop is single-threaded and blocks inside cell execution, so it cannot
+	 * read an op from stdin mid-cell — the interrupt is delivered as SIGINT to
+	 * the process instead. The runner's SIGINT handler raises KeyboardInterrupt
+	 * in the executing cell; the runner settles the cell as an interrupted
+	 * error and stays usable.
+	 */
+	async interrupt(): Promise<void> {
+		if (!this.started || this.process === null) return;
+		this.process.kill("SIGINT");
+	}
 
-  /**
-   * SEQ-TRANS-2: Helper to escalate from SIGTERM to SIGKILL after TRANS_KILL_GRACE_MS.
-   */
-  private async escalateKill(proc: RlmTransportProcess): Promise<void> {
-    const exitPromise = new Promise<boolean>((resolve) => {
-      proc.onExit((_code, _signal) => resolve(true));
-    });
+	/**
+	 * SEQ-TRANS-2: Helper to escalate from SIGTERM to SIGKILL after TRANS_KILL_GRACE_MS.
+	 */
+	private async escalateKill(proc: RlmTransportProcess): Promise<void> {
+		const exitPromise = new Promise<boolean>(resolve => {
+			proc.onExit((_code, _signal) => resolve(true));
+		});
 
-    proc.kill("SIGTERM");
+		proc.kill("SIGTERM");
 
-    const cancelEscalation = this.clock.schedule(() => {
-      proc.kill("SIGKILL");
-    }, TRANS_KILL_GRACE_MS);
+		const cancelEscalation = this.clock.schedule(() => {
+			proc.kill("SIGKILL");
+		}, TRANS_KILL_GRACE_MS);
 
-    await Promise.race([
-      exitPromise,
-      new Promise<void>((r) =>
-        this.clock.schedule(
-          () => r(),
-          TRANS_KILL_GRACE_MS + TRANS_KILL_WAIT_BUFFER_MS,
-        ),
-      ),
-    ]);
+		await Promise.race([
+			exitPromise,
+			new Promise<void>(r => this.clock.schedule(() => r(), TRANS_KILL_GRACE_MS + TRANS_KILL_WAIT_BUFFER_MS)),
+		]);
 
-    cancelEscalation();
-  }
+		cancelEscalation();
+	}
 
-  /**
-   * SEQ-TRANS-2: kill sends SIGTERM; escalate SIGKILL after
-   * TRANS_KILL_GRACE_MS (clock-scheduled).
-   */
-  async kill(): Promise<void> {
-    if (this.process === null) return;
-    this.started = false;
-    await this.escalateKill(this.process);
-  }
+	/**
+	 * SEQ-TRANS-2: kill sends SIGTERM; escalate SIGKILL after
+	 * TRANS_KILL_GRACE_MS (clock-scheduled).
+	 */
+	async kill(): Promise<void> {
+		if (this.process === null) return;
+		this.started = false;
+		await this.escalateKill(this.process);
+	}
 
-  onOutput(cb: (event: KernelOutputEvent) => void): void {
-    this.outputCallback = cb;
-  }
+	onOutput(cb: (event: KernelOutputEvent) => void): void {
+		this.outputCallback = cb;
+	}
 
-  /** POST-TRANS-6: register host request handler for mid-execute requests. */
-  onHostRequest(
-    handler:
-      | ((request: {
-          type: string;
-          payload: Record<string, unknown>;
-          requestId?: string;
-          id?: string;
-        }) => Promise<Record<string, unknown>>)
-      | null,
-  ): void {
-    this.hostRequestHandler = handler;
-  }
-  /** POST-TRANS-4: snapshotNames → runner-reported name list. */
-  async snapshotNames(): Promise<string[]> {
-    this.assertNotDisposed();
-    this.assertStarted();
+	/** POST-TRANS-6: register host request handler for mid-execute requests. */
+	onHostRequest(
+		handler:
+			| ((request: {
+					type: string;
+					payload: Record<string, unknown>;
+					requestId?: string;
+					id?: string;
+			  }) => Promise<Record<string, unknown>>)
+			| null,
+	): void {
+		this.hostRequestHandler = handler;
+	}
+	/** POST-TRANS-4: snapshotNames → runner-reported name list. */
+	async snapshotNames(): Promise<string[]> {
+		this.assertNotDisposed();
+		this.assertStarted();
 
-    const id = `snap-names-${this.opIdCounter++}`;
-    return new Promise<string[]>((resolve, reject) => {
-      this.pendingOps.set(id, {
-        resolve: (v: unknown) => resolve(v as string[]),
-        reject,
-      });
-      this.sendOp({ op: "snapshot_names", id });
-    });
-  }
+		const id = `snap-names-${this.opIdCounter++}`;
+		return new Promise<string[]>((resolve, reject) => {
+			this.pendingOps.set(id, {
+				resolve: (v: unknown) => resolve(v as string[]),
+				reject,
+			});
+			this.sendOp({ op: "snapshot_names", id });
+		});
+	}
 
-  /** POST-TRANS-4: writeSnapshot → {bytes, skipped}. */
-  async writeSnapshot(
-    names: readonly string[],
-    maxBytes: number,
-  ): Promise<KernelSnapshotWriteResult> {
-    this.assertNotDisposed();
-    this.assertStarted();
+	/** POST-TRANS-4: writeSnapshot → {bytes, skipped}. */
+	async writeSnapshot(_names: readonly string[], maxBytes: number): Promise<KernelSnapshotWriteResult> {
+		this.assertNotDisposed();
+		this.assertStarted();
 
-    const id = `snap-write-${this.opIdCounter++}`;
-    const payloadPath = join(this.config.artifactsDir, "kernel-state.dill");
-    const manifestPath = join(this.config.artifactsDir, "kernel-state.json");
+		const id = `snap-write-${this.opIdCounter++}`;
+		const payloadPath = join(this.config.artifactsDir, "kernel-state.dill");
+		const manifestPath = join(this.config.artifactsDir, "kernel-state.json");
 
-    return new Promise<KernelSnapshotWriteResult>((resolve, reject) => {
-      this.pendingOps.set(id, {
-        resolve: (v: unknown) => resolve(v as KernelSnapshotWriteResult),
-        reject,
-      });
-      this.sendOp({
-        op: "snapshot_write",
-        id,
-        path: payloadPath,
-        manifestPath,
-        maxBytes,
-      });
-    });
-  }
+		return new Promise<KernelSnapshotWriteResult>((resolve, reject) => {
+			this.pendingOps.set(id, {
+				resolve: (v: unknown) => resolve(v as KernelSnapshotWriteResult),
+				reject,
+			});
+			this.sendOp({
+				op: "snapshot_write",
+				id,
+				path: payloadPath,
+				manifestPath,
+				maxBytes,
+			});
+		});
+	}
 
-  /** POST-TRANS-4: restoreSnapshot → revived names in runner order. */
-  async restoreSnapshot(): Promise<string[]> {
-    this.assertNotDisposed();
-    this.assertStarted();
+	/** POST-TRANS-4: restoreSnapshot → revived names in runner order. */
+	async restoreSnapshot(): Promise<string[]> {
+		this.assertNotDisposed();
+		this.assertStarted();
 
-    const id = `snap-restore-${this.opIdCounter++}`;
-    const payloadPath = join(this.config.artifactsDir, "kernel-state.dill");
-    const manifestPath = join(this.config.artifactsDir, "kernel-state.json");
+		const id = `snap-restore-${this.opIdCounter++}`;
+		const payloadPath = join(this.config.artifactsDir, "kernel-state.dill");
+		const manifestPath = join(this.config.artifactsDir, "kernel-state.json");
 
-    return new Promise<string[]>((resolve, reject) => {
-      this.pendingOps.set(id, {
-        resolve: (v: unknown) => resolve(v as string[]),
-        reject,
-      });
-      this.sendOp({
-        op: "snapshot_restore",
-        id,
-        path: payloadPath,
-        manifestPath,
-      });
-    });
-  }
+		return new Promise<string[]>((resolve, reject) => {
+			this.pendingOps.set(id, {
+				resolve: (v: unknown) => resolve(v as string[]),
+				reject,
+			});
+			this.sendOp({
+				op: "snapshot_restore",
+				id,
+				path: payloadPath,
+				manifestPath,
+			});
+		});
+	}
 
-  /** POST-TRANS-5: bootstrap runs the runtime bootstrap op. */
-  async bootstrap(): Promise<void> {
-    this.assertNotDisposed();
-    this.assertStarted();
+	/** POST-TRANS-5: bootstrap runs the runtime bootstrap op. */
+	async bootstrap(): Promise<void> {
+		this.assertNotDisposed();
+		this.assertStarted();
 
-    const id = `bootstrap-${this.opIdCounter++}`;
-    return new Promise<void>((resolve, reject) => {
-      this.pendingOps.set(id, {
-        resolve: () => resolve(),
-        reject,
-      });
-      this.sendOp({ op: "bootstrap", id });
-    });
-  }
+		const id = `bootstrap-${this.opIdCounter++}`;
+		return new Promise<void>((resolve, reject) => {
+			this.pendingOps.set(id, {
+				resolve: () => resolve(),
+				reject,
+			});
+			this.sendOp({ op: "bootstrap", id });
+		});
+	}
 
-  isBusy(): boolean {
-    return this.activeExecId !== null;
-  }
+	isBusy(): boolean {
+		return this.activeExecId !== null;
+	}
 
-  alive(): boolean {
-    return this.started && this.process !== null && !this.disposed;
-  }
+	alive(): boolean {
+		return this.started && this.process !== null && !this.disposed;
+	}
 
-  /** C6: reports the kernel's Python version for the snapshot manifest. */
-  async pythonVersion(): Promise<string> {
-    return this.pyVersion;
-  }
+	/** C6: reports the kernel's Python version for the snapshot manifest. */
+	async pythonVersion(): Promise<string> {
+		return this.pyVersion;
+	}
 
-  /** SEQ-TRANS-2: dispose is idempotent and releases the process. */
-  async dispose(): Promise<void> {
-    if (this.disposed) return;
-    this.disposed = true;
-    this.started = false;
+	/** SEQ-TRANS-2: dispose is idempotent and releases the process. */
+	async dispose(): Promise<void> {
+		if (this.disposed) return;
+		this.disposed = true;
+		this.started = false;
 
-    if (this.process !== null) {
-      // Try graceful shutdown
-      try {
-        this.sendOp({ op: "shutdown" });
-      } catch {
-        // process may already be dead
-      }
+		if (this.process !== null) {
+			// Try graceful shutdown
+			try {
+				this.sendOp({ op: "shutdown" });
+			} catch {
+				// process may already be dead
+			}
 
-      await this.escalateKill(this.process);
-    }
+			await this.escalateKill(this.process);
+		}
 
-    this.process = null;
-  }
+		this.process = null;
+	}
 
-  // ---- Internal: wire protocol ----
+	// ---- Internal: wire protocol ----
 
-  private sendOp(op: WireOp): void {
-    if (this.process === null) {
-      throw new RlmTransportContractError("transport not started");
-    }
-    this.process.stdin.write(JSON.stringify(op) + "\n");
-  }
+	private sendOp(op: WireOp): void {
+		if (this.process === null) {
+			throw new RlmTransportContractError("transport not started");
+		}
+		this.process.stdin.write(`${JSON.stringify(op)}\n`);
+	}
 
-  private assertNotDisposed(): void {
-    if (this.disposed) {
-      throw new RlmTransportContractError("transport has been disposed");
-    }
-  }
+	private assertNotDisposed(): void {
+		if (this.disposed) {
+			throw new RlmTransportContractError("transport has been disposed");
+		}
+	}
 
-  private assertStarted(): void {
-    if (!this.started) {
-      throw new RlmTransportContractError("transport not started; call start() first");
-    }
-  }
+	private assertStarted(): void {
+		if (!this.started) {
+			throw new RlmTransportContractError("transport not started; call start() first");
+		}
+	}
 
-  /**
-   * ERRORS-TRANS-3: route a protocol error to the appropriate rejection handler
-   * so it surfaces as a rejected promise rather than an uncaught throw in a
-   * stream callback.
-   */
-  private routeProtocolError(error: TransportProtocolError): void {
-    if (this.readyReject !== null) {
-      this.readyReject(error);
-      this.readyResolve = null;
-      this.readyReject = null;
-    } else if (this.activeExecPending !== null) {
-      const pending = this.activeExecPending;
-      this.activeExecId = null;
-      this.activeExecPending = null;
-      pending.reject(error);
-    }
-    // If no pending handler, the error is still thrown for fail-loud semantics
-    // but won't crash the process if no one is listening
-    else {
-      // Store it for the next op or re-throw
-      throw error;
-    }
-  }
+	/**
+	 * ERRORS-TRANS-3: route a protocol error to the appropriate rejection handler
+	 * so it surfaces as a rejected promise rather than an uncaught throw in a
+	 * stream callback.
+	 */
+	private routeProtocolError(error: TransportProtocolError): void {
+		if (this.readyReject !== null) {
+			this.readyReject(error);
+			this.readyResolve = null;
+			this.readyReject = null;
+		} else if (this.activeExecPending !== null) {
+			const pending = this.activeExecPending;
+			this.activeExecId = null;
+			this.activeExecPending = null;
+			pending.reject(error);
+		}
+		// If no pending handler, the error is still thrown for fail-loud semantics
+		// but won't crash the process if no one is listening
+		else {
+			// Store it for the next op or re-throw
+			throw error;
+		}
+	}
 
-  private handleLine(line: string): void {
-    let frame: WireFrame;
-    try {
-      frame = JSON.parse(line) as WireFrame;
-    } catch {
-      // ERRORS-TRANS-3: non-JSON line → protocol error, never silently dropped.
-      // Route to readyReject or active exec or pending op so the error
-      // surfaces as a rejected promise, not an uncaught throw in a stream callback.
-      const err = new TransportProtocolError(`non-JSON line: ${line.slice(0, 200)}`);
-      this.routeProtocolError(err);
-      return;
-    }
+	private handleLine(line: string): void {
+		let frame: WireFrame;
+		try {
+			frame = JSON.parse(line) as WireFrame;
+		} catch {
+			// ERRORS-TRANS-3: non-JSON line → protocol error, never silently dropped.
+			// Route to readyReject or active exec or pending op so the error
+			// surfaces as a rejected promise, not an uncaught throw in a stream callback.
+			const err = new TransportProtocolError(`non-JSON line: ${line.slice(0, 200)}`);
+			this.routeProtocolError(err);
+			return;
+		}
 
-    // Validate frame type
-    if (!isKnownFrameType(frame.type)) {
-      const err = new TransportProtocolError(
-        `unknown frame type ${JSON.stringify(frame.type)}`,
-      );
-      this.routeProtocolError(err);
-      return;
-    }
+		// Validate frame type
+		if (!isKnownFrameType(frame.type)) {
+			const err = new TransportProtocolError(`unknown frame type ${JSON.stringify(frame.type)}`);
+			this.routeProtocolError(err);
+			return;
+		}
 
-    switch (frame.type) {
-      case "ready": {
-        if (this.readyResolve !== null) {
-          this.readyResolve({
-            type: "ready",
-            protocol: frame.protocol ?? 0,
-            pythonVersion: frame.pythonVersion ?? "",
-          });
-          this.readyResolve = null;
-          this.readyReject = null;
-        }
-        return;
-      }
+		switch (frame.type) {
+			case "ready": {
+				if (this.readyResolve !== null) {
+					this.readyResolve({
+						type: "ready",
+						protocol: frame.protocol ?? 0,
+						pythonVersion: frame.pythonVersion ?? "",
+					});
+					this.readyResolve = null;
+					this.readyReject = null;
+				}
+				return;
+			}
 
-      case "started": {
-        // Execution started acknowledgment — no action needed
-        return;
-      }
+			case "started": {
+				// Execution started acknowledgment — no action needed
+				return;
+			}
 
-      case "stdout":
-      case "stderr": {
-        // INV-TRANS-1: only deliver frames for the active execution id
-        if (
-          frame.id !== undefined &&
-          this.activeExecId !== null &&
-          frame.id === this.activeExecId &&
-          this.activeExecPending !== null &&
-          this.outputCallback !== null
-        ) {
-          this.outputCallback({
-            id: frame.id,
-            stream: frame.type,
-            data: frame.data ?? "",
-          });
-        }
-        // Also accumulate for the done frame
-        if (
-          frame.id !== undefined &&
-          this.activeExecId !== null &&
-          frame.id === this.activeExecId &&
-          this.activeExecPending !== null
-        ) {
-          if (frame.type === "stdout") {
-            this.activeExecPending.stdout += frame.data ?? "";
-          } else {
-            this.activeExecPending.stderr += frame.data ?? "";
-          }
-        }
-        return;
-      }
+			case "stdout":
+			case "stderr": {
+				// INV-TRANS-1: only deliver frames for the active execution id
+				if (
+					frame.id !== undefined &&
+					this.activeExecId !== null &&
+					frame.id === this.activeExecId &&
+					this.activeExecPending !== null &&
+					this.outputCallback !== null
+				) {
+					this.outputCallback({
+						id: frame.id,
+						stream: frame.type,
+						data: frame.data ?? "",
+					});
+				}
+				// Also accumulate for the done frame
+				if (
+					frame.id !== undefined &&
+					this.activeExecId !== null &&
+					frame.id === this.activeExecId &&
+					this.activeExecPending !== null
+				) {
+					if (frame.type === "stdout") {
+						this.activeExecPending.stdout += frame.data ?? "";
+					} else {
+						this.activeExecPending.stderr += frame.data ?? "";
+					}
+				}
+				return;
+			}
 
-      case "done": {
-        // Settle the active execution
-        if (
-          frame.id !== undefined &&
-          this.activeExecId !== null &&
-          frame.id === this.activeExecId &&
-          this.activeExecPending !== null
-        ) {
-          const pending = this.activeExecPending;
-          this.activeExecId = null;
-          this.activeExecPending = null;
+			case "done": {
+				// Settle the active execution
+				if (
+					frame.id !== undefined &&
+					this.activeExecId !== null &&
+					frame.id === this.activeExecId &&
+					this.activeExecPending !== null
+				) {
+					const pending = this.activeExecPending;
+					this.activeExecId = null;
+					this.activeExecPending = null;
 
-          pending.resolve({
-            code: frame.code ?? 0,
-            stdout: frame.stdout ?? pending.stdout,
-            stderr: frame.stderr ?? pending.stderr,
-            result: frame.result ?? "",
-            ...(frame.traceback !== undefined ? { traceback: frame.traceback } : {}),
-            ...(frame.errorEname !== undefined ? { errorEname: frame.errorEname } : {}),
-          });
-        }
-        return;
-      }
+					pending.resolve({
+						code: frame.code ?? 0,
+						stdout: frame.stdout ?? pending.stdout,
+						stderr: frame.stderr ?? pending.stderr,
+						result: frame.result ?? "",
+						...(frame.traceback !== undefined ? { traceback: frame.traceback } : {}),
+						...(frame.errorEname !== undefined ? { errorEname: frame.errorEname } : {}),
+					});
+				}
+				return;
+			}
 
-      case "result": {
-        // A standalone result frame — route to pending ops if it has an id
-        if (frame.id !== undefined && this.pendingOps.has(frame.id)) {
-          const op = this.pendingOps.get(frame.id)!;
-          this.pendingOps.delete(frame.id);
-          // Result frames for snapshot ops carry the data
-          if (frame.names !== undefined) {
-            op.resolve(frame.names);
-          } else if (frame.restoredNames !== undefined) {
-            op.resolve(frame.restoredNames);
-          } else if (frame.bytes !== undefined) {
-            op.resolve({
-              bytes: frame.bytes,
-              skipped: frame.skipped ?? [],
-            });
-          } else {
-            op.resolve(undefined);
-          }
-        }
-        return;
-      }
+			case "result": {
+				// A standalone result frame — route to pending ops if it has an id
+				if (frame.id !== undefined && this.pendingOps.has(frame.id)) {
+					const op = this.pendingOps.get(frame.id)!;
+					this.pendingOps.delete(frame.id);
+					// Result frames for snapshot ops carry the data
+					if (frame.names !== undefined) {
+						op.resolve(frame.names);
+					} else if (frame.restoredNames !== undefined) {
+						op.resolve(frame.restoredNames);
+					} else if (frame.bytes !== undefined) {
+						op.resolve({
+							bytes: frame.bytes,
+							skipped: frame.skipped ?? [],
+						});
+					} else {
+						op.resolve(undefined);
+					}
+				}
+				return;
+			}
 
-      case "error": {
-        // Error frame — reject pending op or settle active execution as error
-        if (frame.id !== undefined && this.pendingOps.has(frame.id)) {
-          const op = this.pendingOps.get(frame.id)!;
-          this.pendingOps.delete(frame.id);
-          op.reject(
-            new RlmTransportContractError(
-              `runner error: ${frame.errorEname ?? "unknown"}: ${frame.data ?? ""}`,
-            ),
-          );
-        } else if (
-          frame.id !== undefined &&
-          this.activeExecId !== null &&
-          frame.id === this.activeExecId &&
-          this.activeExecPending !== null
-        ) {
-          const pending = this.activeExecPending;
-          this.activeExecId = null;
-          this.activeExecPending = null;
-          pending.resolve({
-            code: 1,
-            stdout: pending.stdout,
-            stderr: pending.stderr,
-            result: "",
-            ...(frame.data !== undefined ? { traceback: frame.data } : {}),
-            ...(frame.errorEname !== undefined ? { errorEname: frame.errorEname } : {}),
-          });
-        } else {
-          // Unmatched error frame — route to output callback if active
-          if (this.outputCallback !== null && frame.data) {
-            this.outputCallback({
-              id: frame.id ?? "unmatched",
-              stream: "stderr",
-              data: `[runner error] ${frame.errorEname ?? "unknown"}: ${frame.data}\n`,
-            });
-          }
-        }
-        return;
-      }
+			case "error": {
+				// Error frame — reject pending op or settle active execution as error
+				if (frame.id !== undefined && this.pendingOps.has(frame.id)) {
+					const op = this.pendingOps.get(frame.id)!;
+					this.pendingOps.delete(frame.id);
+					op.reject(
+						new RlmTransportContractError(`runner error: ${frame.errorEname ?? "unknown"}: ${frame.data ?? ""}`),
+					);
+				} else if (
+					frame.id !== undefined &&
+					this.activeExecId !== null &&
+					frame.id === this.activeExecId &&
+					this.activeExecPending !== null
+				) {
+					const pending = this.activeExecPending;
+					this.activeExecId = null;
+					this.activeExecPending = null;
+					pending.resolve({
+						code: 1,
+						stdout: pending.stdout,
+						stderr: pending.stderr,
+						result: "",
+						...(frame.data !== undefined ? { traceback: frame.data } : {}),
+						...(frame.errorEname !== undefined ? { errorEname: frame.errorEname } : {}),
+					});
+				} else {
+					// Unmatched error frame — route to output callback if active
+					if (this.outputCallback !== null && frame.data) {
+						this.outputCallback({
+							id: frame.id ?? "unmatched",
+							stream: "stderr",
+							data: `[runner error] ${frame.errorEname ?? "unknown"}: ${frame.data}\n`,
+						});
+					}
+				}
+				return;
+			}
 
-      case "host_request": {
-        if (this.hostRequestHandler !== null) {
-          const reqType = frame.requestType ?? frame.type;
-          const normalizedType =
-            reqType === "host_request" ? (frame.requestType ?? "") : reqType;
-          const reqPayload = frame.payload ?? {};
-          Promise.resolve(
-            this.hostRequestHandler({
-              type: normalizedType,
-              payload: reqPayload,
-            }),
-          )
-            .then(reply => {
-              try {
-                const status =
-                  (reply.status as string | undefined) ??
-                  (reply.error ? "error" : "ok");
-                this.sendOp({
-                  op: "host_reply",
-                  ...(frame.id !== undefined ? { id: frame.id } : {}),
-                  ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
-                  status,
-                  ...reply,
-                });
-              } catch {
-                // Ignore if disposed
-              }
-            })
-            .catch(err => {
-              try {
-                this.sendOp({
-                  op: "host_reply",
-                  ...(frame.id !== undefined ? { id: frame.id } : {}),
-                  ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
-                  status: "error",
-                  error: err instanceof Error ? err.message : String(err),
-                });
-              } catch {
-                // Ignore if disposed
-              }
-            });
-        }
-        return;
-      }
-    }
-  }
+			case "host_request": {
+				if (this.hostRequestHandler !== null) {
+					const reqType = frame.requestType ?? frame.type;
+					const normalizedType = reqType === "host_request" ? (frame.requestType ?? "") : reqType;
+					const reqPayload = frame.payload ?? {};
+					Promise.resolve(
+						this.hostRequestHandler({
+							type: normalizedType,
+							payload: reqPayload,
+						}),
+					)
+						.then(reply => {
+							try {
+								const status = (reply.status as string | undefined) ?? (reply.error ? "error" : "ok");
+								this.sendOp({
+									op: "host_reply",
+									...(frame.id !== undefined ? { id: frame.id } : {}),
+									...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+									status,
+									...reply,
+								});
+							} catch {
+								// Ignore if disposed
+							}
+						})
+						.catch(err => {
+							try {
+								this.sendOp({
+									op: "host_reply",
+									...(frame.id !== undefined ? { id: frame.id } : {}),
+									...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+									status: "error",
+									error: err instanceof Error ? err.message : String(err),
+								});
+							} catch {
+								// Ignore if disposed
+							}
+						});
+				}
+				return;
+			}
+		}
+	}
 }
 
 // =============================================================================
 // Factory
 // =============================================================================
 
-export function createTransport(
-  config: RlmTransportConfig,
-  deps?: RlmTransportDeps,
-): RlmTransport {
-  return new RlmTransport(config, deps);
+export function createTransport(config: RlmTransportConfig, deps?: RlmTransportDeps): RlmTransport {
+	return new RlmTransport(config, deps);
 }

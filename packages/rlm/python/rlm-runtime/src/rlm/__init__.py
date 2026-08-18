@@ -5,7 +5,8 @@ SLICE-5 surface:
 - Skill wrapping: wrap_skill_module (POST-RT-1 / FORBIDDEN-RT-2)
 - Unavailable skill shim: UnavailableSkill (POST-RT-2 / ERRORS-RT-2)
 - Host request wire bridge: host_request (PRE-RT-1 / POST-RT-5 / ERRORS-RT-1)
-- Lazy MCP integration: McpIntegration, McpToolError, NotEnabled (POST-RT-3 / POST-RT-4 / FORBIDDEN-RT-1)
+- Lazy MCP integration: McpIntegration, McpToolError, NotEnabled
+  (POST-RT-3 / POST-RT-4 / FORBIDDEN-RT-1)
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import asyncio
 import inspect
 import sys
 import types
-from typing import Any, Callable
+from collections.abc import Callable
 
 __version__ = "0.1.0"
 
@@ -41,11 +42,14 @@ HOST_REPLY_STATUSES: tuple[str, ...] = ("ok", "error", "unexpected")
 # Skill Wrapping (POST-RT-1 / FORBIDDEN-RT-2)
 # =============================================================================
 
+
 class _WrappedSkillModule(types.ModuleType):
     """Callable module wrapper that delegates __call__ to run."""
 
-    def __init__(self, target_module: types.ModuleType, run_fn: Callable[..., Any]):
-        super().__init__(target_module.__name__, getattr(target_module, "__doc__", None))
+    def __init__(self, target_module: types.ModuleType, run_fn: Callable[..., object]):
+        super().__init__(
+            target_module.__name__, getattr(target_module, "__doc__", None)
+        )
         self.__dict__.update(target_module.__dict__)
         self._rlm_wrapped_skill = True
         self._target_module = target_module
@@ -62,12 +66,14 @@ class _WrappedSkillModule(types.ModuleType):
             except (ValueError, TypeError):
                 pass
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+    def __call__(self, *args: object, **kwargs: object) -> object:
         # POST-RT-1: __call__ invokes run and awaits if awaitable
         res = self._run_fn(*args, **kwargs)
         if inspect.isawaitable(res) or asyncio.iscoroutine(res):
-            async def _await_res() -> Any:
+
+            async def _await_res() -> object:
                 return await res
+
             return _await_res()
         return res
 
@@ -95,6 +101,7 @@ def wrap_skill_module(mod: types.ModuleType) -> types.ModuleType:
 # Unavailable Skill Shim (POST-RT-2 / ERRORS-RT-2)
 # =============================================================================
 
+
 class UnavailableSkill:
     """Shim bound when a skill fails to import."""
 
@@ -106,11 +113,11 @@ class UnavailableSkill:
         # POST-RT-2: repr starts with UNAVAILABLE_REPR_PREFIX, includes name and error
         return f"{UNAVAILABLE_REPR_PREFIX}{self._name} ({self._import_error})>"
 
-    def run(self, *args: Any, **kwargs: Any) -> Any:
+    def run(self, *args: object, **kwargs: object) -> object:
         # ERRORS-RT-2: raises RuntimeError with formatted error
         raise RuntimeError(UNAVAILABLE_RUN_ERROR % (self._name, self._import_error))
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+    def __call__(self, *args: object, **kwargs: object) -> object:
         return self.run(*args, **kwargs)
 
 
@@ -118,21 +125,23 @@ class UnavailableSkill:
 # Host Request Bridge (PRE-RT-1 / POST-RT-5 / ERRORS-RT-1)
 # =============================================================================
 
-_host_bridge: Any = None
+_host_bridge: object = None
 
 
-def set_host_bridge(bridge: Any) -> None:
+def set_host_bridge(bridge: object) -> None:
     """Set the host bridge callable for host_request dispatch."""
     global _host_bridge
     _host_bridge = bridge
 
 
-def get_host_bridge() -> Any:
+def get_host_bridge() -> object:
     """Get the current host bridge callable."""
     return _host_bridge
 
 
-async def host_request(request_type: str, payload: dict[str, Any] | None = None) -> Any:
+async def host_request(
+    request_type: str, payload: dict[str, object] | None = None
+) -> object:
     """Send a typed request to the host and await the response.
 
     PRE-RT-1: rejects non-string/empty type and non-dict payload with TypeError.
@@ -191,21 +200,31 @@ async def host_request(request_type: str, payload: dict[str, Any] | None = None)
 # Finding #5: Define classes lazily within __getattr__ so top-level __dict__
 # remains free of eager exports, fulfilling PEP 562 / F-080.
 
-def __getattr__(name: str) -> Any:
+
+def __getattr__(name: str) -> object:
     """POST-RT-3: expose McpIntegration, McpToolError, NotEnabled lazily."""
     if name == "McpIntegration":
-        class McpIntegration:
-            """Discovers and invokes MCP tools through host_request (no direct credentials in Python)."""
 
-            def __init__(self, server_name: str | None = None, **kwargs: Any):
+        class McpIntegration:
+            """Discovers and invokes MCP tools through host_request.
+
+            Keeps all credentials and auth stores host-side.
+            """
+
+            def __init__(self, server_name: str | None = None, **kwargs: object):
                 self.server_name = server_name
 
-            async def list_tools(self, **kwargs: Any) -> Any:
-                return await host_request("mcp.list_tools", {"server": self.server_name, **kwargs})
+            async def list_tools(self, **kwargs: object) -> object:
+                return await host_request(
+                    "mcp.list_tools", {"server": self.server_name, **kwargs}
+                )
 
             async def call_tool(
-                self, tool_name: str, arguments: dict[str, Any] | None = None, **kwargs: Any
-            ) -> Any:
+                self,
+                tool_name: str,
+                arguments: dict[str, object] | None = None,
+                **kwargs: object,
+            ) -> object:
                 return await host_request(
                     "mcp.call_tool",
                     {
@@ -216,24 +235,33 @@ def __getattr__(name: str) -> Any:
                     },
                 )
 
-            async def config(self, **kwargs: Any) -> Any:
-                return await host_request("mcp.config", {"server": self.server_name, **kwargs})
+            async def config(self, **kwargs: object) -> object:
+                return await host_request(
+                    "mcp.config", {"server": self.server_name, **kwargs}
+                )
 
-            async def resolve_config(self, **kwargs: Any) -> Any:
+            async def resolve_config(self, **kwargs: object) -> object:
                 return await self.config(**kwargs)
 
-            async def refresh(self, **kwargs: Any) -> Any:
-                return await host_request("mcp.refresh", {"server": self.server_name, **kwargs})
+            async def refresh(self, **kwargs: object) -> object:
+                return await host_request(
+                    "mcp.refresh", {"server": self.server_name, **kwargs}
+                )
 
         return McpIntegration
+
     if name == "McpToolError":
+
         class McpToolError(Exception):
             """Raised when an MCP tool call fails."""
+
         return McpToolError
 
     if name == "NotEnabled":
+
         class NotEnabled(Exception):
             """Raised when MCP integration is not enabled in this session."""
+
         return NotEnabled
 
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
