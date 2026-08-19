@@ -1966,7 +1966,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 			inlineExtensions.push(...(options.extensions ?? []));
 			inlineExtensions.push(createAutoresearchExtension);
-			inlineExtensions.push(createRlmExtension as ExtensionFactory);
+			// SEQ-MOUNT-1: invoke the createRlmExtension HOF to obtain its inner
+			// ExtensionFactory before mounting — pushing the un-invoked HOF caused
+			// the loader to call createRlmExtension(api) itself, treating the
+			// ExtensionAPI as CreateRlmExtensionOptions and never running the
+			// returned factory (POST-MOUNT-1, DISCONNECT B01).
+			inlineExtensions.push(createRlmExtension());
 			if (customTools.length > 0) {
 				inlineExtensions.push(createCustomToolsExtension(customTools));
 			}
