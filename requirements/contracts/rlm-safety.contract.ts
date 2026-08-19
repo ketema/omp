@@ -111,7 +111,6 @@ export function validateTrustPostureDocumented(docText: string): boolean {
 // =============================================================================
 // Artifact 5: Traceability
 // =============================================================================
-
 export const RLM_SAFETY_CONTRACT = {
   'SAFE-V1': 'validateKernelEnv: validates that kernel env contains only allowed session identity keys and capability-gated credentials (F-206/F-207, REQ-N-3).',
   'SAFE-V2': 'validateTrustPostureDocumented: validates that trust posture documentation contains the exact phrase "not a sandbox" (F-208, REQ-N-4).',
@@ -119,6 +118,7 @@ export const RLM_SAFETY_CONTRACT = {
   'POST-SAFE-1': 'The kernel env contains only session identity keys plus capability-gated allowed credentials (SAFE-V1, REQ-N-3).',
   'POST-SAFE-2': 'Only bounded model-catalog metadata crosses into Python (F-267, A-012).',
   'INV-SAFE-1': 'The auth store never crosses the boundary in any direction (F-207).',
+  'INV-SAFE-LIFETIME-1': 'From spawn through dispose, the trust posture is stated in every user/model-facing kernel description (SAFE-V2, REQ-N-4).',
   'ERRORS-SAFE-1': 'CredentialBoundaryViolationError names the offending key the moment a non-allowed credential enters kernel env assembly (REQ-N-3, fail-fast CL15-A).',
   'ERRORS-SAFE-2': 'Missing trust-posture documentation raises RlmSafetyContractError rather than shipping silently (SAFE-V2).',
   'FORBIDDEN-SAFE-1': 'The RLM plugin SHALL NOT present the kernel as a security sandbox (REQ-N-4, F-208).',
@@ -126,5 +126,4 @@ export const RLM_SAFETY_CONTRACT = {
   'FORBIDDEN-SAFE-3': 'The RLM plugin SHALL NOT stub the planned destructive-command blocker; that capability is out of scope for this port (REQ-N-4).',
   'FORBIDDEN-SAFE-4': 'The RLM plugin SHALL NOT ship placeholder, TODO, or stub implementations for any requirement (REQ-N-6).',
 } as const
-
 export type RlmSafetyClauseId = keyof typeof RLM_SAFETY_CONTRACT
