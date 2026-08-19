@@ -111,9 +111,10 @@ export function validateTrustPostureDocumented(docText: string): boolean {
 // =============================================================================
 
 export const RLM_SAFETY_CONTRACT = {
+  'SAFE-V1': 'validateKernelEnv: validates that kernel env contains only allowed session identity keys and capability-gated credentials (F-206/F-207, REQ-N-3).',
+  'SAFE-V2': 'validateTrustPostureDocumented: validates that trust posture documentation contains the exact phrase "not a sandbox" (F-208, REQ-N-4).',
   'PRE-SAFE-1': 'Kernel env assembly runs before process spawn with a capability-gated credential policy (F-206/F-207).',
   'POST-SAFE-1': 'The kernel env contains only session identity keys plus capability-gated allowed credentials (SAFE-V1, REQ-N-3).',
-  'POST-SAFE-2': 'Only bounded model-catalog metadata crosses into Python (F-267, A-012).',
   'INV-SAFE-1': 'The auth store never crosses the boundary in any direction (F-207).',
   'INV-SAFE-LIFETIME-1': 'From spawn through dispose, the trust posture is stated in every user/model-facing kernel description (SAFE-V2, REQ-N-4).',
   'ERRORS-SAFE-1': 'CredentialBoundaryViolationError names the offending key the moment a non-allowed credential enters kernel env assembly (REQ-N-3, fail-fast CL15-A).',

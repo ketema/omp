@@ -292,6 +292,8 @@
         "POST-SAFE-1",
         "POST-SAFE-2",
         "PRE-SAFE-1",
+        "SAFE-V1",
+        "SAFE-V2",
         "REQ-RLM-0001",
         "REQ-RLM-0013",
         "REQ-RLM-0016",
