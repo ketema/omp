@@ -358,10 +358,16 @@ const AGENT_MESSAGE_DELIVERY_STATUS = "delivered";
 export class AgentMessageEngine {
 	private readonly family: AgentFamily;
 	private readonly options: AgentMessageEngineOptions;
+	private readonly deliveries: AgentMessageReceipt[] = [];
 
 	constructor(options: AgentMessageEngineOptions = {}) {
 		this.options = options;
 		this.family = options.family ?? {};
+	}
+
+	/** Every receipt recorded by a successful send, in delivery order. */
+	get deliveredMessages(): readonly AgentMessageReceipt[] {
+		return this.deliveries;
 	}
 
 	private generateId(): string {
@@ -404,6 +410,7 @@ export class AgentMessageEngine {
 			message: payload.message,
 			deliveryStatus: AGENT_MESSAGE_DELIVERY_STATUS,
 		};
+		this.deliveries.push(receipt);
 		this.options.onDeliver?.(receipt);
 		return receipt;
 	}
@@ -466,7 +473,6 @@ export class AgentObserveEngine {
 		const maxChars = payload.max_chars ?? AGENT_OBSERVE_DEFAULT_MAX_CHARS;
 		const source = this.options.lines?.(payload.target) ?? [];
 		const bounded = limit > 0 ? source.slice(-limit) : [];
-
 		let budget = Math.max(0, maxChars);
 		const result: string[] = [];
 		for (let i = bounded.length - 1; i >= 0; i -= 1) {
