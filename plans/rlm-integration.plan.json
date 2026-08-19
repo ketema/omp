@@ -2,7 +2,9 @@
   "schema_version": "1.0",
   "feature_name": "rlm-biomimetic-integration",
   "manifest_path": "requirements/REQUIREMENT_MANIFEST_RLM_INTEGRATION.md",
+  "manifest_hash": "sha256:7c34d4f6e0b44c0186c19d4162af7a6560a480d00b37c6ec4590a9b2884f5538",
   "created": "2026-08-19",
+  "last_updated": "2026-08-19",
   "status": "ACTIVE",
   "slices": [
     {
