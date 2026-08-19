@@ -1,0 +1,106 @@
+{
+  "schema_version": "1.0",
+  "feature_name": "rlm-biomimetic-integration",
+  "manifest_path": "requirements/REQUIREMENT_MANIFEST_RLM_INTEGRATION.md",
+  "created": "2026-08-19",
+  "status": "ACTIVE",
+  "slices": [
+    {
+      "id": "SLICE-1",
+      "name": "Host Bridge Dispatcher & Task Runner Wiring",
+      "clauses_in_scope": [
+        "SEQ-INT-1",
+        "SEQ-INT-2",
+        "SEQ-INT-3",
+        "SEQ-INT-4",
+        "REQ-BIO-0001",
+        "REQ-BIO-0002",
+        "REQ-BIO-0003"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [],
+      "status": "PENDING",
+      "depends_on": [],
+      "pivot_note": "transport.onHostRequest wired to unified dispatcher in extension.ts; RlmRecursionEngine childRunner bound to real OMP subagent task spawner."
+    },
+    {
+      "id": "SLICE-2",
+      "name": "RLM Runtime, Toolchain Source Registry & Headroom-Style Paged View",
+      "clauses_in_scope": [
+        "INV-BIO-2",
+        "INV-BIO-3",
+        "INV-BIO-4",
+        "INV-BIO-6",
+        "SEQ-INT-6",
+        "REQ-BIO-0007",
+        "REQ-BIO-0008",
+        "REQ-BIO-0009",
+        "REQ-BIO-0010",
+        "REQ-BIO-0011",
+        "REQ-BIO-0012",
+        "REQ-BIO-0013"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [
+        "INV-BIO-2",
+        "INV-BIO-3",
+        "INV-BIO-4",
+        "INV-BIO-6"
+      ],
+      "status": "PENDING",
+      "depends_on": [
+        "SLICE-1"
+      ],
+      "pivot_note": "rlm_runtime.py singleton with rlm.tools source recipe persistence, rlm.measure/ingest spooling, rlm.view Headroom-style paging envelope, and timeline.ndjson graph."
+    },
+    {
+      "id": "SLICE-3",
+      "name": "Bash Gate & Memory/Skill Allowlist Floor",
+      "clauses_in_scope": [
+        "INV-BIO-1",
+        "INV-BIO-7",
+        "SEQ-INT-5",
+        "REQ-BIO-0004",
+        "REQ-BIO-0005",
+        "REQ-BIO-0006"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [
+        "INV-BIO-1",
+        "INV-BIO-7"
+      ],
+      "status": "PENDING",
+      "depends_on": [
+        "SLICE-2"
+      ],
+      "pivot_note": "rlm-gate PreToolUse hook intercepts high-risk bash slurps with teaching errors; hardcoded allowlist guarantees 100% full-fidelity memory and skill reads."
+    },
+    {
+      "id": "SLICE-4",
+      "name": "Biomimetic Compaction Bridge & Active-Slice Recovery Walk",
+      "clauses_in_scope": [
+        "INV-BIO-5",
+        "SEQ-INT-7",
+        "SEQ-INT-8",
+        "SEQ-INT-9",
+        "SEQ-INT-10",
+        "REQ-BIO-0014",
+        "REQ-BIO-0015",
+        "REQ-BIO-0016",
+        "REQ-BIO-0017",
+        "REQ-BIO-0018",
+        "REQ-BIO-0019",
+        "REQ-BIO-0020"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [
+        "INV-BIO-5"
+      ],
+      "status": "PENDING",
+      "depends_on": [
+        "SLICE-3"
+      ],
+      "pivot_note": "SessionMaintenance writes 64k active-slice manifest, flushes journals before compaction, injects <rlm_state> notice; rlm.recover rehydrates session JSONL pointers on demand."
+    }
+  ]
+}
