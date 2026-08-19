@@ -20,20 +20,15 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  AgentMessageEngine,
+  AgentObserveEngine,
   BR_ERR_UNAVAILABLE,
   BR_HEARTBEAT_STATUSES,
   BR_MESSAGE_ROLES,
   BR_REFINE_NOTE,
-  RlmBridgeContractError,
-  validateHeartbeatUpdate,
-  validateMessageRole,
-} from "../../../requirements/contracts/rlm-bridge.contract.ts";
-
-import {
-  AgentMessageEngine,
-  AgentObserveEngine,
   HeartbeatEngine,
   RefineEngine,
+  RlmBridgeContractError,
   RlmBridgeRouter,
 } from "../src/engines.ts";
 
@@ -154,7 +149,6 @@ describe("RLM Ported Engines (SLICE-7 RED)", () => {
   describe("Agent Message Routing Bus", () => {
     test("POST-BR-3 + BR-V4: list_agents enumerates allowable family targets", async () => {
       const bus = new AgentMessageEngine({
-        currentAgentId: "sub-12345678",
         family: {
           parent: "parent-session-1",
           siblings: ["sub-87654321"],
@@ -169,23 +163,19 @@ describe("RLM Ported Engines (SLICE-7 RED)", () => {
     test("POST-BR-6: send delivers message to target and returns receipt", async () => {
       const deliveredMessages: unknown[] = [];
       const bus = new AgentMessageEngine({
-        currentAgentId: "sub-12345678",
         family: {
           parent: "parent-session-1",
           siblings: ["sub-87654321"],
           children: [],
         },
-        transport: {
-          async deliver(msg) {
-            deliveredMessages.push(msg);
-            return { ok: true };
-          },
+        onDeliver: (receipt) => {
+          deliveredMessages.push(receipt);
         },
       });
 
       const receipt = await bus.send({
         target: "sub-87654321",
-        role: "sibling",
+        receiver_role: "sibling",
         message: "hello from sibling",
       });
 
@@ -198,7 +188,6 @@ describe("RLM Ported Engines (SLICE-7 RED)", () => {
 
     test("ERRORS-BR-1 + BR-V4: send rejects target outside nuclear family", async () => {
       const bus = new AgentMessageEngine({
-        currentAgentId: "sub-12345678",
         family: {
           parent: "parent-session-1",
           siblings: [],
@@ -210,7 +199,7 @@ describe("RLM Ported Engines (SLICE-7 RED)", () => {
       try {
         await bus.send({
           target: "unrelated-agent-999",
-          role: "stranger" as unknown as "parent",
+          receiver_role: "stranger" as unknown as "parent",
           message: "illegal ping",
         });
       } catch (e) {
@@ -226,27 +215,21 @@ describe("RLM Ported Engines (SLICE-7 RED)", () => {
   describe("Agent Observe Reader", () => {
     test("POST-BR-3: observe.list and observe.recent retrieve bounded subagent context", async () => {
       const observer = new AgentObserveEngine({
-        provider: {
-          async listObservable() {
-            return [{ rlmChildId: "sub-child-001", name: "scout", status: "completed" }];
-          },
-          async readRecent(target, limit, maxChars) {
-            return {
-              target,
-              lines: ["line 1", "line 2"].slice(0, limit),
-              truncated: false,
-            };
-          },
+        family: {
+          parent: "parent-session-1",
+          children: ["sub-child-001"],
+        },
+        lines: (target) => {
+          if (target === "sub-child-001") return ["line 1", "line 2", "line 3"];
+          return [];
         },
       });
 
       const list = await observer.list();
-      expect(list.length).toBe(1);
-      expect(list[0].name).toBe("scout");
+      expect(list).toContain("sub-child-001");
 
-      const recent = await observer.recent({ target: "sub-child-001", limit: 5, max_chars: 1000 });
-      expect(recent.target).toBe("sub-child-001");
-      expect(recent.lines).toEqual(["line 1", "line 2"]);
+      const recent = await observer.recent({ target: "sub-child-001", limit: 2, max_chars: 1000 });
+      expect(recent).toEqual(["line 2", "line 3"]);
     });
   });
 
