@@ -5,7 +5,7 @@
   "manifest_hash": "sha256:7cea922bc3919f07ccaa86bbe3f4e79ada3f401141e0595240c3aeeba5936517",
   "created": "2026-08-15",
   "last_updated": "2026-08-17",
-  "status": "ACTIVE",
+  "status": "COMPLETED",
   "slices": [
     {
       "id": "SLICE-1",
@@ -311,7 +311,7 @@
         "REQ-N-4",
         "REQ-N-6"
       ],
-      "status": "PENDING",
+      "status": "AUDITED",
       "depends_on": [
         "SLICE-7"
       ],
