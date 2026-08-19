@@ -44,15 +44,14 @@ describe("RLM Safety Enforcement (SLICE-8 RED)", () => {
     test("POST-SAFE-1: allows valid session identity and config environment keys", () => {
       const sessionEnv: Record<string, string> = {
         RLM_SESSION_DIR: "/tmp/session-1",
-        RLM_HARNESS_DIR: "/tmp/session-1/harness",
-        RLM_GLOBAL_HARNESS_DIR: "/tmp/global-harness",
-        RLM_AGENT_DIR: "/tmp/agent",
+        RLM_HARNESS_STATE_DIR: "/tmp/session-1/harness",
+        RLM_GLOBAL_HARNESS_STATE_DIR: "/tmp/global-harness",
+        OMP_RLM_AGENT_DIR: "/tmp/agent",
         RLM_DEPTH: "0",
         RLM_MAX_DEPTH: "1",
         RLM_MAX_OUTPUT_CHARS: "65536",
         RLM_SNAPSHOT_MAX_BYTES: "268435456",
       };
-
       const validated = validateKernelEnv(sessionEnv, { websearchLoaded: false });
       expect(validated).toEqual(sessionEnv);
     });

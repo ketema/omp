@@ -49,11 +49,13 @@ export class RlmSafetyContractError extends Error {
 
 /** REQ-N-3: a credential attempted to cross the boundary. */
 export class CredentialBoundaryViolationError extends RlmSafetyContractError {
+  readonly key: string
   constructor(key: string) {
     super(
       `SAFE-V1 violation: credential ${JSON.stringify(key)} is not in the allowed kernel-env set`,
     )
     this.name = 'CredentialBoundaryViolationError'
+    this.key = key
   }
 }
 
