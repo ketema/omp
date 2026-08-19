@@ -271,7 +271,7 @@
       "negative_constraints": [
         "FORBIDDEN-BR-3"
       ],
-      "status": "PENDING",
+      "status": "AUDITED",
       "depends_on": [
         "SLICE-6"
       ],
