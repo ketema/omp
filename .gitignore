@@ -93,3 +93,12 @@ packages/coding-agent/bench/boot-baseline.json
 /.bazelrc.user
 
 .parity/
+
+# serena
+.serena/
+
+# RLM runtime state & artifacts
+.omp/artifacts/
+kernel-state.dill
+kernel-state.json
+**/kernel-state.*
