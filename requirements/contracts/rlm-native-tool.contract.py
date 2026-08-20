@@ -88,7 +88,7 @@ def validate_active_ipython(surface: object) -> ActiveToolSurface:
             f"expected load_mode to be {NATIVE_TOOL_LOAD_MODE}, got {mode!r}",
             clause="POST-NATIVE-2",
         )
-    return ActiveToolSurface(tool_names=tuple(names), load_mode=mode)
+    return ActiveToolSurface(active_tool_names=tuple(names), load_mode=mode)
 
 
 # =============================================================================
