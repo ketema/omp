@@ -1,17 +1,78 @@
 {
-  "name": "@oh-my-pi/pi-rlm",
-  "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "exports": {
-    ".": "./src/index.ts",
-    "./bootstrap": "./src/bootstrap.ts",
-    "./kernel": "./src/kernel.ts",
-    "./transport": "./src/transport.ts",
-    "./tool": "./src/tool.ts",
-    "./extension": "./src/extension.ts"
+  "name": "@oh-my-pi/pi-rlm",
+  "version": "17.3.8",
+  "description": "Recursive Language Model (RLM) persistent IPython kernel integration for Oh My Pi",
+  "homepage": "https://omp.sh",
+  "author": "Can Boluk",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/can1357/oh-my-pi.git",
+    "directory": "packages/rlm"
+  },
+  "bugs": {
+    "url": "https://github.com/can1357/oh-my-pi/issues"
+  },
+  "keywords": [
+    "rlm",
+    "ipython",
+    "repl",
+    "kernel",
+    "agent"
+  ],
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "check": "biome check . && bun run check:types",
+    "check:types": "tsgo -p tsconfig.json --noEmit",
+    "lint": "biome lint .",
+    "fix": "biome check --write --unsafe .",
+    "fmt": "biome format --write .",
+    "test": "bun test"
   },
   "dependencies": {
     "@oh-my-pi/omptype": "catalog:"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:"
+  },
+  "engines": {
+    "bun": ">=1.3.14"
+  },
+  "files": [
+    "src",
+    "python",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./*": {
+      "types": "./src/*.ts",
+      "import": "./src/*.ts"
+    },
+    "./bootstrap": {
+      "types": "./src/bootstrap.ts",
+      "import": "./src/bootstrap.ts"
+    },
+    "./kernel": {
+      "types": "./src/kernel.ts",
+      "import": "./src/kernel.ts"
+    },
+    "./transport": {
+      "types": "./src/transport.ts",
+      "import": "./src/transport.ts"
+    },
+    "./tool": {
+      "types": "./src/tool.ts",
+      "import": "./src/tool.ts"
+    },
+    "./extension": {
+      "types": "./src/extension.ts",
+      "import": "./src/extension.ts"
+    }
   }
 }

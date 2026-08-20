@@ -310,6 +310,10 @@ export interface RlmRecursionEngineOptions {
 	readonly maxDepth?: number;
 	/** Model ids the host can admit a subagent onto; defaults to [parentModel]. */
 	readonly availableModels?: readonly string[];
+	/** Optional preflight model check hook (POST-REC-4). */
+	readonly preflightModel?: (model: string) => Promise<boolean> | boolean;
+	/** Optional hook to derive child name from prompt text (POST-REC-6). */
+	readonly deriveName?: (prompt: string) => string | undefined;
 	/** Generates a fresh REC-V5-shaped child id; defaults to crypto randomness. */
 	readonly generateChildId?: () => string;
 	/**
