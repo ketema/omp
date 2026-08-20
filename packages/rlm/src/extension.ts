@@ -8,11 +8,11 @@
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { bootstrapManagedVenv, buildKernelEnv } from "./bootstrap";
+import { EMBEDDED_RUNTIME_SOURCES, ensureExtractedAssets } from "./embedded_assets";
 import type { KernelClock, KernelExecutionResult, KernelTransport } from "./kernel";
 import { KernelManager } from "./kernel";
 import { createRlmToolDefinition, type RlmToolKernelPort, type RlmToolKernelResult } from "./tool";
 import { createTransport } from "./transport";
-
 // =============================================================================
 // Config types
 // =============================================================================
@@ -169,6 +169,9 @@ async function createDefaultKernel(config: RlmKernelConfig, artifactsDir: string
 	const xdgDir = join(agentDir, "xdg");
 	fs.mkdirSync(agentDir, { recursive: true });
 
+	// Ensure physical Python runner and rlm-runtime package exist on disk
+	const { runnerScriptPath, runtimePackagePath } = ensureExtractedAssets(agentDir);
+
 	let interpreterPath: string;
 
 	if (config.kernelPython !== undefined && config.kernelPython !== "") {
@@ -184,8 +187,18 @@ async function createDefaultKernel(config: RlmKernelConfig, artifactsDir: string
 			{
 				runner: {
 					async run(cmd: string, args: readonly string[]) {
+						let executable = cmd;
+						if (cmd === "uv") {
+							executable =
+								Bun.which("uv") ||
+								(fs.existsSync("/opt/homebrew/bin/uv")
+									? "/opt/homebrew/bin/uv"
+									: fs.existsSync("/usr/local/bin/uv")
+										? "/usr/local/bin/uv"
+										: "uv");
+						}
 						const proc = Bun.spawn({
-							cmd: [cmd, ...args],
+							cmd: [executable, ...args],
 							stdout: "pipe",
 							stderr: "pipe",
 							stdin: "ignore",
@@ -215,23 +228,8 @@ async function createDefaultKernel(config: RlmKernelConfig, artifactsDir: string
 						return null;
 					}
 				},
-				runtimeSources: (() => {
-					const sources: Record<string, string> = {};
-					const runnerFile = new URL("../python/rlm_kernel_runner.py", import.meta.url).pathname;
-					const runtimeInit = new URL("../python/rlm-runtime/src/rlm/__init__.py", import.meta.url).pathname;
-					for (const [name, path] of [
-						["runner.py", runnerFile],
-						["rlm/__init__.py", runtimeInit],
-					] as const) {
-						try {
-							sources[name] = fs.readFileSync(path, "utf8");
-						} catch {
-							// missing source: identity changes force a rebuild anyway
-						}
-					}
-					return sources;
-				})(),
-				runtimePackagePath: new URL("../python/rlm-runtime", import.meta.url).pathname,
+				runtimeSources: EMBEDDED_RUNTIME_SOURCES,
+				runtimePackagePath,
 				skills: [],
 			},
 		);
@@ -264,8 +262,8 @@ async function createDefaultKernel(config: RlmKernelConfig, artifactsDir: string
 		env,
 		cwd: process.cwd(),
 		artifactsDir,
+		runnerScriptPath,
 	});
-
 	// Create kernel manager over the transport
 	const clock: KernelClock = {
 		now(): number {
