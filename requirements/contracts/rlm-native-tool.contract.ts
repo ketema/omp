@@ -42,7 +42,7 @@ export class RlmNativeToolContractError extends Error {
 
 export interface ActiveToolSurface {
 	readonly activeToolNames: readonly string[];
-	readonly loadMode: string;
+	readonly loadMode?: string;
 }
 
 export type ClauseVerification = "test" | "execution" | "tool";

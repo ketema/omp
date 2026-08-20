@@ -25,27 +25,7 @@ import {
 	HOST_MOUNT_TOOL_NAME,
 	RLM_HOST_MOUNT_CONTRACT,
 } from "../../../requirements/contracts/rlm-host-mount.contract";
-
-function assert5Point(
-	condition: boolean,
-	details: {
-		what: string;
-		why: string;
-		expected: string;
-		actual: string;
-		guidance: string;
-	},
-): void {
-	if (!condition) {
-		const message =
-			`\n1. WHAT: ${details.what}\n` +
-			`2. WHY: ${details.why}\n` +
-			`3. EXPECTED: ${details.expected}\n` +
-			`4. ACTUAL: ${details.actual}\n` +
-			`5. GUIDANCE: ${details.guidance}\n`;
-		throw new Error(message);
-	}
-}
+import { assert5Point } from "./helpers/assert-5-point";
 
 describe("RLM host mount contract", () => {
 	const tempDirs: string[] = [];

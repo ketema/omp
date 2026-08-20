@@ -1,5 +1,5 @@
 /**
- * RLM Native Tool Tests — RED phase.
+ * RLM Native Tool Tests — RED/GREEN verification.
  *
  * Enforces `requirements/contracts/rlm-native-tool.contract.ts`.
  * Exercises top-level native tool presentation in packages/coding-agent/src/sdk.ts
@@ -30,27 +30,7 @@ import {
 	NATIVE_TOOL_NAME,
 	RLM_NATIVE_TOOL_CONTRACT,
 } from "../../../requirements/contracts/rlm-native-tool.contract";
-
-function assert5Point(
-	condition: boolean,
-	details: {
-		what: string;
-		why: string;
-		expected: string;
-		actual: string;
-		guidance: string;
-	},
-): void {
-	if (!condition) {
-		const message =
-			`\n1. WHAT: ${details.what}\n` +
-			`2. WHY: ${details.why}\n` +
-			`3. EXPECTED: ${details.expected}\n` +
-			`4. ACTUAL: ${details.actual}\n` +
-			`5. GUIDANCE: ${details.guidance}\n`;
-		throw new Error(message);
-	}
-}
+import { assert5Point } from "./helpers/assert-5-point";
 
 describe("RLM native top-level tool contract", () => {
 	const tempDirs: string[] = [];
@@ -102,7 +82,7 @@ describe("RLM native top-level tool contract", () => {
 		/**
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
 		 * [✓] C1 VALID: cites POST-NATIVE-1 in rlm-native-tool.contract.ts
-		 * [✓] C2 VALUABLE: fails if ipython is excluded from active tools array
+		 * [✓] C2 VALUABLE: fails if ipython is excluded from the active tools array
 		 * [✓] C3 NON-DUPLICATIVE: tests top-level active tools presentation
 		 * [✓] C4 NOT FUTURE-EDIT: bounds existing getActiveToolNames surface
 		 *
@@ -122,12 +102,12 @@ describe("RLM native top-level tool contract", () => {
 				why: `POST-NATIVE-1 violation: active tools do not include ${NATIVE_TOOL_NAME}`,
 				expected: RLM_NATIVE_TOOL_CONTRACT["POST-NATIVE-1"].text,
 				actual: `activeToolNames=${JSON.stringify(activeToolNames)}`,
-				guidance: `Add ${NATIVE_TOOL_NAME} to ESSENTIAL_BUILTIN_TOOL_NAMES and XDEV_KEEP_TOP_LEVEL so it remains in getActiveToolNames()`,
+				guidance: `Pin ${NATIVE_TOOL_NAME} to essential mode so it remains in getActiveToolNames() (ESSENTIAL_NATIVE_TOOL_NAMES / XDEV_KEEP_TOP_LEVEL in essential-tools.ts and xdev.ts)`,
 			});
 
 			expect(session.getToolByName(NATIVE_TOOL_NAME)).toBeDefined();
 
-			// Exercise contract validator
+			// Exercise contract validator — membership only (POST-NATIVE-1); load mode is asserted separately.
 			assertActiveIpython({ activeToolNames });
 		} finally {
 			await session.dispose();
@@ -154,7 +134,7 @@ describe("RLM native top-level tool contract", () => {
 			why: `POST-NATIVE-2 violation: default load mode is '${mode}', expected '${NATIVE_TOOL_LOAD_MODE}'`,
 			expected: RLM_NATIVE_TOOL_CONTRACT["POST-NATIVE-2"].text,
 			actual: `mode='${mode}', mountable=${mountable}`,
-			guidance: `Pin ${NATIVE_TOOL_NAME} to '${NATIVE_TOOL_LOAD_MODE}' in ESSENTIAL_BUILTIN_TOOL_NAMES and XDEV_KEEP_TOP_LEVEL`,
+			guidance: `Pin ${NATIVE_TOOL_NAME} to '${NATIVE_TOOL_LOAD_MODE}' via ESSENTIAL_NATIVE_TOOL_NAMES / XDEV_KEEP_TOP_LEVEL`,
 		});
 
 		assert5Point(!mountable, {

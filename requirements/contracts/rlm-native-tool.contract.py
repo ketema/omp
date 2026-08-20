@@ -54,7 +54,6 @@ class ActiveToolSurface:
     """Contract-level view of top-level active tools."""
 
     active_tool_names: tuple[str, ...]
-    load_mode: str
 
 
 # =============================================================================
@@ -63,7 +62,12 @@ class ActiveToolSurface:
 
 
 def validate_active_ipython(surface: object) -> ActiveToolSurface:
-    """POST-NATIVE-1: active tool names include ``ipython``."""
+    """POST-NATIVE-1: active tool names include ``ipython``.
+
+    Membership-only, mirroring TS ``assertActiveIpython``. Load mode is a
+    separate concern verified by ``validate_essential_load_mode``
+    (POST-NATIVE-2) — this function does not require or inspect it.
+    """
     if not isinstance(surface, Mapping):
         raise RlmNativeToolContractError(
             "active tool surface is not a mapping",
@@ -82,13 +86,22 @@ def validate_active_ipython(surface: object) -> ActiveToolSurface:
             f"active tools {list(names)!r} do not include {NATIVE_TOOL_NAME}",
             clause="POST-NATIVE-1",
         )
-    mode = str(surface.get("load_mode", surface.get("loadMode", "")))
-    if mode != NATIVE_TOOL_LOAD_MODE:
+    return ActiveToolSurface(active_tool_names=tuple(names))
+
+
+def validate_essential_load_mode(mode: object) -> str:
+    """POST-NATIVE-2: load mode is ``essential``.
+
+    Mirrors TS ``assertEssentialLoadMode``. Kept independent from
+    ``validate_active_ipython`` so a caller checking only membership never
+    incurs a spurious load-mode failure.
+    """
+    if not isinstance(mode, str) or mode != NATIVE_TOOL_LOAD_MODE:
         raise RlmNativeToolContractError(
             f"expected load_mode to be {NATIVE_TOOL_LOAD_MODE}, got {mode!r}",
             clause="POST-NATIVE-2",
         )
-    return ActiveToolSurface(active_tool_names=tuple(names), load_mode=mode)
+    return mode
 
 
 # =============================================================================
