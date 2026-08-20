@@ -81,6 +81,7 @@ export interface RlmTransportConfig {
 	readonly env: Readonly<Record<string, string>>;
 	readonly cwd: string;
 	readonly artifactsDir: string;
+	readonly runnerScriptPath?: string;
 }
 
 /** IP-9: the runner's readiness frame payload. */
@@ -410,11 +411,12 @@ export class RlmTransport implements KernelTransport {
 		if (this.started) return;
 		if (this.disposed) throw new TransportSpawnError("transport has been disposed");
 
-		const runnerPath = join(
-			// packages/rlm/src/transport.ts → packages/rlm/python/rlm_kernel_runner.py
-			new URL("../python/rlm_kernel_runner.py", import.meta.url).pathname,
-		);
-
+		const runnerPath =
+			this.config.runnerScriptPath ??
+			join(
+				// packages/rlm/src/transport.ts → packages/rlm/python/rlm_kernel_runner.py
+				new URL("../python/rlm_kernel_runner.py", import.meta.url).pathname,
+			);
 		// POST-TRANS-1: spawn [interpreter, <absolute path of runner>]
 		let process: RlmTransportProcess;
 		try {
