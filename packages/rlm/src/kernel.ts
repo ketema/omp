@@ -330,11 +330,7 @@ export class KernelManager {
 		// must never be settled or have its execute timer cancelled by it.
 		this.clock.schedule(() => {
 			const settle = this.activeSettle;
-			if (
-				settle !== null &&
-				this.activeExecutionId !== null &&
-				this.activeExecutionId === targetExecutionId
-			) {
+			if (settle !== null && this.activeExecutionId !== null && this.activeExecutionId === targetExecutionId) {
 				this.activeSettle = null;
 				this.activeExecutionId = null;
 				// FORBIDDEN-KM-5/INV-KM-4: abort/grace settle cancels the
