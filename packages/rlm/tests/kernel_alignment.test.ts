@@ -53,6 +53,7 @@ describe("kernel contract-implementation alignment", () => {
   test("timing and output constants match the contract authority", () => {
     expect(READY_TIMEOUT_MS).toBe(KM_READY_TIMEOUT_MS)
     expect(EXECUTE_TIMEOUT_MS).toBe(KM_EXECUTE_TIMEOUT_MS)
+    expect(MAX_OUTPUT_CHARS).toBe(KM_MAX_OUTPUT_CHARS)
     expect(PORTS_RESOLVE_TIMEOUT_MS).toBe(KM_PORTS_RESOLVE_TIMEOUT_MS)
     expect(ABORT_GRACE_MS).toBe(KM_ABORT_GRACE_MS)
     expect(BUSY_REUSE_WAIT_MS).toBe(KM_BUSY_REUSE_WAIT_MS)
