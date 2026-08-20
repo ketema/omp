@@ -308,6 +308,10 @@ export class KernelManager {
 	 */
 	abort(): Promise<void> {
 		this.aborted = true;
+		// FORBIDDEN-KM-6: capture the execution id active at abort() time.
+		// The grace callback below may only settle/cancel-for THIS execution,
+		// never a later one that becomes active before the grace fires.
+		const targetExecutionId = this.activeExecutionId;
 		if (this.activeExecutionId !== null) {
 			safeInterrupt(this.transport);
 		} else {
@@ -317,13 +321,20 @@ export class KernelManager {
 			this.pendingAbort = true;
 		}
 
-		// The grace callback may only settle a THEN-ACTIVE execution. An
+		// The grace callback may only settle a THEN-ACTIVE execution whose id
+		// still matches the one active at abort() time (FORBIDDEN-KM-6). An
 		// execution that already settled normally (or was never started)
 		// must not latch a poison flag for the next one (audit r2 V1:
-		// grace firing into a consumed settle re-created the poisoning).
+		// grace firing into a consumed settle re-created the poisoning), and
+		// a later, unrelated execution that started after this abort() call
+		// must never be settled or have its execute timer cancelled by it.
 		this.clock.schedule(() => {
 			const settle = this.activeSettle;
-			if (settle !== null && this.activeExecutionId !== null) {
+			if (
+				settle !== null &&
+				this.activeExecutionId !== null &&
+				this.activeExecutionId === targetExecutionId
+			) {
 				this.activeSettle = null;
 				this.activeExecutionId = null;
 				// FORBIDDEN-KM-5/INV-KM-4: abort/grace settle cancels the
@@ -343,8 +354,9 @@ export class KernelManager {
 					durationMs: this.clock.now() - this.activeStartTime,
 				});
 			}
-			// No active execution at grace time: nothing to settle — an idle
-			// abort must leave NO trace for subsequent executions
+			// No matching active execution at grace time: nothing to settle
+			// — an idle abort, a since-settled execution, or a later
+			// execution must all leave NO trace.
 		}, ABORT_GRACE_MS);
 
 		return Promise.resolve();
