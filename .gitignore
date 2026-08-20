@@ -94,3 +94,8 @@ packages/coding-agent/bench/boot-baseline.json
 
 #serena
 .serena/
+
+# RLM runtime state & artifacts
+.omp/artifacts/
+kernel-state.dill
+kernel-state.json
