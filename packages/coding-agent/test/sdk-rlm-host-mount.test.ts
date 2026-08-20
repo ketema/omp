@@ -140,7 +140,7 @@ describe("RLM host mount contract", () => {
 		}
 	});
 
-	it("FORBIDDEN-MOUNT-1: restricted session bounds ipython while unrestricted never omits it", async () => {
+	it("FORBIDDEN-MOUNT-1: unrestricted session never omits ipython", async () => {
 		/**
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
 		 * [✓] C1 VALID: cites FORBIDDEN-MOUNT-1 in rlm-host-mount.contract.ts

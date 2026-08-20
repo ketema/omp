@@ -18,7 +18,7 @@ import type { ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 
 /**
  * Built-in tool names whose classes declare `loadMode = "essential"`. Kept in
- * sync with the tool classes by `essential-tools.test.ts` (drift guard).
+ * sync with the tool classes by `issue-5764-registertool-loadmode.test.ts` (drift guard).
  */
 export const ESSENTIAL_BUILTIN_TOOL_NAMES: Record<string, true> = {
 	read: true,
