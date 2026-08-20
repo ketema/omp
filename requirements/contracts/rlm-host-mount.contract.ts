@@ -1,5 +1,8 @@
 /**
- * RLM Host Mount Contract — specification authority.
+ * RLM Host Mount Contract — specification authority (TS native).
+ *
+ * CL12-C SINGULAR AUTHORITY: This file is the authoritative specification
+ * for the host mount contract.
  *
  * WHAT the host session must guarantee: the model-facing tool inventory
  * includes `ipython` after unrestricted session construction.
@@ -63,7 +66,7 @@ export function assertMountedIpython(surface: unknown): asserts surface is Mount
 		throw new RlmHostMountContractError("POST-MOUNT-1", "mount surface is not an object");
 	}
 	if (!("toolNames" in surface)) {
-		throw new RlmHostMountContractError("POST-MOUNT-1", "toolNames must be a string array");
+		throw new RlmHostMountContractError("POST-MOUNT-1", "mount surface has no toolNames property");
 	}
 	const names = surface.toolNames;
 	if (!Array.isArray(names) || names.some((name) => typeof name !== "string")) {
