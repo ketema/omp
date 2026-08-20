@@ -60,8 +60,8 @@ interface StructuralToolDefinition {
 }
 
 interface StructuralExtensionAPI {
-	registerTool(tool: StructuralToolDefinition): void;
-	registerFlag(name: string, opts: { type: "boolean" | "string"; default?: boolean | string }): void;
+	registerTool(tool: any): void;
+	registerFlag(name: string, opts?: { type: "boolean" | "string"; default?: boolean | string }): void;
 	registerCommand(name: string, opts: { handler: (args: string, ctx: unknown) => Promise<void> }): void;
 	on(event: string, handler: (event: unknown, ctx: unknown) => void | Promise<void>): void;
 	getFlag(name: string): string | boolean | undefined;

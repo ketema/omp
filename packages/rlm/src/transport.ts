@@ -183,8 +183,8 @@ function isKnownFrameType(type: unknown): type is FrameType {
 interface DefaultProcessState {
 	proc: Subprocess<"pipe", "pipe", "pipe">;
 	stdin: Bun.FileSink;
-	stdoutReader: ReadableStreamDefaultReader<Uint8Array> | null;
-	stderrReader: ReadableStreamDefaultReader<Uint8Array> | null;
+	stdoutReader: { read(): Promise<{ done: boolean; value?: Uint8Array }>; releaseLock(): void } | null;
+	stderrReader: { read(): Promise<{ done: boolean; value?: Uint8Array }>; releaseLock(): void } | null;
 	exited: boolean;
 	exitCode: number | null;
 	exitSignal: string | null;

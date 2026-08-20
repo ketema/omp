@@ -10,9 +10,8 @@ import {
 	parseNumstat,
 } from "../commit/git/diff";
 import type { FileDiff, FileHunks, NumstatEntry } from "../commit/types";
-import { ToolAbortError, ToolError, throwIfAborted } from "../tools/tool-errors";
 import { resolveSshAskpass } from "../exec/non-interactive-env";
-
+import { ToolAbortError, ToolError, throwIfAborted } from "../tools/tool-errors";
 
 // ════════════════════════════════════════════════════════════════════════════
 // Types
@@ -429,7 +428,6 @@ function normalizeStdin(input: CommandOptions["stdin"]): "ignore" | Uint8Array {
 	if (input instanceof Uint8Array) return input;
 	return new Uint8Array(input);
 }
-
 
 function buildNonInteractiveEnv(
 	env: Record<string, string | undefined>,

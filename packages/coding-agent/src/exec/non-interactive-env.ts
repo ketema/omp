@@ -1,5 +1,5 @@
-import { $which } from "@oh-my-pi/pi-utils";
 import { existsSync } from "node:fs";
+import { $which } from "@oh-my-pi/pi-utils";
 
 /** Portable command that rejects credential prompts without assuming an FHS layout. */
 export const REJECT_PROMPT_COMMAND = $which("false") ?? "false";
