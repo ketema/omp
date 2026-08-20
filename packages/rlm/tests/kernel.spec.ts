@@ -44,6 +44,7 @@ import {
   BUSY_INTERRUPT_INTERVAL_MS,
   BUSY_REUSE_WAIT_MS,
   DISPOSE_TIMEOUT_MS,
+  EXECUTE_TIMEOUT_MS,
   MAX_OUTPUT_CHARS,
   SNAPSHOT_ALWAYS_SKIP,
   SNAPSHOT_DEBOUNCE_MS,
@@ -821,4 +822,59 @@ test("INV-KM-LIFETIME-2: dispose bounds in-flight work; kills the process", asyn
   await disposed
   expect(transport.calls.some(c => c.kind === "kill")).toBe(true)
   expect(transport.calls.some(c => c.kind === "transportDispose")).toBe(true)
+})
+
+test("POST-KM-4: hanging execute settles as error at EXECUTE_TIMEOUT_MS", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: POST-KM-4, ERRORS-KM-4, SEQ-KM-6, SEQ-KM-7, FORBIDDEN-KM-4
+   * - Category: timing boundary (virtual clock)
+   * - Risk tier: High — unbounded execute deadlocks INV-KM-1
+   *
+   * Theater check: a manager that never arms a timer leaves settled as STILL_PENDING
+   * after clock.advance(EXECUTE_TIMEOUT_MS).
+   */
+  const clock = makeClock()
+  const transport = makeTransport({ execute: () => new Promise<TransportResult>(() => {}) })
+  const manager = new KernelManager(transport, { clock, artifactsDir: artifactsDir() })
+  await manager.ensureStarted()
+  const pending = manager.execute("while True: pass")
+  let settled: unknown = "STILL_PENDING"
+  void pending.then(
+    r => { settled = r },
+    e => { settled = e },
+  )
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+  await clock.advance(EXECUTE_TIMEOUT_MS)
+  expect(settled).not.toBe("STILL_PENDING")
+  const result = settled as { status: string; errorEname?: string; traceback?: string; durationMs: number }
+  expect(result.status).toBe("error")
+  expect(result.errorEname).toBe("KernelExecuteTimeoutError")
+  expect(String(result.traceback)).toContain("POST-KM-4")
+  expect(result.durationMs).toBeGreaterThanOrEqual(EXECUTE_TIMEOUT_MS)
+  expect(transport.calls.some(c => c.kind === "interrupt")).toBe(true)
+})
+
+test("POST-KM-4: execute after timeout still runs", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: POST-KM-4 + INV-KM-1 (queue liveness after timer settle)
+   */
+  const clock = makeClock()
+  let calls = 0
+  const transport = makeTransport({
+    execute: (_id, _code, n) => {
+      calls = n
+      if (n === 1) return new Promise<TransportResult>(() => {})
+      return Promise.resolve({ code: 0, stdout: "ok", stderr: "", result: "2" })
+    },
+  })
+  const manager = new KernelManager(transport, { clock, artifactsDir: artifactsDir() })
+  await manager.ensureStarted()
+  const hung = manager.execute("while True: pass")
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+  await clock.advance(EXECUTE_TIMEOUT_MS)
+  const second = await manager.execute("1+1")
+  expect(second.status).toBe("ok")
+  expect(calls).toBe(2)
 })
