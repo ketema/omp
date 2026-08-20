@@ -427,22 +427,29 @@ export function createRlmExtension(
 				artifactsDir = join(process.cwd(), ".omp", "artifacts");
 			}
 
-			// Start kernel and announce revival
-			const k = await ensureKernel();
-			await k.ensureStarted();
-			const names = k.restoredNames();
-			if (names.length > 0) {
-				api.sendMessage(
-					{
-						role: "custom",
-						customType: "rlm-revival",
-						content: `IPython state restored. The following names are available again: ${names.join(", ")}`,
-						display: true,
-						attribution: "agent",
-						timestamp: Date.now(),
-					},
-					{ deliverAs: "nextTurn" },
-				);
+			// Injected custom kernel (e.g. tests) or existing snapshot on disk: restore and announce revival
+			const hasSnapshot = fs.existsSync(join(artifactsDir, "kernel-state.dill"));
+			if (options?.createKernel !== undefined || hasSnapshot) {
+				try {
+					const k = await ensureKernel();
+					await k.ensureStarted();
+					const names = k.restoredNames();
+					if (names.length > 0) {
+						api.sendMessage(
+							{
+								role: "custom",
+								customType: "rlm-revival",
+								content: `IPython state restored. The following names are available again: ${names.join(", ")}`,
+								display: true,
+								attribution: "agent",
+								timestamp: Date.now(),
+							},
+							{ deliverAs: "nextTurn" },
+						);
+					}
+				} catch {
+					// Non-fatal on session_start: lazy start will retry on first explicit tool invocation
+				}
 			}
 		});
 
