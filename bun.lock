@@ -225,9 +225,12 @@
     },
     "packages/rlm": {
       "name": "@oh-my-pi/pi-rlm",
-      "version": "0.1.0",
+      "version": "17.3.8",
       "dependencies": {
         "@oh-my-pi/omptype": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
       },
     },
     "packages/snapcompact": {
