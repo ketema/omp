@@ -326,6 +326,13 @@ export class KernelManager {
 			if (settle !== null && this.activeExecutionId !== null) {
 				this.activeSettle = null;
 				this.activeExecutionId = null;
+				// FORBIDDEN-KM-5/INV-KM-4: abort/grace settle cancels the
+				// execute timer — a stale, uncancelled timer would otherwise
+				// fire EXECUTE_TIMEOUT_MS later against whatever execution
+				// is active at that time.
+				const cancel = this.executeTimerCancel;
+				this.executeTimerCancel = null;
+				if (cancel !== null) cancel();
 				settle({
 					status: "aborted",
 					stdout: truncateStream(this.activeStdout),
