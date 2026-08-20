@@ -231,6 +231,7 @@ export const RLM_KERNEL_CONTRACT = {
   'SEQ-KM-7': 'Execute timer expiry SHALL invoke transport.interrupt DURING the in-flight cell (IP-2).',
   'INV-KM-4': 'Every ordinary execute arms exactly one execute timer cancelled on settle, including the abort/grace settle path.',
   'FORBIDDEN-KM-5': 'A settled execution SHALL NOT let its execute timer interrupt or settle any later execution; abort/grace settle cancels the execute timer (INV-KM-4, REQ-RLM-0024).',
+  'FORBIDDEN-KM-6': 'An abort-grace callback SHALL NOT settle or cancel the execute timer of any execution whose id differs from the execution that was active at abort() time (ERRORS-KM-3).',
   'FORBIDDEN-KM-4': 'The manager SHALL NOT wait without bound for transport.execute (INV-01).',
   'ERRORS-KM-1': 'KernelBusyAfterInterruptError when busy persists past KM_BUSY_REUSE_WAIT_MS with interrupts at KM_BUSY_INTERRUPT_INTERVAL_MS (F-009/F-221).',
   'ERRORS-KM-2': 'KernelUnresponsiveError and KernelPortsUnresolvedError quote a stderr tail bounded by KM_STDERR_TAIL_CHARS (F-223/F-224).',

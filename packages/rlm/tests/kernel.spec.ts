@@ -1005,3 +1005,146 @@ test("FORBIDDEN-KM-5/INV-KM-4: abort-settled execute's timer must not touch a la
     "transport",
   ).toBe(2)
 })
+
+// ---------------------------------------------------------------------------
+// FORBIDDEN-KM-6 — stale abort-grace callback must not touch a later,
+// genuinely in-flight execution
+// ---------------------------------------------------------------------------
+
+test("FORBIDDEN-KM-6: abort-grace callback must not settle a later execution in flight when it fires", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: FORBIDDEN-KM-6 (ERRORS-KM-3) — an abort-grace callback
+   *   SHALL NOT settle, and SHALL NOT cancel the execute timer of, any
+   *   execution whose id differs from the execution that was ACTIVE at
+   *   abort() time. INV-KM-1 (cell 2 starts only once cell 1 settles)
+   *   and ERRORS-KM-3 (grace-deadline scheduling) set up the window:
+   *   cell 1 settles 'ok' on its own before the grace deadline it armed
+   *   elapses, cell 2 is admitted, and cell 2 is genuinely in-flight when
+   *   that stale grace timer fires.
+   * - Category: negative-space / timing boundary (virtual clock)
+   * - Risk tier: High — a grace callback that closes over "whichever
+   *   execution is current" instead of the id captured at abort() time
+   *   silently kills an unrelated, healthy, later execution.
+   * - Adversarial: Implementation-blind
+   *
+   * FOUR-CRITERIA TEST VALIDITY GATE:
+   * [✓] C1 VALID: cites FORBIDDEN-KM-6, present in
+   *     requirements/contracts/rlm-kernel.contract.ts today
+   * [✓] C2 VALUABLE: an implementation whose grace callback settles
+   *     whatever execution is current (rather than the id captured at
+   *     abort() time) makes this test FAIL
+   * [✓] C3 NON-DUPLICATIVE: distinct from "V1 regression" (there, cell 2
+   *     is submitted only AFTER the stale grace already fired, proving
+   *     no poison latch on an already-consumed settle) and from
+   *     "FORBIDDEN-KM-5/INV-KM-4" (that test isolates cell 1's stale
+   *     EXECUTE-TIMEOUT deadline, not its grace-settle callback); here
+   *     cell 2 is genuinely in-flight WHILE the stale grace fires
+   * [✓] C4 NOT FUTURE-EDIT: FORBIDDEN-KM-6 is in the contract today;
+   *     bounds the existing abort/grace scheduling path, not a
+   *     hypothetical future capability
+   *
+   * Theater check: harness OBSERVED on current code —
+   * {"cell1":"ok","cell2_after_grace":"aborted"} — cell 1's stale grace
+   * timer settles cell 2 to 'aborted' when it fires mid-flight for cell
+   * 2. The assertions below require cell 2 to remain unsettled at that
+   * instant and to later settle only via its OWN execute timer, which
+   * the current code violates.
+   */
+  const clock = makeClock()
+  const cellGate = Promise.withResolvers<void>()
+  const transport = makeTransport({
+    execute: async (_id, _code, n) => {
+      if (n === 1) {
+        cellGate.resolve()
+        await new Promise(r => setTimeout(r, 2)) // resolves well inside the grace window
+        return { code: 0, stdout: "cell1-done", stderr: "", result: "" }
+      }
+      return new Promise<TransportResult>(() => {}) // cell 2: genuinely in-flight, never resolves
+    },
+  })
+  const manager = new KernelManager(transport, { clock, artifactsDir: artifactsDir() })
+
+  // Abort lands while cell 1 is ACTIVELY executing (SEQ-KM-7); this arms
+  // the grace timer at virtual t=0, deadline t=ABORT_GRACE_MS, captured
+  // against cell 1's execution id.
+  const cell1 = manager.execute("cell1")
+  await cellGate.promise
+  void manager.abort()
+  const r1 = await cell1
+  expect(
+    r1.status,
+    "ARRANGE precondition failed: cell 1 must settle 'ok' on its own, " +
+    "before the grace deadline elapses, or the stale-grace window below " +
+    `is not under test (got ${JSON.stringify(r1)})`,
+  ).toBe("ok")
+
+  // INV-KM-1: cell 2 is admitted only now that cell 1 has settled. It
+  // dispatches at virtual t≈0 (no virtual time has advanced yet) and
+  // hangs — genuinely in-flight, nowhere near its own EXECUTE_TIMEOUT_MS
+  // deadline, when cell 1's stale grace timer is about to fire.
+  const cell2 = manager.execute("cell2")
+  let cell2Result: { status: string; errorEname?: string } | undefined
+  void cell2.then(r => { cell2Result = r })
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+  expect(
+    transport.calls.filter(c => c.kind === "execute").length,
+    "ARRANGE precondition failed: cell 2 must have dispatched to the " +
+    "transport (genuinely in-flight) before the grace deadline elapses, " +
+    "or the window this test targets is not under test",
+  ).toBe(2)
+
+  // Advance to cell 1's grace deadline (virtual t=ABORT_GRACE_MS,
+  // measured from abort() at t=0). FORBIDDEN-KM-6: this callback must
+  // recognize the active execution id changed since abort() and do
+  // nothing to cell 2.
+  await clock.advance(ABORT_GRACE_MS + 10)
+  expect(
+    cell2Result,
+    "FORBIDDEN-KM-6 violation: cell 1's abort-grace callback settled " +
+    "cell 2 (a different, later execution) when it fired\n" +
+    "WHY: the grace callback must only settle the execution id that was " +
+    "ACTIVE at abort() time (cell 1); cell 2 was admitted after cell 1 " +
+    "settled 'ok' on its own (INV-KM-1) and is genuinely still in-flight\n" +
+    "EXPECTED: undefined (cell 2 untouched by cell 1's stale grace timer)\n" +
+    `ACTUAL: ${JSON.stringify(cell2Result)}\n` +
+    "GUIDANCE: the grace callback must compare against the execution id " +
+    "captured at abort() time before settling anything",
+  ).toBeUndefined()
+  expect(
+    transport.calls.filter(c => c.kind === "execute").length,
+    "FORBIDDEN-KM-6 violation: an extra execute() dispatch appeared after " +
+    "cell 1's stale grace fired against cell 2\n" +
+    "WHY: a grace callback that mistakes cell 2 for the aborted execution " +
+    "can trigger a phantom retry/replacement dispatch\n" +
+    "EXPECTED: 2 (cell 1, cell 2 — no phantom dispatch)\n" +
+    `ACTUAL: ${transport.calls.filter(c => c.kind === "execute").length}\n` +
+    "GUIDANCE: the stale grace callback must be a no-op once its captured " +
+    "execution id no longer matches the active execution",
+  ).toBe(2)
+
+  // Cell 2's OWN execute timer (armed at its own dispatch, virtual t≈0)
+  // must still be intact — not cancelled by cell 1's stale grace
+  // callback — and must be the thing that eventually settles it.
+  await clock.advance(EXECUTE_TIMEOUT_MS - (ABORT_GRACE_MS + 10))
+  expect(
+    cell2Result?.status,
+    "FORBIDDEN-KM-6 violation: cell 2 never settled at its own " +
+    "EXECUTE_TIMEOUT_MS deadline\n" +
+    "WHY: if cell 1's stale grace callback cancelled cell 2's execute " +
+    "timer instead of leaving it alone, cell 2 hangs forever\n" +
+    "EXPECTED: status 'error' via cell 2's own, untouched execute timer\n" +
+    `ACTUAL: ${JSON.stringify(cell2Result)}\n` +
+    "GUIDANCE: the stale grace callback must not cancel a later " +
+    "execution's execute timer",
+  ).toBe("error")
+  expect(
+    cell2Result?.errorEname,
+    "FORBIDDEN-KM-6 violation: cell 2 settled 'error' but not via its own " +
+    "execute-timeout path\n" +
+    "EXPECTED: KernelExecuteTimeoutError (cell 2's own execute timer)\n" +
+    `ACTUAL: ${JSON.stringify(cell2Result?.errorEname)}\n` +
+    "GUIDANCE: cell 2 must time out through its own execute timer, " +
+    "untouched by cell 1's stale grace callback",
+  ).toBe("KernelExecuteTimeoutError")
+})
