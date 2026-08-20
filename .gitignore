@@ -91,3 +91,11 @@ packages/coding-agent/bench/boot-baseline.json
 /bazel-pi
 /bazel-oh-my-pi
 /.bazelrc.user
+
+#serena
+.serena/
+
+# RLM runtime state & artifacts
+.omp/artifacts/
+kernel-state.dill
+kernel-state.json

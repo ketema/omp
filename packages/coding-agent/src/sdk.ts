@@ -27,6 +27,7 @@ import {
 	prewarmOpenAICodexResponses,
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { FALLBACK_DIALECT, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
+import { createRlmExtension } from "@oh-my-pi/pi-rlm";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { $env, $flag, getAgentDir, getProjectDir, logger, postmortem, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
@@ -1965,6 +1966,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 			inlineExtensions.push(...(options.extensions ?? []));
 			inlineExtensions.push(createAutoresearchExtension);
+			// SEQ-MOUNT-1: invoke the createRlmExtension HOF to obtain its inner
+			// ExtensionFactory before mounting — pushing the un-invoked HOF caused
+			// the loader to call createRlmExtension(api) itself, treating the
+			// ExtensionAPI as CreateRlmExtensionOptions and never running the
+			// returned factory (POST-MOUNT-1, DISCONNECT B01).
+			inlineExtensions.push(createRlmExtension());
 			if (customTools.length > 0) {
 				inlineExtensions.push(createCustomToolsExtension(customTools));
 			}

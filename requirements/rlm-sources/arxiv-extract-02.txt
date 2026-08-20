@@ -1,0 +1,55 @@
+M-C2-001 | Continual Harness (definition) | LLM Refiner edits harness H from the most recent trajectory window during a single continuous episode; generalizes reset-based prompt optimization (which rewrites only p from complete-episode resets, refs [1,14]) to rewriting the full state from the trajectory so far; agent never resets | §3 (opening, before 3.2)
+M-C2-002 | Observation state | s_t = (o_t, m_t) written as agent's observation at step t | §3
+M-C2-003 | Inner loop | Standard agent step: model M wrapped by current harness H_t produces action a_t from s_t and trajectory so far | §3
+M-C2-004 | Outer loop | Harness refinement: every F steps after a warm-up of W steps, a Refiner reads the recent trajectory window for failure signatures and emits per-component edits delta = (delta p, delta G, delta K, delta M); updated harness H_{t+1} = H_t XOR delta enters agent's context on next step (Figure 2a) | §3
+M-C2-005 | Harness edit application | p replaced by delta p; G, K, M receive CRUD-style operations (create, read, update, delete) | §3
+M-C2-006 | Agent/Refiner model sharing | Agent and Refiner roles share the same model M, ablated across Gemini 3.1 Pro, Flash, and Flash-Lite (§4); differ only in when invoked and on what trajectory context; both issue edits through the same meta-tool API (§2) | §3
+M-C2-007 | Refinement window input | Refiner reads tau_{t-F:t} (last F-step trajectory window) | §3.2
+M-C2-008 | Failure signatures | Identified over window: navigation loops, tool-call failures, stalled objectives, missed exploration opportunities | §3.2
+M-C2-009 | Pass 1 — prompt | Rewrites prompt p conditioned on identified failures and trajectory window | §3.2
+M-C2-010 | Pass 2 — sub-agents | Creates sub-agent entries for repeated multi-step patterns, edits existing entries to address detected failures, deletes entries not invoked productively | §3.2
+M-C2-011 | Pass 3 — skills/code | Codifies skills from successful sequences and repairs executable code that raised exceptions | §3.2
+M-C2-012 | Pass 4 — memory | Adds memory entries to fill gaps, updates stale entries, demotes importance for areas the agent has moved past | §3.2
+M-C2-013 | Monotonic refinement accumulation | Refinement information accumulates monotonically: failure signatures observed earlier remain available to all subsequent passes, so refinement quality compounds with episode length; reset-based methods restart accumulation after each update | §3.2
+M-C2-014 | Late-failure targeting | Continual Harness can target failures appearing only deep in an episode (late-game battles, multi-step puzzles, dialogue chains), which reset-based approaches cannot reach by construction | §3.2
+M-C2-015 | Co-learning loop | After warm-up stages (Appendix D), each online iteration runs pi_theta_k inside live-refining harness H_t for K = 256 steps | §3.3
+M-C2-016 | Process reward model | Pairwise PRM R(s_t, a_t, tau) in [0,1] scores each transition over a sliding window of recent transitions (component weights in Appendix D) | §3.3
+M-C2-017 | Relabel + SFT update | Low-reward windows relabeled by a frontier teacher; soft SFT update on the relabeled shard produces theta_{k+1} | §3.3
+M-C2-018 | Reset-free state carry | Saved emulator state at end of iteration k is loaded as start of iteration k+1; model's in-game position accumulates across training rather than restarting | §3.3
+M-C2-019 | Co-learning update split | theta updated across iterations (via SFT on relabeled trajectories); H_t updated within each iteration (via the Refiner); trajectory distribution D_theta depends on theta through the harness | §3.3
+M-C2-020 | Environments/metrlic | Evaluated on Pokemon Red and Emerald; standardized milestone evaluation from PokeAgent Challenge [5]; primary metric: cumulative button presses to milestone | §4.1
+M-C2-021 | H_min condition | Frames, local text map, buttons, generic system prompt; no sub-agents, memory, or skills | §4.1
+M-C2-022 | H_expert condition | Hand-designed PokeAgent [5] harness and fixed GPP harness with built sub-agents, A-star pathfinding, type chart, damage calculator, curated objectives | §4.1
+M-C2-023 | H_CH condition | Starts from H_min and refines during gameplay via Figure 2; three variants: from scratch; bootstrap frozen (loads a successful from-scratch run, refinement disabled); bootstrap updating (same bootstrap, refinement continues) | §4.1
+M-C2-024 | Models and seeds | Gemini 3 variants (Pro, Flash, Flash-Lite) across all harness conditions; Gemma-4 (E2B, E4B, 26B MoE, 31B dense) for open-source transfer; at least three seeds across all experiments; seed medians reported with per-seed traces at reduced opacity | §4.1
+M-C2-025 | GPP completion record | Blue (May 2025), Yellow Legacy on hard mode (August 2025), Crystal without a lost end-game battle (November 2025); first AI system to complete multiple Pokemon RPGs | §4.2
+M-C2-026 | General-skill replacement | From Yellow Legacy onward, hand-authored specialists (Pathfinder Agent, Boulder Puzzle Strategist) replaced with general skills: define_agent, run_code, notepad edits | §4.2
+M-C2-027 | Emergent harness behaviors (unprompted) | Wrapped an autopress_buttons sandbox loophole into a general press_sequence primitive; named multi-stage battle strategy "Operation Zombie Phoenix" (Crystal final Red fight); authored explicit truth-table of Goldenrod Underground switch puzzle in notepad | §4.2
+M-C2-028 | CRUD concentration | Yellow Legacy CRUD operations (creation, update, delete) on skill/sub-agent definitions binned per 2,000 turns; updates persist throughout the run rather than converging; concentrated on a small subset of navigation and battle components (five most-updated components) | §4.2 / Figure 3
+M-C2-029 | battle_strategist_agent rewrite | Prompt cycles between growth and simplification; structural rewrite absorbs per-decision logic into a master_battle_agent that dispatches to named sub-checks; measured via total nodes, decision gates, graph depth, max fan-out (Elite Four phase) | §4.2 / Figure 4
+M-C2-030 | DAgger co-learning training step | batch size = 1; K=256-step DAgger [15,8] rollout through full Continual Harness (memory, skills, sub-agents, prompt all evolving via Figure 2), then PRM scoring pass, Gemini-3.1-pro teacher relabel of low-reward windows, soft SFT update on relabeled shard | §4.5
+M-C2-031 | Priming warm-up | Model primed by SFT on frontier Continual Harness trajectories and an offline GRPO stage on a per-step process reward; neither stage produces meaningful milestone advancement on its own | §4.5
+Q-C2-001 | Primary metric definition | "cumulative button presses to milestone" | §4.1
+Q-C2-002 | Seed reporting | "We report seed medians with per-seed traces at reduced opacity." | §4.1
+Q-C2-003 | GPP status claim | "making GPP the first AI system to complete multiple Pokémon RPGs" | §4.2
+Q-C2-004 | Reset-free regime argument | "reset-free is also the practically dominant regime for long-running coding agents, embodied agents, and ops tasks where free environment resets are costly or unavailable" | §3.2
+Q-C2-005 | Failure signature list | "navigation loops, tool-call failures, stalled objectives, and missed exploration opportunities" | §3.2
+Q-C2-006 | Pro cost result | "from-scratch H_CH reaches 100% of milestones at a $130 median, against H_min at 98% for $215, a ∼40% cost reduction with no completion loss" | §4.4
+Q-C2-007 | Flash-Lite limitation | "The harness gains requires a model that will sufficiently utilize the harness components properly." | §4.4
+Q-C2-008 | Reset-free trajectory claim | "each curve in Figure 7 is a single agent's in-game trajectory traversed across its own training, not an aggregate over independent rollouts" | §4.5
+Q-C2-009 | Late-game reachability | "reset-based approaches cannot reach by construction since each iteration resets to the initial state" | §3.2
+Q-C2-010 | Harness growth description | "the process is the same: a small set of components is repeatedly updated and periodically rewritten" | §4.2
+B-C2-001 | Pro CH from-scratch vs H_min | 100% milestones at $130 median vs 98% at $215; ~40% cost reduction with no completion loss (Emerald, Figure 6) | §4.4
+B-C2-002 | Pro bootstrap variants | 96–100% of milestones at $110–$140 | §4.4
+B-C2-003 | Flash bootstrap-updating vs H_min | 80% at $42 vs H_min 77% at $30; from-scratch and bootstrap-frozen higher variance | §4.4
+B-C2-004 | Flash-Lite | H_min reaches 20% at $11; every Continual Harness variant falls to 3–13% at comparable or higher cost | §4.4
+B-C2-005 | Gemma-4 untrained baseline | Zero advance beyond the starting milestone (dashed line in Figure 7) | §4.5
+B-C2-006 | Figure 6 cost axis | Gemini API spend log scale, cached input at 25%; Y axis: fraction of 31-milestone Emerald set reached; 24-hour seeds | §4.4 / Figure 6
+B-C2-007 | Milestone sequences (Figure 5) | Red: 11-milestone subset through Thunder Badge; Emerald: 9-milestone sequence through Knuckle Badge (2nd gym); x-axis capped at 8.5k button presses | §4.3 / Figure 5
+B-C2-008 | Red bootstrap-updating | More efficient than from-scratch at every milestone (refinement signal compounds within the episode) | §4.3
+B-C2-009 | Training hyperparameters | K = 256 steps per iteration; batch size = 1; teacher model Gemini-3.1-pro | §3.3 / §4.5
+C-C2-001 | Model capability floor | Harness gains on Flash-Lite fall to 3–13% at comparable or higher cost — harness requires a model that sufficiently utilizes the harness components | §4.4
+C-C2-002 | Residual gap to expert | Gap concentrates in dialogue-heavy gym interiors and multi-turn battle strategy, components Continual Harness does not yet synthesize reliably | §4.3
+C-C2-003 | Non-resettable failure coverage | Reset-based approaches cannot by construction reach failures that only appear deep in an episode (late-game battles, multi-step puzzles, dialogue chains) | §3.2
+C-C2-004 | Warm-up insufficiency | Neither the SFT-on-frontier-trajectories warm-up nor the offline GRPO stage produces meaningful milestone advancement on its own; live in-game gains begin only at co-learning stage | §4.5
+C-C2-005 | No expert assets | Continual Harness achieves its gap recovery without access to the game decompilation, the milestone schedule, or any of the hand-built sub-agents of H_expert | §4.3

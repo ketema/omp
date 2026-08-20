@@ -81,6 +81,9 @@
 ### Fixed
 
 - Fixed `omp stats` and `/stats` dashboards being unreachable from container hosts by accepting an explicit `--host` bind address while preserving the `127.0.0.1` default.
+### Added
+
+- Added native Recursive Language Model (RLM) capability via a persistent `ipython` tool (`packages/rlm`), featuring managed virtual environment bootstrap (`kernel-venv`), pre-bootstrapped data science extras (`pandas`, `numpy`, `httpx`, `pydantic`, `beautifulsoup4`, `scipy`), debounced Dill state persistence across turns and compactions, and top-level native tool execution.
 
 ## [17.3.5] - 2026-08-16
 
