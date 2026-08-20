@@ -21,6 +21,8 @@ export const BUSY_REUSE_WAIT_MS = 5000;
 export const BUSY_INTERRUPT_INTERVAL_MS = 500;
 export const SHUTDOWN_GRACE_MS = 200;
 export const DISPOSE_TIMEOUT_MS = 5000;
+/** REQ-RLM-0023: ordinary execute wall-clock cap. */
+export const EXECUTE_TIMEOUT_MS = 30_000;
 export const SNAPSHOT_DEBOUNCE_MS = 1500;
 export const SNAPSHOT_DISPOSE_TIMEOUT_MS = 5000;
 export const SNAPSHOT_MAX_BYTES = 256 * 1024 * 1024;
@@ -227,10 +229,11 @@ export class KernelManager {
 	private activeStdout = "";
 	private activeStderr = "";
 	private aborted = false;
+	/** REQ-RLM-0023: cancel the execute wall-clock timer on settle. */
+	private executeTimerCancel: (() => void) | null = null;
 
 	// Pending abort: abort() called before executeInternal set up active state
 	private pendingAbort = false;
-
 	// Snapshot debounce timer (SEQ-KM-3)
 	private snapshotCancel: (() => void) | null = null;
 
@@ -562,6 +565,26 @@ export class KernelManager {
 		return new Promise<KernelExecutionResult>(resolve => {
 			this.activeSettle = resolve;
 
+			this.executeTimerCancel = this.clock.schedule(() => {
+				if (this.activeSettle === null) return;
+				safeInterrupt(this.transport);
+				const settle = this.activeSettle;
+				this.activeSettle = null;
+				this.activeExecutionId = null;
+				const cancel = this.executeTimerCancel;
+				this.executeTimerCancel = null;
+				if (cancel !== null) cancel();
+				settle({
+					status: "error",
+					stdout: truncateStream(this.activeStdout),
+					stderr: truncateStream(this.activeStderr),
+					result: "",
+					traceback: `POST-KM-4 violation: execute exceeded ${EXECUTE_TIMEOUT_MS}ms`,
+					errorEname: "KernelExecuteTimeoutError",
+					durationMs: this.clock.now() - startTime,
+				});
+			}, EXECUTE_TIMEOUT_MS);
+
 			// If abort was called between setting activeExecutionId and entering
 			// this promise constructor, don't call transport.execute
 			if (this.aborted) return;
@@ -569,32 +592,33 @@ export class KernelManager {
 			this.transport
 				.execute(id, code)
 				.then(execResult => {
-					// If already settled by abort, do nothing
 					const settle = this.activeSettle;
 					if (settle === null) return;
 					this.activeSettle = null;
 					this.activeExecutionId = null;
+					const cancel = this.executeTimerCancel;
+					this.executeTimerCancel = null;
+					if (cancel !== null) cancel();
 
 					const durationMs = this.clock.now() - startTime;
 					const result = this.buildResult(execResult, durationMs);
 					settle(result);
 
-					// SEQ-KM-3: schedule debounced snapshot after successful execution
 					if (execResult.code === 0) {
 						this.scheduleSnapshot();
 					}
 				})
 				.catch((deathCause: unknown) => {
-					// If aborted, do not restart
 					if (this.aborted) return;
-
-					// INV-KM-LIFETIME-1/3: kernel death — restart and retry once
 					this.handleKernelDeath(code, startTime, deathCause)
 						.then(result => {
 							const settle = this.activeSettle;
 							if (settle === null) return;
 							this.activeSettle = null;
 							this.activeExecutionId = null;
+							const cancel = this.executeTimerCancel;
+							this.executeTimerCancel = null;
+							if (cancel !== null) cancel();
 							settle(result);
 							if (result.status === "ok") {
 								this.scheduleSnapshot();
@@ -605,6 +629,9 @@ export class KernelManager {
 							if (settle === null) return;
 							this.activeSettle = null;
 							this.activeExecutionId = null;
+							const cancel = this.executeTimerCancel;
+							this.executeTimerCancel = null;
+							if (cancel !== null) cancel();
 							settle({
 								status: "error",
 								stdout: "",
@@ -618,8 +645,6 @@ export class KernelManager {
 				});
 		});
 	}
-
-	// ---- Internal: kernel death handling (INV-KM-LIFETIME-1/3) ----
 
 	private async handleKernelDeath(
 		code: string,

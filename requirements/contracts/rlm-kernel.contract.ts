@@ -18,6 +18,8 @@
 
 /** F-003: readiness probe budget. */
 export const KM_READY_TIMEOUT_MS = 5000
+/** REQ-RLM-0023: ordinary execute wall-clock cap. */
+export const KM_EXECUTE_TIMEOUT_MS = 30_000
 /** F-003: port resolution budget. */
 export const KM_PORTS_RESOLVE_TIMEOUT_MS = 5000
 /** F-006: per-stream output cap before truncation. */
@@ -97,6 +99,16 @@ export class KernelPortsUnresolvedError extends RlmKernelContractError {
   }
 }
 
+/** REQ-RLM-0023 / ERRORS-KM-4: execute exceeded KM_EXECUTE_TIMEOUT_MS. */
+export class KernelExecuteTimeoutError extends RlmKernelContractError {
+  constructor() {
+    super(
+      `POST-KM-4 violation: execute exceeded ${KM_EXECUTE_TIMEOUT_MS}ms`,
+    )
+    this.name = 'KernelExecuteTimeoutError'
+  }
+}
+
 /** F-222: execution aborted before completion. */
 export class ExecutionAbortedError extends RlmKernelContractError {
   constructor() {
@@ -104,8 +116,6 @@ export class ExecutionAbortedError extends RlmKernelContractError {
     this.name = 'ExecutionAbortedError'
   }
 }
-
-// =============================================================================
 // Artifact 3: Structural types (the dataclasses of the contract)
 // =============================================================================
 
@@ -215,6 +225,12 @@ export const RLM_KERNEL_CONTRACT = {
   'SEQ-KM-3': 'Each successful execution SHALL schedule a debounced snapshot within KM_SNAPSHOT_DEBOUNCE_MS (SEQ-3, IP-5, F-180).',
   'SEQ-KM-4': 'Session dispose SHALL flush a snapshot BEFORE transport teardown completes (SEQ-4, IP-5, F-181).',
   'SEQ-KM-5': 'Compaction completion SHALL inject the namespace-inventory notice (kernel persisted, live names listed) BEFORE the Model continues (SEQ-5, F-179, IP-6).',
+  'POST-KM-4': 'Ordinary execute settles as ok, error, or aborted at or before KM_EXECUTE_TIMEOUT_MS (REQ-RLM-0023).',
+  'ERRORS-KM-4': 'Execute that reaches KM_EXECUTE_TIMEOUT_MS settles as error with errorEname KernelExecuteTimeoutError citing POST-KM-4 (REQ-RLM-0024).',
+  'SEQ-KM-6': 'executeInternal SHALL arm the execute timer BEFORE transport.execute (IP-1).',
+  'SEQ-KM-7': 'Execute timer expiry SHALL invoke transport.interrupt DURING the in-flight cell (IP-2).',
+  'INV-KM-4': 'Every ordinary execute arms exactly one execute timer cancelled on settle.',
+  'FORBIDDEN-KM-4': 'The manager SHALL NOT wait without bound for transport.execute (INV-01).',
   'ERRORS-KM-1': 'KernelBusyAfterInterruptError when busy persists past KM_BUSY_REUSE_WAIT_MS with interrupts at KM_BUSY_INTERRUPT_INTERVAL_MS (F-009/F-221).',
   'ERRORS-KM-2': 'KernelUnresponsiveError and KernelPortsUnresolvedError quote a stderr tail bounded by KM_STDERR_TAIL_CHARS (F-223/F-224).',
   'ERRORS-KM-3': 'ExecutionAbortedError resolves any execution cancelled mid-flight after KM_ABORT_GRACE_MS (F-008/F-222).',

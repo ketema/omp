@@ -14,6 +14,19 @@ No contract executes unless ALL predicates evaluate to TRUE.
 
 ---
 
+## Actors
+
+| Actor | Identifier |
+|-------|------------|
+| Model | Model |
+| TypeScript host | TypeScript host |
+| Kernel manager | Kernel manager |
+| Python runtime | Python runtime |
+| RLM plugin | RLM plugin |
+| Subagent child | Subagent child |
+| omp frontend | omp frontend |
+| User | User |
+
 ## 1. Intent Traceability
 
 - **Source Prose** (verbatim):
@@ -21,20 +34,9 @@ No contract executes unless ALL predicates evaluate to TRUE.
   > "convert this document into our ieee compliant format using req-elicit. The document IS the requirements."
   > Earlier directives, retained as decisions: "keep all venv extras" · "I want full OS capability. the computer is the sandbox" · "the way in which omp uses its current kernel should not change. the rlm kernel should be additional. a tool. an addition." · "I am not looking to change up how omp operates other than providing the harness with a native way to allow the model to offload state." · "the core context is still the same because that is what is sent to the model and what is appended to each turn. that cannot be changed."
 
-- **Our Understanding**: The RLM plugin shall add to omp a prime-agent-faithful RLM state-offload capability: a persistent Python kernel surface the Model uses as an additional tool, with the offload discipline (prompt contract, harness ledger, snapshot/revival, compaction notice, recursion) — such that main context stays append-only and unchanged, and state the Model must keep survives compaction and session resume by pointer instead of by transcript. Requirements material = the feature enumeration recorded in `requirements/rlm-feature-reference.md` (behavioral source), IEEE-specified in §4 below.
+- **Our Understanding**: The RLM plugin adds to omp a prime-agent-faithful RLM state-offload capability: a persistent Python kernel surface the Model uses as an additional tool, with the offload discipline (prompt contract, harness ledger, snapshot/revival, compaction notice, recursion) — such that main context stays append-only and unchanged, and state the Model must keep survives compaction and session resume by pointer instead of by transcript. Requirements material = the feature enumeration recorded in `requirements/rlm-feature-reference.md` (behavioral source), IEEE-specified in §4 below.
 
 - **Ambiguity Score**: 3 (three genuine open zones, §5; nothing else may block contracts).
-
-## Actors
-
-- **Model**
-- **TypeScript host**
-- **Kernel manager**
-- **Python runtime**
-- **RLM plugin**
-- **Subagent child**
-- **omp frontend**
-- **User**
 
 ## 2. The Actor Matrix
 
@@ -73,7 +75,7 @@ No contract executes unless ALL predicates evaluate to TRUE.
 | ID | Caller | Must Invoke | Temporal Constraint | Breaks If Missing |
 |----|--------|-------------|---------------------|-------------------|
 | SEQ-1 | session start (first RLM tool use) | kernel manager `start` | BEFORE any cell execution | tool unusable |
-| SEQ-2 | kernel manager `start` | snapshot `restore` | AFTER process spawn, BEFORE prelude/shims are (re)injected | revived state clobbered by bootstrap |
+| SEQ-2 | kernel manager `start` | snapshot `restore` | AFTER process spawn, BEFORE the runtime (re)injects prelude/shims | revived state clobbered by bootstrap |
 | SEQ-3 | cell execution completion | snapshot debounce write | AFTER execute settles (1500 ms debounce) | restart loses namespace |
 | SEQ-4 | session dispose | kernel shutdown with snapshot flush | BEFORE process teardown completes | state loss on exit |
 | SEQ-5 | compaction completion | inventory notice injection | AFTER compaction item written | model unaware its state survived |
@@ -88,7 +90,7 @@ No contract executes unless ALL predicates evaluate to TRUE.
 
 ### Integration Points Checklist
 
-| ID | Source | Target | Handoff Data | Covered By |
+| ID | Source | Target | Handoff Data | Contract Clause |
 |----|--------|--------|--------------|------------|
 | IP-1 | RLM tool call | kernel manager | cell source, timeout, reset flag | SEQ-1..3, F-004/F-006 |
 | IP-2 | kernel | host bridge | typed host_request payloads | F-071/F-072/F-073 |
@@ -135,7 +137,9 @@ No contract executes unless ALL predicates evaluate to TRUE.
 | REQ-RLM-0019 | RLM plugin SHALL spawn the real kernel runner process with the bootstrap interpreter (REQ-RLM-0012) and speak JSON-lines-over-stdio with it (execute, interrupt, snapshot names/write/restore, bootstrap, shutdown ops; readiness within 5000 ms; SIGTERM then SIGKILL teardown), and RLM plugin SHALL ship that runner as dedicated Python inside packages/rlm/. | F-223/F-224 |
 | REQ-RLM-0020 | Python runtime SHALL wrap each installed Python skill imported into the kernel as a callable module whose `__call__` awaits the skill's `run` and copies its `__signature__`, cached in `sys.modules` (F-026). | installed skill not callable in kernel |
 | REQ-RLM-0021 | Python runtime SHALL represent a skill that failed to import with a shim whose repr identifies it as unavailable and whose `run` raises carrying the import error (F-027). | unavailable skill silently missing |
-| REQ-RLM-0022 | Python runtime SHALL provide an in-kernel MCP integration that discovers and invokes MCP tools by routing all requests, including credential resolution, through the host bridge (`host_request`), keeping credential and auth-store material host-side (F-080, F-164). | F-220 / credential leak (REQ-N-3) |
+| REQ-RLM-0022 | Python runtime SHALL provide in-kernel MCP integration that discovers and invokes MCP tools by routing all requests, including credential resolution, through the host bridge (`host_request`), keeping credential and auth-store material host-side (F-080, F-164). | F-220 / credential leak (REQ-N-3) |
+| REQ-RLM-0023 | Kernel manager SHALL settle an ordinary execute as ok, error, or aborted at or before KM_EXECUTE_TIMEOUT_MS. | See requirements/REQ-2026-RLM-EXECUTE-TIMEOUT.md |
+| REQ-RLM-0024 | Kernel manager SHALL interrupt an execute that reaches KM_EXECUTE_TIMEOUT_MS and accept a following execute in the same session. | See requirements/REQ-2026-RLM-EXECUTE-TIMEOUT.md |
 
 ### Negative-space (IEEE "shall not")
 
@@ -148,24 +152,36 @@ No contract executes unless ALL predicates evaluate to TRUE.
 | REQ-N-5 | TypeScript host SHALL NOT return a child's answer as the `rlm()`/spawn return value (F-049). |
 | REQ-N-6 | RLM plugin SHALL NOT ship placeholder, TODO, or stub implementations for any requirement in this manifest. |
 
+## Hard Invariants (The "Never" List)
+
+| ID | Category | Invariant |
+|----|----------|-----------|
+| INV-01 | Isolation | RLM plugin SHALL NOT modify or re-parent omp's existing eval tool, kernel registry, or runner process semantics (REQ-N-1). |
+| INV-02 | Context | RLM plugin SHALL NOT change what the host appends to the main context per turn (REQ-N-2). |
+| INV-03 | Credential | TypeScript host SHALL NOT expose credentials, auth stores, or non-bounded catalog data to the Python process (REQ-N-3). |
+| INV-04 | Sandbox | RLM plugin SHALL NOT present the kernel as a security sandbox (REQ-N-4). |
+| INV-05 | Attribution | TypeScript host SHALL NOT return a child's answer as the `rlm()`/spawn return value (REQ-N-5). |
+| INV-06 | Completeness | RLM plugin SHALL NOT ship placeholder, TODO, or stub implementations for any requirement in this manifest (REQ-N-6). |
+| INV-07 | Trust boundary | Python runtime SHALL NOT run an agent loop (REQ-RLM-0018). |
+
 ## 5. High-Entropy Zones (adjudicated)
 
 | Zone | Question | Resolution | Decided By |
 |------|----------|------------|------------|
 | Z-1 paper answer-variable | The paper paradigm (P-003/measure P-006) requires the answer via an environment variable and sub-LLM-only tools; prime-agent's implementation flows results through ordinary tool output and exposes full tools in-kernel (F-049). Which is authoritative for this port? | RESOLVED: prime-agent semantics govern; paper answer-variable and tool-demotion recorded as ancestry only. Deferred (future refactor): tight per-call output cap with artifact:// overflow spill. | User: "we stick with prime-agent semantics for z-1" |
-| Z-2 conditional-handler scope | F-150..F-166 handlers whose backing capability is missing in omp (refine loop, interval heartbeats, agent_observe, intra-session agent_message): build the missing omp capabilities first, or port the registered-but-unavailable semantics (F-166 string) as the reference itself does when a capability is absent? | Decision (a-full): TypeScript host SHALL implement ALL conditional handlers with real backing machinery; TypeScript host SHALL port the four engines omp lacks (refine loop, heartbeat scheduler, agent_message routing bus, agent_observe reader) from prime-agent's implementations; the F-166/F-220 unavailable-string applies only when the User disables a capability through configuration. | User: "A full. use prime-agent code for capabilities omp does not have. I want ALL capabilities" |
-| Z-3 placement | The capability lands as: (A) external CustomTool plugin package (zero core change; ~/.omp/plugins), (B) in-repo `packages/rlm` sibling + memory-backend integration, or (C) second kernel via eval-kernel kind parameterization? All three satisfy REQ-N-1/REQ-RLM-0001. | Decision (B): RLM plugin SHALL live as an in-repo `packages/rlm` sibling package (mnemopi pattern), wired in through omp's own registration surfaces; the RLM plugin SHALL keep all its code inside `packages/rlm/` plus minimal registration touchpoints, with zero edits inside `src/eval/` or core agent files. | User: "Z-3 -> B" |
+| Z-2 conditional-handler scope | F-150..F-166 handlers whose backing capability is missing in omp (refine loop, interval heartbeats, agent_observe, intra-session agent_message): build the missing omp capabilities first, or port the registered-but-unavailable semantics (F-166 string) as the reference itself does when a capability is absent? | Decision (a-full): TypeScript host implements ALL conditional handlers with real backing machinery, including the four engines omp lacked (refine loop, heartbeat scheduler, agent_message routing bus, agent_observe reader), ported from prime-agent's implementations (binding obligation: REQ-RLM-0010); the F-166/F-220 unavailable-string applies only when the User disables a capability through configuration. | User: "A full. use prime-agent code" |
+| Z-3 placement | The capability lands as: (A) external CustomTool plugin package (zero core change; ~/.omp/plugins), (B) in-repo `packages/rlm` sibling + memory-backend integration, or (C) second kernel via eval-kernel kind parameterization? All three satisfy REQ-N-1/REQ-RLM-0001. | Decision (B): RLM plugin lives as an in-repo `packages/rlm` sibling package (mnemopi pattern), wired in through omp's own registration surfaces, keeping all its code inside `packages/rlm/` plus minimal registration touchpoints, with zero edits inside `src/eval/` or core agent files (binding obligation: REQ-RLM-0001/REQ-N-1). | User: "Z-3 -> B" |
 | Z-4 primitives carried forward | Full OS capability, computer-as-sandbox, keep-all-venv-extras, addition-not-mutation. | Decided | User (verbatim directives quoted in §1) |
 
 ## 5.5 Rejected Alternatives
 
-| Decision | Alternative Considered | Why Rejected |
-|----------|----------------------|--------------|
-| Addition, never mutation | Retrofit offload discipline into omp's existing eval kernel | User directive, verbatim in §1 |
-| Host execution, no sandbox | Mount kernel under a sandbox backend | User directive, verbatim in §1 |
-| Full extras set | Trimmed dependency set | User directive, verbatim in §1 |
-| Main context stays append-only | Replacing main-context composition with kernel pointers | User directive, verbatim in §1 |
-| Faithful F-166 absence semantics (Z-2 alt) | (pending adjudication) | — |
+| Decision | Alternative Considered | Why Rejected | Decided By |
+|----------|----------------------|--------------|------------|
+| Addition, never mutation | Retrofit offload discipline into omp's existing eval kernel | User directive, verbatim in §1 | User |
+| Host execution, no sandbox | Mount kernel under a sandbox backend | User directive, verbatim in §1 | User |
+| Full extras set | Trimmed dependency set | User directive, verbatim in §1 | User |
+| Main context stays append-only | Replacing main-context composition with kernel pointers | User directive, verbatim in §1 | User |
+| Faithful F-166 absence semantics (Z-2 alt) | (pending adjudication) | — | User |
 
 ## 6. Tool/API Interface Summary
 
@@ -191,9 +207,22 @@ No contract executes unless ALL predicates evaluate to TRUE.
 
 Default for every unmet REQ: fail fast with the reference's exact error where the reference defines one (F-220..F-240); otherwise a CL15-A actionable error naming the violated REQ id. Fallbacks exist only where the reference contracts them (F-144 delete-outcome skip, F-095 ValueErrors, F-108 corrupt-file tolerance, F-166 unavailable-type string).
 
+| Requirement | Failure Condition | Behavior | Notification |
+|------------|-------------------|----------|-------------|
+| REQ-RLM-0001 | Pre-port eval/tool behavior drifts | FAIL FAST — port diff gate | CI fails, naming the drifted surface |
+| REQ-RLM-0003 | Kernel readiness/ports/abort/busy/shutdown/stderr-tail budgets exceeded | FAIL FAST — named timeout error (F-223/F-224) | KernelUnresponsiveError / KernelPortsUnresolvedError with stderr tail |
+| REQ-RLM-0011 | Snapshot write crashes mid-write | Prior snapshot stays intact and readable (F-171) | No notification needed; next read succeeds against the prior snapshot |
+| REQ-RLM-0012 | Kernel environment bootstrap fails (no internet, missing package) | FAIL FAST — naming the internet requirement | RlmBootstrapError naming the failed package/venv step |
+| REQ-RLM-0017 / REQ-RLM-0018 | Python process attempts credential access or an agent loop | FAIL FAST — request never leaves the process (F-208/A-008/A-012) | No host_request emitted; violation is structural, not runtime-caught |
+| REQ-RLM-0020 / REQ-RLM-0021 | Installed Python skill fails to import | Unavailable shim installed in place of the callable (F-027) | RT_UNAVAILABLE_RUN_ERROR carrying the import error on invocation |
+| REQ-RLM-0022 | In-kernel MCP call bypasses the host bridge | FAIL FAST — credential/auth material never reaches the Python process | The host raises TypeError before sending any frame (REQ-N-3 boundary) |
+| REQ-RLM-0023 | Cell still running at KM_EXECUTE_TIMEOUT_MS | FAIL FAST — interrupt then settle error | Tool result status error, errorEname KernelExecuteTimeoutError |
+| REQ-RLM-0024 | Interrupt does not stop the cell before the abort grace | FAIL FAST — settle error; later execute still accepted | Tool result status error citing ERRORS-KM-4 |
+| REQ-N-6 | Placeholder/TODO/stub shipped for any requirement | FAIL FAST — audit gate blocks | constitutional-audit VIOLATIONS FOUND, naming the stub |
+
 ## 8. Completion Promise (Ralph Loop Exit)
 
-> Every REQ above maps to feature IDs implemented with an observing test; the full port is exercised in an assembled real run where the model stores state in the kernel across a compaction and a session resume, and the stored state round-trips with a revival notice in the transcript — with omp's pre-port eval/tool behavior verified byte-equivalent.
+> Every REQ above maps to a feature ID that carries an observing test. An assembled real run exercises the full port: the model stores state in the kernel across a compaction and a session resume, the stored state round-trips with a revival notice in the transcript, and constitutional-audit confirms omp's pre-port eval/tool behavior stays byte-equivalent.
 
 ## 9. Contract Authority
 
@@ -208,3 +237,5 @@ Default for every unmet REQ: fail fast with the reference's exact error where th
 | 2026-08-15 | K. Harris (AI-executed) | Z-3 resolved (B): in-repo packages/rlm sibling. REQ-RLM-0017 split into 0017/0018 per one-polarity-per-line rule (no requirement line mixes obligation and prohibition). All zones adjudicated; contracts unblocked |
 | 2026-08-16 | K. Harris (AI-executed) | Constitutional-refactor re-assessment (slice-4 transport gap): REQ-RLM-0019 added — real kernel spawn + JSON-lines transport + dedicated runner owned by SLICE-4; §3.5 dependency line corrected (bootstrap, not eval resolution); SEQ-12 + IP-9 added. User decision verbatim: "A. ... add the appropriate language to designate this slice for explicitly spawn the real python kernel" |
 | 2026-08-17 | K. Harris (AI-executed) | Constitutional-refactor Phase 1 (MCP + in-kernel skills disconnect matrix): REQ-RLM-0020 (skill wrapping F-026), REQ-RLM-0021 (unavailable-skill shim F-027), REQ-RLM-0022 (in-kernel MCP integration, credentials host-side per REQ-N-3, F-080/F-164) added. host_request wire (NDJSON) stays under REQ-RLM-0006 with contract-level semantics. User directive verbatim: "the mcp work must be incorporated into the plan... same for the skills" |
+| 2026-08-20 | K. Harris (AI-executed) | REQ-RLM-0023/0024 added (kernel execute wall-clock timer, KM_EXECUTE_TIMEOUT_MS): sourced from requirements/REQ-2026-RLM-EXECUTE-TIMEOUT.md, dedicated manifest for the execute timer, IEEE lint clean. Issue ketema/omp#4. Not ccabdd-bound (projection unavailable). |
+| 2026-08-20 | K. Harris (AI-executed) | Full IEEE 29148 lint compliance pass: added Hard Invariants section (was globally missing); converted Actors bullet list to a table and moved it to schema position (after Governance, before Intent); reworded "Our Understanding," SEQ-2, and Completion Promise out of passive voice; renamed Integration Points Checklist's last column to "Contract Clause"; reworded Z-2/Z-3 decision-record resolutions off SHALL onto traceable REQ citations; added a real table to §7 Failure Mode Specification. Verified via `git stash` that all 9 errors + 4 warnings pre-dated this session (present on unmodified `main`). Result: 0 errors, 0 warnings. |
