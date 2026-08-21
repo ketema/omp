@@ -4,8 +4,8 @@
   "manifest_path": "requirements/REQ-2026-RLM-EXECUTE-TIMEOUT.md",
   "manifest_hash": "sha256:125ae1d59b0acbf854af7d3d69a66e2a4a52c040763617cb09c9ae07f6637675",
   "created": "2026-08-20",
-  "last_updated": "2026-08-20",
-  "status": "ACTIVE",
+  "last_updated": "2026-08-21",
+  "status": "COMPLETED",
   "slices": [
     {
       "id": "SLICE-1",
@@ -26,7 +26,7 @@
         "INV-03",
         "REQ-N-7"
       ],
-      "status": "PENDING",
+      "status": "AUDITED",
       "depends_on": [],
       "issue": "#4",
       "pivot_note": "After this slice, unbounded cells settle as error at 30000 ms; later cells still run."
