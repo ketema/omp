@@ -1,0 +1,34 @@
+schema_version: "1.0.0"
+feature: "rlm_shell_parity"
+github_issue: 8
+repository: "ketema/omp"
+branch: "sec/8-rlm-shell-environment-parity"
+
+slices:
+  - id: "SLICE-1"
+    name: "Environment Parity in buildKernelEnv and Transport"
+    description: "Pass host PATH, HOME, SHELL, USER, TMPDIR via Safe Shell Allowlist into transport spawn"
+    claude_scope:
+      - "packages/rlm/src/bootstrap.ts"
+      - "packages/rlm/src/extension.ts"
+      - "packages/rlm/src/transport.ts"
+    contracts:
+      - "packages/rlm/contracts/rlm_env_parity.contract.ts"
+    tests:
+      - "packages/rlm/test/rlm_env_parity.test.ts"
+    clauses:
+      - "PRE-ENV-01"
+      - "POST-ENV-01"
+      - "POST-ENV-02"
+      - "POST-ENV-03"
+      - "INV-ENV-01"
+      - "INV-ENV-02"
+      - "SEQ-ENV-01"
+      - "SEQ-ENV-02"
+      - "ERRORS-ENV-01"
+
+negative_constraints:
+  - "FORBIDDEN-ENV-01"
+  - "INV-ENV-01"
+
+completion_promise: "IPython tool executes system CLI binaries from PATH identically to native bash subshells."
