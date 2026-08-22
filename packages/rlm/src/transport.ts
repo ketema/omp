@@ -507,6 +507,21 @@ export class RlmTransport implements KernelTransport {
 		this.assertNotDisposed();
 		this.assertStarted();
 
+		// Settle any prior dangling execution if a new execution starts
+		if (this.activeExecPending !== null) {
+			const pending = this.activeExecPending;
+			this.activeExecPending = null;
+			this.activeExecId = null;
+			pending.resolve({
+				code: 1,
+				stdout: pending.stdout,
+				stderr: pending.stderr,
+				result: "",
+				errorEname: "InterruptedError",
+				traceback: "Previous execution interrupted or superseded by new execute() call",
+			});
+		}
+
 		return new Promise<KernelTransportExecuteResult>((resolve, reject) => {
 			this.activeExecId = id;
 			this.activeExecPending = {
