@@ -38,6 +38,18 @@ export const RUNTIME_IDENTITY_KIND = "sha256";
 const MANIFEST_FILE = ".bootstrap-version";
 const LOCK_FILE = ".bootstrap.lock";
 
+export const FALLBACK_POSIX_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
+export const SAFE_SHELL_ENV_KEYS = [
+	"PATH",
+	"HOME",
+	"SHELL",
+	"USER",
+	"LOGNAME",
+	"TMPDIR",
+	"LANG",
+	"LC_ALL",
+	"TERM",
+] as const;
 const CRUD_METHODS: readonly string[] = [
 	"create_memory",
 	"update_memory",
@@ -93,6 +105,16 @@ export class RlmBootstrapError extends Error {
 	constructor(message: string, options?: { cause?: unknown }) {
 		super(message, options);
 		this.name = "RlmBootstrapError";
+	}
+}
+
+export class KernelEnvironmentError extends Error {
+	readonly clauseId: string;
+
+	constructor(message: string, clauseId: string) {
+		super(`${clauseId}: ${message}`);
+		this.name = "KernelEnvironmentError";
+		this.clauseId = clauseId;
 	}
 }
 
@@ -254,20 +276,100 @@ export async function resolveInterpreter(config: InterpreterConfig, deps: Bootst
 }
 
 // =============================================================================
-// INV-BOOT-2 — bounded kernel env (exact set, cross-validated by SAFE-V1)
+// RLM kernel environment parity
 // =============================================================================
 
-export function buildKernelEnv(session: KernelSession, caps: KernelCaps): Record<string, string> {
+export function buildKernelEnv(
+	session: KernelSession,
+	caps: KernelCaps,
+	hostEnv: Readonly<Record<string, string | undefined>> = process.env,
+): Record<string, string> {
+	// PRE-ENV-01 / ERRORS-ENV-01: validate erased TypeScript inputs at the boundary.
+	if (session === null || typeof session !== "object") {
+		throw new KernelEnvironmentError("session must be a valid object", "PRE-ENV-01");
+	}
+	if (caps === null || typeof caps !== "object") {
+		throw new KernelEnvironmentError("caps must be a valid object", "PRE-ENV-01");
+	}
+
+	const env: Record<string, string> = {};
+	for (const key of SAFE_SHELL_ENV_KEYS) {
+		const value = hostEnv[key];
+		if (value !== undefined) env[key] = value;
+	}
+
+	// POST-ENV-02 / INV-ENV-01: the kernel always receives a usable PATH.
+	if (env.PATH === undefined || env.PATH.trim() === "") {
+		env.PATH = FALLBACK_POSIX_PATH;
+	}
+
+	// POST-ENV-03 / INV-ENV-02: internal bounds take strict precedence.
 	return {
+		...env,
 		RLM_DEPTH: String(session.depth),
 		RLM_MAX_DEPTH: String(session.maxDepth),
 		RLM_SESSION_DIR: session.sessionDir,
+		RLM_HARNESS_DIR: session.harnessDir,
+		RLM_GLOBAL_HARNESS_DIR: session.globalHarnessDir,
+		RLM_AGENT_DIR: session.agentDir,
 		RLM_HARNESS_STATE_DIR: session.harnessDir,
 		RLM_GLOBAL_HARNESS_STATE_DIR: session.globalHarnessDir,
 		OMP_RLM_AGENT_DIR: session.agentDir,
 		RLM_MAX_OUTPUT_CHARS: String(caps.maxOutputChars),
 		RLM_SNAPSHOT_MAX_BYTES: String(caps.snapshotMaxBytes),
 	};
+}
+
+type KernelTransportFactory<T> = (env: Record<string, string>) => T;
+type KernelSpawnFn = (cmd: string, args: string[], opts: { cwd?: string; env: Record<string, string> }) => unknown;
+
+export interface RlmHostOptions {
+	readonly session: KernelSession;
+	readonly caps: KernelCaps;
+	readonly hostEnv?: Readonly<Record<string, string | undefined>>;
+	readonly spawnFn?: KernelSpawnFn;
+}
+
+export class RlmHost {
+	readonly #session: KernelSession;
+	readonly #caps: KernelCaps;
+	readonly #hostEnv: Readonly<Record<string, string | undefined>>;
+	readonly #spawnFn: KernelSpawnFn | undefined;
+
+	constructor(opts: RlmHostOptions);
+	constructor(session: KernelSession, caps: KernelCaps, hostEnv?: Readonly<Record<string, string | undefined>>);
+	constructor(
+		sessionOrOpts: KernelSession | RlmHostOptions,
+		caps?: KernelCaps,
+		hostEnv: Readonly<Record<string, string | undefined>> = process.env,
+	) {
+		if ("session" in sessionOrOpts) {
+			this.#session = sessionOrOpts.session;
+			this.#caps = sessionOrOpts.caps;
+			this.#hostEnv = sessionOrOpts.hostEnv ?? process.env;
+			this.#spawnFn = sessionOrOpts.spawnFn;
+			return;
+		}
+		if (caps === undefined) {
+			throw new KernelEnvironmentError("caps must be a valid object", "PRE-ENV-01");
+		}
+
+		this.#session = sessionOrOpts;
+		this.#caps = caps;
+		this.#hostEnv = hostEnv;
+		this.#spawnFn = undefined;
+	}
+
+	// SEQ-ENV-01 / SEQ-ENV-02: build once before either injection receives the environment.
+	start<T>(createTransport: KernelTransportFactory<T>): T;
+	start(): undefined;
+	start<T>(createTransport?: KernelTransportFactory<T>): T | undefined {
+		const env = buildKernelEnv(this.#session, this.#caps, this.#hostEnv);
+		if (this.#spawnFn !== undefined) {
+			this.#spawnFn("python", [], { env });
+		}
+		return createTransport?.(env);
+	}
 }
 
 // =============================================================================

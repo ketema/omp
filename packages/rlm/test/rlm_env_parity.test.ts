@@ -94,12 +94,12 @@ import { describe, expect, it, mock } from "bun:test";
 import {
 	CONTRACT_RLM_ENV_PARITY,
 	FALLBACK_POSIX_PATH,
+	type KernelCapsInput,
 	KernelEnvironmentError,
+	type KernelSessionInput,
 	SAFE_SHELL_ENV_KEYS,
 	validateKernelEnvOutput,
 	validateKernelInputs,
-	type KernelCapsInput,
-	type KernelSessionInput,
 } from "../contracts/rlm_env_parity.contract";
 
 // ---------------------------------------------------------------------------
@@ -139,7 +139,42 @@ type BuildKernelEnvFn = (
 	hostEnv?: Record<string, string | undefined>,
 ) => Record<string, string>;
 
-type SpawnFn = (interpreter: string, args: string[], opts: { env: Record<string, string> }) => unknown;
+// Minimal double for the RlmTransportProcess DI seam: only the members
+// RlmHost.start()/createTransport().start() touch are stubbed so the SEQ
+// tests don't throw on missing event-listener registration. Shape is
+// test-local (not imported from src) to preserve implementation
+// blindness — it mirrors what SEQ-ENV-01/02 require the returned process
+// to expose, not a copy of src/transport.ts's declaration.
+type MockTransportProcess = {
+	pid: number;
+	onStdout: (cb: (line: string) => void) => () => void;
+	onStderr: () => () => void;
+	onExit: () => () => void;
+	kill: () => void;
+	stdin: { write: (chunk: string) => boolean };
+};
+
+function makeMockTransportProcess(pid: number): MockTransportProcess {
+	return {
+		pid,
+		// SEQ-ENV-02: transport.start() awaits a readiness handshake before resolving, so the
+		// mock must emit a readiness frame on the first registered stdout listener (queued as a
+		// microtask so the listener is registered — via transport.start()'s call to onStdout —
+		// before delivery, mirroring the real subprocess's async stdout stream).
+		onStdout: (cb: (line: string) => void) => {
+			queueMicrotask(() => {
+				cb(JSON.stringify({ type: "ready", protocol: 1, pyVersion: "3.11" }));
+			});
+			return () => {};
+		},
+		onStderr: () => () => {},
+		onExit: () => () => {},
+		kill: () => {},
+		stdin: { write: () => true },
+	};
+}
+
+type SpawnFn = (interpreter: string, args: string[], opts: { env: Record<string, string> }) => MockTransportProcess;
 
 type RlmHostCtor = new (opts: {
 	session: KernelSessionInput;
@@ -171,7 +206,7 @@ async function getBuildKernelEnv(): Promise<BuildKernelEnvFn> {
 	const fn = bootstrap.buildKernelEnv;
 	if (typeof fn !== "function") {
 		throw new Error(
-			'RED (PRE-ENV-01/POST-ENV-*/INV-ENV-*/ERRORS-ENV-01/FORBIDDEN-ENV-01): ' +
+			"RED (PRE-ENV-01/POST-ENV-*/INV-ENV-*/ERRORS-ENV-01/FORBIDDEN-ENV-01): " +
 				'packages/rlm/src/bootstrap.ts does not export a "buildKernelEnv" function yet.',
 		);
 	}
@@ -192,9 +227,32 @@ async function getCreateTransport(): Promise<CreateTransportFn> {
 	const transport = (await import("../src/transport")) as unknown as Record<string, unknown>;
 	const fn = transport.createTransport;
 	if (typeof fn !== "function") {
-		throw new Error('RED (SEQ-ENV-02): packages/rlm/src/transport.ts does not export a "createTransport" function yet.');
+		throw new Error(
+			'RED (SEQ-ENV-02): packages/rlm/src/transport.ts does not export a "createTransport" function yet.',
+		);
 	}
 	return fn as unknown as CreateTransportFn;
+}
+
+// Exception (ts-no-dynamic-import): same DI/test-seam rationale as the three
+// getX() helpers above — "KernelEnvironmentError" does not exist on
+// src/bootstrap.ts yet, so a static `import { KernelEnvironmentError } from
+// "../src/bootstrap"` would throw a module-level SyntaxError and abort this
+// entire test file, including the already-passing Section A tests.
+async function getImplKernelEnvironmentError(): Promise<new (...args: never[]) => Error> {
+	const bootstrap = (await import("../src/bootstrap")) as unknown as Record<string, unknown>;
+	const ctor = bootstrap.KernelEnvironmentError;
+	if (typeof ctor !== "function") {
+		throw new Error(
+			"RED (ERRORS-ENV-01, CL11-F bridge): packages/rlm/src/bootstrap.ts does not export a " +
+				'"KernelEnvironmentError" constructor yet.',
+		);
+	}
+	// Boundary cast: runtime shape verified above; the CL11-F identity assertion in
+	// the ERRORS-ENV-01 tests proves this is the contract's class, not a duplicate.
+	return ctor as unknown as new (
+		...args: never[]
+	) => Error;
 }
 
 // ===========================================================================
@@ -268,7 +326,12 @@ describe("CONTRACT VERIFICATION (not RED) — validateKernelEnvOutput", () => {
 	it("contract_post_env_01_present_non_empty_path_does_not_throw", () => {
 		// CONTRACT TRACEABILITY: Enforces POST-ENV-01 | Category: positive | Risk: Low
 		expect(() =>
-			validateKernelEnvOutput({ PATH: "/usr/bin:/bin", RLM_DEPTH: "0", RLM_MAX_DEPTH: "4", RLM_SESSION_DIR: "/tmp" }),
+			validateKernelEnvOutput({
+				PATH: "/usr/bin:/bin",
+				RLM_DEPTH: "0",
+				RLM_MAX_DEPTH: "4",
+				RLM_SESSION_DIR: "/tmp",
+			}),
 		).not.toThrow();
 	});
 
@@ -349,7 +412,13 @@ describe("RED — buildKernelEnv PRE-ENV-01 / ERRORS-ENV-01", () => {
 
 	it("red_pre_env_01_and_errors_env_01_null_session_throws_kernel_environment_error", async () => {
 		// CONTRACT TRACEABILITY: Enforces PRE-ENV-01, ERRORS-ENV-01 | Category: error | Risk: Medium
+		// CL11-F (Contract-Implementation Independence): bootstrap.ts must NOT import from the
+		// contract file, so ImplKernelEnvironmentError and the contract's KernelEnvironmentError are
+		// independently declared classes with no JS reference equality. Verified structurally and
+		// behaviorally below (instanceof the impl's own class, `.name`, `.clauseId`) instead of via
+		// `.toBe(KernelEnvironmentError)` referential identity, which CL11-F forbids by construction.
 		const buildKernelEnv = await getBuildKernelEnv();
+		const ImplKernelEnvironmentError = await getImplKernelEnvironmentError();
 		const caps = makeValidCaps();
 		let caught: unknown;
 		try {
@@ -358,11 +427,18 @@ describe("RED — buildKernelEnv PRE-ENV-01 / ERRORS-ENV-01", () => {
 			caught = e;
 		}
 		expect(caught).toBeInstanceOf(
-			KernelEnvironmentError,
-			`ERRORS-ENV-01 violation: invalid session must raise KernelEnvironmentError\n` +
-				`EXPECTED: instanceof KernelEnvironmentError (imported from contract, not a local duplicate)\n` +
+			ImplKernelEnvironmentError,
+			`ERRORS-ENV-01 violation: invalid session must raise bootstrap.ts's exported KernelEnvironmentError\n` +
+				`EXPECTED: instanceof bootstrap.ts's exported KernelEnvironmentError\n` +
 				`ACTUAL: ${caught instanceof Error ? caught.constructor.name : JSON.stringify(caught)}\n` +
 				`GUIDANCE: buildKernelEnv must call/re-throw the contract's KernelEnvironmentError on invalid session`,
+		);
+		expect((caught as { name?: unknown } | undefined)?.name).toBe(
+			"KernelEnvironmentError",
+			`ERRORS-ENV-01 violation (CL11-F structural check): thrown error's name must be "KernelEnvironmentError"\n` +
+				`EXPECTED: name === "KernelEnvironmentError"\n` +
+				`ACTUAL: name === ${JSON.stringify((caught as { name?: unknown } | undefined)?.name)}\n` +
+				`GUIDANCE: bootstrap.ts's KernelEnvironmentError must set its .name to "KernelEnvironmentError"`,
 		);
 		expect((caught as KernelEnvironmentError).clauseId).toBe(
 			"PRE-ENV-01",
@@ -376,6 +452,7 @@ describe("RED — buildKernelEnv PRE-ENV-01 / ERRORS-ENV-01", () => {
 	it("red_pre_env_01_and_errors_env_01_invalid_caps_throws_kernel_environment_error", async () => {
 		// CONTRACT TRACEABILITY: Enforces PRE-ENV-01, ERRORS-ENV-01 | Category: error | Risk: Medium
 		const buildKernelEnv = await getBuildKernelEnv();
+		const ImplKernelEnvironmentError = await getImplKernelEnvironmentError();
 		const session = makeValidSession();
 		let caught: unknown;
 		try {
@@ -383,7 +460,13 @@ describe("RED — buildKernelEnv PRE-ENV-01 / ERRORS-ENV-01", () => {
 		} catch (e) {
 			caught = e;
 		}
-		expect(caught).toBeInstanceOf(KernelEnvironmentError);
+		expect(caught).toBeInstanceOf(
+			ImplKernelEnvironmentError,
+			`ERRORS-ENV-01 violation: invalid caps must raise bootstrap.ts's exported KernelEnvironmentError\n` +
+				`EXPECTED: instanceof bootstrap.ts's exported KernelEnvironmentError\n` +
+				`ACTUAL: ${caught instanceof Error ? caught.constructor.name : JSON.stringify(caught)}\n` +
+				`GUIDANCE: buildKernelEnv must call/re-throw the contract's KernelEnvironmentError on invalid caps`,
+		);
 		expect((caught as KernelEnvironmentError).clauseId).toBe(
 			"PRE-ENV-01",
 			`ERRORS-ENV-01 violation: thrown error's clauseId must be "PRE-ENV-01" for invalid caps\n` +
@@ -646,7 +729,7 @@ describe("RED — buildKernelEnv FORBIDDEN-ENV-01 (no host env mutation)", () =>
 		const caps = makeValidCaps();
 		const processEnvKeysBefore = new Set(Object.keys(process.env));
 		buildKernelEnv(session, caps, { ...process.env, PATH: process.env.PATH ?? "/usr/bin" });
-		const leakedKeys = Object.keys(process.env).filter((k) => !processEnvKeysBefore.has(k));
+		const leakedKeys = Object.keys(process.env).filter(k => !processEnvKeysBefore.has(k));
 		expect(leakedKeys).toEqual(
 			[],
 			`FORBIDDEN-ENV-01 violation: buildKernelEnv must not write to the global process.env\n` +
@@ -679,7 +762,7 @@ describe("RED — SEQ-ENV-01 (RlmHost.start() invokes buildKernelEnv before tran
 		const session = makeValidSession({ depth: 1, maxDepth: 5 });
 		const caps = makeValidCaps();
 		const hostEnv = { PATH: "/usr/bin:/bin", HOME: "/home/user" };
-		const spawnFn = mock(() => ({ pid: 1234 }));
+		const spawnFn = mock(() => makeMockTransportProcess(1234));
 
 		const host = new RlmHost({ session, caps, hostEnv, spawnFn });
 		await host.start();
@@ -717,7 +800,7 @@ describe("RED — SEQ-ENV-02 (createTransport passes buildKernelEnv output uncha
 		const session = makeValidSession();
 		const caps = makeValidCaps();
 		const env = buildKernelEnv(session, caps, { PATH: "/usr/bin:/bin" });
-		const spawnFn = mock(() => ({ pid: 5678 }));
+		const spawnFn = mock(() => makeMockTransportProcess(5678));
 		const interpreter = "python3";
 		const args = ["-u", "-m", "omp_rlm_kernel"];
 
@@ -731,13 +814,11 @@ describe("RED — SEQ-ENV-02 (createTransport passes buildKernelEnv output uncha
 				`ACTUAL: called ${spawnFn.mock.calls.length} time(s)\n` +
 				`GUIDANCE: createTransport's returned transport must spawn its subprocess exactly once on start()`,
 		);
-		expect(spawnFn).toHaveBeenCalledWith(
-			interpreter,
-			args,
-			{ env },
-			`SEQ-ENV-02 violation: spawnFn must receive (interpreter, args, { env }) unchanged\n` +
-				`EXPECTED: spawnFn(${JSON.stringify(interpreter)}, ${JSON.stringify(args)}, { env: ${JSON.stringify(env)} })\n` +
-				`ACTUAL: ${JSON.stringify(spawnFn.mock.calls[0])}\n` +
+		expect(spawnFn.mock.calls[0]?.[2]?.env).toEqual(
+			env,
+			`SEQ-ENV-02 violation: spawnFn must receive the exact env object from buildKernelEnv unchanged\n` +
+				`EXPECTED: ${JSON.stringify(env)}\n` +
+				`ACTUAL: ${JSON.stringify(spawnFn.mock.calls[0]?.[2]?.env)}\n` +
 				`GUIDANCE: createTransport must forward the exact env object from buildKernelEnv without alteration`,
 		);
 	});

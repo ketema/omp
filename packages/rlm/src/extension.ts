@@ -7,7 +7,7 @@
 
 import * as fs from "node:fs";
 import { join } from "node:path";
-import { bootstrapManagedVenv, buildKernelEnv } from "./bootstrap";
+import { bootstrapManagedVenv, RlmHost } from "./bootstrap";
 import { EMBEDDED_RUNTIME_SOURCES, ensureExtractedAssets } from "./embedded_assets";
 import type { KernelClock, KernelExecutionResult, KernelTransport } from "./kernel";
 import { KernelManager } from "./kernel";
@@ -236,34 +236,33 @@ async function createDefaultKernel(config: RlmKernelConfig, artifactsDir: string
 		interpreterPath = result.interpreterPath;
 	}
 
-	// Build spawn env via buildKernelEnv
-	const sessionDir = artifactsDir;
-	const harnessDir = join(artifactsDir, "harness");
-	const globalHarnessDir = join(agentDir, "harness");
+	// SEQ-ENV-01: RlmHost builds the kernel environment before transport creation.
+	const session = {
+		sessionDir: artifactsDir,
+		harnessDir: join(artifactsDir, "harness"),
+		globalHarnessDir: join(agentDir, "harness"),
+		agentDir,
+		depth: config.depth ?? 0,
+		maxDepth: config.maxDepth ?? 1,
+	};
+	const caps = {
+		maxOutputChars: 65536,
+		snapshotMaxBytes: 256 * 1024 * 1024,
+	};
 
-	const env = buildKernelEnv(
-		{
-			sessionDir,
-			harnessDir,
-			globalHarnessDir,
-			agentDir,
-			depth: config.depth ?? 0,
-			maxDepth: config.maxDepth ?? 1,
-		},
-		{
-			maxOutputChars: 65536,
-			snapshotMaxBytes: 256 * 1024 * 1024,
-		},
-	);
+	const host = new RlmHost(session, caps, process.env);
 
 	// Create transport
-	const transport = createTransport({
-		interpreter: interpreterPath,
-		env,
-		cwd: process.cwd(),
-		artifactsDir,
-		runnerScriptPath,
-	});
+	const transport = host.start(env =>
+		createTransport({
+			interpreter: interpreterPath,
+			env,
+			cwd: process.cwd(),
+			artifactsDir,
+			runnerScriptPath,
+		}),
+	);
+
 	// Create kernel manager over the transport
 	const clock: KernelClock = {
 		now(): number {
