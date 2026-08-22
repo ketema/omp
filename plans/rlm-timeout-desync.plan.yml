@@ -1,0 +1,42 @@
+schema_version: '1.0'
+feature_name: rlm-timeout-desync
+manifest_path: requirements/REQ-2026-RLM-TIMEOUT-DESYNC.md
+manifest_hash: sha256:bc24fda5053cb65ece45d917ae64ee0aff65382041083905f7489c24f2c8142c
+created: '2026-08-22'
+last_updated: '2026-08-22'
+status: ACTIVE
+slices:
+- id: SLICE-1
+  clauses_in_scope:
+  - POST-TRANS-2
+  - POST-KM-4
+  - INV-TRANS-1
+  - SEQ-1
+  - SEQ-2
+  - SEQ-3
+  - SEQ-4
+  - ERRORS-1
+  - ERRORS-2
+  - ERRORS-3
+  - IP-1
+  - IP-2
+  - IP-3
+  - IP-4
+  clauses_deferred: []
+  negative_constraints:
+  - FORBIDDEN-1
+  - FORBIDDEN-2
+  status: PENDING
+  depends_on: []
+  issue: '#12'
+  pivot_note: Sequential execute operations recover cleanly from timeouts and interrupts
+    without deadlock or dropped frames.
+pivot_guidance:
+- 'After SLICE-1 AUDIT: verify Gate 3 (CL12-E traceability) and all live transport
+  tests pass.'
+forgotten_invariants:
+- INV-01
+- INV-02
+- INV-03
+- FORBIDDEN-01
+- FORBIDDEN-02

@@ -339,6 +339,48 @@ describe("transport wire protocol", () => {
     await exec
     expect(settled).toBe(true)
   })
+
+  test("POST-TRANS-2/POST-TRANS-3: sequential execute after timeout/interrupt desync recovers cleanly", async () => {
+    /**
+     * CONTRACT TRACEABILITY:
+     * - Authority: requirements/contracts/rlm-timeout-desync.contract.ts
+     * - Enforces: POST-TRANS-2, POST-TRANS-3, INV-TRANS-1, SEQ-3, FORBIDDEN-1, FORBIDDEN-2
+     * - Category: Wire tier protocol / Desync recovery
+     * - Behavior: When execute is interrupted / times out, subsequent execute must not deadlock
+     *   or be corrupted when stale done frame arrives from runner.
+     */
+    const fake = makeFakeProcess()
+    const { transport } = makeWireTransport(fake)
+    await startReady(fake, transport)
+
+    // First execution
+    const exec1 = transport.execute("e1", "while True: pass")
+    expect(fake.state.stdinLines.length).toBe(1)
+    const op1 = JSON.parse(fake.state.stdinLines[0])
+    expect(op1.id).toBe("e1")
+
+    // Interrupt transport
+    await transport.interrupt()
+    expect(fake.state.signals).toContain("SIGINT")
+
+    // Second execution dispatched immediately
+    const exec2 = transport.execute("e2", "1 + 1")
+    expect(fake.state.stdinLines.length).toBe(2)
+    const op2 = JSON.parse(fake.state.stdinLines[1])
+    expect(op2.id).toBe("e2")
+
+    // Late done frame for e1 arrives
+    fake.emitFrame({ type: "done", id: "e1", code: 1, stderr: "Interrupted" })
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+
+    // Done frame for e2 arrives
+    fake.emitFrame({ type: "done", id: "e2", code: 0, stdout: "", stderr: "", result: "2" })
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+
+    const res2 = await exec2
+    expect(res2.code).toBe(0)
+    expect(res2.result).toBe("2")
+  })
 })
 
 // ---------------------------------------------------------------------------
