@@ -879,6 +879,61 @@ test("POST-KM-4: execute after timeout still runs", async () => {
   expect(calls).toBe(2)
 })
 
+test("POST-KM-4/POST-TRANS-2: issue #12 sequential execute after timeout desync reproduces failure", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Issue: ketema/omp#12
+   * - Enforces: POST-KM-4, POST-TRANS-2, INV-KM-1
+   * - Behavior: When execute times out in KernelManager, in-flight transport execution
+   *   must be cleanly settled/cancelled and must not deadlock or drop frames on subsequent execute.
+   */
+  const clock = makeClock()
+  let activeExecResolve: ((res: TransportResult) => void) | null = null
+  let execCallCount = 0
+
+  const transport = makeTransport({
+    execute: (_id, _code, n) => {
+      execCallCount = n
+      if (n === 1) {
+        return new Promise<TransportResult>(resolve => {
+          activeExecResolve = resolve
+        })
+      }
+      return Promise.resolve({ code: 0, stdout: "recovered", stderr: "", result: "42" })
+    },
+  })
+
+  const manager = new KernelManager(transport, { clock, artifactsDir: artifactsDir() })
+  await manager.ensureStarted()
+
+  // 1. Dispatch first execution that hangs
+  const hung = manager.execute("long_running_task()")
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+
+  // 2. Advance time past EXECUTE_TIMEOUT_MS -> timeout triggers
+  await clock.advance(EXECUTE_TIMEOUT_MS)
+  const hungResult = await hung
+  expect(hungResult.status).toBe("error")
+  expect(hungResult.traceback).toContain("POST-KM-4 violation: execute exceeded 30000ms")
+
+  // 3. Immediately dispatch second execution
+  const secondPromise = manager.execute("next_task()")
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+
+  // 4. Stale first execution eventually resolves late from transport
+  if (activeExecResolve) {
+    (activeExecResolve as (res: TransportResult) => void)({ code: 0, stdout: "late", stderr: "", result: "old" })
+  }
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+
+  // 5. Assert second execution resolved properly with second output, not corrupted or hung
+  const secondResult = await secondPromise
+  expect(secondResult.status).toBe("ok")
+  expect(secondResult.result).toBe("42")
+  expect(execCallCount).toBe(2)
+})
+
+
 // ---------------------------------------------------------------------------
 // FORBIDDEN-KM-5 / INV-KM-4 — stale execute-timer isolation across executions
 // ---------------------------------------------------------------------------
