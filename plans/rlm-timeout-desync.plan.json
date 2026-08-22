@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "feature_name": "rlm-timeout-desync",
   "manifest_path": "requirements/REQ-2026-RLM-TIMEOUT-DESYNC.md",
-  "manifest_hash": "sha256:bc24fda5053cb65ece45d917ae64ee0aff65382041083905f7489c24f2c8142c",
+  "manifest_hash": "sha256:b173e4f5f65a0a2f310a6fd22f94e873a24e140b71d7ff49f8b5ddabae2a7ecf",
   "created": "2026-08-22",
   "last_updated": "2026-08-22",
   "status": "ACTIVE",
