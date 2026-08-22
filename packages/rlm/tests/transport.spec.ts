@@ -343,8 +343,9 @@ describe("transport wire protocol", () => {
   test("POST-TRANS-2/POST-TRANS-3: sequential execute after timeout/interrupt desync recovers cleanly", async () => {
     /**
      * CONTRACT TRACEABILITY:
-     * - Issue: ketema/omp#12
-     * - Enforces: POST-TRANS-2, POST-TRANS-3, INV-TRANS-1
+     * - Authority: requirements/contracts/rlm-timeout-desync.contract.ts
+     * - Enforces: POST-TRANS-2, POST-TRANS-3, INV-TRANS-1, SEQ-3, FORBIDDEN-1, FORBIDDEN-2
+     * - Category: Wire tier protocol / Desync recovery
      * - Behavior: When execute is interrupted / times out, subsequent execute must not deadlock
      *   or be corrupted when stale done frame arrives from runner.
      */

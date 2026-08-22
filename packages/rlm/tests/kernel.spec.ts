@@ -882,8 +882,9 @@ test("POST-KM-4: execute after timeout still runs", async () => {
 test("POST-KM-4/POST-TRANS-2: issue #12 sequential execute after timeout desync reproduces failure", async () => {
   /**
    * CONTRACT TRACEABILITY:
-   * - Issue: ketema/omp#12
-   * - Enforces: POST-KM-4, POST-TRANS-2, INV-KM-1
+   * - Authority: requirements/contracts/rlm-timeout-desync.contract.ts
+   * - Enforces: POST-KM-4, POST-TRANS-2, INV-TRANS-1, SEQ-2, SEQ-3, FORBIDDEN-1
+   * - Category: Timing boundary / Desynchronization recovery
    * - Behavior: When execute times out in KernelManager, in-flight transport execution
    *   must be cleanly settled/cancelled and must not deadlock or drop frames on subsequent execute.
    */
