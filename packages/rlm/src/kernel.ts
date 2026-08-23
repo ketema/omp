@@ -818,7 +818,9 @@ export class KernelManager {
 				savedNames: filteredNames,
 				skipped: writeResult.skipped,
 				bytes: writeResult.bytes,
-				...(writeResult.uncompressedBytes !== undefined ? { uncompressedBytes: writeResult.uncompressedBytes } : {}),
+				...(writeResult.uncompressedBytes !== undefined
+					? { uncompressedBytes: writeResult.uncompressedBytes }
+					: {}),
 				...(writeResult.compressedBytes !== undefined ? { compressedBytes: writeResult.compressedBytes } : {}),
 				...(writeResult.compression !== undefined ? { compression: writeResult.compression } : {}),
 				...(writeResult.compressionRatio !== undefined ? { compressionRatio: writeResult.compressionRatio } : {}),
