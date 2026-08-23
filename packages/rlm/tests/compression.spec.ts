@@ -129,14 +129,17 @@ describe("RLM Dill Compression Contracts & Validators", () => {
       });
 
       if (probe.exitCode !== 0) {
-        // Auto-provision via uv if uv is available in environment
-        const uvFind = Bun.spawnSync(["which", "uv"], { stdout: "pipe" });
-        if (uvFind.exitCode === 0) {
+        // Auto-provision via uv if uv is available in environment. Resolve
+        // the binary path once via Bun.which() (a direct lookup API) rather
+        // than spawning a `which` subprocess, and reuse that resolved path
+        // for every subsequent uv invocation below.
+        const uvPath = Bun.which("uv");
+        if (uvPath !== null) {
           tempVenvBase = fs.mkdtempSync(path.join(os.tmpdir(), "rlm-test-venv-"));
           try {
-            Bun.spawnSync(["uv", "venv", tempVenvBase], { stdout: "pipe", stderr: "pipe" });
+            Bun.spawnSync([uvPath, "venv", tempVenvBase], { stdout: "pipe", stderr: "pipe" });
             const uvPython = path.join(tempVenvBase, "bin", "python3");
-            Bun.spawnSync(["uv", "pip", "install", "--python", uvPython, "dill", "numpy", "ipykernel"], {
+            Bun.spawnSync([uvPath, "pip", "install", "--python", uvPython, "dill", "numpy", "ipykernel"], {
               stdout: "pipe",
               stderr: "pipe",
             });

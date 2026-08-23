@@ -2,8 +2,9 @@
  * RLM Dill Snapshot Compression Contract — specification authority.
  *
  * Enforces transparent, collision-free stream compression for persistent
- * Python kernel state snapshots, ensuring >=50% disk savings, sub-second
- * write times, and 100% backward compatibility with legacy uncompressed files.
+ * Python kernel state snapshots, ensuring >=50% disk savings, writes
+ * completing within the 3000ms MAX_COMPRESS_MS ceiling, and 100% backward
+ * compatibility with legacy uncompressed files.
  *
  * Traceability: REQ-2026-RLM-DILL-COMPRESSION, issue ketema/omp#15.
  *

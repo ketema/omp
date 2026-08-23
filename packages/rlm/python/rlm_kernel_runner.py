@@ -351,12 +351,32 @@ def _snapshot_names() -> list[str]:
     return sorted(names)
 
 
+def _fsync_dir(dir_path: str) -> None:
+    """Fsync a directory so its entries (renames) are durable across a crash.
+
+    POSIX-only: opening a directory for fsync is unsupported on some
+    platforms/filesystems (notably Windows), in which case this is a no-op —
+    the file-content fsync already performed covers data durability; only the
+    directory-entry (rename visibility) guarantee is best-effort there.
+    """
+    try:
+        dir_fd = os.open(dir_path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
 def _snapshot_write(
     path: str, manifest_path: str, max_bytes: int
 ) -> dict:
     """Per-variable dill.dumps with transparent stream compression, atomic write, and manifest."""
     import dill
-    t_start = time.time()
+    t_start = time.perf_counter()
 
     dill.settings["recurse"] = True
 
@@ -453,7 +473,7 @@ def _snapshot_write(
             if uncompressed_bytes > 0
             else 0.0
         )
-        duration_ms = round((time.time() - t_start) * 1000.0, 2)
+        duration_ms = round((time.perf_counter() - t_start) * 1000.0, 2)
 
         manifest = {
             "version": 1,
@@ -478,6 +498,12 @@ def _snapshot_write(
         # Phase 3: Direct atomic replace (in POSIX, each os.replace is atomic so prior file remains intact until replacement)
         os.replace(tmp_path, path)
         os.replace(manifest_tmp, manifest_path)
+        # FORBIDDEN-2/3: file contents were fsynced above, but the directory
+        # entries created by these renames were not — without this, a power
+        # loss can still lose either rename despite the advertised atomic-
+        # durability guarantee. Fsync each distinct containing directory.
+        for _dir in {os.path.dirname(path) or ".", os.path.dirname(manifest_path) or "."}:
+            _fsync_dir(_dir)
     except Exception as exc:
         for p in (tmp_path, manifest_tmp):
             try:
