@@ -399,7 +399,7 @@ describe("transport wire protocol", () => {
     pending.then(() => { resolved = true })
     pending.catch(() => undefined)
 
-    await new Promise(r => setTimeout(r, 0))
+    await Bun.sleep(0)
     const sentOps = fake.state.stdinLines.map(line => JSON.parse(line) as { op: string; id: string })
     const bootstrapOp = sentOps.find(op => op.op === "bootstrap")
     expect(bootstrapOp).toBeDefined()
