@@ -123,9 +123,28 @@ export function validateSnapshotMagic(header: Uint8Array): SnapshotHeaderInfo {
     return { codec: "lzma", isCompressed: true, headerLength: 6 };
   }
 
+  // Check Truncated LZMA Magic Prefix (< 6 bytes matching start of LZMA header)
+  if (header.length < 6) {
+    let matchesLzma = true;
+    for (let i = 0; i < header.length; i++) {
+      if (header[i] !== LZMA_MAGIC_BYTES[i]) {
+        matchesLzma = false;
+        break;
+      }
+    }
+    if (matchesLzma) {
+      throw new CorruptSnapshotError(`Truncated LZMA magic header (${header.length}/6 bytes)`);
+    }
+  }
+
   // Check Gzip: 0x1F 0x8B
   if (header.length >= 2 && header[0] === 0x1f && header[1] === 0x8b) {
     return { codec: "gzip", isCompressed: true, headerLength: 2 };
+  }
+
+  // Check Truncated Gzip Magic Prefix (< 2 bytes matching start of Gzip header)
+  if (header.length < 2 && header[0] === GZIP_MAGIC_BYTES[0]) {
+    throw new CorruptSnapshotError(`Truncated Gzip magic header (${header.length}/2 bytes)`);
   }
 
   // Check Legacy Pickle Protocol 2/3/4/5: starts with 0x80
