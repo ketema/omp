@@ -82,4 +82,30 @@ describe("RLM Dill Compression Contracts & Validators", () => {
 
     expect(() => validateCompressionHeader(invalidMetadata)).toThrow();
   });
+
+  test("Python unittest suite: test_rlm_dill_compression.py passes 100%", async () => {
+    const pythonExe = process.env.VIRTUAL_ENV
+      ? `${process.env.VIRTUAL_ENV}/bin/python3`
+      : `${process.env.HOME}/.omp/agent/kernel-venv/bin/python3`;
+
+    const proc = Bun.spawn([
+      pythonExe,
+      "-m",
+      "unittest",
+      "packages/rlm/python/test_rlm_dill_compression.py",
+    ], {
+      env: {
+        ...process.env,
+        PYTHONPATH: "packages/rlm/python",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const exitCode = await proc.exited;
+    const stderr = await new Response(proc.stderr).text();
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("OK");
+  }, 30_000);
+
 });
