@@ -170,7 +170,18 @@ export function validateCompressionHeader(metadata: unknown): asserts metadata i
   if (!Array.isArray(m.savedNames) || !m.savedNames.every(n => typeof n === "string")) {
     throw new RlmSnapshotCompressionError("Snapshot metadata savedNames must be an array of strings");
   }
-  if (!Array.isArray(m.skipped) || !m.skipped.every(s => typeof s === "object" && s !== null && typeof (s as any).name === "string" && typeof (s as any).reason === "string")) {
+  if (
+    !Array.isArray(m.skipped) ||
+    !m.skipped.every(
+      s =>
+        typeof s === "object" &&
+        s !== null &&
+        "name" in s &&
+        "reason" in s &&
+        typeof (s as Record<string, unknown>).name === "string" &&
+        typeof (s as Record<string, unknown>).reason === "string"
+    )
+  ) {
     throw new RlmSnapshotCompressionError("Snapshot metadata skipped must be an array of {name, reason} objects");
   }
   if (typeof m.bytes !== "number" || typeof m.uncompressedBytes !== "number" || typeof m.compressedBytes !== "number") {

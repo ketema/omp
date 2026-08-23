@@ -391,10 +391,19 @@ def _snapshot_write(
         "pythonVersion": sys.version.split()[0],
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
+    manifest_tmp = manifest_path + ".tmp"
     try:
-        with open(manifest_path, "w") as fh:
+        with open(manifest_tmp, "w") as fh:
             json.dump(manifest, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(manifest_tmp, manifest_path)
     except Exception as exc:
+        try:
+            if os.path.exists(manifest_tmp):
+                os.remove(manifest_tmp)
+        except OSError:
+            pass
         raise RlmSnapshotCompressionError(f"Failed to write snapshot manifest to {manifest_path}: {exc}") from exc
 
     duration_ms = round((time.time() - t_start) * 1000.0, 2)
@@ -453,8 +462,8 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
         try:
             ns[name] = dill.loads(blob)
             restored.append(name)
-        except Exception:
-            pass
+        except Exception as exc:
+            raise CorruptSnapshotError(f"Failed to unpickle variable '{name}': {exc}") from exc
 
     return {"restoredNames": sorted(restored)}
 
