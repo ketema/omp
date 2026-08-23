@@ -7,11 +7,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import * as fs from "node:fs";
-import { join } from "node:path";
 import {
-  GZIP_MAGIC_BYTES,
-  LZMA_MAGIC_BYTES,
   MIN_COMPRESSION_RATIO_PERCENT,
   validateCompressionHeader,
   validateCompressionRatio,
@@ -53,6 +49,9 @@ describe("RLM Dill Compression Contracts & Validators", () => {
     const ratio = validateCompressionRatio(5_000_000, 1_000_000);
     expect(ratio).toBe(80.0);
     expect(ratio).toBeGreaterThanOrEqual(MIN_COMPRESSION_RATIO_PERCENT);
+
+    // Below 50% threshold throws RlmSnapshotCompressionError
+    expect(() => validateCompressionRatio(1_000_000, 900_000, 50.0)).toThrow();
   });
 
   test("POST-SNAP-MANIFEST-1: validateCompressionHeader enforces metadata shape", () => {
