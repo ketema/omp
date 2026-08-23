@@ -470,7 +470,14 @@ describe("transport live kernel (real spawn)", () => {
     // Recoverable cleanup: move the work root to the system trash rather than
     // permanently deleting it (no rm).
     if (workRoot !== "") {
-      await Bun.spawn(["trash", workRoot], { stdout: "ignore", stderr: "ignore" }).exited
+      try {
+        const hasTrash = Bun.spawnSync(["which", "trash"], { stdout: "ignore" }).exitCode === 0
+        if (hasTrash) {
+          await Bun.spawn(["trash", workRoot], { stdout: "ignore", stderr: "ignore" }).exited
+        } else {
+          fs.rmSync(workRoot, { recursive: true, force: true })
+        }
+      } catch {}
     }
   }, 120_000)
 

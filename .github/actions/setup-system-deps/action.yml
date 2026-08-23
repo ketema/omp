@@ -1,8 +1,8 @@
 name: Setup system deps
 description: >-
    Install the canvas/native runtime deps CI needs (cairo/pango stack, fd,
-   ripgrep, imagemagick). No-op on the preloaded omp-kata runner image, which
-   already ships them; self-heals on a stock runner by installing via apt.
+   ripgrep, imagemagick, uv). No-op on the preloaded omp-kata runner image, which
+   already ships them; self-heals on a stock runner by installing via apt and astral.sh.
 
 runs:
    using: composite
@@ -13,14 +13,15 @@ runs:
            # The preloaded omp-kata runner image bakes these in. Detect that
            # and skip the apt round-trip; otherwise install the exact same set so
            # stock runners (and any future host) still work.
-           if command -v fd >/dev/null 2>&1 \
-              && command -v rg >/dev/null 2>&1 \
-              && command -v magick >/dev/null 2>&1 \
-              && pkg-config --exists cairo pango 2>/dev/null; then
-             echo "System deps already present (preloaded runner image); skipping apt."
-             exit 0
+           if ! command -v fd >/dev/null 2>&1               || ! command -v rg >/dev/null 2>&1               || ! command -v magick >/dev/null 2>&1               || ! pkg-config --exists cairo pango 2>/dev/null; then
+             sudo apt-get update
+             sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep imagemagick
+             sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+             sudo ln -sf /usr/bin/convert /usr/local/bin/magick
            fi
-           sudo apt-get update
-           sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep imagemagick
-           sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
-           sudo ln -sf /usr/bin/convert /usr/local/bin/magick
+           if ! command -v uv >/dev/null 2>&1; then
+             curl -LsSf https://astral.sh/uv/install.sh | sh
+             echo "$HOME/.local/bin" >> $GITHUB_PATH
+             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+             export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+           fi
