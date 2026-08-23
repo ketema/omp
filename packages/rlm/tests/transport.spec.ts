@@ -572,4 +572,61 @@ describe("transport live kernel (real spawn)", () => {
     expect(probe.code).toBe(0)
     await transport.dispose()
   }, 60_000)
+
+  test("POST-SNAP-COMPRESS-1/POST-SNAP-RESTORE-1 live: transparent stream compression round-trips with verified magic header and manifest", async () => {
+    /**
+     * CONTRACT TRACEABILITY:
+     * - Authority: requirements/contracts/rlm-dill-compression.contract.ts
+     * - Enforces: POST-SNAP-COMPRESS-1, POST-SNAP-RESTORE-1, POST-SNAP-MANIFEST-1, SEQ-3, SEQ-4, IP-3, IP-4, IP-5
+     * - Category: Live transport stream compression round-trip
+     */
+    const artifacts = join(workRoot, "art-dill-compress")
+    fs.mkdirSync(artifacts, { recursive: true })
+    const first = createTransport(liveConfig(artifacts))
+    await first.start()
+
+    // Populate large numerical array state in first session
+    await first.execute("e1", "import numpy as np; arr = np.arange(250000).reshape(500, 500); label = 'verified_compression'")
+    const names = await first.snapshotNames()
+    expect(names).toContain("arr")
+    expect(names).toContain("label")
+
+    // Write compressed snapshot
+    const writeResult = await first.writeSnapshot(names, 256 * 1024 * 1024)
+    expect(writeResult.bytes).toBeGreaterThan(0)
+    await first.dispose()
+
+    // Inspect on-disk binary snapshot file header
+    const snapshotFile = join(artifacts, "kernel-state.dill")
+    expect(fs.existsSync(snapshotFile)).toBe(true)
+    const fileBytes = fs.readFileSync(snapshotFile)
+
+    // Assert LZMA magic byte header: 0xFD 0x37 0x7A 0x58 0x5A 0x00
+    expect(fileBytes[0]).toBe(0xfd)
+    expect(fileBytes[1]).toBe(0x37)
+    expect(fileBytes[2]).toBe(0x7a)
+    expect(fileBytes[3]).toBe(0x58)
+    expect(fileBytes[4]).toBe(0x5a)
+    expect(fileBytes[5]).toBe(0x00)
+
+    // Inspect manifest JSON
+    const manifestFile = join(artifacts, "kernel-state.json")
+    expect(fs.existsSync(manifestFile)).toBe(true)
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf-8"))
+    expect(manifest.compression).toBe("lzma")
+    expect(manifest.uncompressedBytes).toBeGreaterThan(manifest.compressedBytes)
+    expect(manifest.compressionRatio).toBeGreaterThanOrEqual(50.0)
+
+    // Revive in fresh transport process
+    const second = createTransport(liveConfig(artifacts))
+    await second.start()
+    const restored = await second.restoreSnapshot()
+    expect(restored).toContain("arr")
+    expect(restored).toContain("label")
+
+    const probe = await second.execute("e2", "print(f'{label}:{arr[10, 10]}')")
+    expect(probe.stdout).toContain("verified_compression:5010")
+    await second.dispose()
+  }, 120_000)
+
 })
