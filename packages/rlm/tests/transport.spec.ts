@@ -471,7 +471,7 @@ describe("transport live kernel (real spawn)", () => {
     // permanently deleting it (no rm).
     if (workRoot !== "") {
       try {
-        const hasTrash = Bun.spawnSync(["which", "trash"], { stdout: "ignore" }).exitCode === 0
+        const hasTrash = Bun.which("trash") !== null
         if (hasTrash) {
           await Bun.spawn(["trash", workRoot], { stdout: "ignore", stderr: "ignore" }).exited
         } else {
@@ -585,21 +585,32 @@ time.sleep(30)`,
     const artifacts = join(workRoot, "art-snap")
     fs.mkdirSync(artifacts, { recursive: true })
     const first = createTransport(liveConfig(artifacts))
-    await first.start()
-    await first.execute("e1", "x = 42\nimport math")
-    const names = await first.snapshotNames()
-    expect(names).toContain("x")
-    const write = await first.writeSnapshot(names.filter(n => n === "x"), 256 * 1024 * 1024)
-    expect(write.bytes).toBeGreaterThan(0)
-    await first.dispose()
+    // Same suite-safety guarantee as POST-SNAP-COMPRESS-1/RESTORE-1 live below:
+    // two real kernel processes, both torn down on every exit path so an
+    // assertion failure cannot leave a live runner poisoning later tests.
+    let second: ReturnType<typeof createTransport> | null = null
+    try {
+      await first.start()
+      await first.execute("e1", "x = 42\nimport math")
+      const names = await first.snapshotNames()
+      expect(names).toContain("x")
+      const write = await first.writeSnapshot(names.filter(n => n === "x"), 256 * 1024 * 1024)
+      expect(write.bytes).toBeGreaterThan(0)
+      await first.dispose()
 
-    const second = createTransport(liveConfig(artifacts))
-    await second.start()
-    const restored = await second.restoreSnapshot()
-    expect(restored).toContain("x")
-    const probe = await second.execute("e1", "print(x)")
-    expect(probe.stdout).toContain("42")
-    await second.dispose()
+      second = createTransport(liveConfig(artifacts))
+      await second.start()
+      const restored = await second.restoreSnapshot()
+      expect(restored).toContain("x")
+      const probe = await second.execute("e1", "print(x)")
+      expect(probe.stdout).toContain("42")
+    } finally {
+      if (second !== null) {
+        await second.dispose()
+      } else {
+        await first.dispose()
+      }
+    }
   }, 120_000)
 
   test("POST-TRANS-5 live: the runtime bootstrap succeeds in the managed venv", async () => {
@@ -627,63 +638,74 @@ time.sleep(30)`,
     const config = liveConfig(artifacts)
     config.env.RLM_SNAPSHOT_COMPRESSION = "lzma"
     const first = createTransport(config)
-    await first.start()
+    // Two real kernel processes are spawned across this test (first, then a
+    // fresh second on revival). Both are protected by try/finally so ANY
+    // assertion failure before their explicit dispose() calls still tears
+    // them down — an un-guarded live process left running after a failed
+    // assertion can poison every test that runs after it in the suite.
+    let second: ReturnType<typeof createTransport> | null = null
+    try {
+      await first.start()
 
-    // Populate large numerical array state in first session
-    await first.execute("e1", "import numpy as np; arr = np.arange(250000).reshape(500, 500); label = 'verified_compression'")
-    const names = await first.snapshotNames()
-    expect(names).toContain("arr")
-    expect(names).toContain("label")
+      // Populate large numerical array state in first session
+      await first.execute("e1", "import numpy as np; arr = np.arange(250000).reshape(500, 500); label = 'verified_compression'")
+      const names = await first.snapshotNames()
+      expect(names).toContain("arr")
+      expect(names).toContain("label")
 
-    // Write compressed snapshot
-    const writeResult = await first.writeSnapshot(names, 256 * 1024 * 1024)
-    expect(writeResult.bytes).toBeGreaterThan(0)
-    expect(writeResult.compression).toBe("lzma")
-    // Narrow via explicit guard rather than a non-null assertion: compressedBytes
-    // is optional on KernelSnapshotWriteResult, and a live LZMA write must always
-    // populate it — failing loudly here documents that invariant instead of
-    // silencing the checker with `!`.
-    if (writeResult.compressedBytes === undefined) {
-      throw new Error("writeResult.compressedBytes must be defined for a live lzma write")
+      // Write compressed snapshot
+      const writeResult = await first.writeSnapshot(names, 256 * 1024 * 1024)
+      expect(writeResult.bytes).toBeGreaterThan(0)
+      expect(writeResult.compression).toBe("lzma")
+      // Narrow via explicit guard rather than a non-null assertion: compressedBytes
+      // is optional on KernelSnapshotWriteResult, and a live LZMA write must always
+      // populate it — failing loudly here documents that invariant instead of
+      // silencing the checker with `!`.
+      if (writeResult.compressedBytes === undefined) {
+        throw new Error("writeResult.compressedBytes must be defined for a live lzma write")
+      }
+      expect(writeResult.uncompressedBytes).toBeGreaterThan(writeResult.compressedBytes)
+      expect(writeResult.compressionRatio).toBeGreaterThanOrEqual(50.0)
+      expect(writeResult.compressionDurationMs).toBeGreaterThan(0.0)
+
+      // Inspect on-disk binary snapshot file header
+      const snapshotFile = join(artifacts, "kernel-state.dill")
+      expect(fs.existsSync(snapshotFile)).toBe(true)
+      const fileBytes = fs.readFileSync(snapshotFile)
+
+      // Assert LZMA magic byte header: 0xFD 0x37 0x7A 0x58 0x5A 0x00
+      expect(fileBytes[0]).toBe(0xfd)
+      expect(fileBytes[1]).toBe(0x37)
+      expect(fileBytes[2]).toBe(0x7a)
+      expect(fileBytes[3]).toBe(0x58)
+      expect(fileBytes[4]).toBe(0x5a)
+      expect(fileBytes[5]).toBe(0x00)
+
+      // Inspect manifest JSON
+      const manifestFile = join(artifacts, "kernel-state.json")
+      expect(fs.existsSync(manifestFile)).toBe(true)
+      const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf-8"))
+      expect(manifest.compression).toBe("lzma")
+      expect(manifest.uncompressedBytes).toBeGreaterThan(manifest.compressedBytes)
+      expect(manifest.compressionRatio).toBeGreaterThanOrEqual(50.0)
+
+      // Revive in fresh transport process
+      const secondConfig = liveConfig(artifacts)
+      secondConfig.env.RLM_SNAPSHOT_COMPRESSION = "lzma"
+      second = createTransport(secondConfig)
+      await second.start()
+      const restored = await second.restoreSnapshot()
+      expect(restored).toContain("arr")
+      expect(restored).toContain("label")
+
+      const probe = await second.execute("e2", "print(f'{label}:{arr[10, 10]}')")
+      expect(probe.stdout).toContain("verified_compression:5010")
+    } finally {
+      await first.dispose()
+      if (second !== null) {
+        await second.dispose()
+      }
     }
-    expect(writeResult.uncompressedBytes).toBeGreaterThan(writeResult.compressedBytes)
-    expect(writeResult.compressionRatio).toBeGreaterThanOrEqual(50.0)
-    expect(writeResult.compressionDurationMs).toBeGreaterThan(0.0)
-    await first.dispose()
-
-    // Inspect on-disk binary snapshot file header
-    const snapshotFile = join(artifacts, "kernel-state.dill")
-    expect(fs.existsSync(snapshotFile)).toBe(true)
-    const fileBytes = fs.readFileSync(snapshotFile)
-
-    // Assert LZMA magic byte header: 0xFD 0x37 0x7A 0x58 0x5A 0x00
-    expect(fileBytes[0]).toBe(0xfd)
-    expect(fileBytes[1]).toBe(0x37)
-    expect(fileBytes[2]).toBe(0x7a)
-    expect(fileBytes[3]).toBe(0x58)
-    expect(fileBytes[4]).toBe(0x5a)
-    expect(fileBytes[5]).toBe(0x00)
-
-    // Inspect manifest JSON
-    const manifestFile = join(artifacts, "kernel-state.json")
-    expect(fs.existsSync(manifestFile)).toBe(true)
-    const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf-8"))
-    expect(manifest.compression).toBe("lzma")
-    expect(manifest.uncompressedBytes).toBeGreaterThan(manifest.compressedBytes)
-    expect(manifest.compressionRatio).toBeGreaterThanOrEqual(50.0)
-
-    // Revive in fresh transport process
-    const secondConfig = liveConfig(artifacts)
-    secondConfig.env.RLM_SNAPSHOT_COMPRESSION = "lzma"
-    const second = createTransport(secondConfig)
-    await second.start()
-    const restored = await second.restoreSnapshot()
-    expect(restored).toContain("arr")
-    expect(restored).toContain("label")
-
-    const probe = await second.execute("e2", "print(f'{label}:{arr[10, 10]}')")
-    expect(probe.stdout).toContain("verified_compression:5010")
-    await second.dispose()
   }, 120_000)
 
 })
