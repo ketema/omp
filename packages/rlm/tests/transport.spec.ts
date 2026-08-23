@@ -528,20 +528,55 @@ describe("transport live kernel (real spawn)", () => {
   }, 60_000)
 
   test("POST-TRANS-3 live: interrupt aborts a running cell and the kernel stays usable", async () => {
+    // Self-contained: creates its own artifacts dir, marker file, and
+    // transport; tears down its own transport on every exit path so this
+    // test cannot pollute state for tests that run after it.
     const artifacts = join(workRoot, "art-intr")
     fs.mkdirSync(artifacts, { recursive: true })
     const transport = createTransport(liveConfig(artifacts))
-    await transport.start()
-    const sleeper = transport.execute("e1", "import time; time.sleep(30)")
-    sleeper.catch(() => undefined)
-    await Bun.sleep(300)
-    await transport.interrupt()
-    const interrupted = await sleeper
-    expect(interrupted.code).not.toBe(0)
-    const next = await transport.execute("e2", "1 + 1")
-    expect(next.code).toBe(0)
-    expect(next.result).toContain("2")
-    await transport.dispose()
+    const markerFile = join(artifacts, "started.marker")
+    try {
+      await transport.start()
+      // The cell writes a marker file as its very first statement, before
+      // sleeping. Polling for that marker is a deterministic signal that
+      // the runner has actually entered cell execution (past the point
+      // where an interrupt is attributable to THIS cell) — a fixed-delay
+      // sleep() is a race against CI scheduling variance: on a loaded
+      // runner the interrupt can arrive before the op is even dispatched,
+      // in which case it is correctly (by design) absorbed as an idle
+      // interrupt and the cell then runs to completion untouched.
+      const sleeper = transport.execute(
+        "e1",
+        `open(${JSON.stringify(markerFile)}, "w").close()
+import time
+time.sleep(30)`,
+      )
+      sleeper.catch(() => undefined)
+
+      const deadline = Date.now() + 10_000
+      while (!fs.existsSync(markerFile)) {
+        if (Date.now() > deadline) {
+          throw new Error(`cell did not signal start via ${markerFile} within 10s`)
+        }
+        await Bun.sleep(10)
+      }
+
+      await transport.interrupt()
+      const interrupted = await sleeper
+      expect(interrupted.code).not.toBe(0)
+      const next = await transport.execute("e2", "1 + 1")
+      expect(next.code).toBe(0)
+      expect(next.result).toContain("2")
+    } finally {
+      await transport.dispose()
+      if (fs.existsSync(markerFile)) {
+        // Best-effort marker cleanup: the whole workRoot is removed in
+        // afterAll regardless, so a failure here must never fail the test.
+        try {
+          fs.rmSync(markerFile, { force: true })
+        } catch {}
+      }
+    }
   }, 60_000)
 
   test("POST-TRANS-4 live: snapshot round-trips and a fresh process revives the namespace", async () => {
@@ -604,7 +639,14 @@ describe("transport live kernel (real spawn)", () => {
     const writeResult = await first.writeSnapshot(names, 256 * 1024 * 1024)
     expect(writeResult.bytes).toBeGreaterThan(0)
     expect(writeResult.compression).toBe("lzma")
-    expect(writeResult.uncompressedBytes).toBeGreaterThan(writeResult.compressedBytes!)
+    // Narrow via explicit guard rather than a non-null assertion: compressedBytes
+    // is optional on KernelSnapshotWriteResult, and a live LZMA write must always
+    // populate it — failing loudly here documents that invariant instead of
+    // silencing the checker with `!`.
+    if (writeResult.compressedBytes === undefined) {
+      throw new Error("writeResult.compressedBytes must be defined for a live lzma write")
+    }
+    expect(writeResult.uncompressedBytes).toBeGreaterThan(writeResult.compressedBytes)
     expect(writeResult.compressionRatio).toBeGreaterThanOrEqual(50.0)
     expect(writeResult.compressionDurationMs).toBeGreaterThan(0.0)
     await first.dispose()
