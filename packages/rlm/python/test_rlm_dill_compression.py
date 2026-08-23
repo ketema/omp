@@ -209,6 +209,44 @@ class TestRlmDillCompression(unittest.TestCase):
         with self.assertRaises(CorruptSnapshotError):
             rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
 
+    def test_errors_1_truncated_magic_headers_raise_corrupt_error(self):
+        """ERRORS-1: Truncated magic headers for LZMA and Gzip raise CorruptSnapshotError directly."""
+        # Truncated LZMA (3 bytes instead of 6)
+        with open(self.snapshot_path, "wb") as f:
+            f.write(bytes([0xfd, 0x37, 0x7a]))
+
+        with self.assertRaises(CorruptSnapshotError):
+            rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+
+        # Truncated Gzip (1 byte instead of 2)
+        with open(self.snapshot_path, "wb") as f:
+            f.write(bytes([0x1f]))
+
+        with self.assertRaises(CorruptSnapshotError):
+            rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+
+    def test_post_snap_restore_1_atomic_namespace_isolation(self):
+        """POST-SNAP-RESTORE-1: Failed unpickling of any variable leaves active user_ns completely untouched."""
+        ns = rlm_kernel_runner._get_ns()
+        ns["original_var"] = "untouched"
+
+        # Construct a payload where variable 1 is valid, but variable 2 has corrupt pickle bytes
+        corrupted_payload = {
+            "good_var": dill.dumps("good"),
+            "bad_var": b"CORRUPT_PICKLE_BLOB_NOT_DILL",
+        }
+        with open(self.snapshot_path, "wb") as f:
+            dill.dump(corrupted_payload, f)
+
+        # Attempt restore
+        with self.assertRaises(CorruptSnapshotError):
+            rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+
+        # Active namespace must NOT contain partial restores
+        self.assertEqual(ns.get("original_var"), "untouched")
+        self.assertNotIn("good_var", ns)
+        self.assertNotIn("bad_var", ns)
+
     def test_errors_2_unsupported_header_fails_fast(self):
         """ERRORS-2: Unrecognized magic header raises UnsupportedCodecError directly."""
         with open(self.snapshot_path, "wb") as f:
