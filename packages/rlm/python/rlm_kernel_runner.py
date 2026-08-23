@@ -105,6 +105,9 @@ _exec_lock = threading.Lock()
 
 def _execute_cell(code: str, exec_id: str) -> dict:
     """Execute a cell, capturing stdout/stderr, returning the done frame."""
+    global _is_executing
+    _is_executing = True
+    _interrupt_event.clear()
     ns = _get_ns()
     stdout_buf = io.StringIO()
     stderr_buf = io.StringIO()
@@ -179,6 +182,7 @@ def _execute_cell(code: str, exec_id: str) -> dict:
         tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
         traceback_str = "".join(tb_lines)
     finally:
+        _is_executing = False
         sys.stdout = old_stdout
         sys.stderr = old_stderr
 
@@ -208,14 +212,15 @@ def _execute_cell(code: str, exec_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 _interrupt_event = threading.Event()
+_is_executing = False
 
 
 def _install_interrupt_handler() -> None:
-    """Install SIGINT handler that interrupts the running cell."""
+    """Install SIGINT handler that interrupts the running cell without terminating the runner when idle."""
     def handler(signum: int, frame: Any) -> None:
         _interrupt_event.set()
-        # Also raise KeyboardInterrupt in the main thread
-        raise KeyboardInterrupt("Execution interrupted by host")
+        if _is_executing:
+            raise KeyboardInterrupt("Execution interrupted by host")
 
     try:
         signal.signal(signal.SIGINT, handler)
