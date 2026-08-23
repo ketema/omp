@@ -86,6 +86,7 @@ describe("RLM Dill Compression Contracts & Validators", () => {
       compressedBytes: 250000,
       compression: "lzma",
       compressionRatio: 75.0,
+      compressionDurationMs: 12.5,
       pythonVersion: "3.11.0",
       timestamp: "2026-08-22T21:45:00Z",
     };
@@ -124,8 +125,10 @@ describe("RLM Dill Compression Contracts & Validators", () => {
     });
 
     if (probe.exitCode !== 0) {
-      console.warn("Skipping Python unittest execution in unprovisioned environment (missing dill/numpy)");
-      return;
+      const probeErr = new TextDecoder().decode(probe.stderr);
+      throw new Error(
+        `Python runtime environment at '${pythonExe}' is missing required dependencies (dill, numpy): ${probeErr}`,
+      );
     }
 
     const proc = Bun.spawn([

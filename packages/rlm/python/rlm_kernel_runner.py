@@ -363,11 +363,14 @@ def _snapshot_write(
         payload[name] = blob
         total += len(blob)
 
-    # Atomic write: stream serialization directly into compressed file on disk with durable fsync and exact stream counting
+    # Coupled two-phase commit: stage both payload and manifest to .tmp files before replacing production state
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp_path = path + ".tmp"
+    manifest_tmp = manifest_path + ".tmp"
     uncompressed_bytes = 0
+
     try:
+        # Phase 1: Stream payload directly to tmp_path with fsync and exact stream counting
         with open(tmp_path, "wb") as raw_fh:
             if codec == "lzma":
                 with lzma.open(raw_fh, "wb", preset=0) as comp_fh:
@@ -387,54 +390,50 @@ def _snapshot_write(
                 uncompressed_bytes = cw.bytes_written
             raw_fh.flush()
             os.fsync(raw_fh.fileno())
-        os.replace(tmp_path, path)
-    except Exception as exc:
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except OSError:
-            pass
-        if isinstance(exc, RlmSnapshotCompressionError):
-            raise
-        raise RlmSnapshotCompressionError(f"Atomic snapshot write failed: {exc}") from exc
 
-    bytes_written = os.path.getsize(path)
-    saved = sorted(payload.keys())
+        bytes_written = os.path.getsize(tmp_path)
+        saved = sorted(payload.keys())
 
-    compression_ratio = (
-        round(max(0.0, (1.0 - (bytes_written / uncompressed_bytes)) * 100.0), 2)
-        if uncompressed_bytes > 0
-        else 0.0
-    )
-    duration_ms = round((time.time() - t_start) * 1000.0, 2)
+        compression_ratio = (
+            round(max(0.0, (1.0 - (bytes_written / uncompressed_bytes)) * 100.0), 2)
+            if uncompressed_bytes > 0
+            else 0.0
+        )
+        duration_ms = round((time.time() - t_start) * 1000.0, 2)
 
-    manifest = {
-        "version": 1,
-        "savedNames": saved,
-        "skipped": skipped,
-        "bytes": bytes_written,
-        "uncompressedBytes": uncompressed_bytes,
-        "compressedBytes": bytes_written,
-        "compression": codec,
-        "compressionRatio": compression_ratio,
-        "compressionDurationMs": duration_ms,
-        "pythonVersion": sys.version.split()[0],
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }
-    manifest_tmp = manifest_path + ".tmp"
-    try:
+        manifest = {
+            "version": 1,
+            "savedNames": saved,
+            "skipped": skipped,
+            "bytes": bytes_written,
+            "uncompressedBytes": uncompressed_bytes,
+            "compressedBytes": bytes_written,
+            "compression": codec,
+            "compressionRatio": compression_ratio,
+            "compressionDurationMs": duration_ms,
+            "pythonVersion": sys.version.split()[0],
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+
+        # Phase 2: Stage and fsync manifest to manifest_tmp
         with open(manifest_tmp, "w") as fh:
             json.dump(manifest, fh)
             fh.flush()
             os.fsync(fh.fileno())
+
+        # Phase 3: Coupled atomic commit
+        os.replace(tmp_path, path)
         os.replace(manifest_tmp, manifest_path)
     except Exception as exc:
-        try:
-            if os.path.exists(manifest_tmp):
-                os.remove(manifest_tmp)
-        except OSError:
-            pass
-        raise RlmSnapshotCompressionError(f"Failed to write snapshot manifest to {manifest_path}: {exc}") from exc
+        for p in (tmp_path, manifest_tmp):
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except OSError:
+                pass
+        if isinstance(exc, RlmSnapshotCompressionError):
+            raise
+        raise RlmSnapshotCompressionError(f"Atomic snapshot write failed: {exc}") from exc
     return {
         "bytes": bytes_written,
         "uncompressedBytes": uncompressed_bytes,

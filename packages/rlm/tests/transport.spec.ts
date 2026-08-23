@@ -594,6 +594,10 @@ describe("transport live kernel (real spawn)", () => {
     // Write compressed snapshot
     const writeResult = await first.writeSnapshot(names, 256 * 1024 * 1024)
     expect(writeResult.bytes).toBeGreaterThan(0)
+    expect(writeResult.compression).toBe("lzma")
+    expect(writeResult.uncompressedBytes).toBeGreaterThan(writeResult.compressedBytes!)
+    expect(writeResult.compressionRatio).toBeGreaterThanOrEqual(50.0)
+    expect(writeResult.compressionDurationMs).toBeGreaterThan(0.0)
     await first.dispose()
 
     // Inspect on-disk binary snapshot file header

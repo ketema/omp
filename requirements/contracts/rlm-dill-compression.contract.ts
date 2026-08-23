@@ -82,7 +82,7 @@ export interface SnapshotMetadata {
   compressedBytes: number;
   compression: CompressionCodec;
   compressionRatio: number;
-  compressionDurationMs?: number;
+  compressionDurationMs: number;
   pythonVersion: string;
   timestamp: string;
 }
@@ -210,11 +210,17 @@ export function validateCompressionHeader(metadata: unknown): asserts metadata i
   if (!SUPPORTED_COMPRESSION_CODECS.includes(m.compression as CompressionCodec)) {
     throw new UnsupportedCodecError(String(m.compression));
   }
-  if (typeof m.compressionRatio !== "number") {
+  if (typeof m.compressionRatio !== "number" || Number.isNaN(m.compressionRatio)) {
     throw new RlmSnapshotCompressionError("Snapshot metadata compressionRatio must be a number");
   }
-  if (m.compressionDurationMs !== undefined && typeof m.compressionDurationMs !== "number") {
-    throw new RlmSnapshotCompressionError("Snapshot metadata compressionDurationMs must be a number if present");
+  if (
+    typeof m.compressionDurationMs !== "number" ||
+    Number.isNaN(m.compressionDurationMs) ||
+    m.compressionDurationMs < 0
+  ) {
+    throw new RlmSnapshotCompressionError(
+      "Snapshot metadata compressionDurationMs must be a non-negative number"
+    );
   }
   if (typeof m.pythonVersion !== "string" || typeof m.timestamp !== "string") {
     throw new RlmSnapshotCompressionError("Snapshot metadata pythonVersion and timestamp must be strings");
