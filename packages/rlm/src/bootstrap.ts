@@ -8,6 +8,7 @@
 
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 // =============================================================================
@@ -258,6 +259,7 @@ export async function resolveInterpreter(config: InterpreterConfig, deps: Bootst
 // =============================================================================
 
 export function buildKernelEnv(session: KernelSession, caps: KernelCaps): Record<string, string> {
+	const resolvedHome = process.env.HOME && process.env.HOME.trim() !== "" ? process.env.HOME : homedir();
 	return {
 		RLM_DEPTH: String(session.depth),
 		RLM_MAX_DEPTH: String(session.maxDepth),
@@ -267,6 +269,10 @@ export function buildKernelEnv(session: KernelSession, caps: KernelCaps): Record
 		OMP_RLM_AGENT_DIR: session.agentDir,
 		RLM_MAX_OUTPUT_CHARS: String(caps.maxOutputChars),
 		RLM_SNAPSHOT_MAX_BYTES: String(caps.snapshotMaxBytes),
+		CCABDD_HARNESS: process.env.CCABDD_HARNESS ?? "omp",
+		CCABDD_STATE_SERVER_PATH: process.env.CCABDD_STATE_SERVER_PATH ?? "",
+		HOME: resolvedHome,
+		PATH: process.env.PATH ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
 	};
 }
 

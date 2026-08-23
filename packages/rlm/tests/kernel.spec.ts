@@ -455,7 +455,25 @@ test("SEQ-KM-4: dispose flushes the snapshot BEFORE transport teardown", async (
   expect(kinds.indexOf("writeSnapshot")).toBeGreaterThan(-1)
   expect(kinds.indexOf("writeSnapshot")).toBeLessThan(kinds.lastIndexOf("transportDispose"))
 })
-
+test("SEQ-KM-4: dispose without prior execute does not flush snapshot or reject on unstarted transport", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Enforces: SEQ-KM-4 / INV-KM-LIFETIME-2 (unstarted session teardown)
+   * - Category: integration (lifecycle safety)
+   * - Risk tier: High
+   */
+  const transport = makeTransport({
+    snapshotNames: async () => {
+      throw new Error("transport not started; call start() first")
+    },
+  })
+  const manager = new KernelManager(transport, { clock: makeClock(), artifactsDir: artifactsDir() })
+  // Never executed -> manager.dispose({ snapshot: true }) must not attempt snapshot or throw
+  await manager.dispose({ snapshot: true })
+  const kinds = transport.calls.map(c => c.kind)
+  expect(kinds.includes("writeSnapshot")).toBe(false)
+  expect(kinds.includes("snapshotNames")).toBe(false)
+})
 // ---------------------------------------------------------------------------
 // FORBIDDEN-KM-1 — crash-mid-write protection (temp+rename at the manager)
 // ---------------------------------------------------------------------------

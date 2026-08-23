@@ -17,8 +17,8 @@
 /** F-207: the ONLY credential ever injected into kernel env, and only when
  * the websearch capability is loaded. */
 export const SAFE_ALLOWED_CREDENTIAL_KEYS: readonly string[] = ['SERPER_API_KEY'] as const
-/** F-207/F-206: env keys passed through to the kernel (session identity
- * plus the config caps delivered by SEQ-BOOT-2). */
+/** F-207/F-206: env keys passed through to the kernel (session identity,
+ * CCABDD harness & runtime configuration, plus the config caps delivered by SEQ-BOOT-2). */
 export const SAFE_SESSION_ENV_KEYS: readonly string[] = [
   'RLM_DEPTH',
   'RLM_MAX_DEPTH',
@@ -28,6 +28,10 @@ export const SAFE_SESSION_ENV_KEYS: readonly string[] = [
   'OMP_RLM_AGENT_DIR',
   'RLM_MAX_OUTPUT_CHARS',
   'RLM_SNAPSHOT_MAX_BYTES',
+  'CCABDD_HARNESS',
+  'CCABDD_STATE_SERVER_PATH',
+  'HOME',
+  'PATH',
 ] as const
 /** A-012/F-267: the only model data permitted into Python — bounded catalog
  * metadata, never the full store. */
@@ -71,7 +75,7 @@ export interface KernelEnvPolicy {
 }
 
 // =============================================================================
-// Artifact 4: Validators
+// Artifact 4: Contract-side validators
 // =============================================================================
 
 /**

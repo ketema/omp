@@ -403,7 +403,7 @@ export class KernelManager {
 		// SEQ-KM-4/F-181 (V2): flush snapshot before teardown if requested —
 		// bounded by SNAPSHOT_DISPOSE_TIMEOUT_MS so a hung kernel cannot
 		// deadlock teardown (prime-agent flushSnapshotForDispose shape)
-		if (options?.snapshot === true) {
+		if (options?.snapshot === true && this.started && this.transport.alive()) {
 			await Promise.race([
 				this.runSnapshot().catch((error: unknown) => {
 					// Snapshot failure at teardown is observable, not silent (F8):
