@@ -338,26 +338,27 @@ def _snapshot_write(
         payload[name] = blob
         total += len(blob)
 
-    # Serialize raw dictionary payload
-    raw_payload_bytes = dill.dumps(payload)
-    uncompressed_bytes = len(raw_payload_bytes)
+    # Calculate uncompressed size by summing the individual dill blobs already pickled in payload
+    # This avoids allocating a second full serialized dictionary buffer in RAM!
+    uncompressed_bytes = sum(len(blob) for blob in payload.values()) if payload else 0
 
-    # Compress stream according to configured codec
-    if codec == "lzma":
-        compressed_payload_bytes = lzma.compress(raw_payload_bytes, preset=0)
-    elif codec == "gzip":
-        compressed_payload_bytes = gzip.compress(raw_payload_bytes, compresslevel=1)
-    else:
-        compressed_payload_bytes = raw_payload_bytes
-
-    # Atomic write: write to temp file in same directory, flush, fsync, then os.replace
+    # Atomic write: stream serialization directly into compressed file on disk
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp_path = path + ".tmp"
     try:
-        with open(tmp_path, "wb") as fh:
-            fh.write(compressed_payload_bytes)
-            fh.flush()
-            os.fsync(fh.fileno())
+        if codec == "lzma":
+            with lzma.open(tmp_path, "wb", preset=0) as fh:
+                dill.dump(payload, fh)
+                fh.flush()
+        elif codec == "gzip":
+            with gzip.open(tmp_path, "wb", compresslevel=1) as fh:
+                dill.dump(payload, fh)
+                fh.flush()
+        else:
+            with open(tmp_path, "wb") as fh:
+                dill.dump(payload, fh)
+                fh.flush()
+                os.fsync(fh.fileno())
         os.replace(tmp_path, path)
     except Exception as exc:
         try:
@@ -409,7 +410,7 @@ def _snapshot_write(
 
 
 def _snapshot_restore(path: str, manifest_path: str) -> dict:
-    """Load the payload with transparent decompression auto-detection and inject names into user_ns."""
+    """Load the payload with transparent stream decompression auto-detection and inject names into user_ns."""
     import dill
     import gzip
     import lzma
@@ -418,31 +419,30 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
         return {"restoredNames": []}
 
     try:
+        if os.path.getsize(path) == 0:
+            raise CorruptSnapshotError("Empty snapshot payload: 0 bytes")
         with open(path, "rb") as fh:
-            raw_bytes = fh.read()
+            header = fh.read(6)
     except Exception as exc:
+        if isinstance(exc, RlmSnapshotCompressionError):
+            raise
         raise RlmSnapshotCompressionError(f"Failed to read snapshot file {path}: {exc}") from exc
 
-    if len(raw_bytes) == 0:
-        raise CorruptSnapshotError("Empty snapshot payload: 0 bytes")
-
     # Detect compression codec from magic header
-    codec = _detect_codec(raw_bytes)
+    codec = _detect_codec(header)
 
     try:
         if codec == "lzma":
-            decompressed = lzma.decompress(raw_bytes)
+            with lzma.open(path, "rb") as fh:
+                payload = dill.load(fh)
         elif codec == "gzip":
-            decompressed = gzip.decompress(raw_bytes)
+            with gzip.open(path, "rb") as fh:
+                payload = dill.load(fh)
         else:
-            decompressed = raw_bytes
+            with open(path, "rb") as fh:
+                payload = dill.load(fh)
     except Exception as exc:
-        raise CorruptSnapshotError(f"Decompression failed for codec {codec}: {exc}") from exc
-
-    try:
-        payload = dill.loads(decompressed)
-    except Exception as exc:
-        raise CorruptSnapshotError(f"Dill unpickling failed: {exc}") from exc
+        raise CorruptSnapshotError(f"Decompression / dill load failed for codec {codec}: {exc}") from exc
 
     if not isinstance(payload, dict):
         raise CorruptSnapshotError(f"Expected dict payload, got {type(payload).__name__}")
