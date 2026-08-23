@@ -134,12 +134,20 @@ def _execute_cell(code: str, exec_id: str) -> dict:
                 # Flush any output from the shell
                 stdout_buf.flush()
                 stderr_buf.flush()
-                if result.error_in_exec is not None:
+                if _interrupt_event.is_set():
+                    code_val = 1
+                    error_ename = "KeyboardInterrupt"
+                    traceback_str = "Execution interrupted by host"
+                elif result.error_in_exec is not None or not getattr(result, "success", True):
                     exc = result.error_in_exec
                     code_val = 1
-                    error_ename = type(exc).__name__
-                    tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
-                    traceback_str = "".join(tb_lines)
+                    if exc is not None:
+                        error_ename = type(exc).__name__
+                        tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
+                        traceback_str = "".join(tb_lines)
+                    else:
+                        error_ename = "ExecutionError"
+                        traceback_str = "Execution failed"
                 elif result.result is not None:
                     try:
                         result_str = repr(result.result)
@@ -183,6 +191,11 @@ def _execute_cell(code: str, exec_id: str) -> dict:
         traceback_str = "".join(tb_lines)
     finally:
         _is_executing = False
+        if _interrupt_event.is_set():
+            code_val = 1
+            if error_ename is None:
+                error_ename = "KeyboardInterrupt"
+                traceback_str = "Execution interrupted by host"
         sys.stdout = old_stdout
         sys.stderr = old_stderr
 
