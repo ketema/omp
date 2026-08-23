@@ -261,10 +261,14 @@ def _detect_codec(data: bytes) -> str:
     # LZMA: 0xFD '7' 'z' 'X' 'Z' 0x00
     if len(data) >= 6 and data.startswith(b"\xfd7zXZ\x00"):
         return "lzma"
+    if data.startswith(b"\xfd"):
+        raise CorruptSnapshotError(f"Truncated LZMA magic header ({len(data)}/6 bytes)")
 
     # Gzip: 0x1F 0x8B
     if len(data) >= 2 and data.startswith(b"\x1f\x8b"):
         return "gzip"
+    if data.startswith(b"\x1f"):
+        raise CorruptSnapshotError(f"Truncated Gzip magic header ({len(data)}/2 bytes)")
 
     # Legacy Python pickle / dill protocol 2/3/4/5: starts with 0x80
     if data[0] == 0x80:
@@ -372,10 +376,11 @@ def _snapshot_write(
     saved = sorted(payload.keys())
 
     compression_ratio = (
-        round((1.0 - (bytes_written / uncompressed_bytes)) * 100.0, 2)
+        round(max(0.0, (1.0 - (bytes_written / uncompressed_bytes)) * 100.0), 2)
         if uncompressed_bytes > 0
         else 0.0
     )
+    duration_ms = round((time.time() - t_start) * 1000.0, 2)
 
     manifest = {
         "version": 1,
@@ -386,6 +391,7 @@ def _snapshot_write(
         "compressedBytes": bytes_written,
         "compression": codec,
         "compressionRatio": compression_ratio,
+        "compressionDurationMs": duration_ms,
         "pythonVersion": sys.version.split()[0],
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
@@ -403,8 +409,6 @@ def _snapshot_write(
         except OSError:
             pass
         raise RlmSnapshotCompressionError(f"Failed to write snapshot manifest to {manifest_path}: {exc}") from exc
-
-    duration_ms = round((time.time() - t_start) * 1000.0, 2)
     return {
         "bytes": bytes_written,
         "uncompressedBytes": uncompressed_bytes,
@@ -454,16 +458,19 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
     if not isinstance(payload, dict):
         raise CorruptSnapshotError(f"Expected dict payload, got {type(payload).__name__}")
 
-    ns = _get_ns()
-    restored = []
+    # Two-phase atomic restore: unpack into isolated temp dict first to protect active namespace
+    temp_restored = {}
     for name, blob in payload.items():
         try:
-            ns[name] = dill.loads(blob)
-            restored.append(name)
+            temp_restored[name] = dill.loads(blob)
         except Exception as exc:
             raise CorruptSnapshotError(f"Failed to unpickle variable '{name}': {exc}") from exc
 
-    return {"restoredNames": sorted(restored)}
+    # Commit atomically to user namespace only after all variables successfully unpickled
+    ns = _get_ns()
+    ns.update(temp_restored)
+
+    return {"restoredNames": sorted(temp_restored.keys())}
 
 
 # ---------------------------------------------------------------------------

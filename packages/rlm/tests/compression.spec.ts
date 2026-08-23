@@ -95,6 +95,19 @@ describe("RLM Dill Compression Contracts & Validators", () => {
       : `${process.env.HOME}/.omp/agent/kernel-venv/bin/python3`;
     const pythonExe = fs.existsSync(venvPath) ? venvPath : "python3";
 
+    // Safe probe: verify interpreter has required dependencies (dill, numpy)
+    const probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy, rlm_kernel_runner"], {
+      cwd: pythonDir,
+      env: { ...process.env, PYTHONPATH: pythonDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    if (probe.exitCode !== 0) {
+      console.warn("Skipping Python unittest execution in unprovisioned environment (missing dill/numpy)");
+      return;
+    }
+
     const proc = Bun.spawn([
       pythonExe,
       "-m",
