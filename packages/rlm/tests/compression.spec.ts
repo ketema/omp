@@ -12,6 +12,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   MIN_COMPRESSION_RATIO_PERCENT,
+  RlmSnapshotCompressionError,
+  UnsupportedCodecError,
   validateCompressionHeader,
   validateCompressionRatio,
   validateSnapshotMagic,
@@ -64,7 +66,7 @@ describe("RLM Dill Compression Contracts & Validators", () => {
 
   test("ERRORS-2: validateSnapshotMagic rejects unrecognized binary headers", () => {
     const unknownHeader = new Uint8Array([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-    expect(() => validateSnapshotMagic(unknownHeader)).toThrow();
+    expect(() => validateSnapshotMagic(unknownHeader)).toThrow(UnsupportedCodecError);
   });
 
   test("INV-SNAP-RATIO-1: validateCompressionRatio calculates correct ratio and bounds", () => {
@@ -74,7 +76,7 @@ describe("RLM Dill Compression Contracts & Validators", () => {
     expect(ratio).toBeGreaterThanOrEqual(MIN_COMPRESSION_RATIO_PERCENT);
 
     // Below 50% threshold throws RlmSnapshotCompressionError
-    expect(() => validateCompressionRatio(1_000_000, 900_000, 50.0)).toThrow();
+    expect(() => validateCompressionRatio(1_000_000, 900_000, 50.0)).toThrow(RlmSnapshotCompressionError);
   });
 
   test("POST-SNAP-MANIFEST-1: validateCompressionHeader enforces metadata shape", () => {
@@ -100,14 +102,18 @@ describe("RLM Dill Compression Contracts & Validators", () => {
       skipped: [],
       bytes: 250000,
       uncompressedBytes: 1000000,
+      compressedBytes: 250000,
       compression: "unsupported_codec",
       compressionRatio: 75.0,
+      compressionDurationMs: 12.5,
+      pythonVersion: "3.11.0",
+      timestamp: "2026-08-22T21:45:00Z",
     };
 
-    expect(() => validateCompressionHeader(invalidMetadata)).toThrow();
+    expect(() => validateCompressionHeader(invalidMetadata)).toThrow(UnsupportedCodecError);
   });
 
-  test("Python unittest suite: test_rlm_dill_compression.py passes 100%", async () => {
+  test("POST-SNAP-COMPRESS-1/POST-SNAP-RESTORE-1: Python unittest suite passes 100%", async () => {
     const rlmDir = path.join(import.meta.dir, "..");
     const pythonDir = path.join(rlmDir, "python");
     const testFile = path.join(pythonDir, "test_rlm_dill_compression.py");
@@ -118,6 +124,7 @@ describe("RLM Dill Compression Contracts & Validators", () => {
 
     let pythonExe = fs.existsSync(venvPath) ? venvPath : "python3";
     let tempVenvBase: string | null = null;
+    let lastProvError: string | null = null;
 
     try {
       // Safe probe: verify interpreter has required dependencies (dill, numpy)
@@ -129,37 +136,51 @@ describe("RLM Dill Compression Contracts & Validators", () => {
       });
 
       if (probe.exitCode !== 0) {
-        // Auto-provision via uv if uv is available in environment. Resolve
-        // the binary path once via Bun.which() (a direct lookup API) rather
-        // than spawning a `which` subprocess, and reuse that resolved path
-        // for every subsequent uv invocation below.
+        // Auto-provision via uv if uv is available in environment
         const uvPath = Bun.which("uv");
         if (uvPath !== null) {
           tempVenvBase = fs.mkdtempSync(path.join(os.tmpdir(), "rlm-test-venv-"));
           try {
-            Bun.spawnSync([uvPath, "venv", tempVenvBase], { stdout: "pipe", stderr: "pipe" });
-            const uvPython = path.join(tempVenvBase, "bin", "python3");
-            Bun.spawnSync([uvPath, "pip", "install", "--python", uvPython, "dill", "numpy", "ipykernel"], {
-              stdout: "pipe",
-              stderr: "pipe",
-            });
-            if (fs.existsSync(uvPython)) {
-              pythonExe = uvPython;
-              probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy"], {
-                cwd: pythonDir,
-                env: { ...process.env, PYTHONPATH: pythonDir },
-                stdout: "pipe",
-                stderr: "pipe",
-              });
+            const venvProc = Bun.spawn([uvPath, "venv", tempVenvBase], { stdout: "ignore", stderr: "pipe" });
+            const [venvErr, venvExit] = await Promise.all([
+              new Response(venvProc.stderr).text(),
+              venvProc.exited,
+            ]);
+            if (venvExit === 0) {
+              const uvPython = path.join(tempVenvBase, "bin", "python3");
+              const pipProc = Bun.spawn(
+                [uvPath, "pip", "install", "--python", uvPython, "dill", "numpy", "ipykernel"],
+                { stdout: "ignore", stderr: "pipe" },
+              );
+              const [pipErr, pipExit] = await Promise.all([
+                new Response(pipProc.stderr).text(),
+                pipProc.exited,
+              ]);
+              if (pipExit === 0 && fs.existsSync(uvPython)) {
+                pythonExe = uvPython;
+                probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy"], {
+                  cwd: pythonDir,
+                  env: { ...process.env, PYTHONPATH: pythonDir },
+                  stdout: "pipe",
+                  stderr: "pipe",
+                });
+              } else {
+                lastProvError = `pip install failed (code ${pipExit}): ${pipErr}`;
+              }
+            } else {
+              lastProvError = `venv create failed (code ${venvExit}): ${venvErr}`;
             }
-          } catch {}
+          } catch (provErr) {
+            lastProvError = String(provErr);
+          }
         }
       }
 
       if (probe.exitCode !== 0) {
         const probeErr = new TextDecoder().decode(probe.stderr);
+        const provContext = lastProvError ? ` (auto-provision detail: ${lastProvError})` : "";
         throw new Error(
-          `Python runtime environment at '${pythonExe}' is missing required dependencies (dill, numpy): ${probeErr}`,
+          `Python runtime environment at '${pythonExe}' is missing required dependencies (dill, numpy): ${probeErr}${provContext}`,
         );
       }
 
@@ -174,16 +195,19 @@ describe("RLM Dill Compression Contracts & Validators", () => {
           ...process.env,
           PYTHONPATH: pythonDir,
         },
-        stdout: "pipe",
+        stdout: "ignore",
         stderr: "pipe",
       });
 
-      const exitCode = await proc.exited;
-      const stderr = await new Response(proc.stderr).text();
+      const [stderr, exitCode] = await Promise.all([
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
       expect(exitCode).toBe(0);
       expect(stderr).toContain("OK");
     } finally {
       if (tempVenvBase && fs.existsSync(tempVenvBase)) {
+        // Best-effort cleanup of temporary test venv
         try {
           fs.rmSync(tempVenvBase, { recursive: true, force: true });
         } catch {}

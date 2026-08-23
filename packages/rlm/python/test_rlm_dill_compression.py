@@ -5,9 +5,7 @@ Requirements Manifest: requirements/REQ-2026-RLM-DILL-COMPRESSION.md
 Issue: ketema/omp#15
 """
 
-import gzip
 import json
-import lzma
 import os
 import shutil
 import tempfile
@@ -261,7 +259,7 @@ class TestRlmDillCompression(unittest.TestCase):
             rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
 
     def test_inv_snap_stream_counting_accuracy(self):
-        """INV-SNAP-STREAM-1: _CountingWriter measures exact uncompressed byte size of serialized dictionary."""
+        """POST-SNAP-COMPRESS-1, POST-SNAP-MANIFEST-1: _CountingWriter measures exact uncompressed byte size of serialized dictionary."""
         ns = rlm_kernel_runner._get_ns()
         ns["k1"] = [1, 2, 3, 4, 5]
         ns["k2"] = {"hello": "world", "nested": [10, 20]}
@@ -352,6 +350,8 @@ class TestRlmDillCompression(unittest.TestCase):
         skipped_names = [item["name"] for item in manifest["skipped"]]
         self.assertIn("oversize_val", skipped_names)
         self.assertEqual(manifest["skipped"][skipped_names.index("oversize_val")]["reason"], "exceeds snapshot size cap")
+        self.assertIn("unpicklable_gen", skipped_names)
+        self.assertIn("TypeError", manifest["skipped"][skipped_names.index("unpicklable_gen")]["reason"])
 
 
 if __name__ == "__main__":
