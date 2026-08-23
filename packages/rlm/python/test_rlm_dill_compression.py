@@ -153,7 +153,7 @@ class TestRlmDillCompression(unittest.TestCase):
         )
 
     def test_inv_snap_time_1_latency_bound(self):
-        """INV-SNAP-TIME-1: Serialization and stream compression completes in < 3000ms."""
+        """INV-SNAP-TIME-1, POST-SNAP-TIME-1: Serialization and stream compression completes in < 3000ms."""
         ns = rlm_kernel_runner._get_ns()
         ns["array_5mb"] = np.arange(625000).reshape(1000, 625)
 

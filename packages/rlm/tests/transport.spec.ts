@@ -577,7 +577,7 @@ describe("transport live kernel (real spawn)", () => {
     /**
      * CONTRACT TRACEABILITY:
      * - Authority: requirements/contracts/rlm-dill-compression.contract.ts
-     * - Enforces: POST-SNAP-COMPRESS-1, POST-SNAP-RESTORE-1, POST-SNAP-MANIFEST-1, SEQ-3, SEQ-4, IP-3, IP-4, IP-5
+     * - Enforces: POST-SNAP-COMPRESS-1, POST-SNAP-RESTORE-1, POST-SNAP-MANIFEST-1, SEQ-3, SEQ-4, IP-1, IP-2, IP-3, IP-4, IP-5
      * - Category: Live transport stream compression round-trip
      */
     const artifacts = join(workRoot, "art-dill-compress")
