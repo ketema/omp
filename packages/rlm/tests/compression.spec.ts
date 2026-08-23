@@ -1,3 +1,4 @@
+import * as os from "node:os";
 /**
  * RED Phase TypeScript tests for RLM Snapshot Manifest Compression Telemetry.
  *
@@ -129,23 +130,24 @@ describe("RLM Dill Compression Contracts & Validators", () => {
       // Auto-provision via uv if uv is available in environment
       const uvFind = Bun.spawnSync(["which", "uv"], { stdout: "pipe" });
       if (uvFind.exitCode === 0) {
-        const venvDir = path.join(process.env.HOME ?? "/tmp", ".omp", "agent", "kernel-venv");
-        fs.mkdirSync(venvDir, { recursive: true });
-        Bun.spawnSync(["uv", "venv", venvDir], { stdout: "pipe", stderr: "pipe" });
-        const uvPython = path.join(venvDir, "bin", "python3");
-        Bun.spawnSync(["uv", "pip", "install", "--python", uvPython, "dill", "numpy", "ipykernel"], {
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-        if (fs.existsSync(uvPython)) {
-          pythonExe = uvPython;
-          probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy"], {
-            cwd: pythonDir,
-            env: { ...process.env, PYTHONPATH: pythonDir },
+        const tempVenvBase = fs.mkdtempSync(path.join(os.tmpdir(), "rlm-test-venv-"));
+        try {
+          Bun.spawnSync(["uv", "venv", tempVenvBase], { stdout: "pipe", stderr: "pipe" });
+          const uvPython = path.join(tempVenvBase, "bin", "python3");
+          Bun.spawnSync(["uv", "pip", "install", "--python", uvPython, "dill", "numpy", "ipykernel"], {
             stdout: "pipe",
             stderr: "pipe",
           });
-        }
+          if (fs.existsSync(uvPython)) {
+            pythonExe = uvPython;
+            probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy"], {
+              cwd: pythonDir,
+              env: { ...process.env, PYTHONPATH: pythonDir },
+              stdout: "pipe",
+              stderr: "pipe",
+            });
+          }
+        } catch {}
       }
     }
 

@@ -101,11 +101,13 @@ function makeClock() {
   return clock
 }
 
+import type { KernelSnapshotWriteResult } from "../src/kernel.ts"
+
 type TransportScript = {
   start?: () => Promise<void> | void
   execute?: (id: string, code: string, call: number) => Promise<TransportResult>
   snapshotNames?: () => Promise<string[]>
-  writeSnapshot?: (names: string[], maxBytes: number) => Promise<{ bytes: number; skipped: { name: string; reason: string }[] }>
+  writeSnapshot?: (names: string[], maxBytes: number) => Promise<KernelSnapshotWriteResult>
   /** Snapshot payload write at the FS boundary: default writes to artifactsDir. */
   writeSnapshotPayload?: (dir: string) => Promise<void>
   restoreSnapshot?: () => Promise<string[]>
@@ -439,6 +441,41 @@ test("SEQ-KM-3 coalescing: successive executions defer to one snapshot per quiet
 // ---------------------------------------------------------------------------
 // SEQ-KM-4 — dispose flush ordering
 // ---------------------------------------------------------------------------
+
+
+test("POST-SNAP-MANIFEST-1: KernelManager persists full compression telemetry when writing manifest", async () => {
+  /**
+   * CONTRACT TRACEABILITY:
+   * - Authority: requirements/contracts/rlm-dill-compression.contract.ts
+   * - Enforces: POST-SNAP-MANIFEST-1, IP-4
+   * - Category: integration (KernelManager manifest rewrite carries compression telemetry)
+   */
+  const dir = artifactsDir()
+  const transport = makeTransport({
+    writeSnapshot: async () => ({
+      bytes: 25000,
+      uncompressedBytes: 100000,
+      compressedBytes: 25000,
+      compression: "lzma",
+      compressionRatio: 75.0,
+      compressionDurationMs: 42.5,
+      skipped: [],
+    }),
+  })
+  const manager = new KernelManager(transport, { clock: makeClock(), artifactsDir: dir })
+  await manager.execute("a = 1")
+  await manager.dispose({ snapshot: true })
+
+  const manifestFile = `${dir}/kernel-state.json`
+  expect(fs.existsSync(manifestFile)).toBe(true)
+  const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf-8"))
+  expect(manifest.bytes).toBe(25000)
+  expect(manifest.uncompressedBytes).toBe(100000)
+  expect(manifest.compressedBytes).toBe(25000)
+  expect(manifest.compression).toBe("lzma")
+  expect(manifest.compressionRatio).toBe(75.0)
+  expect(manifest.compressionDurationMs).toBe(42.5)
+})
 
 test("SEQ-KM-4: dispose flushes the snapshot BEFORE transport teardown", async () => {
   /**
