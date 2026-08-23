@@ -342,23 +342,21 @@ def _snapshot_write(
     # This avoids allocating a second full serialized dictionary buffer in RAM!
     uncompressed_bytes = sum(len(blob) for blob in payload.values()) if payload else 0
 
-    # Atomic write: stream serialization directly into compressed file on disk
+    # Atomic write: stream serialization directly into compressed file on disk with durable fsync
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp_path = path + ".tmp"
     try:
-        if codec == "lzma":
-            with lzma.open(tmp_path, "wb", preset=0) as fh:
-                dill.dump(payload, fh)
-                fh.flush()
-        elif codec == "gzip":
-            with gzip.open(tmp_path, "wb", compresslevel=1) as fh:
-                dill.dump(payload, fh)
-                fh.flush()
-        else:
-            with open(tmp_path, "wb") as fh:
-                dill.dump(payload, fh)
-                fh.flush()
-                os.fsync(fh.fileno())
+        with open(tmp_path, "wb") as raw_fh:
+            if codec == "lzma":
+                with lzma.open(raw_fh, "wb", preset=0) as comp_fh:
+                    dill.dump(payload, comp_fh)
+            elif codec == "gzip":
+                with gzip.open(raw_fh, "wb", compresslevel=1) as comp_fh:
+                    dill.dump(payload, comp_fh)
+            else:
+                dill.dump(payload, raw_fh)
+            raw_fh.flush()
+            os.fsync(raw_fh.fileno())
         os.replace(tmp_path, path)
     except Exception as exc:
         try:

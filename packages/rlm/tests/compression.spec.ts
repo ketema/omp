@@ -7,6 +7,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import * as fs from "node:fs";
+import { join } from "node:path";
 import {
   MIN_COMPRESSION_RATIO_PERCENT,
   validateCompressionHeader,
@@ -84,19 +86,25 @@ describe("RLM Dill Compression Contracts & Validators", () => {
   });
 
   test("Python unittest suite: test_rlm_dill_compression.py passes 100%", async () => {
-    const pythonExe = process.env.VIRTUAL_ENV
+    const rlmDir = join(import.meta.dir, "..");
+    const pythonDir = join(rlmDir, "python");
+    const testFile = join(pythonDir, "test_rlm_dill_compression.py");
+
+    const venvPath = process.env.VIRTUAL_ENV
       ? `${process.env.VIRTUAL_ENV}/bin/python3`
       : `${process.env.HOME}/.omp/agent/kernel-venv/bin/python3`;
+    const pythonExe = fs.existsSync(venvPath) ? venvPath : "python3";
 
     const proc = Bun.spawn([
       pythonExe,
       "-m",
       "unittest",
-      "packages/rlm/python/test_rlm_dill_compression.py",
+      testFile,
     ], {
+      cwd: pythonDir,
       env: {
         ...process.env,
-        PYTHONPATH: "packages/rlm/python",
+        PYTHONPATH: pythonDir,
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -107,5 +115,4 @@ describe("RLM Dill Compression Contracts & Validators", () => {
     expect(exitCode).toBe(0);
     expect(stderr).toContain("OK");
   }, 30_000);
-
 });

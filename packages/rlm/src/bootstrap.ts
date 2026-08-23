@@ -273,7 +273,7 @@ export function buildKernelEnv(session: KernelSession, caps: KernelCaps): Record
 		CCABDD_STATE_SERVER_PATH: process.env.CCABDD_STATE_SERVER_PATH ?? "",
 		HOME: resolvedHome,
 		PATH: process.env.PATH ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-		...(process.env.RLM_SNAPSHOT_COMPRESSION ? { RLM_SNAPSHOT_COMPRESSION: process.env.RLM_SNAPSHOT_COMPRESSION } : {}),
+		RLM_SNAPSHOT_COMPRESSION: process.env.RLM_SNAPSHOT_COMPRESSION ?? "lzma",
 	};
 }
 
