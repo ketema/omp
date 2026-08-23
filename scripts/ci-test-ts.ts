@@ -105,6 +105,7 @@ const nativeAndIntegrationPackages = [
 	"packages/tui",
 	"packages/collab-web",
 	"packages/typescript-edit-benchmark",
+	"packages/rlm",
 ];
 
 // Packages the CI buckets deliberately skip but a local full run should still

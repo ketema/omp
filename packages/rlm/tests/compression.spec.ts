@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
-import { join } from "node:path";
+import * as path from "node:path";
 import {
   MIN_COMPRESSION_RATIO_PERCENT,
   validateCompressionHeader,
@@ -107,9 +107,9 @@ describe("RLM Dill Compression Contracts & Validators", () => {
   });
 
   test("Python unittest suite: test_rlm_dill_compression.py passes 100%", async () => {
-    const rlmDir = join(import.meta.dir, "..");
-    const pythonDir = join(rlmDir, "python");
-    const testFile = join(pythonDir, "test_rlm_dill_compression.py");
+    const rlmDir = path.join(import.meta.dir, "..");
+    const pythonDir = path.join(rlmDir, "python");
+    const testFile = path.join(pythonDir, "test_rlm_dill_compression.py");
 
     const venvPath = process.env.VIRTUAL_ENV
       ? `${process.env.VIRTUAL_ENV}/bin/python3`
