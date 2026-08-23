@@ -37,8 +37,8 @@ export const SAFE_SESSION_ENV_KEYS: readonly string[] = [
 	"PATH",
 ] as const;
 
-/** A-012/F-267: only model data permitted into Python — bounded catalog
- *  metadata, never full auth store. */
+/** A-012/F-267: the only model data permitted into Python — bounded catalog
+ * metadata, never the full store. */
 export const SAFE_MODEL_CROSSING = "bounded-catalog-metadata-only";
 
 /** F-208: kernel trust posture, stated once. */
