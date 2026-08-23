@@ -106,40 +106,55 @@ _exec_lock = threading.Lock()
 def _execute_cell(code: str, exec_id: str) -> dict:
     """Execute a cell, capturing stdout/stderr, returning the done frame."""
     global _is_executing
-    _is_executing = True
-    _interrupt_event.clear()
+
     ns = _get_ns()
     stdout_buf = io.StringIO()
     stderr_buf = io.StringIO()
-
-    # Redirect sys.stdout/sys.stderr during cell execution
     old_stdout = sys.stdout
     old_stderr = sys.stderr
-    sys.stdout = stdout_buf
-    sys.stderr = stderr_buf
-
-    # Emit started frame
-    _emit({"type": "started", "id": exec_id})
 
     code_val = 0
     result_str = ""
     traceback_str: str | None = None
     error_ename: str | None = None
 
+    # The ENTIRE execution-state transition (flag flip, stream redirection,
+    # interrupt-event reset, actual execution) lives under one try/finally so
+    # a SIGINT landing in the setup window still restores sys.stdout/stderr
+    # and clears _is_executing — never leaving global state dirty for the
+    # next request (previously flag flip + redirection ran BEFORE the
+    # try/finally, so a SIGINT in that narrow window escaped cleanup).
     try:
-        with _exec_lock:
-            if _shell is not None and not isinstance(_shell, dict):
+        _is_executing = True
+        # Clear any stale interrupt flag left by a prior cell (or an idle
+        # SIGINT absorbed by main()'s outer loop) so it cannot leak into
+        # THIS cell's result — an idle interrupt with no cell in flight is
+        # intentionally absorbed, never attached to a future execution.
+        _interrupt_event.clear()
+        sys.stdout = stdout_buf
+        sys.stderr = stderr_buf
+
+        # Emit started frame
+        _emit({"type": "started", "id": exec_id})
+
+        if _shell is not None and not isinstance(_shell, dict):
+            with _exec_lock:
                 # Use IPython's run_cell for rich execution
                 result = _shell.run_cell(code)
-                # Flush any output from the shell
-                stdout_buf.flush()
-                stderr_buf.flush()
-                if _interrupt_event.is_set():
-                    code_val = 1
-                    error_ename = "KeyboardInterrupt"
-                    traceback_str = "Execution interrupted by host"
-                elif result.error_in_exec is not None or not getattr(result, "success", True):
-                    exc = result.error_in_exec
+            # Flush any output from the shell
+            stdout_buf.flush()
+            stderr_buf.flush()
+            if _interrupt_event.is_set():
+                code_val = 1
+                error_ename = "KeyboardInterrupt"
+                traceback_str = "Execution interrupted by host"
+            else:
+                # error_before_exec covers parse/compile failures (SyntaxError);
+                # error_in_exec covers runtime failures during execution. Both
+                # SHALL be checked — reading only one silently downgrades the
+                # other class of failure to a generic ExecutionError.
+                exc = result.error_before_exec or result.error_in_exec
+                if exc is not None or not getattr(result, "success", True):
                     code_val = 1
                     if exc is not None:
                         error_ename = type(exc).__name__
@@ -153,10 +168,11 @@ def _execute_cell(code: str, exec_id: str) -> dict:
                         result_str = repr(result.result)
                     except Exception:
                         result_str = "<unrepr>"
-            else:
-                # Plain Python fallback — split last expression for result
-                import ast
+        else:
+            # Plain Python fallback — split last expression for result
+            import ast
 
+            with _exec_lock:
                 try:
                     module = ast.parse(code, "<cell>", "exec")
                     if module.body and isinstance(module.body[-1], ast.Expr):
