@@ -299,6 +299,7 @@ def _snapshot_write(
     import dill
     import gzip
     import lzma
+    t_start = time.time()
 
     dill.settings["recurse"] = True
 
@@ -392,15 +393,17 @@ def _snapshot_write(
     try:
         with open(manifest_path, "w") as fh:
             json.dump(manifest, fh)
-    except Exception:
-        pass
+    except Exception as exc:
+        raise RlmSnapshotCompressionError(f"Failed to write snapshot manifest to {manifest_path}: {exc}") from exc
 
+    duration_ms = round((time.time() - t_start) * 1000.0, 2)
     return {
         "bytes": bytes_written,
         "uncompressedBytes": uncompressed_bytes,
         "compressedBytes": bytes_written,
         "compression": codec,
         "compressionRatio": compression_ratio,
+        "compressionDurationMs": duration_ms,
         "skipped": skipped,
     }
 
@@ -507,6 +510,11 @@ def _handle_op(op: dict) -> None:
                 "type": "result",
                 "id": op_id,
                 "bytes": result["bytes"],
+                "uncompressedBytes": result.get("uncompressedBytes", result["bytes"]),
+                "compressedBytes": result.get("compressedBytes", result["bytes"]),
+                "compression": result.get("compression", "raw"),
+                "compressionRatio": result.get("compressionRatio", 0.0),
+                "compressionDurationMs": result.get("compressionDurationMs", 0.0),
                 "skipped": result["skipped"],
             })
         except Exception as exc:
