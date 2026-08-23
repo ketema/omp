@@ -211,19 +211,53 @@ class TestRlmDillCompression(unittest.TestCase):
 
     def test_errors_1_truncated_magic_headers_raise_corrupt_error(self):
         """ERRORS-1: Truncated magic headers for LZMA and Gzip raise CorruptSnapshotError directly."""
-        # Truncated LZMA (3 bytes instead of 6)
+        # Truncated LZMA (3 bytes instead of 6) matching prefix
         with open(self.snapshot_path, "wb") as f:
             f.write(bytes([0xfd, 0x37, 0x7a]))
 
         with self.assertRaises(CorruptSnapshotError):
             rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
 
-        # Truncated Gzip (1 byte instead of 2)
+        # Truncated Gzip (1 byte instead of 2) matching prefix
         with open(self.snapshot_path, "wb") as f:
             f.write(bytes([0x1f]))
 
         with self.assertRaises(CorruptSnapshotError):
             rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+
+        # 6-byte non-LZMA header starting with 0xfd raises UnsupportedCodecError, NOT CorruptSnapshotError
+        with open(self.snapshot_path, "wb") as f:
+            f.write(bytes([0xfd, 0x00, 0x00, 0x00, 0x00, 0x00]))
+
+        with self.assertRaises(UnsupportedCodecError):
+            rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+
+        # 2-byte non-Gzip header starting with 0x1f raises UnsupportedCodecError, NOT CorruptSnapshotError
+        with open(self.snapshot_path, "wb") as f:
+            f.write(bytes([0x1f, 0x00]))
+
+        with self.assertRaises(UnsupportedCodecError):
+            rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+
+    def test_inv_snap_stream_counting_accuracy(self):
+        """INV-SNAP-STREAM-1: _CountingWriter measures exact uncompressed byte size of serialized dictionary."""
+        ns = rlm_kernel_runner._get_ns()
+        ns["k1"] = [1, 2, 3, 4, 5]
+        ns["k2"] = {"hello": "world", "nested": [10, 20]}
+
+        res = rlm_kernel_runner._snapshot_write(
+            self.snapshot_path,
+            self.manifest_path,
+            256 * 1024 * 1024
+        )
+        self.assertGreater(res["uncompressedBytes"], 0)
+        self.assertGreater(res["compressionDurationMs"], 0.0)
+
+        with open(self.manifest_path) as f:
+            manifest = json.load(f)
+
+        self.assertEqual(manifest["uncompressedBytes"], res["uncompressedBytes"])
+        self.assertEqual(manifest["compressionDurationMs"], res["compressionDurationMs"])
 
     def test_post_snap_restore_1_atomic_namespace_isolation(self):
         """POST-SNAP-RESTORE-1: Failed unpickling of any variable leaves active user_ns completely untouched."""

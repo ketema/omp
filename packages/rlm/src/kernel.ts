@@ -824,6 +824,9 @@ export class KernelManager {
 				...(writeResult.compressedBytes !== undefined ? { compressedBytes: writeResult.compressedBytes } : {}),
 				...(writeResult.compression !== undefined ? { compression: writeResult.compression } : {}),
 				...(writeResult.compressionRatio !== undefined ? { compressionRatio: writeResult.compressionRatio } : {}),
+				...(writeResult.compressionDurationMs !== undefined
+					? { compressionDurationMs: writeResult.compressionDurationMs }
+					: {}),
 				pythonVersion,
 				timestamp: utcIsoTimestamp(this.clock),
 			};

@@ -41,6 +41,26 @@ describe("RLM Dill Compression Contracts & Validators", () => {
     });
   });
 
+  test("ERRORS-1: validateSnapshotMagic identifies truncated magic prefixes as CorruptSnapshotError", () => {
+    // Truncated LZMA (<6 bytes matching start of LZMA header)
+    const truncatedLzma = new Uint8Array([0xfd, 0x37, 0x7a]);
+    expect(() => validateSnapshotMagic(truncatedLzma)).toThrow("Truncated LZMA");
+
+    // Truncated Gzip (<2 bytes matching start of Gzip header)
+    const truncatedGzip = new Uint8Array([0x1f]);
+    expect(() => validateSnapshotMagic(truncatedGzip)).toThrow("Truncated Gzip");
+  });
+
+  test("ERRORS-2: validateSnapshotMagic rejects invalid 6-byte non-LZMA header as UnsupportedCodecError", () => {
+    // 6-byte payload starting with 0xfd but not matching LZMA magic
+    const invalidLzma = new Uint8Array([0xfd, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    expect(() => validateSnapshotMagic(invalidLzma)).toThrow("Unrecognized magic header");
+
+    // 2-byte payload starting with 0x1f but not matching Gzip magic
+    const invalidGzip = new Uint8Array([0x1f, 0x00]);
+    expect(() => validateSnapshotMagic(invalidGzip)).toThrow("Unrecognized magic header");
+  });
+
   test("ERRORS-2: validateSnapshotMagic rejects unrecognized binary headers", () => {
     const unknownHeader = new Uint8Array([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
     expect(() => validateSnapshotMagic(unknownHeader)).toThrow();
@@ -96,7 +116,7 @@ describe("RLM Dill Compression Contracts & Validators", () => {
     const pythonExe = fs.existsSync(venvPath) ? venvPath : "python3";
 
     // Safe probe: verify interpreter has required dependencies (dill, numpy)
-    const probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy, rlm_kernel_runner"], {
+    const probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy"], {
       cwd: pythonDir,
       env: { ...process.env, PYTHONPATH: pythonDir },
       stdout: "pipe",

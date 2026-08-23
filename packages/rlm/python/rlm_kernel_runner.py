@@ -253,6 +253,27 @@ class SnapshotConfigurationError(RlmSnapshotCompressionError):
     pass
 
 
+class _CountingWriter(io.RawIOBase):
+    """Transparent stream wrapper that counts exact uncompressed bytes written by dill.dump without buffering in RAM."""
+
+    def __init__(self, target_stream):
+        self.target_stream = target_stream
+        self.bytes_written = 0
+
+    def write(self, b):
+        self.bytes_written += len(b)
+        return self.target_stream.write(b)
+
+    def flush(self):
+        return self.target_stream.flush()
+
+    def readable(self):
+        return False
+
+    def writable(self):
+        return True
+
+
 def _detect_codec(data: bytes) -> str:
     """Inspect magic bytes to determine compression codec (lzma, gzip, or raw)."""
     if len(data) < 1:
@@ -261,13 +282,13 @@ def _detect_codec(data: bytes) -> str:
     # LZMA: 0xFD '7' 'z' 'X' 'Z' 0x00
     if len(data) >= 6 and data.startswith(b"\xfd7zXZ\x00"):
         return "lzma"
-    if data.startswith(b"\xfd"):
+    if len(data) < 6 and b"\xfd7zXZ\x00".startswith(data):
         raise CorruptSnapshotError(f"Truncated LZMA magic header ({len(data)}/6 bytes)")
 
     # Gzip: 0x1F 0x8B
     if len(data) >= 2 and data.startswith(b"\x1f\x8b"):
         return "gzip"
-    if data.startswith(b"\x1f"):
+    if len(data) < 2 and b"\x1f\x8b".startswith(data):
         raise CorruptSnapshotError(f"Truncated Gzip magic header ({len(data)}/2 bytes)")
 
     # Legacy Python pickle / dill protocol 2/3/4/5: starts with 0x80
@@ -342,23 +363,28 @@ def _snapshot_write(
         payload[name] = blob
         total += len(blob)
 
-    # Calculate uncompressed size by summing the individual dill blobs already pickled in payload
-    # This avoids allocating a second full serialized dictionary buffer in RAM!
-    uncompressed_bytes = sum(len(blob) for blob in payload.values()) if payload else 0
-
-    # Atomic write: stream serialization directly into compressed file on disk with durable fsync
+    # Atomic write: stream serialization directly into compressed file on disk with durable fsync and exact stream counting
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp_path = path + ".tmp"
+    uncompressed_bytes = 0
     try:
         with open(tmp_path, "wb") as raw_fh:
             if codec == "lzma":
                 with lzma.open(raw_fh, "wb", preset=0) as comp_fh:
-                    dill.dump(payload, comp_fh)
+                    cw = _CountingWriter(comp_fh)
+                    dill.dump(payload, cw)
+                    comp_fh.flush()
+                    uncompressed_bytes = cw.bytes_written
             elif codec == "gzip":
                 with gzip.open(raw_fh, "wb", compresslevel=1) as comp_fh:
-                    dill.dump(payload, comp_fh)
+                    cw = _CountingWriter(comp_fh)
+                    dill.dump(payload, cw)
+                    comp_fh.flush()
+                    uncompressed_bytes = cw.bytes_written
             else:
-                dill.dump(payload, raw_fh)
+                cw = _CountingWriter(raw_fh)
+                dill.dump(payload, cw)
+                uncompressed_bytes = cw.bytes_written
             raw_fh.flush()
             os.fsync(raw_fh.fileno())
         os.replace(tmp_path, path)
