@@ -322,17 +322,28 @@ def _snapshot_write(
 ) -> dict:
     """Per-variable dill.dumps with transparent stream compression, atomic write, and manifest."""
     import dill
-    import gzip
-    import lzma
     t_start = time.time()
 
     dill.settings["recurse"] = True
 
-    # Validate compression codec configuration
+    # Validate compression codec configuration with dynamic module loading and gzip fallback
     codec_env = os.environ.get("RLM_SNAPSHOT_COMPRESSION", "lzma").strip().lower()
+    lzma_mod = None
+    gzip_mod = None
+
     if codec_env in ("lzma", "xz"):
-        codec = "lzma"
+        try:
+            import lzma as lzma_mod
+            codec = "lzma"
+        except ImportError as exc:
+            if "RLM_SNAPSHOT_COMPRESSION" in os.environ:
+                raise SnapshotConfigurationError(
+                    f"LZMA compression requested but _lzma module is unavailable: {exc}"
+                ) from exc
+            import gzip as gzip_mod
+            codec = "gzip"
     elif codec_env == "gzip":
+        import gzip as gzip_mod
         codec = "gzip"
     elif codec_env in ("raw", "none", "uncompressed"):
         codec = "raw"
@@ -369,17 +380,26 @@ def _snapshot_write(
     manifest_tmp = manifest_path + ".tmp"
     uncompressed_bytes = 0
 
+    has_prior_payload = os.path.exists(path)
+    payload_bak = path + ".bak" if has_prior_payload else None
+    has_prior_manifest = os.path.exists(manifest_path)
+    manifest_bak = manifest_path + ".bak" if has_prior_manifest else None
+
     try:
         # Phase 1: Stream payload directly to tmp_path with fsync and exact stream counting
         with open(tmp_path, "wb") as raw_fh:
             if codec == "lzma":
-                with lzma.open(raw_fh, "wb", preset=0) as comp_fh:
+                if lzma_mod is None:
+                    import lzma as lzma_mod
+                with lzma_mod.open(raw_fh, "wb", preset=0) as comp_fh:
                     cw = _CountingWriter(comp_fh)
                     dill.dump(payload, cw)
                     comp_fh.flush()
                     uncompressed_bytes = cw.bytes_written
             elif codec == "gzip":
-                with gzip.open(raw_fh, "wb", compresslevel=1) as comp_fh:
+                if gzip_mod is None:
+                    import gzip as gzip_mod
+                with gzip_mod.open(raw_fh, "wb", compresslevel=1) as comp_fh:
                     cw = _CountingWriter(comp_fh)
                     dill.dump(payload, cw)
                     comp_fh.flush()
@@ -421,10 +441,32 @@ def _snapshot_write(
             fh.flush()
             os.fsync(fh.fileno())
 
-        # Phase 3: Coupled atomic commit
+        # Phase 3: Coupled atomic commit with backup rollback protection
+        if payload_bak:
+            os.replace(path, payload_bak)
         os.replace(tmp_path, path)
+
+        if manifest_bak:
+            os.replace(manifest_path, manifest_bak)
         os.replace(manifest_tmp, manifest_path)
+
+        # Success: remove backups
+        if payload_bak and os.path.exists(payload_bak):
+            os.remove(payload_bak)
+        if manifest_bak and os.path.exists(manifest_bak):
+            os.remove(manifest_bak)
     except Exception as exc:
+        # Rollback on replace failure to prevent torn states
+        if payload_bak and os.path.exists(payload_bak):
+            try:
+                os.replace(payload_bak, path)
+            except OSError:
+                pass
+        if manifest_bak and os.path.exists(manifest_bak):
+            try:
+                os.replace(manifest_bak, manifest_path)
+            except OSError:
+                pass
         for p in (tmp_path, manifest_tmp):
             try:
                 if os.path.exists(p):
@@ -448,8 +490,6 @@ def _snapshot_write(
 def _snapshot_restore(path: str, manifest_path: str) -> dict:
     """Load the payload with transparent stream decompression auto-detection and inject names into user_ns."""
     import dill
-    import gzip
-    import lzma
 
     if not os.path.exists(path):
         return {"restoredNames": []}
@@ -469,15 +509,24 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
 
     try:
         if codec == "lzma":
+            try:
+                import lzma
+            except ImportError as exc:
+                raise UnsupportedCodecError(
+                    f"LZMA decompression unsupported on this Python build (missing _lzma): {exc}"
+                ) from exc
             with lzma.open(path, "rb") as fh:
                 payload = dill.load(fh)
         elif codec == "gzip":
+            import gzip
             with gzip.open(path, "rb") as fh:
                 payload = dill.load(fh)
         else:
             with open(path, "rb") as fh:
                 payload = dill.load(fh)
     except Exception as exc:
+        if isinstance(exc, RlmSnapshotCompressionError):
+            raise
         raise CorruptSnapshotError(f"Decompression / dill load failed for codec {codec}: {exc}") from exc
 
     if not isinstance(payload, dict):
@@ -486,16 +535,24 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
     # Two-phase atomic restore: unpack into isolated temp dict first to protect active namespace
     temp_restored = {}
     for name, blob in payload.items():
+        if not isinstance(name, str):
+            raise CorruptSnapshotError(f"Invalid non-string variable name in snapshot payload: {name!r}")
         try:
             temp_restored[name] = dill.loads(blob)
         except Exception as exc:
             raise CorruptSnapshotError(f"Failed to unpickle variable '{name}': {exc}") from exc
 
-    # Commit atomically to user namespace only after all variables successfully unpickled
+    # Validate and sort restored names BEFORE mutating active user namespace
+    try:
+        restored_names = sorted(temp_restored.keys())
+    except Exception as exc:
+        raise CorruptSnapshotError(f"Failed to order restored variable names: {exc}") from exc
+
+    # Commit atomically to user namespace only after all variables and names are validated
     ns = _get_ns()
     ns.update(temp_restored)
 
-    return {"restoredNames": sorted(temp_restored.keys())}
+    return {"restoredNames": restored_names}
 
 
 # ---------------------------------------------------------------------------

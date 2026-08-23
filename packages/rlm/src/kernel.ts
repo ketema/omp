@@ -110,6 +110,7 @@ export interface KernelSnapshotManifest {
 	readonly compressedBytes?: number;
 	readonly compression?: string;
 	readonly compressionRatio?: number;
+	readonly compressionDurationMs?: number;
 	readonly pythonVersion: string;
 	readonly timestamp: string;
 }

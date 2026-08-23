@@ -582,7 +582,9 @@ describe("transport live kernel (real spawn)", () => {
      */
     const artifacts = join(workRoot, "art-dill-compress")
     fs.mkdirSync(artifacts, { recursive: true })
-    const first = createTransport(liveConfig(artifacts))
+    const config = liveConfig(artifacts)
+    config.env.RLM_SNAPSHOT_COMPRESSION = "lzma"
+    const first = createTransport(config)
     await first.start()
 
     // Populate large numerical array state in first session
@@ -622,7 +624,9 @@ describe("transport live kernel (real spawn)", () => {
     expect(manifest.compressionRatio).toBeGreaterThanOrEqual(50.0)
 
     // Revive in fresh transport process
-    const second = createTransport(liveConfig(artifacts))
+    const secondConfig = liveConfig(artifacts)
+    secondConfig.env.RLM_SNAPSHOT_COMPRESSION = "lzma"
+    const second = createTransport(secondConfig)
     await second.start()
     const restored = await second.restoreSnapshot()
     expect(restored).toContain("arr")
