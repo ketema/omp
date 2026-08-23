@@ -267,7 +267,7 @@ export function buildKernelEnv(session: KernelSession, caps: KernelCaps): Record
 		OMP_RLM_AGENT_DIR: session.agentDir,
 		RLM_MAX_OUTPUT_CHARS: String(caps.maxOutputChars),
 		RLM_SNAPSHOT_MAX_BYTES: String(caps.snapshotMaxBytes),
-		RLM_SNAPSHOT_COMPRESSION: process.env.RLM_SNAPSHOT_COMPRESSION ?? "lzma",
+		RLM_SNAPSHOT_COMPRESSION: process.env.RLM_SNAPSHOT_COMPRESSION ?? "auto",
 	};
 }
 

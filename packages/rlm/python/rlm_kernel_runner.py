@@ -327,21 +327,25 @@ def _snapshot_write(
     dill.settings["recurse"] = True
 
     # Validate compression codec configuration with dynamic module loading and gzip fallback
-    codec_env = os.environ.get("RLM_SNAPSHOT_COMPRESSION", "lzma").strip().lower()
+    codec_env = os.environ.get("RLM_SNAPSHOT_COMPRESSION", "auto").strip().lower()
     lzma_mod = None
     gzip_mod = None
 
-    if codec_env in ("lzma", "xz"):
+    if codec_env in ("auto", "default", ""):
+        try:
+            import lzma as lzma_mod
+            codec = "lzma"
+        except ImportError:
+            import gzip as gzip_mod
+            codec = "gzip"
+    elif codec_env in ("lzma", "xz"):
         try:
             import lzma as lzma_mod
             codec = "lzma"
         except ImportError as exc:
-            if "RLM_SNAPSHOT_COMPRESSION" in os.environ:
-                raise SnapshotConfigurationError(
-                    f"LZMA compression requested but _lzma module is unavailable: {exc}"
-                ) from exc
-            import gzip as gzip_mod
-            codec = "gzip"
+            raise SnapshotConfigurationError(
+                f"LZMA compression requested but _lzma module is unavailable: {exc}"
+            ) from exc
     elif codec_env == "gzip":
         import gzip as gzip_mod
         codec = "gzip"
@@ -380,10 +384,6 @@ def _snapshot_write(
     manifest_tmp = manifest_path + ".tmp"
     uncompressed_bytes = 0
 
-    has_prior_payload = os.path.exists(path)
-    payload_bak = path + ".bak" if has_prior_payload else None
-    has_prior_manifest = os.path.exists(manifest_path)
-    manifest_bak = manifest_path + ".bak" if has_prior_manifest else None
 
     try:
         # Phase 1: Stream payload directly to tmp_path with fsync and exact stream counting
@@ -441,32 +441,10 @@ def _snapshot_write(
             fh.flush()
             os.fsync(fh.fileno())
 
-        # Phase 3: Coupled atomic commit with backup rollback protection
-        if payload_bak:
-            os.replace(path, payload_bak)
+        # Phase 3: Direct atomic replace (in POSIX, each os.replace is atomic so prior file remains intact until replacement)
         os.replace(tmp_path, path)
-
-        if manifest_bak:
-            os.replace(manifest_path, manifest_bak)
         os.replace(manifest_tmp, manifest_path)
-
-        # Success: remove backups
-        if payload_bak and os.path.exists(payload_bak):
-            os.remove(payload_bak)
-        if manifest_bak and os.path.exists(manifest_bak):
-            os.remove(manifest_bak)
     except Exception as exc:
-        # Rollback on replace failure to prevent torn states
-        if payload_bak and os.path.exists(payload_bak):
-            try:
-                os.replace(payload_bak, path)
-            except OSError:
-                pass
-        if manifest_bak and os.path.exists(manifest_bak):
-            try:
-                os.replace(manifest_bak, manifest_path)
-            except OSError:
-                pass
         for p in (tmp_path, manifest_tmp):
             try:
                 if os.path.exists(p):
