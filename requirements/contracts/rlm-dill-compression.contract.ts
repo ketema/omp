@@ -293,6 +293,15 @@ export const CONTRACT_RLM_DILL_COMPRESSION = {
     description: "Runner SHALL NOT leave orphaned temporary snapshot files on disk when serialization fails",
     verification: "test",
   },
+  "FORBIDDEN-4": {
+    id: "FORBIDDEN-4",
+    description:
+      "Runner SHALL NOT re-resolve RLM_SNAPSHOT_COMPRESSION from the process environment after bootstrap; " +
+      "the codec is frozen once at bootstrap, before any Model-issued cell can execute, and reused for all " +
+      "subsequent writes in that process (REQ-2026-RLM-DILL-COMPRESSION.md Actor Matrix: " +
+      '"Model SHALL NOT disable kernel snapshot compression")',
+    verification: "test",
+  },
   "ERRORS-1": {
     id: "ERRORS-1",
     description: "Truncated or corrupted compressed payload raises CorruptSnapshotError",
@@ -310,7 +319,10 @@ export const CONTRACT_RLM_DILL_COMPRESSION = {
   },
   "ERRORS-4": {
     id: "ERRORS-4",
-    description: "Atomic snapshot replacement failure on filesystem raises RlmSnapshotCompressionError",
+    description:
+      "Atomic snapshot replacement failure on filesystem raises RlmSnapshotCompressionError; " +
+      "if the payload commit already succeeded when the manifest commit fails, the payload " +
+      "is rolled back to its prior generation so the reported failure has no partial effect on disk",
     verification: "test",
   },
   "SEQ-1": {

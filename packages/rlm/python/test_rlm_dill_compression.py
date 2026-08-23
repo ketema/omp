@@ -39,6 +39,10 @@ class TestRlmDillCompression(unittest.TestCase):
         shutil.rmtree(self.test_dir, ignore_errors=True)
         if "RLM_SNAPSHOT_COMPRESSION" in os.environ:
             del os.environ["RLM_SNAPSHOT_COMPRESSION"]
+        # No dedicated reset function is exposed in the runner module by
+        # design (see _freeze_snapshot_codec docstring) -- tests simulate a
+        # fresh process launch by clearing the module global directly.
+        rlm_kernel_runner._FROZEN_SNAPSHOT_CODEC = None
 
     def test_post_snap_compress_1_lzma_header(self):
         """POST-SNAP-COMPRESS-1, SEQ-3, IP-3: Snapshot file is compressed with LZMA magic header by default."""
@@ -317,6 +321,34 @@ class TestRlmDillCompression(unittest.TestCase):
         with self.assertRaises(SnapshotConfigurationError):
             rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
 
+    def test_forbidden_4_frozen_codec_survives_mid_session_env_mutation(self):
+        """FORBIDDEN-4: a codec frozen at bootstrap is immune to a later in-process
+        mutation of RLM_SNAPSHOT_COMPRESSION, e.g. a Model-executed cell (Copilot
+        review 5002571472, REQ-2026-RLM-DILL-COMPRESSION.md Actor Matrix line 44:
+        'Model SHALL NOT disable kernel snapshot compression')."""
+        os.environ["RLM_SNAPSHOT_COMPRESSION"] = "lzma"
+        rlm_kernel_runner._bootstrap()
+
+        # Simulate a Model-executed cell disabling compression after bootstrap.
+        os.environ["RLM_SNAPSHOT_COMPRESSION"] = "raw"
+
+        ns = rlm_kernel_runner._get_ns()
+        ns["x"] = "must still be written with the frozen lzma codec"
+        result = rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+
+        self.assertEqual(
+            result["compression"],
+            "lzma",
+            "the codec frozen at bootstrap must not change when a cell mutates os.environ afterward",
+        )
+        with open(self.snapshot_path, "rb") as f:
+            header = f.read(6)
+        self.assertEqual(
+            header,
+            bytes([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]),
+            "on-disk payload must carry the frozen codec's LZMA magic header, not the mutated 'raw' value",
+        )
+
     def test_errors_4_and_forbidden_3_atomic_replace_failure_cleanup(self):
         """ERRORS-4, FORBIDDEN-3: Atomic replacement failure raises RlmSnapshotCompressionError and cleans up .tmp."""
         ns = rlm_kernel_runner._get_ns()
@@ -330,6 +362,185 @@ class TestRlmDillCompression(unittest.TestCase):
 
         # Temporary file must be unlinked on failure
         self.assertFalse(os.path.exists(tmp_path), "FORBIDDEN-3: .tmp file was not cleaned up after write error")
+
+    def test_errors_4_manifest_commit_failure_rolls_back_payload_replace(self):
+        """ERRORS-4: a manifest-commit failure after a successful payload commit rolls
+        the payload back to its prior generation, so a reported failure has no
+        partial effect on disk (Copilot review 5002571472, transport.spec.ts pairing
+        finding on rlm_kernel_runner.py:499-500)."""
+        ns = rlm_kernel_runner._get_ns()
+        ns["old_val"] = "first generation"
+        rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+        with open(self.snapshot_path, "rb") as f:
+            old_payload_bytes = f.read()
+        self.assertTrue(os.path.exists(self.manifest_path))
+
+        ns.clear()
+        ns["new_val"] = "second generation, must never land on disk on failure"
+
+        real_replace = os.replace
+
+        def fail_manifest_replace(src, dst, *args, **kwargs):
+            if dst == self.manifest_path:
+                raise OSError("Simulated manifest commit failure")
+            return real_replace(src, dst, *args, **kwargs)
+
+        with patch("os.replace", side_effect=fail_manifest_replace):
+            with self.assertRaises(RlmSnapshotCompressionError):
+                rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+
+        with open(self.snapshot_path, "rb") as f:
+            after_failure_bytes = f.read()
+        self.assertEqual(
+            after_failure_bytes,
+            old_payload_bytes,
+            "payload must be rolled back to the prior generation when the manifest commit fails",
+        )
+        self.assertFalse(
+            os.path.exists(self.snapshot_path + ".bak"),
+            "no orphaned backup file should remain after rollback",
+        )
+        self.assertFalse(os.path.exists(self.snapshot_path + ".tmp"))
+        self.assertFalse(os.path.exists(self.manifest_path + ".tmp"))
+
+    def test_errors_4_payload_replace_failure_leaves_no_orphaned_backup(self):
+        """Peer review Finding #4: when the FIRST os.replace (payload commit)
+        fails, `path` and `path + '.bak'` are still hard links to the SAME
+        inode -- POSIX rename() of one hard link onto its own inode-sibling
+        is a documented no-op that does NOT unlink the source, so a naive
+        rollback attempt would leave the backup orphaned on disk. The
+        backup must be explicitly reclaimed in that case."""
+        ns = rlm_kernel_runner._get_ns()
+        ns["old_val"] = "first generation"
+        rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+        with open(self.snapshot_path, "rb") as f:
+            old_payload_bytes = f.read()
+
+        ns.clear()
+        ns["new_val"] = "second generation, must never land on disk"
+
+        real_replace = os.replace
+        call_count = {"payload_dst_calls": 0}
+
+        def fail_first_payload_replace(src, dst, *args, **kwargs):
+            # Fail ONLY the first attempt at replacing `path` (the actual
+            # commit). The rollback attempt is the SECOND call targeting the
+            # same dst -- let it run for real so it reproduces the genuine
+            # same-inode no-op this test exists to catch, rather than
+            # failing that call too (which would exercise the unrelated
+            # dual-failure branch instead).
+            if dst == self.snapshot_path:
+                call_count["payload_dst_calls"] += 1
+                if call_count["payload_dst_calls"] == 1:
+                    raise OSError("Simulated payload commit failure")
+            return real_replace(src, dst, *args, **kwargs)
+
+        with patch("os.replace", side_effect=fail_first_payload_replace):
+            with self.assertRaises(RlmSnapshotCompressionError):
+                rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+
+        with open(self.snapshot_path, "rb") as f:
+            after_failure_bytes = f.read()
+        self.assertEqual(after_failure_bytes, old_payload_bytes, "prior generation must remain intact")
+        self.assertFalse(
+            os.path.exists(self.snapshot_path + ".bak"),
+            "no orphaned backup file should remain when the payload replace itself fails",
+        )
+        self.assertFalse(os.path.exists(self.snapshot_path + ".tmp"))
+        self.assertFalse(os.path.exists(self.manifest_path + ".tmp"))
+
+    def test_regression_payload_path_never_source_of_replace_during_commit(self):
+        """Regression guard, not a contract clause: the live payload path must
+        never itself be the SOURCE of an os.replace during commit. A
+        move-based backup (os.replace(path, backup)) would leave `path`
+        transiently absent; a process kill in that window would destroy the
+        only good generation with no way for _snapshot_restore to recover it
+        (it never consults path + '.bak'). The backup must be a hard link
+        instead, which adds a second reference to the same inode without
+        ever unlinking `path`. This guards against reintroducing the
+        move-based design a prior peer review round rejected."""
+        ns = rlm_kernel_runner._get_ns()
+        ns["old_val"] = "first generation"
+        rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+
+        ns.clear()
+        ns["new_val"] = "second generation"
+
+        real_replace = os.replace
+        rename_away_calls = []
+
+        def watching_replace(src, dst, *args, **kwargs):
+            if src == self.snapshot_path:
+                rename_away_calls.append((src, dst))
+            return real_replace(src, dst, *args, **kwargs)
+
+        with patch("os.replace", side_effect=watching_replace):
+            rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+
+        self.assertEqual(
+            rename_away_calls,
+            [],
+            "the live payload path must never be the source of an os.replace "
+            "(that would leave it transiently absent); use a hard-link backup instead",
+        )
+        self.assertTrue(os.path.exists(self.snapshot_path))
+
+    def test_regression_successful_commit_survives_backup_cleanup_failure(self):
+        """Regression guard, not a contract clause (peer review Defect A): a
+        failure to remove the now-unneeded .bak hard link AFTER a
+        successful two-phase commit must not be reported to the caller as a
+        write failure -- both replaces already landed by that point, so the
+        write genuinely succeeded."""
+        ns = rlm_kernel_runner._get_ns()
+        ns["old_val"] = "first generation"
+        rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+
+        ns.clear()
+        ns["new_val"] = "second generation"
+
+        real_remove = os.remove
+
+        def flaky_remove(path_arg, *args, **kwargs):
+            if path_arg == self.snapshot_path + ".bak":
+                raise OSError("Simulated backup cleanup failure")
+            return real_remove(path_arg, *args, **kwargs)
+
+        with patch("os.remove", side_effect=flaky_remove):
+            result = rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+
+        self.assertIn("bytes", result)
+        self.assertGreater(result["bytes"], 0)
+        self.assertTrue(os.path.exists(self.snapshot_path))
+        self.assertTrue(os.path.exists(self.manifest_path))
+
+    def test_errors_4_first_snapshot_manifest_failure_leaves_no_partial_payload(self):
+        """Peer review Defect B: on the VERY FIRST snapshot (no prior
+        generation to roll back to), a manifest-commit failure must not
+        leave the payload committed without its manifest -- the broadened
+        ERRORS-4 'no partial effect on disk' guarantee applies regardless
+        of whether a prior generation existed."""
+        ns = rlm_kernel_runner._get_ns()
+        ns["x"] = "first snapshot ever, must not partially land"
+
+        real_replace = os.replace
+
+        def fail_manifest_replace(src, dst, *args, **kwargs):
+            if dst == self.manifest_path:
+                raise OSError("Simulated manifest commit failure")
+            return real_replace(src, dst, *args, **kwargs)
+
+        with patch("os.replace", side_effect=fail_manifest_replace):
+            with self.assertRaises(RlmSnapshotCompressionError):
+                rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+
+        self.assertFalse(
+            os.path.exists(self.snapshot_path),
+            "no payload should remain when the first-ever snapshot's manifest commit fails",
+        )
+        self.assertFalse(os.path.exists(self.manifest_path))
+        self.assertFalse(os.path.exists(self.snapshot_path + ".tmp"))
+        self.assertFalse(os.path.exists(self.manifest_path + ".tmp"))
+        self.assertFalse(os.path.exists(self.snapshot_path + ".bak"))
 
     def test_post_snap_skip_1_unpicklable_and_oversize_handling(self):
         """POST-SNAP-SKIP-1, SEQ-2, IP-4: Unpicklable and oversize objects recorded in skipped list while valid state persists."""
