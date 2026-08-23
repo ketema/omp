@@ -192,6 +192,15 @@ class TestRlmDillCompression(unittest.TestCase):
         self.assertFalse(os.path.exists(tmp_path), "FORBIDDEN-3 violation: orphaned .tmp file left behind")
         self.assertTrue(os.path.exists(self.snapshot_path))
 
+    def test_errors_1_empty_snapshot_file_fails_fast(self):
+        """ERRORS-1: Existing 0-byte snapshot file raises CorruptSnapshotError fail-fast."""
+        # Touch empty file
+        with open(self.snapshot_path, "wb") as f:
+            pass
+
+        with self.assertRaises(CorruptSnapshotError):
+            rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+
     def test_errors_1_corrupt_payload_fails_fast(self):
         """ERRORS-1: Corrupt or truncated compressed payload raises CorruptSnapshotError directly."""
         with open(self.snapshot_path, "wb") as f:

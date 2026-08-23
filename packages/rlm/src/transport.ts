@@ -865,6 +865,11 @@ export class RlmTransport implements KernelTransport {
 					} else if (frame.bytes !== undefined) {
 						op.resolve({
 							bytes: frame.bytes,
+							uncompressedBytes: typeof frame.uncompressedBytes === "number" ? frame.uncompressedBytes : frame.bytes,
+							compressedBytes: typeof frame.compressedBytes === "number" ? frame.compressedBytes : frame.bytes,
+							compression: typeof frame.compression === "string" ? frame.compression : "raw",
+							compressionRatio: typeof frame.compressionRatio === "number" ? frame.compressionRatio : 0.0,
+							compressionDurationMs: typeof frame.compressionDurationMs === "number" ? frame.compressionDurationMs : 0.0,
 							skipped: frame.skipped ?? [],
 						});
 					} else {

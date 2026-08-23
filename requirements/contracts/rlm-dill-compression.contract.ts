@@ -150,8 +150,13 @@ export function validateCompressionRatio(
   minPercent = MIN_COMPRESSION_RATIO_PERCENT
 ): number {
   if (uncompressedBytes <= 0) return 0.0;
-  const ratio = ((uncompressedBytes - compressedBytes) / uncompressedBytes) * 100.0;
-  return Number(ratio.toFixed(2));
+  const ratio = Number((((uncompressedBytes - compressedBytes) / uncompressedBytes) * 100.0).toFixed(2));
+  if (ratio < minPercent) {
+    throw new RlmSnapshotCompressionError(
+      `Compression ratio ${ratio}% is below minimum required threshold of ${minPercent}%`
+    );
+  }
+  return ratio;
 }
 
 export function validateCompressionHeader(metadata: unknown): asserts metadata is SnapshotMetadata {
@@ -159,14 +164,26 @@ export function validateCompressionHeader(metadata: unknown): asserts metadata i
     throw new RlmSnapshotCompressionError("Snapshot metadata must be a non-null object");
   }
   const m = metadata as Record<string, unknown>;
-  if (typeof m.bytes !== "number" || typeof m.uncompressedBytes !== "number") {
-    throw new RlmSnapshotCompressionError("Snapshot metadata bytes and uncompressedBytes must be numbers");
+  if (typeof m.version !== "number") {
+    throw new RlmSnapshotCompressionError("Snapshot metadata version must be a number");
+  }
+  if (!Array.isArray(m.savedNames) || !m.savedNames.every(n => typeof n === "string")) {
+    throw new RlmSnapshotCompressionError("Snapshot metadata savedNames must be an array of strings");
+  }
+  if (!Array.isArray(m.skipped) || !m.skipped.every(s => typeof s === "object" && s !== null && typeof (s as any).name === "string" && typeof (s as any).reason === "string")) {
+    throw new RlmSnapshotCompressionError("Snapshot metadata skipped must be an array of {name, reason} objects");
+  }
+  if (typeof m.bytes !== "number" || typeof m.uncompressedBytes !== "number" || typeof m.compressedBytes !== "number") {
+    throw new RlmSnapshotCompressionError("Snapshot metadata bytes, uncompressedBytes, and compressedBytes must be numbers");
   }
   if (!SUPPORTED_COMPRESSION_CODECS.includes(m.compression as CompressionCodec)) {
     throw new UnsupportedCodecError(String(m.compression));
   }
   if (typeof m.compressionRatio !== "number") {
     throw new RlmSnapshotCompressionError("Snapshot metadata compressionRatio must be a number");
+  }
+  if (typeof m.pythonVersion !== "string" || typeof m.timestamp !== "string") {
+    throw new RlmSnapshotCompressionError("Snapshot metadata pythonVersion and timestamp must be strings");
   }
 }
 
@@ -213,6 +230,11 @@ export const CONTRACT_RLM_DILL_COMPRESSION = {
   "INV-SNAP-RATIO-1": {
     id: "INV-SNAP-RATIO-1",
     description: "Compression achieves >= 50% disk space reduction on non-trivial state payloads",
+    verification: "test",
+  },
+  "INV-SNAP-TIME-1": {
+    id: "INV-SNAP-TIME-1",
+    description: "Snapshot stream compression completes within 3000ms latency ceiling",
     verification: "test",
   },
   "FORBIDDEN-1": {

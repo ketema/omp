@@ -424,7 +424,7 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
         raise RlmSnapshotCompressionError(f"Failed to read snapshot file {path}: {exc}") from exc
 
     if len(raw_bytes) == 0:
-        return {"restoredNames": []}
+        raise CorruptSnapshotError("Empty snapshot payload: 0 bytes")
 
     # Detect compression codec from magic header
     codec = _detect_codec(raw_bytes)

@@ -106,6 +106,10 @@ export interface KernelSnapshotManifest {
 	readonly savedNames: readonly string[];
 	readonly skipped: readonly { readonly name: string; readonly reason: string }[];
 	readonly bytes: number;
+	readonly uncompressedBytes?: number;
+	readonly compressedBytes?: number;
+	readonly compression?: string;
+	readonly compressionRatio?: number;
 	readonly pythonVersion: string;
 	readonly timestamp: string;
 }
@@ -132,6 +136,11 @@ export interface KernelOutputEvent {
 
 export interface KernelSnapshotWriteResult {
 	readonly bytes: number;
+	readonly uncompressedBytes?: number;
+	readonly compressedBytes?: number;
+	readonly compression?: string;
+	readonly compressionRatio?: number;
+	readonly compressionDurationMs?: number;
 	readonly skipped: readonly { readonly name: string; readonly reason: string }[];
 }
 
@@ -809,6 +818,10 @@ export class KernelManager {
 				savedNames: filteredNames,
 				skipped: writeResult.skipped,
 				bytes: writeResult.bytes,
+				...(writeResult.uncompressedBytes !== undefined ? { uncompressedBytes: writeResult.uncompressedBytes } : {}),
+				...(writeResult.compressedBytes !== undefined ? { compressedBytes: writeResult.compressedBytes } : {}),
+				...(writeResult.compression !== undefined ? { compression: writeResult.compression } : {}),
+				...(writeResult.compressionRatio !== undefined ? { compressionRatio: writeResult.compressionRatio } : {}),
 				pythonVersion,
 				timestamp: utcIsoTimestamp(this.clock),
 			};
