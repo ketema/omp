@@ -267,6 +267,10 @@ export function buildKernelEnv(session: KernelSession, caps: KernelCaps): Record
 		OMP_RLM_AGENT_DIR: session.agentDir,
 		RLM_MAX_OUTPUT_CHARS: String(caps.maxOutputChars),
 		RLM_SNAPSHOT_MAX_BYTES: String(caps.snapshotMaxBytes),
+		CCABDD_HARNESS: process.env.CCABDD_HARNESS ?? "omp",
+		CCABDD_STATE_SERVER_PATH: process.env.CCABDD_STATE_SERVER_PATH ?? "",
+		HOME: process.env.HOME ?? "",
+		PATH: process.env.PATH ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
 	};
 }
 
