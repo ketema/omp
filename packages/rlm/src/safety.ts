@@ -31,6 +31,7 @@ export const SAFE_SESSION_ENV_KEYS: readonly string[] = [
 	"OMP_RLM_AGENT_DIR",
 	"RLM_MAX_OUTPUT_CHARS",
 	"RLM_SNAPSHOT_MAX_BYTES",
+	"RLM_SNAPSHOT_COMPRESSION",
 ] as const;
 
 /** A-012/F-267: the only model data permitted into Python — bounded catalog
