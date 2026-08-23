@@ -117,65 +117,74 @@ describe("RLM Dill Compression Contracts & Validators", () => {
       : path.join(process.env.HOME ?? "", ".omp", "agent", "kernel-venv", "bin", "python3");
 
     let pythonExe = fs.existsSync(venvPath) ? venvPath : "python3";
+    let tempVenvBase: string | null = null;
 
-    // Safe probe: verify interpreter has required dependencies (dill, numpy)
-    let probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy"], {
-      cwd: pythonDir,
-      env: { ...process.env, PYTHONPATH: pythonDir },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    try {
+      // Safe probe: verify interpreter has required dependencies (dill, numpy)
+      let probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy"], {
+        cwd: pythonDir,
+        env: { ...process.env, PYTHONPATH: pythonDir },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
 
-    if (probe.exitCode !== 0) {
-      // Auto-provision via uv if uv is available in environment
-      const uvFind = Bun.spawnSync(["which", "uv"], { stdout: "pipe" });
-      if (uvFind.exitCode === 0) {
-        const tempVenvBase = fs.mkdtempSync(path.join(os.tmpdir(), "rlm-test-venv-"));
-        try {
-          Bun.spawnSync(["uv", "venv", tempVenvBase], { stdout: "pipe", stderr: "pipe" });
-          const uvPython = path.join(tempVenvBase, "bin", "python3");
-          Bun.spawnSync(["uv", "pip", "install", "--python", uvPython, "dill", "numpy", "ipykernel"], {
-            stdout: "pipe",
-            stderr: "pipe",
-          });
-          if (fs.existsSync(uvPython)) {
-            pythonExe = uvPython;
-            probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy"], {
-              cwd: pythonDir,
-              env: { ...process.env, PYTHONPATH: pythonDir },
+      if (probe.exitCode !== 0) {
+        // Auto-provision via uv if uv is available in environment
+        const uvFind = Bun.spawnSync(["which", "uv"], { stdout: "pipe" });
+        if (uvFind.exitCode === 0) {
+          tempVenvBase = fs.mkdtempSync(path.join(os.tmpdir(), "rlm-test-venv-"));
+          try {
+            Bun.spawnSync(["uv", "venv", tempVenvBase], { stdout: "pipe", stderr: "pipe" });
+            const uvPython = path.join(tempVenvBase, "bin", "python3");
+            Bun.spawnSync(["uv", "pip", "install", "--python", uvPython, "dill", "numpy", "ipykernel"], {
               stdout: "pipe",
               stderr: "pipe",
             });
-          }
+            if (fs.existsSync(uvPython)) {
+              pythonExe = uvPython;
+              probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy"], {
+                cwd: pythonDir,
+                env: { ...process.env, PYTHONPATH: pythonDir },
+                stdout: "pipe",
+                stderr: "pipe",
+              });
+            }
+          } catch {}
+        }
+      }
+
+      if (probe.exitCode !== 0) {
+        const probeErr = new TextDecoder().decode(probe.stderr);
+        throw new Error(
+          `Python runtime environment at '${pythonExe}' is missing required dependencies (dill, numpy): ${probeErr}`,
+        );
+      }
+
+      const proc = Bun.spawn([
+        pythonExe,
+        "-m",
+        "unittest",
+        testFile,
+      ], {
+        cwd: pythonDir,
+        env: {
+          ...process.env,
+          PYTHONPATH: pythonDir,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      const exitCode = await proc.exited;
+      const stderr = await new Response(proc.stderr).text();
+      expect(exitCode).toBe(0);
+      expect(stderr).toContain("OK");
+    } finally {
+      if (tempVenvBase && fs.existsSync(tempVenvBase)) {
+        try {
+          fs.rmSync(tempVenvBase, { recursive: true, force: true });
         } catch {}
       }
     }
-
-    if (probe.exitCode !== 0) {
-      const probeErr = new TextDecoder().decode(probe.stderr);
-      throw new Error(
-        `Python runtime environment at '${pythonExe}' is missing required dependencies (dill, numpy): ${probeErr}`,
-      );
-    }
-
-    const proc = Bun.spawn([
-      pythonExe,
-      "-m",
-      "unittest",
-      testFile,
-    ], {
-      cwd: pythonDir,
-      env: {
-        ...process.env,
-        PYTHONPATH: pythonDir,
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    const exitCode = await proc.exited;
-    const stderr = await new Response(proc.stderr).text();
-    expect(exitCode).toBe(0);
-    expect(stderr).toContain("OK");
   }, 60_000);
 });
