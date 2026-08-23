@@ -371,16 +371,12 @@ def _fsync_dir(dir_path: str) -> None:
         os.close(dir_fd)
 
 
-def _snapshot_write(
-    path: str, manifest_path: str, max_bytes: int
-) -> dict:
-    """Per-variable dill.dumps with transparent stream compression, atomic write, and manifest."""
-    import dill
-    t_start = time.perf_counter()
+def _resolve_snapshot_codec() -> dict[str, Any]:
+    """Validate and resolve RLM_SNAPSHOT_COMPRESSION from the process environment.
 
-    dill.settings["recurse"] = True
-
-    # Validate compression codec configuration with dynamic module loading and gzip fallback
+    Pure lookup, called by _freeze_snapshot_codec(). Not called directly by
+    _snapshot_write() -- see FORBIDDEN-4 (_freeze_snapshot_codec docstring) for why.
+    """
     codec_env = os.environ.get("RLM_SNAPSHOT_COMPRESSION", "auto").strip().lower()
     lzma_mod = None
     gzip_mod = None
@@ -407,6 +403,56 @@ def _snapshot_write(
         codec = "raw"
     else:
         raise SnapshotConfigurationError(f"Unsupported RLM_SNAPSHOT_COMPRESSION: {codec_env}")
+
+    return {"codec": codec, "lzma_mod": lzma_mod, "gzip_mod": gzip_mod}
+
+
+_FROZEN_SNAPSHOT_CODEC: dict[str, Any] | None = None
+
+
+def _freeze_snapshot_codec() -> dict[str, Any]:
+    """FORBIDDEN-4: resolve and cache the snapshot codec exactly once per
+    process lifetime, called from _bootstrap() before any Model-issued cell
+    can execute (REQ-2026-RLM-DILL-COMPRESSION.md Actor Matrix line 44:
+    "Model SHALL NOT disable kernel snapshot compression"). Idempotent: a
+    later call (including from _snapshot_write() as a safety net for callers
+    that invoke it without going through _bootstrap(), e.g. unit tests)
+    returns the already-frozen value rather than re-reading the now-mutable
+    process environment.
+
+    This freeze is a Model-CONDUCT boundary, not a security sandbox
+    boundary: per SAFE_TRUST_POSTURE (safety.ts:43), the kernel gives model
+    code the worker OS's own permissions in this same process, so no
+    in-process guard can be made tamper-proof against a Model cell that
+    deliberately goes looking for it (e.g. via gc/sys.modules
+    introspection). Its purpose is to close the ordinary, non-adversarial
+    path Copilot flagged -- re-reading a mutable env var on every write --
+    not to defend against a Model actively trying to defeat it. No
+    dedicated "undo the freeze" function is exposed at module scope for
+    this reason; tests that need a fresh-launch simulation reset the module
+    global directly (test_rlm_dill_compression.py tearDown).
+    """
+    global _FROZEN_SNAPSHOT_CODEC
+    if _FROZEN_SNAPSHOT_CODEC is None:
+        _FROZEN_SNAPSHOT_CODEC = _resolve_snapshot_codec()
+    return _FROZEN_SNAPSHOT_CODEC
+
+
+def _snapshot_write(
+    path: str, manifest_path: str, max_bytes: int
+) -> dict:
+    """Per-variable dill.dumps with transparent stream compression, atomic write, and manifest."""
+    import dill
+    t_start = time.perf_counter()
+
+    dill.settings["recurse"] = True
+
+    # FORBIDDEN-4: use the codec frozen at bootstrap, never a fresh read of
+    # the (Model-mutable) process environment -- see _freeze_snapshot_codec.
+    codec_config = _freeze_snapshot_codec()
+    codec = codec_config["codec"]
+    lzma_mod = codec_config["lzma_mod"]
+    gzip_mod = codec_config["gzip_mod"]
 
     ns = _get_ns()
     names = _snapshot_names()
@@ -495,9 +541,69 @@ def _snapshot_write(
             fh.flush()
             os.fsync(fh.fileno())
 
-        # Phase 3: Direct atomic replace (in POSIX, each os.replace is atomic so prior file remains intact until replacement)
-        os.replace(tmp_path, path)
-        os.replace(manifest_tmp, manifest_path)
+        # Phase 3: Commit the payload, then the manifest. A hard link (not a
+        # rename) preserves the prior generation under path + ".bak" WITHOUT
+        # ever unlinking `path` itself, so `path` always resolves to a valid
+        # generation (old, then new) even if the process is killed between
+        # these two replaces -- unlike a move-based backup, which would
+        # leave `path` briefly absent (regression caught in peer review). If
+        # the manifest commit fails after the payload commit succeeded, roll
+        # `path` back to the prior generation via the backup hard link, so a
+        # REPORTED failure has no partial effect on disk (ERRORS-4). Two
+        # independent os.replace calls still cannot be made one atomic
+        # operation without directory-swap machinery (out of scope here);
+        # this closes the trappable half of that gap only. The residual
+        # window (an unstoppable process kill between the two replaces) can
+        # still leave a stale kernel-state.json describing the prior
+        # generation; that is bounded, not silent, because TypeScript's
+        # KernelManager independently overwrites this file with
+        # authoritative telemetry on every SUCCESSFUL snapshot and skips
+        # that write on failure (kernel.ts:818-835).
+        payload_backup = path + ".bak" if os.path.exists(path) else None
+        if payload_backup is not None:
+            if os.path.exists(payload_backup):
+                os.remove(payload_backup)
+            os.link(path, payload_backup)
+        try:
+            os.replace(tmp_path, path)
+            os.replace(manifest_tmp, manifest_path)
+        except OSError as commit_exc:
+            try:
+                if payload_backup is not None:
+                    os.replace(payload_backup, path)
+                    # POSIX rename() is a documented no-op (source is NOT
+                    # unlinked) when src and dst already reference the same
+                    # inode -- the case when the FIRST os.replace(tmp_path,
+                    # path) failed, leaving `path` untouched and still
+                    # hard-linked to `payload_backup`. Reclaim the backup
+                    # explicitly so it never lingers as an orphan.
+                    if os.path.exists(payload_backup):
+                        os.remove(payload_backup)
+                elif os.path.exists(path):
+                    # Peer review Defect B: first-ever snapshot has no prior
+                    # generation to roll back to. Remove the just-committed
+                    # payload too, so a reported failure has no partial
+                    # effect on disk (ERRORS-4) regardless of whether a
+                    # prior generation existed.
+                    os.remove(path)
+            except OSError as rollback_exc:
+                raise RlmSnapshotCompressionError(
+                    f"Atomic snapshot write failed and payload rollback also failed "
+                    f"(disk state indeterminate for path={path!r}, "
+                    f"manifest_path={manifest_path!r}): commit error={commit_exc}; "
+                    f"rollback error={rollback_exc}"
+                ) from commit_exc
+            raise
+        else:
+            # Peer review Defect A: cleanup of the now-unneeded backup must
+            # never turn a SUCCESSFUL commit into a reported failure -- both
+            # replaces already landed by this point. Swallow cleanup errors
+            # the same way the outer handler swallows .tmp cleanup errors.
+            try:
+                if payload_backup is not None and os.path.exists(payload_backup):
+                    os.remove(payload_backup)
+            except OSError:
+                pass
         # FORBIDDEN-2/3: file contents were fsynced above, but the directory
         # entries created by these renames were not — without this, a power
         # loss can still lose either rename despite the advertised atomic-
@@ -606,6 +712,10 @@ def _bootstrap() -> None:
 
     # Import the runtime package
     import rlm  # noqa: F401
+
+    # FORBIDDEN-4: freeze the snapshot codec now, before any Model-issued
+    # cell can execute (REQ-2026-RLM-DILL-COMPRESSION.md Actor Matrix line 44).
+    _freeze_snapshot_codec()
 
 
 # ---------------------------------------------------------------------------
