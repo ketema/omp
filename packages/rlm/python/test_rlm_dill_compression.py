@@ -117,7 +117,7 @@ class TestRlmDillCompression(unittest.TestCase):
     def test_inv_snap_ratio_1_size_reduction(self):
         """INV-SNAP-RATIO-1: Compression achieves >= 50% reduction on numerical array payload."""
         ns = rlm_kernel_runner._get_ns()
-        ns["big_array"] = np.random.randn(500, 500) # ~2MB array
+        ns["big_array"] = np.arange(250000).reshape(500, 500) # ~2MB structured array
 
         os.environ["RLM_SNAPSHOT_COMPRESSION"] = "lzma"
         rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)

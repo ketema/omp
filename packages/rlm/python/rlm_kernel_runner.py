@@ -228,6 +228,53 @@ def _install_interrupt_handler() -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Snapshot Compression Exceptions
+# ---------------------------------------------------------------------------
+
+
+class RlmSnapshotCompressionError(Exception):
+    """Base exception for snapshot compression errors."""
+    pass
+
+
+class CorruptSnapshotError(RlmSnapshotCompressionError):
+    """Raised when a snapshot file payload is corrupted or truncated."""
+    pass
+
+
+class UnsupportedCodecError(RlmSnapshotCompressionError):
+    """Raised when a snapshot binary magic header is unrecognized."""
+    pass
+
+
+class SnapshotConfigurationError(RlmSnapshotCompressionError):
+    """Raised when RLM_SNAPSHOT_COMPRESSION is configured with an unsupported value."""
+    pass
+
+
+def _detect_codec(data: bytes) -> str:
+    """Inspect magic bytes to determine compression codec (lzma, gzip, or raw)."""
+    if len(data) < 1:
+        raise CorruptSnapshotError("Empty snapshot payload: 0 bytes")
+
+    # LZMA: 0xFD '7' 'z' 'X' 'Z' 0x00
+    if len(data) >= 6 and data.startswith(b"\xfd7zXZ\x00"):
+        return "lzma"
+
+    # Gzip: 0x1F 0x8B
+    if len(data) >= 2 and data.startswith(b"\x1f\x8b"):
+        return "gzip"
+
+    # Legacy Python pickle / dill protocol 2/3/4/5: starts with 0x80
+    if data[0] == 0x80:
+        return "raw"
+
+    raise UnsupportedCodecError(
+        f"Unrecognized magic header: {[hex(b) for b in data[:6]]}"
+    )
+
+
 def _snapshot_names() -> list[str]:
     """Top-level user_ns names excluding builtins and the always-skip set."""
     ns = _get_ns()
@@ -248,10 +295,23 @@ def _snapshot_names() -> list[str]:
 def _snapshot_write(
     path: str, manifest_path: str, max_bytes: int
 ) -> dict:
-    """Per-variable dill.dumps with atomic write and manifest."""
+    """Per-variable dill.dumps with transparent stream compression, atomic write, and manifest."""
     import dill
+    import gzip
+    import lzma
 
     dill.settings["recurse"] = True
+
+    # Validate compression codec configuration
+    codec_env = os.environ.get("RLM_SNAPSHOT_COMPRESSION", "lzma").strip().lower()
+    if codec_env in ("lzma", "xz"):
+        codec = "lzma"
+    elif codec_env == "gzip":
+        codec = "gzip"
+    elif codec_env in ("raw", "none", "uncompressed"):
+        codec = "raw"
+    else:
+        raise SnapshotConfigurationError(f"Unsupported RLM_SNAPSHOT_COMPRESSION: {codec_env}")
 
     ns = _get_ns()
     names = _snapshot_names()
@@ -277,28 +337,55 @@ def _snapshot_write(
         payload[name] = blob
         total += len(blob)
 
-    # Atomic write: temp file in same directory, then os.replace
+    # Serialize raw dictionary payload
+    raw_payload_bytes = dill.dumps(payload)
+    uncompressed_bytes = len(raw_payload_bytes)
+
+    # Compress stream according to configured codec
+    if codec == "lzma":
+        compressed_payload_bytes = lzma.compress(raw_payload_bytes, preset=0)
+    elif codec == "gzip":
+        compressed_payload_bytes = gzip.compress(raw_payload_bytes, compresslevel=1)
+    else:
+        compressed_payload_bytes = raw_payload_bytes
+
+    # Atomic write: write to temp file in same directory, flush, fsync, then os.replace
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp_path = path + ".tmp"
     try:
         with open(tmp_path, "wb") as fh:
-            dill.dump(payload, fh)
+            fh.write(compressed_payload_bytes)
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp_path, path)
-    except Exception:
+    except Exception as exc:
         try:
-            os.remove(tmp_path)
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
         except OSError:
             pass
-        raise
+        if isinstance(exc, RlmSnapshotCompressionError):
+            raise
+        raise RlmSnapshotCompressionError(f"Atomic snapshot write failed: {exc}") from exc
 
     bytes_written = os.path.getsize(path)
     saved = sorted(payload.keys())
+
+    compression_ratio = (
+        round((1.0 - (bytes_written / uncompressed_bytes)) * 100.0, 2)
+        if uncompressed_bytes > 0
+        else 0.0
+    )
 
     manifest = {
         "version": 1,
         "savedNames": saved,
         "skipped": skipped,
         "bytes": bytes_written,
+        "uncompressedBytes": uncompressed_bytes,
+        "compressedBytes": bytes_written,
+        "compression": codec,
+        "compressionRatio": compression_ratio,
         "pythonVersion": sys.version.split()[0],
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
@@ -308,24 +395,54 @@ def _snapshot_write(
     except Exception:
         pass
 
-    return {"bytes": bytes_written, "skipped": skipped}
+    return {
+        "bytes": bytes_written,
+        "uncompressedBytes": uncompressed_bytes,
+        "compressedBytes": bytes_written,
+        "compression": codec,
+        "compressionRatio": compression_ratio,
+        "skipped": skipped,
+    }
 
 
 def _snapshot_restore(path: str, manifest_path: str) -> dict:
-    """Load the payload and inject names into user_ns."""
+    """Load the payload with transparent decompression auto-detection and inject names into user_ns."""
     import dill
+    import gzip
+    import lzma
 
     if not os.path.exists(path):
         return {"restoredNames": []}
 
     try:
         with open(path, "rb") as fh:
-            payload = dill.load(fh)
-    except Exception:
+            raw_bytes = fh.read()
+    except Exception as exc:
+        raise RlmSnapshotCompressionError(f"Failed to read snapshot file {path}: {exc}") from exc
+
+    if len(raw_bytes) == 0:
         return {"restoredNames": []}
 
+    # Detect compression codec from magic header
+    codec = _detect_codec(raw_bytes)
+
+    try:
+        if codec == "lzma":
+            decompressed = lzma.decompress(raw_bytes)
+        elif codec == "gzip":
+            decompressed = gzip.decompress(raw_bytes)
+        else:
+            decompressed = raw_bytes
+    except Exception as exc:
+        raise CorruptSnapshotError(f"Decompression failed for codec {codec}: {exc}") from exc
+
+    try:
+        payload = dill.loads(decompressed)
+    except Exception as exc:
+        raise CorruptSnapshotError(f"Dill unpickling failed: {exc}") from exc
+
     if not isinstance(payload, dict):
-        return {"restoredNames": []}
+        raise CorruptSnapshotError(f"Expected dict payload, got {type(payload).__name__}")
 
     ns = _get_ns()
     restored = []
@@ -342,6 +459,7 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
 # ---------------------------------------------------------------------------
 # Bootstrap
 # ---------------------------------------------------------------------------
+
 
 
 def _bootstrap() -> None:
