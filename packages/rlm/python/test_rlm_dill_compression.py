@@ -1,0 +1,227 @@
+"""Adversarial RED Phase unit tests for RLM transparent snapshot compression.
+
+Contract Authority: requirements/contracts/rlm-dill-compression.contract.ts
+Requirements Manifest: requirements/REQ-2026-RLM-DILL-COMPRESSION.md
+Issue: ketema/omp#15
+"""
+
+import gzip
+import json
+import lzma
+import os
+import shutil
+import tempfile
+import time
+import unittest
+import numpy as np
+import dill
+
+# Import runner methods to test
+import rlm_kernel_runner
+
+
+class TestRlmDillCompression(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp(prefix="rlm_comp_test_")
+        self.snapshot_path = os.path.join(self.test_dir, "kernel-state.dill")
+        self.manifest_path = os.path.join(self.test_dir, "kernel-state.json")
+        # Ensure clean user namespace
+        ns = rlm_kernel_runner._get_ns()
+        ns.clear()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+        if "RLM_SNAPSHOT_COMPRESSION" in os.environ:
+            del os.environ["RLM_SNAPSHOT_COMPRESSION"]
+
+    def test_post_snap_compress_1_lzma_header(self):
+        """POST-SNAP-COMPRESS-1: Snapshot file is compressed with LZMA magic header by default."""
+        ns = rlm_kernel_runner._get_ns()
+        ns["arr"] = np.arange(10000)
+        ns["msg"] = "hello transparent compression"
+
+        os.environ["RLM_SNAPSHOT_COMPRESSION"] = "lzma"
+        result = rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+
+        self.assertTrue(os.path.exists(self.snapshot_path))
+        with open(self.snapshot_path, "rb") as f:
+            header = f.read(6)
+
+        # POST-SNAP-COMPRESS-1: Must begin with LZMA magic bytes
+        self.assertEqual(header, bytes([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]), f"Expected LZMA magic header, got: {header!r}")
+        self.assertGreater(result["bytes"], 0)
+
+    def test_post_snap_compress_1_gzip_header(self):
+        """POST-SNAP-COMPRESS-1: Snapshot file is compressed with Gzip header when configured."""
+        ns = rlm_kernel_runner._get_ns()
+        ns["matrix"] = np.random.randn(200, 200)
+
+        os.environ["RLM_SNAPSHOT_COMPRESSION"] = "gzip"
+        result = rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+
+        self.assertTrue(os.path.exists(self.snapshot_path))
+        with open(self.snapshot_path, "rb") as f:
+            header = f.read(2)
+
+        # POST-SNAP-COMPRESS-1: Must begin with Gzip magic bytes 
+        self.assertEqual(header, bytes([0x1f, 0x8b]), f"Expected Gzip magic header, got: {header!r}")
+
+    def test_post_snap_restore_1_decompression_roundtrip(self):
+        """POST-SNAP-RESTORE-1: _snapshot_restore decompresses and restores exact namespace variables."""
+        ns = rlm_kernel_runner._get_ns()
+        test_arr = np.linspace(0, 100, 5000)
+        test_dict = {"a": 1, "b": [1, 2, 3], "c": "test"}
+        ns["test_arr"] = test_arr
+        ns["test_dict"] = test_dict
+
+        # Save compressed
+        os.environ["RLM_SNAPSHOT_COMPRESSION"] = "lzma"
+        rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+
+        # Clear namespace
+        ns.clear()
+        self.assertNotIn("test_arr", ns)
+        self.assertNotIn("test_dict", ns)
+
+        # Restore
+        res = rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+        self.assertIn("test_arr", res["restoredNames"])
+        self.assertIn("test_dict", res["restoredNames"])
+
+        # POST-SNAP-RESTORE-1: Verify exact object and array equivalence
+        np.testing.assert_array_equal(ns["test_arr"], test_arr)
+        self.assertEqual(ns["test_dict"], test_dict)
+
+    def test_inv_snap_compat_1_legacy_uncompressed_restore(self):
+        """INV-SNAP-COMPAT-1: Legacy uncompressed snapshots starting with 0x80 restore cleanly."""
+        ns = rlm_kernel_runner._get_ns()
+        legacy_data = {"legacy_x": 42, "legacy_msg": "uncompressed legacy"}
+
+        # Write raw uncompressed dill dictionary payload
+        payload = {k: dill.dumps(v) for k, v in legacy_data.items()}
+        with open(self.snapshot_path, "wb") as f:
+            dill.dump(payload, f)
+
+        # Verify it has raw pickle header (0x80)
+        with open(self.snapshot_path, "rb") as f:
+            first_byte = f.read(1)
+        self.assertEqual(first_byte, bytes([0x80]))
+
+        # Restore from uncompressed
+        res = rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+        self.assertIn("legacy_x", res["restoredNames"])
+        self.assertIn("legacy_msg", res["restoredNames"])
+        self.assertEqual(ns["legacy_x"], 42)
+        self.assertEqual(ns["legacy_msg"], "uncompressed legacy")
+
+    def test_inv_snap_ratio_1_size_reduction(self):
+        """INV-SNAP-RATIO-1: Compression achieves >= 50% reduction on numerical array payload."""
+        ns = rlm_kernel_runner._get_ns()
+        ns["big_array"] = np.random.randn(500, 500) # ~2MB array
+
+        os.environ["RLM_SNAPSHOT_COMPRESSION"] = "lzma"
+        rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+
+        with open(self.manifest_path) as f:
+            manifest = json.load(f)
+
+        self.assertIn("uncompressedBytes", manifest)
+        self.assertIn("compressedBytes", manifest)
+        self.assertIn("compressionRatio", manifest)
+        self.assertGreaterEqual(
+            manifest["compressionRatio"],
+            50.0,
+            f"Expected compression ratio >= 50%, got {manifest['compressionRatio']}%",
+        )
+
+    def test_inv_snap_time_1_latency_bound(self):
+        """INV-SNAP-TIME-1: Serialization and stream compression completes in < 3000ms."""
+        ns = rlm_kernel_runner._get_ns()
+        ns["array_5mb"] = np.random.randn(1000, 625) # ~5MB
+
+        t0 = time.time()
+        rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+        duration_ms = (time.time() - t0) * 1000.0
+
+        self.assertLess(
+            duration_ms,
+            3000.0,
+            f"Snapshot write exceeded 3000ms latency ceiling: took {duration_ms:.2f}ms",
+        )
+
+    def test_forbidden_1_no_raw_bytes_when_compressed(self):
+        """FORBIDDEN-1: Snapshot file must not begin with uncompressed 0x80 pickle byte when compression active."""
+        ns = rlm_kernel_runner._get_ns()
+        ns["val"] = 12345
+
+        os.environ["RLM_SNAPSHOT_COMPRESSION"] = "lzma"
+        rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+
+        with open(self.snapshot_path, "rb") as f:
+            first_byte = f.read(1)
+
+        self.assertNotEqual(first_byte, bytes([0x80]), "FORBIDDEN-1 violation: wrote uncompressed pickle byte 0x80")
+
+    def test_forbidden_2_and_3_atomic_write_and_tmp_cleanup(self):
+        """FORBIDDEN-2 & FORBIDDEN-3: Atomic .tmp replacement with immediate cleanup on failure."""
+        tmp_path = self.snapshot_path + ".tmp"
+        self.assertFalse(os.path.exists(tmp_path))
+
+        ns = rlm_kernel_runner._get_ns()
+        ns["data"] = "atomic test"
+        rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+
+        # Temporary file must not remain after successful write
+        self.assertFalse(os.path.exists(tmp_path), "FORBIDDEN-3 violation: orphaned .tmp file left behind")
+        self.assertTrue(os.path.exists(self.snapshot_path))
+
+    def test_errors_1_corrupt_payload_fails_fast(self):
+        """ERRORS-1: Corrupt or truncated compressed payload raises CorruptSnapshotError."""
+        # Write valid LZMA header followed by garbage
+        with open(self.snapshot_path, "wb") as f:
+            f.write(bytes([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00, 0xde, 0xad, 0xbe, 0xef, 0x00, 0x01, 0x02]))
+
+        with self.assertRaises(Exception) as ctx:
+            rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+
+        err_name = type(ctx.exception).__name__
+        self.assertIn(
+            err_name,
+            ["CorruptSnapshotError", "RlmSnapshotCompressionError", "LZMAError"],
+            f"Expected CorruptSnapshotError or LZMAError, got {err_name}",
+        )
+
+    def test_errors_2_unsupported_header_fails_fast(self):
+        """ERRORS-2: Unrecognized magic header raises UnsupportedCodecError."""
+        with open(self.snapshot_path, "wb") as f:
+            f.write(b"UNKNOWN_BINARY_HEADER_12345")
+
+        with self.assertRaises(Exception) as ctx:
+            rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+
+        err_name = type(ctx.exception).__name__
+        self.assertIn(
+            err_name,
+            ["UnsupportedCodecError", "RlmSnapshotCompressionError", "CorruptSnapshotError"],
+            f"Expected UnsupportedCodecError, got {err_name}",
+        )
+
+    def test_errors_3_invalid_compression_config(self):
+        """ERRORS-3: Unsupported RLM_SNAPSHOT_COMPRESSION value raises SnapshotConfigurationError."""
+        os.environ["RLM_SNAPSHOT_COMPRESSION"] = "invalid_bzip3_codec"
+        ns = rlm_kernel_runner._get_ns()
+        ns["x"] = 1
+
+        with self.assertRaises(Exception) as ctx:
+            rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024)
+
+        err_name = type(ctx.exception).__name__
+        self.assertIn(
+            err_name,
+            ["SnapshotConfigurationError", "RlmSnapshotCompressionError", "ValueError"],
+            f"Expected SnapshotConfigurationError or ValueError, got {err_name}",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

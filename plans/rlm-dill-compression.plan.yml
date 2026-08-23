@@ -1,0 +1,54 @@
+schema_version: '1.0'
+feature_name: rlm-dill-compression
+manifest_path: requirements/REQ-2026-RLM-DILL-COMPRESSION.md
+manifest_hash: sha256:3b58c705f7ac02c2db577829cd0c04633e187aee47bb661e315bd6f9ec1614a9
+created: '2026-08-22'
+last_updated: '2026-08-22'
+status: ACTIVE
+slices:
+- id: SLICE-1
+  clauses_in_scope:
+  - POST-SNAP-COMPRESS-1
+  - POST-SNAP-RESTORE-1
+  - POST-SNAP-MANIFEST-1
+  - POST-SNAP-TIME-1
+  - POST-SNAP-SKIP-1
+  - INV-SNAP-COMPAT-1
+  - INV-SNAP-DETECT-1
+  - INV-SNAP-RATIO-1
+  - INV-SNAP-TIME-1
+  - SEQ-1
+  - SEQ-2
+  - SEQ-3
+  - SEQ-4
+  - SEQ-5
+  - ERRORS-1
+  - ERRORS-2
+  - ERRORS-3
+  - ERRORS-4
+  - IP-1
+  - IP-2
+  - IP-3
+  - IP-4
+  - IP-5
+  clauses_deferred: []
+  negative_constraints:
+  - FORBIDDEN-1
+  - FORBIDDEN-2
+  - FORBIDDEN-3
+  status: PENDING
+  depends_on: []
+  issue: '#15'
+  pivot_note: Transparent snapshot compression reduces on-disk footprint by >=50%
+    with deterministic magic header auto-detection on restore.
+pivot_guidance:
+- 'After SLICE-1 AUDIT: verify Gate 3 (CL12-E traceability), compression ratio bounds,
+  and legacy uncompressed restore parity.'
+forgotten_invariants:
+- INV-SNAP-COMPAT-1
+- INV-SNAP-DETECT-1
+- INV-SNAP-RATIO-1
+- INV-SNAP-TIME-1
+- FORBIDDEN-1
+- FORBIDDEN-2
+- FORBIDDEN-3
