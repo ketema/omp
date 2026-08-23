@@ -112,17 +112,42 @@ describe("RLM Dill Compression Contracts & Validators", () => {
     const testFile = path.join(pythonDir, "test_rlm_dill_compression.py");
 
     const venvPath = process.env.VIRTUAL_ENV
-      ? `${process.env.VIRTUAL_ENV}/bin/python3`
-      : `${process.env.HOME}/.omp/agent/kernel-venv/bin/python3`;
-    const pythonExe = fs.existsSync(venvPath) ? venvPath : "python3";
+      ? path.join(process.env.VIRTUAL_ENV, "bin", "python3")
+      : path.join(process.env.HOME ?? "", ".omp", "agent", "kernel-venv", "bin", "python3");
+
+    let pythonExe = fs.existsSync(venvPath) ? venvPath : "python3";
 
     // Safe probe: verify interpreter has required dependencies (dill, numpy)
-    const probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy"], {
+    let probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy"], {
       cwd: pythonDir,
       env: { ...process.env, PYTHONPATH: pythonDir },
       stdout: "pipe",
       stderr: "pipe",
     });
+
+    if (probe.exitCode !== 0) {
+      // Auto-provision via uv if uv is available in environment
+      const uvFind = Bun.spawnSync(["which", "uv"], { stdout: "pipe" });
+      if (uvFind.exitCode === 0) {
+        const venvDir = path.join(process.env.HOME ?? "/tmp", ".omp", "agent", "kernel-venv");
+        fs.mkdirSync(venvDir, { recursive: true });
+        Bun.spawnSync(["uv", "venv", venvDir], { stdout: "pipe", stderr: "pipe" });
+        const uvPython = path.join(venvDir, "bin", "python3");
+        Bun.spawnSync(["uv", "pip", "install", "--python", uvPython, "dill", "numpy", "ipykernel"], {
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        if (fs.existsSync(uvPython)) {
+          pythonExe = uvPython;
+          probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy"], {
+            cwd: pythonDir,
+            env: { ...process.env, PYTHONPATH: pythonDir },
+            stdout: "pipe",
+            stderr: "pipe",
+          });
+        }
+      }
+    }
 
     if (probe.exitCode !== 0) {
       const probeErr = new TextDecoder().decode(probe.stderr);
@@ -150,5 +175,5 @@ describe("RLM Dill Compression Contracts & Validators", () => {
     const stderr = await new Response(proc.stderr).text();
     expect(exitCode).toBe(0);
     expect(stderr).toContain("OK");
-  }, 30_000);
+  }, 60_000);
 });
