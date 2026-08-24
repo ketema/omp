@@ -102,9 +102,20 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.galleryHelp,
 	},
 	{
+		name: "git",
+		load: () => import("./commands/git").then(m => m.default),
+		help: commandHelp.gitHelp,
+	},
+	{
 		name: "grievances",
 		load: () => import("./commands/grievances").then(m => m.default),
 		help: commandHelp.grievancesHelp,
+	},
+	{
+		name: "images",
+		load: () => import("./commands/images").then(m => m.default),
+		aliases: ["img"],
+		help: commandHelp.imagesHelp,
 	},
 	{
 		name: "install",
@@ -155,6 +166,11 @@ export const commands: CommandEntry[] = [
 		name: "read",
 		load: () => import("./commands/read").then(m => m.default),
 		help: commandHelp.readHelp,
+	},
+	{
+		name: "render",
+		load: () => import("./commands/render").then(m => m.default),
+		help: commandHelp.renderHelp,
 	},
 	{
 		name: "ssh",
