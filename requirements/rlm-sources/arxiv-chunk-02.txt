@@ -1,0 +1,473 @@
+. An LLM Refiner edits
+ℋ
+\mathcal{H}
+from the most recent trajectory window during a single continuous episode, generalizing prompt-optimization methods that rewrite only
+p
+p
+from complete-episode resets
+[
+1
+,
+14
+]
+to a method that rewrites the full state from the trajectory so far.
+Write
+s
+t
+=
+(
+o
+t
+,
+m
+t
+)
+s_{t}=(o_{t},m_{t})
+for the agent’s observation at step
+t
+t
+. The
+inner loop
+is the standard agent step: the model
+M
+M
+wrapped by the current harness
+ℋ
+t
+\mathcal{H}_{t}
+produces an action
+a
+t
+a_{t}
+from
+s
+t
+s_{t}
+and the trajectory so far. The
+outer loop
+is harness refinement: every
+F
+F
+steps after a warm-up of
+W
+W
+steps, a Refiner reads the recent trajectory window for failure signatures and emits per-component edits
+Δ
+=
+(
+Δ
+​
+p
+,
+Δ
+​
+𝒢
+,
+Δ
+​
+𝒦
+,
+Δ
+​
+ℳ
+)
+\Delta=(\Delta p,\Delta\mathcal{G},\Delta\mathcal{K},\Delta\mathcal{M})
+. The agent does not reset; the updated harness
+ℋ
+t
++
+1
+=
+ℋ
+t
+⊕
+Δ
+\mathcal{H}_{t+1}=\mathcal{H}_{t}\oplus\Delta
+enters the agent’s context on the next step (
+Figure
+2
+a), with
+p
+p
+replaced by
+Δ
+​
+p
+\Delta p
+and
+𝒢
+,
+𝒦
+,
+ℳ
+\mathcal{G},\mathcal{K},\mathcal{M}
+receiving CRUD-style operations (create, read, update, delete). The Agent and Refiner roles share the same model
+M
+M
+, ablated across Gemini 3.1 Pro, Flash, and Flash-Lite (
+Section
+4
+). In our GPP runs, the Refiner role for the system prompt and pre-built primitives was performed manually by humans observing the livestream;
+Continual Harness
+automates it. Both the agent and the Refiner issue edits through the same meta-tool API (
+Section
+2
+); they differ only in when each is invoked and on what trajectory context.
+3.2  Refinement Loop
+The Refiner reads
+τ
+t
+−
+F
+:
+t
+\tau_{t-F:t}
+and identifies failure signatures over the window: navigation loops, tool-call failures, stalled objectives, and missed exploration opportunities. It then runs four passes, one per component: (i) it rewrites the prompt
+p
+p
+conditioned on the identified failures and the trajectory window; (ii) it creates sub-agent entries for repeated multi-step patterns, edits existing entries to address detected failures, and deletes entries that have not been invoked productively; (iii) it codifies skills from successful sequences and repairs executable code that raised exceptions; (iv) it adds memory entries to fill gaps, updates stale entries, and demotes importance for areas the agent has moved past.
+Refinement information accumulates monotonically over the episode: failure signatures observed earlier in the trajectory remain available to all subsequent refinement passes, so refinement quality compounds with episode length, while reset-based methods restart this accumulation after each update.
+Continual Harness
+can also target failure modes that only appear deep in an episode (late-game battles, multi-step puzzles, dialogue chains), which reset-based approaches cannot reach by construction since each iteration resets to the initial state. Beyond these technical advantages, reset-free is also the practically dominant regime for long-running coding agents, embodied agents, and ops tasks where free environment resets are costly or unavailable.
+3.3  Continual Model-Harness Co-Learning Loop
+Figure
+2
+b instantiates Continual Harness as a training loop for an open-source model. After warm-up stages (Appendix
+D
+), each online iteration runs
+π
+θ
+k
+\pi_{\theta_{k}}
+inside a live-refining harness
+ℋ
+t
+\mathcal{H}_{t}
+for
+K
+=
+256
+K{=}256
+steps. A pairwise process reward model (PRM)
+R
+⁡
+(
+s
+t
+,
+a
+t
+,
+τ
+)
+∈
+[
+0
+,
+1
+]
+R(s_{t},a_{t},\tau)\in[0,1]
+scores each transition over a sliding window of recent transitions (component weights in Appendix
+D
+); low-reward windows are relabeled by a frontier teacher, and a soft SFT update on the relabeled shard produces
+θ
+k
++
+1
+\theta_{k+1}
+. The loop is reset-free since the saved emulator state at the end of iteration
+k
+k
+is loaded as the start of iteration
+k
++
+1
+k{+}1
+, so the model’s in-game position accumulates across training rather than restarting.
+The trajectory distribution
+𝒟
+θ
+\mathcal{D}_{\theta}
+depends on
+θ
+\theta
+through the harness. The model’s actions induce
+τ
+\tau
+, the Refiner reads
+τ
+\tau
+to update
+ℋ
+t
+\mathcal{H}_{t}
+, and
+ℋ
+t
+\mathcal{H}_{t}
+in turn shapes the next observation distribution. Both the model weights
+θ
+\theta
+and the harness state
+ℋ
+t
+\mathcal{H}_{t}
+are updated by this loop, where
+θ
+\theta
+is updated across iterations (via SFT on relabeled trajectories) and
+ℋ
+t
+\mathcal{H}_{t}
+within each iteration (via the Refiner).
+4  Experiments
+We organize our experiments around the contributions from
+Section
+1
+: our GPP project results (
+Section
+4.2
+),
+Continual Harness
+closing the gap to a hand-engineered harness (
+Section
+4.3
+), showing improvements with reset-free experience that can bootstrap runs if one does choose to reset, and continual model-harness co-learning for open-source students (
+Section
+4.5
+).
+Section
+4.6
+attributes these gains to in-loop refinement on each of the harness components, and additional details are in the appendix.
+4.1  Setup
+Environments and metric.
+We evaluate on Pokémon Red and Emerald, two RPGs in the same genre that differ in map layout, mechanics, and difficulty. We use the standardized milestone evaluation from the PokeAgent Challenge
+[
+5
+]
+. The primary metric is
+cumulative button presses to milestone
+.
+Harness conditions.
+ℋ
+min
+\mathcal{H}_{\min}
+: frames, local text map, buttons, generic system prompt; no sub-agents, memory, or skills.
+ℋ
+expert
+\mathcal{H}_{\mathrm{expert}}
+: the hand-designed harness of PokeAgent
+[
+5
+]
+and fixed GPP harness with built sub-agents, A
+∗
+pathfinding, type chart, damage calculator, and curated objectives.
+ℋ
+CH
+\mathcal{H}_{\mathrm{CH}}
+: starts from
+ℋ
+min
+\mathcal{H}_{\min}
+and refines during gameplay via
+Figure
+2
+; three variants:
+from scratch
+,
+bootstrap frozen
+(loads a successful from-scratch run, refinement disabled),
+bootstrap updating
+(same bootstrap, refinement continues).
+Models and seeds.
+we use Gemini 3 variants (Pro, Flash, Flash-Lite) across all harness conditions, and for open-source transfer (
+Section
+4.5
+) we use Gemma-4 (E2B, E4B, 26B MoE, 31B dense). We use at least three seeds across all experiments. We report seed medians with per-seed traces at reduced opacity.
+4.2  Gemini Plays Pokémon completes multiple RPGs
+Our GPP project ran Gemini models live through Pokémon Blue (May 2025), Yellow Legacy on hard mode (August 2025), and Crystal without a lost end-game battle (November 2025), making GPP the first AI system to complete multiple Pokémon RPGs. Since GPP used a mix of human designed and agent iterated harness, we highlight specific cases where we explored harness refinement over thousands of hours of gameplay.
+Emergent Continual Harness behavior through skills.
+Our Blue-era GPP harness relied on hand-authored specialists such as Pathfinder Agent and Boulder Puzzle Strategist. From Yellow Legacy onward we replaced these with general skills (
+define_agent
+,
+run_code
+, notepad edits) and let the model build its own harness. Unprompted behaviors included wrapping an
+autopress_buttons
+sandbox loophole into a general
+press_sequence
+primitive, developing named multi-stage battle strategies (“Operation Zombie Phoenix” on Crystal’s final Red fight), and authoring an explicit truth-table representation of the Goldenrod Underground switch puzzle in the notepad.
+Quantitative harness growth.
+Figure
+3
+reports CRUD operations (creation, update, delete) on skill and sub-agent definitions across our Yellow Legacy run. Updates persist throughout the run rather than converging to a fixed harness, and concentrate on a small subset of navigation and battle components.
+Figure
+4
+reports structural metrics of one such component, the
+battle_strategist_agent
+prompt, across successive revisions during the Elite Four phase. The prompt cycles between growth and simplification, and undergoes a structural rewrite in which per-decision logic is absorbed into a
+master_battle_agent
+that dispatches to named sub-checks. Across both figures the process is the same: a small set of components is repeatedly updated and periodically rewritten. Quality is established separately by GPP’s completion record. We generalize GPP’s mixed methodology to create Continual Harness, which fully automates this process for all modules. Additional results in Appendix
+B
+.
+Figure 3
+:
+Yellow Legacy harness refinement is concentrated and recurrent rather than uniform.
+(a) Counts of CRUD operations (creation, update, delete) on skill and sub-agent definitions, binned per 2,000 turns. The harness is updated throughout the run rather than converging to a fixed scaffold. (b) Update counts for the five most-updated components over the same horizon. A small subset of navigation and battle components accounts for the majority of updates.
+Figure 4
+:
+Decision-making complexity of the Yellow Legacy
+battle_strategist_agent
+prompt at successive revisions during the Elite Four phase of the run: total nodes, decision gates, graph depth, and max fan-out. See appendix
+B
+for details.
+4.3  Continual Harness closes the gap to a hand-engineered harness
+Figure 5
+:
+Milestones reached vs. cumulative button presses. Red (left): 11-milestone subset sequence through Thunder Badge. Emerald (right): 9-milestone sequence through Knuckle Badge (2nd gym); x-axis capped at 8.5k. Lines stop at each run’s last monitored milestone. Thick lines: seed medians; faint lines: individual seeds.
+Figure
+5
+plots milestones reached against cumulative button presses for
+ℋ
+min
+\mathcal{H}_{\min}
+, the three Continual Harness variants, and
+ℋ
+expert
+\mathcal{H}_{\mathrm{expert}}
+. On both games, Continual Harness substantially reduces the button-press cost of every monitored milestone relative to
+ℋ
+min
+\mathcal{H}_{\min}
+and recovers a majority of the
+ℋ
+min
+\mathcal{H}_{\min}
+-to-expert efficiency gap, without access to the game decompilation, the milestone schedule, or any of the hand-built sub-agents that constitute
+ℋ
+expert
+\mathcal{H}_{\mathrm{expert}}
+. The residual gap to the expert harness concentrates in dialogue-heavy gym interiors and multi-turn battle strategy, components Continual Harness does not yet synthesize reliably; we attribute these to specific refinement targets in
+Section
+4.6
+. On Red, the bootstrap-updating variant is more efficient than from-scratch at every milestone, indicating that the refinement signal compounds within the episode: a harness refined in a prior run accelerates the next even when the game state itself resets. Thus, automated refinement over harness components recovers a substantial fraction of the efficiency of a hand-engineered harness starting from a minimalist interface.
+4.4  Continual Harness gain depends on model capability
+Figure 6
+:
+Emerald cost–completion Pareto plane. Filled markers: individual 24-hour seeds. Ringed markers: per-cell medians. Dashed staircase: cost-monotone Pareto frontier. Y axis: fraction of the 31-milestone Emerald set reached; X axis: Gemini API spend (log scale, cached input at
+25
+%
+25\%
+).
+Figure
+6
+compares every Emerald run from every model-harness cell with respect to cost and completion. On Pro, Continual Harness is strictly Pareto-dominant over
+ℋ
+min
+\mathcal{H}_{\min}
+: from-scratch
+ℋ
+CH
+\mathcal{H}_{\mathrm{CH}}
+reaches
+100
+%
+100\%
+of milestones at a $130 median, against
+ℋ
+min
+\mathcal{H}_{\min}
+at
+98
+%
+98\%
+for $215, a
+∼
+40
+%
+\sim 40\%
+cost reduction with no completion loss. The two bootstrap variants on Pro reach
+96
+96
+–
+100
+%
+100\%
+of milestones at $110–$140.
+On Flash, harness benefit is high variance: bootstrap-updating reaches
+80
+%
+80\%
+at $42, marginally above
+ℋ
+min
+\mathcal{H}_{\min}
+at
+77
+%
+77\%
+for $30, while from-scratch and bootstrap-frozen variants have a higher variance.
+Flash-Lite with
+ℋ
+min
+\mathcal{H}_{\min}
+reaches
+20
+%
+20\%
+at $11; every Continual Harness variant on Flash-Lite falls to
+3
+3
+–
+13
+%
+13\%
+at comparable or higher cost. The harness gains requires a model that will sufficiently utilize the harness components properly.
+4.5  Open-source students co-learn with a refining harness
+We test whether an open-source model improves its gameplay using the self-refining harness with reset-free training (batch size
+=
+1
+=1
+). The model is first primed by supervised fine-tuning on frontier Continual Harness trajectories and an offline GRPO stage on a per-step process reward; neither warm-up stage produces meaningful milestone advancement on its own (Appendix
+D
+), and the live in-game gains we report here begin only at the co-learning stage. Each training iteration is a
+K
+=
+256
+K{=}256
+-step DAgger
+[
+15
+,
+8
+]
+rollout through the full Continual Harness (memory, skills, sub-agents, and prompt all evolving via
+Figure
+2
+), followed by a process-reward-model scoring pass, a Gemini-3.1-pro teacher relabel of low-reward windows, and a soft SFT update on the relabeled shard. The training loop is
+reset-free
+: the emulator state at the end of iteration
+k
+k
+is loaded as the start of iteration
+k
++
+1
+k{+}1
+, so each curve in
+Figure
+7
+is a single agent’s in-game trajectory traversed across its own training, not an aggregate over independent rollouts.
+Figure 7
+:
+Reset-free DAgger+PRM training drives sustained milestone progress on Pokémon Red.
+Milestone index reached versus training iteration
+k
+k
+for the five advancing runs; the broken y-axis labels each band’s start and end. Filled dots: beginning of game. Open rings: mid-game checkpoint. Stars: judge-verified advances.
++
+N
++N
+: net objective gain. Dashed line: untrained Gemma-4 baseline (zero advance beyond the starting milestone). Teacher model: Gemini-3.1-pro.
+Figure
+7

@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "feature_name": "rlm-execute-timeout",
+  "manifest_path": "requirements/REQ-2026-RLM-EXECUTE-TIMEOUT.md",
+  "manifest_hash": "sha256:125ae1d59b0acbf854af7d3d69a66e2a4a52c040763617cb09c9ae07f6637675",
+  "created": "2026-08-20",
+  "last_updated": "2026-08-21",
+  "status": "COMPLETED",
+  "slices": [
+    {
+      "id": "SLICE-1",
+      "clauses_in_scope": [
+        "POST-KM-4",
+        "ERRORS-KM-4",
+        "SEQ-KM-6",
+        "SEQ-KM-7",
+        "INV-KM-4",
+        "FORBIDDEN-KM-4",
+        "REQ-RLM-0023",
+        "REQ-RLM-0024"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [
+        "INV-01",
+        "INV-02",
+        "INV-03",
+        "REQ-N-7"
+      ],
+      "status": "AUDITED",
+      "depends_on": [],
+      "issue": "#4",
+      "pivot_note": "After this slice, unbounded cells settle as error at 30000 ms; later cells still run."
+    }
+  ],
+  "pivot_guidance": [
+    "After SLICE-1 AUDIT: live cell that would exceed 30000 ms must settle as error before declaring GREEN."
+  ],
+  "forgotten_invariants": [
+    "INV-KM-1",
+    "INV-01",
+    "FORBIDDEN-KM-4"
+  ]
+}

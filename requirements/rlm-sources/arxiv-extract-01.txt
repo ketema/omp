@@ -1,0 +1,41 @@
+M-C1-001 | Minimal embodiment interface | Agent at timestep t receives frame observation o_t (rendered image) + text map m_t (visible tiles and nearby walkable positions in ASCII form); selects action a_t from fixed button-input set A. | §2.1 Embodied Agent Environments
+M-C1-002 | Text-map composition rule | Text map derived from game state a human player can read off screen; compensates for limited spatial reasoning of VLMs; contains NO walkthrough, NO objective list, NO pathfinding. | §2.1
+M-C1-003 | Harness decomposition | Agentic harness H = scaffolding between foundation model M and environment; 4 components: system prompt p, sub-agents G (battle strategy, puzzle solving, self-reflection), skills K (text-level heuristics + executable programs), memory M (persistent knowledge store). | §2.2 Agentic Harnesses
+M-C1-004 | Meta-tools | Fixed set exposed by harness: define_agent, run_code, process_memory, + similar primitives; agent edits p, G, K, M in place via these. | §2.2
+M-C1-005 | Pre-built skill primitives | Harness ships with press_buttons and get_game_state skills; new skills can be authored during play. | §2.2
+M-C1-006 | Minimalist harness | H_min: only environment interface (o_t, m_t, a_t in A) + generic system prompt; no sub-agents, memory, or authored skills. | §2.2
+M-C1-007 | Hand-engineered harness | H_expert: all components populated through manual engineering. | §2.2
+M-C1-008 | Meta-harness | Model given meta-tools (define_agent, run_code, etc.) to construct its own sub-agents, skills, memory during play; operating point of later GPP runs; model built own pathfinders, battle strategists, reusable scripts unprompted. | §2.2
+M-C1-009 | Continual Harness H_CH | Starts from minimal harness + automated Refiner that rewrites p, G, K, M in place from trajectory analysis; running state evolves every refinement cycle. | §2.2
+M-C1-010 | Refinement loop | Agent reads (s_t, H, tau) and emits a_t; every F steps Refiner reads trajectory window tau_{t-F:t} for failure signatures, emits per-component edits Delta=(Dp, DG, DK, DM) via meta-tool API, applies H <- H + Delta; F's numeric value not stated in chunk. | §3 / Fig 2(a)
+M-C1-011 | Four-pass CRUD refinement | Refiner runs four passes over harness applying CRUD (create/read/update/delete) edits to system prompt, sub-agents, skills, memories. | §1
+M-C1-012 | Mid-episode update (vs GEPA) | CH updates mid-episode without restart; prompt-optimization methods like GEPA run complete episodes and reset between updates. | §1
+M-C1-013 | Co-learning loop (DAgger+PRM) | Each iteration runs pi_theta_k inside live-refining H_t for K=256 steps; trajectory scored by pairwise process reward model (PRM); low-R windows relabeled by Gemini-3.1-pro (frontier teacher); soft SFT update produces theta_{k+1}. | §1 / Fig 2(b)
+M-C1-014 | Reset-free state carryover | Persistent state at end of iteration k loaded as start of iteration k+1; environment never reset between training iterations. | Fig 2(b) / Abstract
+M-C1-015 | GPP later-run automation | In later GPP runs human-authored agents removed; model handed meta-tools (define_agent, run_code, notepad edits, custom tool creation) so it could construct own sub-agents and reusable scripts during play. | §1
+M-C1-016 | Emergent self-improvement precursor | In hardest stages of Yellow and Crystal the model iterated on its own strategy through long-context memory (early emergent continual-harness behavior, later formalized/automated as CH). | Abstract / §1
+M-C1-017 | Online in-context learning over harness state | CH's core mechanism: online in-context learning over harness state H from §2; alternates acting in environment with refining system prompt, sub-agents, skill library, memory from episode trajectory data. | Abstract / §3.1
+Q-C1-001 | Abstract: first AI system claim | "GPP became the first AI system to complete Pokémon Blue, Yellow Legacy on hard mode, and Crystal without a lost battle."
+Q-C1-002 | §1: refinement cadence | "Every F steps, a Refiner reads the recent trajectory for failure signatures and runs four passes over the harness applying CRUD edits to system prompt, sub-agents, skills, and memories."
+Q-C1-003 | §1: reset-free contrast | "updates mid-episode, so self-improvement continues without restarting."
+Q-C1-004 | §2.1: text map limits | "it contains no walkthrough, no objective list, and no pathfinding."
+Q-C1-005 | §2.2: unprompted construction | "the model built its own pathfinders, battle strategists, and reusable scripts without being asked to."
+Q-C1-006 | Fig 2(b): reset-free loop | "The loop is reset-free: a persistent state at the end of iter k is loaded as the start of iter k+1."
+Q-C1-007 | §1: emergent behavior origin | "the model itself began iterating on its own strategy through long-context memory, an early emergent form of continual-harness behavior"
+Q-C1-008 | §1: capability scaling | "the harness gain scales with model capability"
+Q-C1-009 | Abstract: co-learning shape | "the agent alternates between acting and refining its own prompt, sub-agents, skills, and memory, drawing on any past trajectory data."
+B-C1-001 | GPP completion milestones | Beat Pokémon Blue May 2025; defeated Elite Four in Yellow Legacy on hard mode Aug 2025; completed Crystal Nov 2025; first AI system to complete multiple Pokémon RPGs; no lost battle in Blue, Yellow Legacy (hard), Crystal. | §1 / Abstract
+B-C1-002 | PokeAgent baseline | Frontier VLMs make almost no progress on RPG gameplay without domain-specific scaffolding (per PokeAgent Challenge). | §1
+B-C1-003 | CH vs baselines on Red/Emerald | Across frontier models, starting from scratch substantially reduces button-press cost relative to minimalist baseline and recovers a majority of the gap to hand-engineered expert harness. | Abstract / §1
+B-C1-004 | Emerald Pareto plane by model tier | On Emerald cost-vs-completion Pareto plane: strictly Pareto-dominant on Gemini 3 Pro; high-variance on Flash; below capability floor on Flash-Lite. | §1
+B-C1-005 | Model breadth | Evaluated on Pokémon Red and Emerald across three Gemini 3 variants: Pro, Flash, Flash-Lite. | §1
+B-C1-006 | Open-source co-learning result | Online process-reward co-learning loop drives sustained in-game milestone progress on Pokémon Red in open-source Gemma-4 across training iterations, from both beginning and mid-game checkpoints. | Abstract / §1
+B-C1-007 | Co-learning iteration length | Each co-learning iteration runs K=256 steps inside the live-refining harness; pairwise PRM scoring; low-reward windows relabeled by Gemini-3.1-pro; soft SFT update. | Fig 2(b)
+C-C1-001 | Partial observability limit | Environment partially observable: agent cannot access internal state such as NPC intent or battle mechanics beyond what frame and map expose. | §2.1
+C-C1-002 | No curated knowledge baseline | CH achievements relative to baseline occur "with no curated knowledge, no hand-crafted tools, and no domain scaffolding" — all harness content originates from raw interface. | Abstract / §1
+C-C1-003 | Visual spatial reasoning limit | VLM spatial reasoning limitation mitigated only by ASCII text map; map itself offers no navigation help (no pathfinding/walkthrough/objective). | §2.1
+C-C1-004 | Capability floor | On Emerald, CH on Flash-Lite falls below capability floor — gains not guaranteed for weakest models. | §1
+C-C1-005 | Episode-reset incompatibility | Prompt-optimization methods (GEPA) require episode resets, so reset-free adaptation demands mid-episode harness edits instead. | §1
+C-C1-006 | Choose-states for co-learning | Co-learning loop described for open-source model only (Gemma-4) on Pokémon Red in this chunk; Emerald coverage not claimed for co-learning. | §1
+C-C1-007 | License | Paper licensed CC BY-NC-SA 4.0. | §0 (license line)
+C-C1-008 | Versioning | arXiv:2605.09998v1 [cs.LG], dated 11 May 2026; correspondence sethkarten@princeton.edu. | Header
