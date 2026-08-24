@@ -59,8 +59,8 @@ export const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
 	ask: true,
 	grep: true,
 	web_search: true,
+	ipython: true,
 };
-
 /**
  * Tools that carry the `xd://` transport itself and therefore can never be
  * mounted as devices: `read xd://` lists/documents devices and
