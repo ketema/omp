@@ -155,6 +155,7 @@ export const packages: PublishPackage[] = [
 	{ dir: "packages/hashline", kind: "typescript" },
 	{ dir: "packages/mnemopi", kind: "typescript" },
 	{ dir: "packages/snapcompact", kind: "typescript" },
+	{ dir: "packages/rlm", kind: "typescript" },
 	{
 		dir: "packages/stats",
 		kind: "typescript",
