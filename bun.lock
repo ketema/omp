@@ -87,6 +87,7 @@
         "@oh-my-pi/pi-catalog": "catalog:",
         "@oh-my-pi/pi-mnemopi": "catalog:",
         "@oh-my-pi/pi-natives": "catalog:",
+        "@oh-my-pi/pi-rlm": "workspace:*",
         "@oh-my-pi/pi-tui": "catalog:",
         "@oh-my-pi/pi-utils": "catalog:",
         "@oh-my-pi/pi-wire": "catalog:",
@@ -224,6 +225,16 @@
         "@types/bun": "catalog:",
         "arkregex": "0.0.8",
         "arktype": "2.2.3",
+      },
+    },
+    "packages/rlm": {
+      "name": "@oh-my-pi/pi-rlm",
+      "version": "17.3.8",
+      "dependencies": {
+        "@oh-my-pi/omptype": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
       },
     },
     "packages/snapcompact": {
@@ -740,6 +751,8 @@
     "@oh-my-pi/pi-mnemopi": ["@oh-my-pi/pi-mnemopi@workspace:packages/mnemopi"],
 
     "@oh-my-pi/pi-natives": ["@oh-my-pi/pi-natives@workspace:packages/natives"],
+
+    "@oh-my-pi/pi-rlm": ["@oh-my-pi/pi-rlm@workspace:packages/rlm"],
 
     "@oh-my-pi/pi-tui": ["@oh-my-pi/pi-tui@workspace:packages/tui"],
 

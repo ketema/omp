@@ -51,6 +51,7 @@ import {
 import { AsyncJobManager } from "./async";
 import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
 import { createAutoresearchExtension } from "./autoresearch";
+import { createRlmExtension } from "@oh-my-pi/pi-rlm";
 import { loadCapability } from "./capability";
 import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
@@ -2033,6 +2034,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 			inlineExtensions.push(...(options.extensions ?? []));
 			inlineExtensions.push(createAutoresearchExtension);
+			inlineExtensions.push(createRlmExtension());
 			if (customTools.length > 0) {
 				inlineExtensions.push(createCustomToolsExtension(customTools, customToolSourcePaths));
 			}
