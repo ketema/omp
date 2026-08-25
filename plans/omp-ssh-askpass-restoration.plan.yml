@@ -5,7 +5,7 @@
   "manifest_hash": "sha256:1f996f2648f1061d759d093e98d2bead34d3b457b59fcbc773d46fa3ff2fdf87",
   "created": "2026-08-25",
   "last_updated": "2026-08-25",
-  "status": "DRAFT",
+  "status": "ACTIVE",
   "slices": [
     {
       "id": "SLICE-1",
