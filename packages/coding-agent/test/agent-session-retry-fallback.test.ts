@@ -2579,7 +2579,8 @@ describe("AgentSession retry fallback", () => {
 		// namespace (google/gemini-2.5-flash -> openrouter/google/gemini-2.5-flash).
 		// However, because the resolved candidate is paid OpenRouter and the
 		// failing predecessor is non-Antigravity/generic Google without an
-		// authentic 429 receipt, turn recovery fails closed without paid inference.
+		// authentic 429 receipt, paid fallback is suppressed, allowing bounded
+		// same-model recovery without invoking paid OpenRouter.
 		const settings = Settings.isolated({
 			"compaction.enabled": false,
 			"retry.maxRetries": 1,
@@ -2600,18 +2601,24 @@ describe("AgentSession retry fallback", () => {
 				fallbackAppliedEvents.push(event);
 			}
 		});
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 
-		try {
-			await session.prompt("Recover via id-prefixed wildcard entry");
-			await session.waitForIdle();
-		} catch {
-			// Expected fail-closed when paid fallback is suppressed
-		}
+		await session.prompt("Recover via id-prefixed wildcard entry");
+		await session.waitForIdle();
 
 		// Fail-closed under INV-QR-12, INV-QR-16, and FORBIDDEN-QR-14:
-		// Paid OpenRouter inference is suppressed without an authentic Google Antigravity 429.
-		expect(requestedModels).toEqual([`${primaryModel.provider}/${primaryModel.id}`]);
-		expect(fallbackAppliedEvents.filter(e => e.to === `${fallbackModel.provider}/${fallbackModel.id}`)).toHaveLength(0);
+		// Paid OpenRouter inference is never invoked without an authentic Google Antigravity 429.
+		// Recovery stays on same-model retry.
+		expect(requestedModels.filter(m => m === `${fallbackModel.provider}/${fallbackModel.id}`)).toHaveLength(0);
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${primaryModel.provider}/${primaryModel.id}`,
+		]);
+		expect(fallbackAppliedEvents.filter(e => e.to === `${fallbackModel.provider}/${fallbackModel.id}`)).toHaveLength(
+			0,
+		);
+		expect(session.model?.provider).toBe(primaryModel.provider);
+		expect(session.model?.id).toBe(primaryModel.id);
 	});
 
 	it("matches id-prefixed wildcard keys and strips the vendor prefix for direct-provider targets", async () => {
@@ -5634,7 +5641,11 @@ describe("AgentSession retry fallback", () => {
 
 			expect(notificationTimestamp).toBeDefined();
 			expect(paidInferenceStartTimestamp).toBeDefined();
-			if (notificationTimestamp === undefined || paidInferenceStartTimestamp === undefined || notificationTimestamp > paidInferenceStartTimestamp) {
+			if (
+				notificationTimestamp === undefined ||
+				paidInferenceStartTimestamp === undefined ||
+				notificationTimestamp > paidInferenceStartTimestamp
+			) {
 				throw new Error(
 					"1. WHAT: test_turnstile_post20_notification_precedes_inference FAILED\n" +
 						"2. WHY: POST-QR-20 / INV-QR-16 / SEQ-QR-16 / FORBIDDEN-QR-14 violation - paid use notification must occur before paid request starts\n" +
@@ -5647,7 +5658,7 @@ describe("AgentSession retry fallback", () => {
 			expect(session.model?.provider).toBe(fallbackModel.provider);
 			expect(session.model?.id).toBe(fallbackModel.id);
 			expect(session.servingModel).toEqual({
-				selector: fallbackSelector,
+				selector: "openrouter/google/gemini-3.7-flash:high",
 				isFallback: true,
 			});
 		});
@@ -5682,12 +5693,18 @@ describe("AgentSession retry fallback", () => {
 			const non429Partitions: Array<{ name: string; error: Error; expectedClassification: string }> = [
 				{
 					name: "auth_401",
-					error: Object.assign(new Error("Google Antigravity authentication failed: 401 Unauthorized"), { status: 401, errorStatus: 401 }),
+					error: Object.assign(new Error("Google Antigravity authentication failed: 401 Unauthorized"), {
+						status: 401,
+						errorStatus: 401,
+					}),
 					expectedClassification: "auth",
 				},
 				{
 					name: "auth_403",
-					error: Object.assign(new Error("Google Antigravity access forbidden: 403 Forbidden"), { status: 403, errorStatus: 403 }),
+					error: Object.assign(new Error("Google Antigravity access forbidden: 403 Forbidden"), {
+						status: 403,
+						errorStatus: 403,
+					}),
 					expectedClassification: "auth",
 				},
 				{
@@ -5701,12 +5718,18 @@ describe("AgentSession retry fallback", () => {
 				},
 				{
 					name: "timeout_408",
-					error: Object.assign(new Error("Google Antigravity request timeout: 408 Request Timeout"), { status: 408, errorStatus: 408 }),
+					error: Object.assign(new Error("Google Antigravity request timeout: 408 Request Timeout"), {
+						status: 408,
+						errorStatus: 408,
+					}),
 					expectedClassification: "timeout",
 				},
 				{
 					name: "timeout_504",
-					error: Object.assign(new Error("Google Antigravity gateway timeout: 504 Gateway Timeout"), { status: 504, errorStatus: 504 }),
+					error: Object.assign(new Error("Google Antigravity gateway timeout: 504 Gateway Timeout"), {
+						status: 504,
+						errorStatus: 504,
+					}),
 					expectedClassification: "timeout",
 				},
 				{
@@ -5719,7 +5742,10 @@ describe("AgentSession retry fallback", () => {
 				},
 				{
 					name: "transport_502",
-					error: Object.assign(new Error("Google Antigravity bad gateway: 502 Bad Gateway"), { status: 502, errorStatus: 502 }),
+					error: Object.assign(new Error("Google Antigravity bad gateway: 502 Bad Gateway"), {
+						status: 502,
+						errorStatus: 502,
+					}),
 					expectedClassification: "transport",
 				},
 				{
@@ -5732,7 +5758,9 @@ describe("AgentSession retry fallback", () => {
 				},
 				{
 					name: "transport_econnreset",
-					error: Object.assign(new Error("fetch failed: connect ECONNRESET 127.0.0.1:443"), { code: "ECONNRESET" }),
+					error: Object.assign(new Error("fetch failed: connect ECONNRESET 127.0.0.1:443"), {
+						code: "ECONNRESET",
+					}),
 					expectedClassification: "transport",
 				},
 				{
@@ -6052,8 +6080,29 @@ describe("AgentSession retry fallback", () => {
 				.mockResolvedValue({ switched: false });
 			let notificationEmittedAt: number | undefined;
 			let paidStreamStartedAt: number | undefined;
-			const mock = createMockModel();
+			const makeGoogleAntigravity429Stream = (model: Model<Api>): AssistantMessageEventStream => {
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					const errorPartial: AssistantMessage = {
+						role: "assistant",
+						content: [],
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+						usage: emptyUsage(),
+						stopReason: "error",
+						errorMessage:
+							"Google API error (429): Quota exceeded for metric: generativelanguage.googleapis.com, RESOURCE_EXHAUSTED",
+						errorStatus: 429,
+						timestamp: Date.now(),
+					};
+					stream.push({ type: "start", partial: errorPartial });
+					stream.push({ type: "error", reason: "error", error: errorPartial });
+				});
+				return stream;
+			};
 
+			let primaryAttempts = 0;
 			const agent = new Agent({
 				getApiKey: model => `${model.provider}-test-key`,
 				initialState: {
@@ -6063,19 +6112,14 @@ describe("AgentSession retry fallback", () => {
 					messages: [],
 				},
 				streamFn: (model, context, options) => {
-					if (model.provider === primaryModel.provider) {
-						mock.push({
-							throw: Object.assign(new Error("429 RESOURCE_EXHAUSTED"), {
-								status: 429,
-								errorStatus: 429,
-								providerCode: "RESOURCE_EXHAUSTED",
-							}),
-						});
+					if (model.provider === primaryModel.provider && primaryAttempts === 0) {
+						primaryAttempts += 1;
+						return makeGoogleAntigravity429Stream(model);
 					} else if (model.provider === fallbackModel.provider) {
 						paidStreamStartedAt = Date.now();
-						mock.push({ content: ["Paid response delivered"] });
+						return recoveredTextStream(model, "Paid response delivered");
 					}
-					return mock.stream(model, context, options);
+					return recoveredTextStream(model, `ok:${model.provider}/${model.id}`);
 				},
 			});
 
