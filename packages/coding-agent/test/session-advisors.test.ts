@@ -16,6 +16,7 @@ import { type Api, type AssistantMessage, Effort, type Model } from "@oh-my-pi/p
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { parseModelString } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -24,6 +25,8 @@ import {
 	type SessionAdvisorsHost,
 	type SessionAdvisorsOptions,
 } from "@oh-my-pi/pi-coding-agent/session/session-advisors";
+import { createCodexCompactionContext as createMaintenanceCodexCompactionContext } from "@oh-my-pi/pi-coding-agent/session/session-maintenance";
+import type { RetryFallbackSelector } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { YieldQueue } from "@oh-my-pi/pi-coding-agent/session/yield-queue";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -78,28 +81,41 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 			allowAgentInitiatedTurns: () => true,
 			planModeState: () => undefined,
 			clientBridge: () => undefined,
-			emitSessionEvent: (event: AgentSessionEvent) => {
+			emitSessionEvent: async (event: AgentSessionEvent): Promise<void> => {
 				events?.push(event);
 			},
 			emitNotice: () => {},
-			sendCustomMessage: async () => {},
+			sendCustomMessage: async (): Promise<boolean> => true,
 			extractQueuedAdvisorCards: () => [],
 			dropPendingAdvisorCards: () => {},
 			preserveAdvisorCard: () => {},
 			hasPendingNextTurnMessages: () => false,
 			convertToLlmForSideRequest: () => [],
 			effectiveServiceTier: () => undefined,
-			resolveContextPromotionTarget: () => undefined,
+			resolveContextPromotionTarget: async (): Promise<Model | undefined> => undefined,
 			resolveCompactionModelCandidates: () => [],
 			resolveRetryFallbackRole: (role: string) => targetSession.settings.getModelRole(role),
 			retryFallbackChainKeys: () => Object.keys(targetSession.settings.get("retry.fallbackChains") ?? {}),
-			findRetryFallbackCandidates: (role?: string) =>
-				(targetSession.settings.get("retry.fallbackChains") as Record<string, string[]> | undefined)?.[
-					role ?? "default"
-				] ?? [],
+			findRetryFallbackCandidates: (
+				role?: string,
+				_currentSelector?: string,
+				_currentModel?: Model,
+			): RetryFallbackSelector[] => {
+				const chains = targetSession.settings.get("retry.fallbackChains") as Record<string, string[]> | undefined;
+				const rawList = chains?.[role ?? "default"] ?? [];
+				return rawList.map(raw => {
+					const parsed = parseModelString(raw);
+					return {
+						raw,
+						provider: parsed?.provider ?? "unknown",
+						id: parsed?.id ?? raw,
+						thinkingLevel: parsed?.thinkingLevel,
+					};
+				});
+			},
 			isRetryFallbackSelectorSuppressed: () => false,
 			noteRetryFallbackCooldown: () => {},
-			createCodexCompactionContext: () => undefined,
+			createCodexCompactionContext: createMaintenanceCodexCompactionContext,
 			sessionId: () => targetSession.sessionManager.getSessionId(),
 		} satisfies SessionAdvisorsHost;
 		return host;
