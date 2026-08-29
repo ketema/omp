@@ -6996,7 +6996,7 @@ describe("AgentSession retry fallback", () => {
 			expect(session.servingModel?.selector).toBe(paidContractSelector);
 		});
 
-		it("REQ-QR-022, POST-QR-20, SEQ-QR-14, FORBIDDEN-QR-14: every paid denial emits typed paid_fallback_denied with from/to/role, reasonCode, attemptedPosition, status, correlationId, emittedAt", async () => {
+		it("REQ-QR-022, POST-QR-20, POST-QR-29, SEQ-QR-14, FORBIDDEN-QR-14: every paid denial emits typed paid_fallback_denied with from/to/role, reasonCode, attemptedPosition, status, correlationId, emittedAt in chain order", async () => {
 			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
 			authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
 			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
@@ -7068,67 +7068,100 @@ describe("AgentSession retry fallback", () => {
 			);
 
 			const deniedEvents = observabilityEvents.filter(event => event.type === "paid_fallback_denied");
-			if (deniedEvents.length !== 1) {
+			if (deniedEvents.length !== 2) {
 				throw new Error(
 					"1. WHAT: test_paid_fallback_denied_typed_event FAILED\n" +
-						"2. WHY: REQ-QR-022 / FORBIDDEN-QR-14 / SEQ-QR-14 violation - every paid denial must emit exactly one typed paid_fallback_denied event, not a prose notice\n" +
-						"3. EXPECTED: 1 event with type paid_fallback_denied\n" +
+						"2. WHY: REQ-QR-022 / POST-QR-29 / FORBIDDEN-QR-14 / SEQ-QR-14 violation - both Vertex (auth) and OpenRouter (missing_vertex_receipt) paid denials must be emitted in chain order\n" +
+						"3. EXPECTED: 2 events with type paid_fallback_denied (Vertex with reasonCode='auth', OpenRouter with reasonCode='missing_vertex_receipt')\n" +
 						`4. ACTUAL: ${JSON.stringify(deniedEvents)}\n` +
-						"5. GUIDANCE: Emit machine-readable paid_fallback_denied; observability must not depend on notice message text.",
+						"5. GUIDANCE: Emit machine-readable paid_fallback_denied for each paid candidate in chain order.",
 				);
 			}
-			const denied = deniedEvents[0];
 			const expectedFrom = "google-antigravity/gemini-3.7-flash-tiered:high";
-			const expectedTo = "google-vertex/gemini-3.7-flash:high";
+			const vertexDenial = deniedEvents[0];
+			const openRouterDenial = deniedEvents[1];
+
 			if (
-				denied.from !== expectedFrom ||
-				denied.to !== expectedTo ||
-				denied.role !== "default" ||
-				denied.reasonCode !== "auth" ||
-				denied.attemptedPosition !== 1 ||
-				denied.status !== "denied"
+				vertexDenial.from !== expectedFrom ||
+				vertexDenial.to !== vertexSelector ||
+				vertexDenial.role !== "default" ||
+				vertexDenial.reasonCode !== "auth" ||
+				vertexDenial.attemptedPosition !== 1 ||
+				vertexDenial.status !== "denied"
 			) {
 				throw new Error(
 					"1. WHAT: test_paid_fallback_denied_typed_event FAILED\n" +
-						"2. WHY: REQ-QR-022 / POST-QR-20 violation - paid_fallback_denied must carry from, to, role, reasonCode, attemptedPosition, and status\n" +
-						`3. EXPECTED: { type: "paid_fallback_denied", from: "${expectedFrom}", to: "${expectedTo}", role: "default", reasonCode: "auth", attemptedPosition: 1, status: "denied" }\n` +
-						`4. ACTUAL: ${JSON.stringify(denied)}\n` +
-						"5. GUIDANCE: Record the rejected paid candidate identity, auth reason, chain position, and denied status on the typed event.",
+						"2. WHY: REQ-QR-022 / POST-QR-20 violation - first denial must be Vertex with reasonCode='auth'\n" +
+						`3. EXPECTED: { type: "paid_fallback_denied", from: "${expectedFrom}", to: "${vertexSelector}", role: "default", reasonCode: "auth", attemptedPosition: 1, status: "denied" }\n` +
+						`4. ACTUAL: ${JSON.stringify(vertexDenial)}\n` +
+						"5. GUIDANCE: Record the rejected Vertex candidate identity with auth reason on the first typed event.",
 				);
 			}
-			if (typeof denied.correlationId !== "string" || denied.correlationId.trim().length === 0) {
+
+			if (
+				openRouterDenial.from !== expectedFrom ||
+				openRouterDenial.to !== fallbackSelector ||
+				openRouterDenial.role !== "default" ||
+				openRouterDenial.reasonCode !== "missing_vertex_receipt" ||
+				openRouterDenial.attemptedPosition !== 2 ||
+				openRouterDenial.status !== "denied"
+			) {
 				throw new Error(
 					"1. WHAT: test_paid_fallback_denied_typed_event FAILED\n" +
-						"2. WHY: POST-QR-20 / REQ-QR-022 violation - paid_fallback_denied must carry a nonempty correlationId\n" +
-						"3. EXPECTED: nonempty string correlationId\n" +
-						`4. ACTUAL: correlationId=${JSON.stringify(denied.correlationId)}\n` +
-						"5. GUIDANCE: Correlate the denial to the request identity.",
+						"2. WHY: REQ-QR-022 / POST-QR-20 violation - second denial must be OpenRouter with reasonCode='missing_vertex_receipt'\n" +
+						`3. EXPECTED: { type: "paid_fallback_denied", from: "${expectedFrom}", to: "${fallbackSelector}", role: "default", reasonCode: "missing_vertex_receipt", attemptedPosition: 2, status: "denied" }\n` +
+						`4. ACTUAL: ${JSON.stringify(openRouterDenial)}\n` +
+						"5. GUIDANCE: Record the rejected OpenRouter candidate identity with missing_vertex_receipt reason on the second typed event.",
 				);
 			}
-			if (timestampFieldsOf(denied).join(",") !== "emittedAt") {
-				throw new Error(
-					"1. WHAT: test_paid_fallback_denied_typed_event FAILED\n" +
-						"2. WHY: POST-QR-20 violation - paid_fallback_denied must expose exactly one timestamp field named emittedAt\n" +
-						'3. EXPECTED: timestamp fields ["emittedAt"]\n' +
-						`4. ACTUAL: ${JSON.stringify(timestampFieldsOf(denied))} on ${JSON.stringify(denied)}\n` +
-						"5. GUIDANCE: Stamp the typed denial with emittedAt only.",
-				);
+
+			for (const denial of [vertexDenial, openRouterDenial]) {
+				if (typeof denial.correlationId !== "string" || denial.correlationId.trim().length === 0) {
+					throw new Error(
+						"1. WHAT: test_paid_fallback_denied_typed_event FAILED\n" +
+							"2. WHY: POST-QR-20 / REQ-QR-022 violation - paid_fallback_denied must carry a nonempty correlationId\n" +
+							"3. EXPECTED: nonempty string correlationId\n" +
+							`4. ACTUAL: correlationId=${JSON.stringify(denial.correlationId)}\n` +
+							"5. GUIDANCE: Correlate the denial to the request identity.",
+					);
+				}
+				if (timestampFieldsOf(denial).join(",") !== "emittedAt") {
+					throw new Error(
+						"1. WHAT: test_paid_fallback_denied_typed_event FAILED\n" +
+							"2. WHY: POST-QR-20 violation - paid_fallback_denied must expose exactly one timestamp field named emittedAt\n" +
+							'3. EXPECTED: timestamp fields ["emittedAt"]\n' +
+							`4. ACTUAL: ${JSON.stringify(timestampFieldsOf(denial))} on ${JSON.stringify(denial)}\n` +
+							"5. GUIDANCE: Stamp the typed denial with emittedAt only.",
+					);
+				}
 			}
-			expect(denied).toEqual(
+
+			expect(vertexDenial).toEqual(
 				expect.objectContaining({
 					type: "paid_fallback_denied",
 					from: expectedFrom,
-					to: expectedTo,
+					to: vertexSelector,
 					role: "default",
 					reasonCode: "auth",
 					attemptedPosition: 1,
 					status: "denied",
 				}),
 			);
+			expect(openRouterDenial).toEqual(
+				expect.objectContaining({
+					type: "paid_fallback_denied",
+					from: expectedFrom,
+					to: fallbackSelector,
+					role: "default",
+					reasonCode: "missing_vertex_receipt",
+					attemptedPosition: 2,
+					status: "denied",
+				}),
+			);
 			expect(observabilityEvents.filter(event => event.type === "paid_fallback_active")).toHaveLength(0);
 		});
 
-		it("REQ-QR-022, FORBIDDEN-QR-14: repeated identical usage-aware paid denial within one session emits one typed paid_fallback_denied", async () => {
+		it("REQ-QR-022, POST-QR-29, FORBIDDEN-QR-14: repeated identical usage-aware paid denial within one session emits one typed paid_fallback_denied per distinct target key", async () => {
 			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
 			authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
 			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
@@ -7196,32 +7229,51 @@ describe("AgentSession retry fallback", () => {
 			);
 
 			const deniedEvents = observabilityEvents.filter(event => event.type === "paid_fallback_denied");
-			if (deniedEvents.length !== 1) {
+			if (deniedEvents.length !== 2) {
 				throw new Error(
 					"1. WHAT: test_usage_aware_paid_denial_dedup FAILED\n" +
-						"2. WHY: REQ-QR-022 / FORBIDDEN-QR-14 violation - repeated identical usage-aware paid denial in one session must emit exactly one typed paid_fallback_denied\n" +
-						"3. EXPECTED: 1 paid_fallback_denied event\n" +
+						"2. WHY: REQ-QR-022 / POST-QR-29 / FORBIDDEN-QR-14 violation - repeated identical usage-aware paid denial in one session must emit exactly one typed paid_fallback_denied per distinct target key (2 total across Vertex and OpenRouter)\n" +
+						"3. EXPECTED: 2 paid_fallback_denied events (one per distinct target key; zero duplicates from second turn)\n" +
 						`4. ACTUAL: count=${deniedEvents.length} events=${JSON.stringify(deniedEvents)}\n` +
-						"5. GUIDANCE: Deduplicate identical usage-aware paid denials to a single countable typed event per session.",
+						"5. GUIDANCE: Deduplicate identical usage-aware paid denials per distinct (session, from, to, reason) key.",
 				);
 			}
-			const denied = deniedEvents[0];
+			const vertexDenial = deniedEvents.find(e => e.to === vertexSelector);
+			const openRouterDenial = deniedEvents.find(e => e.to === fallbackSelector);
+
 			if (
-				denied.from !== "google-antigravity/gemini-3.7-flash-tiered:high" ||
-				denied.to !== "google-vertex/gemini-3.7-flash:high" ||
-				denied.role !== "default" ||
-				denied.reasonCode !== "non-429" ||
-				denied.status !== "denied"
+				!vertexDenial ||
+				vertexDenial.from !== "google-antigravity/gemini-3.7-flash-tiered:high" ||
+				vertexDenial.role !== "default" ||
+				vertexDenial.reasonCode !== "non-429" ||
+				vertexDenial.status !== "denied"
 			) {
 				throw new Error(
 					"1. WHAT: test_usage_aware_paid_denial_dedup FAILED\n" +
-						"2. WHY: REQ-QR-022 violation - the deduplicated denial must name the paid candidate and non-429 reason\n" +
+						"2. WHY: REQ-QR-022 / POST-QR-29 violation - deduplicated denial for Vertex must name Vertex and non-429 reason\n" +
 						'3. EXPECTED: { from: "google-antigravity/gemini-3.7-flash-tiered:high", to: "google-vertex/gemini-3.7-flash:high", role: "default", reasonCode: "non-429", status: "denied" }\n' +
-						`4. ACTUAL: ${JSON.stringify(denied)}\n` +
-						"5. GUIDANCE: Classify proactive usage-aware paid denial as non-429 with status denied.",
+						`4. ACTUAL: vertexDenial=${JSON.stringify(vertexDenial)}\n` +
+						"5. GUIDANCE: Classify proactive usage-aware paid denial for Vertex as non-429 with status denied.",
 				);
 			}
-			expect(deniedEvents).toHaveLength(1);
+
+			if (
+				!openRouterDenial ||
+				openRouterDenial.from !== "google-antigravity/gemini-3.7-flash-tiered:high" ||
+				openRouterDenial.role !== "default" ||
+				openRouterDenial.reasonCode !== "missing_vertex_receipt" ||
+				openRouterDenial.status !== "denied"
+			) {
+				throw new Error(
+					"1. WHAT: test_usage_aware_paid_denial_dedup FAILED\n" +
+						"2. WHY: REQ-QR-022 / POST-QR-29 violation - deduplicated denial for OpenRouter must name OpenRouter and missing_vertex_receipt reason\n" +
+						'3. EXPECTED: { from: "google-antigravity/gemini-3.7-flash-tiered:high", to: "openrouter/google/gemini-3.7-flash:high", role: "default", reasonCode: "missing_vertex_receipt", status: "denied" }\n' +
+						`4. ACTUAL: openRouterDenial=${JSON.stringify(openRouterDenial)}\n` +
+						"5. GUIDANCE: Classify proactive usage-aware paid denial for OpenRouter as missing_vertex_receipt with status denied.",
+				);
+			}
+
+			expect(deniedEvents).toHaveLength(2);
 			expect(observabilityEvents.filter(event => event.type === "paid_fallback_active")).toHaveLength(0);
 		});
 
