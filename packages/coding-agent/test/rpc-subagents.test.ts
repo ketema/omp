@@ -414,6 +414,15 @@ function handle(frame) {
 	if (frame.type === "prompt") {
 		write({ id: frame.id, type: "response", command: "prompt", success: true });
 		write({ type: "notice", level: "info", message: "subagent test" });
+		write({
+			type: "paid_fallback_active",
+			request_id: "req-123",
+			selector: "openrouter/google/gemini-3.7-flash:high",
+			event_name: "paid_fallback_active",
+			event_payload_digest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			emitted_at: 1700000000,
+			paid_request_started_at: 1700000001,
+		});
 		write({ type: "subagent_lifecycle", payload: { id: "SubagentA", index: 0, agent: "task", agentSource: "bundled", status: "started", sessionFile: "/tmp/subagent.jsonl" } });
 		write({ type: "subagent_progress", payload: { index: 0, agent: "task", agentSource: "bundled", task: "Do work", assignment: "Implement work", sessionFile: "/tmp/subagent.jsonl", progress } });
 		write({ type: "subagent_event", payload: { id: "SubagentA", event: { type: "agent_start" } } });
@@ -428,10 +437,14 @@ function handle(frame) {
 		const progressTasks: string[] = [];
 		const rawEventTypes: string[] = [];
 		const sessionEventTypes: string[] = [];
+		const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
 		client.onSubagentLifecycle(payload => lifecycleIds.push(payload.id));
 		client.onSubagentProgress(payload => progressTasks.push(payload.task));
 		client.onSubagentEvent(payload => rawEventTypes.push(payload.event.type));
-		client.onSessionEvent(event => sessionEventTypes.push(event.type));
+		client.onSessionEvent(event => {
+			sessionEventTypes.push(event.type);
+			sessionEvents.push(event as unknown as { type: string; [key: string]: unknown });
+		});
 
 		await client.start();
 		await expect(client.setSubagentSubscription("events")).resolves.toBe("events");
@@ -445,5 +458,18 @@ function handle(frame) {
 		expect(progressTasks).toEqual(["Do work"]);
 		expect(rawEventTypes).toEqual(["agent_start"]);
 		expect(sessionEventTypes).toContain("notice");
+		// RPC integration obligation (INV-QR-12/15/16, SEQ-QR-14..16, FORBIDDEN-QR-14):
+		// Verify that RPC client forwards paid_fallback_active session frames with authenticated receipt fields.
+		expect(sessionEventTypes).toContain("paid_fallback_active");
+		const paidFallbackFrame = sessionEvents.find(e => e.type === "paid_fallback_active");
+		expect(paidFallbackFrame).toMatchObject({
+			type: "paid_fallback_active",
+			request_id: "req-123",
+			selector: "openrouter/google/gemini-3.7-flash:high",
+			event_name: "paid_fallback_active",
+			event_payload_digest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			emitted_at: 1700000000,
+			paid_request_started_at: 1700000001,
+		});
 	});
 });
