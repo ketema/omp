@@ -20,13 +20,13 @@ import { parseModelString } from "@oh-my-pi/pi-coding-agent/config/model-resolve
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import type { RetryFallbackSelector } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
 import {
 	SessionAdvisors,
 	type SessionAdvisorsHost,
 	type SessionAdvisorsOptions,
 } from "@oh-my-pi/pi-coding-agent/session/session-advisors";
 import { createCodexCompactionContext as createMaintenanceCodexCompactionContext } from "@oh-my-pi/pi-coding-agent/session/session-maintenance";
-import type { RetryFallbackSelector } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { YieldQueue } from "@oh-my-pi/pi-coding-agent/session/yield-queue";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -262,7 +262,7 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 				tools: [],
 				messages: [],
 			},
-			streamFn: (model, context, options) => {
+			streamFn: (model, _context, _options) => {
 				const requested = `${model.provider}/${model.id}`;
 				requestedModels.push(requested);
 				if (model.provider === primaryModel.provider && primaryAttempts === 0) {
@@ -380,7 +380,7 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 				tools: [],
 				messages: [],
 			},
-			streamFn: (model, context, options) => {
+			streamFn: (model, _context, _options) => {
 				if (model.provider === primaryModel.provider) {
 					antigravityAttempts += 1;
 					return makeAntigravity429Stream(model);
@@ -455,6 +455,7 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 
 		expect(vertexInferenceCount).toBe(1);
 		expect(paidNotifications).toHaveLength(1);
+		expect(antigravityAttempts).toBeGreaterThanOrEqual(1);
 	});
 
 	it("INV-QR-18, FORBIDDEN-QR-16: direct model swap to Vertex or OpenRouter around SharedFallbackPolicy is rejected with a typed denial", async () => {
@@ -517,7 +518,7 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 			advisors.applyAdvisorConfigs([{ name: "DirectVertex", model: vertexSelector }], undefined);
 			await advisors.buildRuntime();
 			await advisors.stopRuntime();
-		} catch (err: unknown) {
+		} catch {
 			threw = true;
 		}
 
