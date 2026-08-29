@@ -8,6 +8,16 @@ import type { ConfiguredThinkingLevel } from "../thinking";
 import type { TodoItem } from "../tools/todo";
 import type { CustomMessage } from "./messages";
 
+/** Stable machine-readable reasons a candidate is denied paid OpenRouter fallback (REQ-QR-022). */
+export type PaidFallbackDenialReasonCode =
+	| "not_google_antigravity"
+	| "non-429"
+	| "auth"
+	| "candidate_suppressed"
+	| "candidate_not_found"
+	| "effort_ceiling_exceeded"
+	| "context_window_exceeded";
+
 /** Session-specific events that extend the core AgentEvent. */
 export type AgentSessionEvent =
 	| Exclude<AgentEvent, { type: "agent_end" }>
@@ -60,12 +70,21 @@ export type AgentSessionEvent =
 			role?: string;
 			source?: string;
 			emittedAt: number;
+			correlationId: string;
 			requestedEffort?: string;
-			attemptedPosition?: number;
-			authoritativeQuotaSignal?: string | number;
-			timestamp?: number;
-			notificationTimestamp?: number;
-			notificationEmittedAt?: number;
+			attemptedPosition: number;
+			authoritativeQuotaSignal: string;
+	  }
+	| {
+			type: "paid_fallback_denied";
+			from: string;
+			to: string;
+			role: string;
+			reasonCode: PaidFallbackDenialReasonCode;
+			status: string;
+			attemptedPosition: number;
+			correlationId: string;
+			emittedAt: number;
 	  }
 	| {
 			type: "thinking_level_changed";

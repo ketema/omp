@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { scheduler } from "node:timers/promises";
 import {
 	type Agent,
@@ -24,7 +25,7 @@ import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-cat
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { extractRetryHint, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { formatModelStringWithRouting, resolveModelOverride } from "../config/model-resolver";
+import { formatModelSelectorValue, formatModelStringWithRouting, resolveModelOverride } from "../config/model-resolver";
 
 import type { Settings } from "../config/settings";
 import type { RetryErrorUpdate } from "../extensibility/shared-events";
@@ -37,7 +38,7 @@ import {
 	clampThinkingLevelToCeiling,
 	modelSupportsEffortCeiling,
 } from "../thinking";
-import type { AgentSessionEvent } from "./agent-session-events";
+import type { AgentSessionEvent, PaidFallbackDenialReasonCode } from "./agent-session-events";
 import type {
 	InitialRetryFallbackState,
 	UsageFallbackConfirmation,
@@ -98,10 +99,9 @@ function isOpenRouterPaidCandidate(candidate: { provider: string } | null | unde
 	return candidate?.provider === "openrouter";
 }
 
-interface PaidFallbackAuthorizationResult {
-	authorized: boolean;
-	denialReason?: string;
-}
+type PaidFallbackAuthorizationResult =
+	| { authorized: true }
+	| { authorized: false; denialReason: string; reasonCode: PaidFallbackDenialReasonCode };
 
 /**
  * Authorizes advancement to paid OpenRouter only when the immediately failing
@@ -113,13 +113,15 @@ interface PaidFallbackAuthorizationResult {
 function authorizePaidFallback(options: {
 	currentSelector?: string;
 	failedMessage?: AssistantMessage;
+	authFailure?: boolean;
 }): PaidFallbackAuthorizationResult {
-	const { currentSelector, failedMessage } = options;
+	const { currentSelector, failedMessage, authFailure } = options;
 
 	if (!currentSelector?.startsWith("google-antigravity/")) {
 		return {
 			authorized: false,
 			denialReason: `Failing selector is not Google Antigravity (${currentSelector ?? "unknown"})`,
+			reasonCode: "not_google_antigravity",
 		};
 	}
 
@@ -128,6 +130,7 @@ function authorizePaidFallback(options: {
 		return {
 			authorized: false,
 			denialReason: `Error status ${status ?? "unknown"} is not 429 rate limit or quota exhaustion`,
+			reasonCode: authFailure ? "auth" : "non-429",
 		};
 	}
 	return { authorized: true };
@@ -277,6 +280,12 @@ export class TurnRecovery {
 	#bootstrapCache:
 		| { model: Model; level: ThinkingLevel | undefined; routed: boolean; value: ServingModel }
 		| undefined;
+	/**
+	 * `from|to|reasonCode` keys already reported by {@link #denyPaidFallback}
+	 * this session, so a candidate re-checked on every retry (e.g. a
+	 * suppressed cooldown) denies once instead of paging on every attempt.
+	 */
+	#deniedPaidFallbackKeys = new Set<string>();
 
 	constructor(host: TurnRecoveryHost, options: TurnRecoveryOptions = {}) {
 		this.#host = host;
@@ -1443,6 +1452,57 @@ export class TurnRecovery {
 		);
 	}
 
+	/**
+	 * Single emission boundary for a denied paid-OpenRouter candidate: emits
+	 * the human-readable notice and the typed `paid_fallback_denied` event
+	 * exactly once per distinct `from`/`to`/`reasonCode` this session, so a
+	 * candidate re-checked on every retry (e.g. a suppressed cooldown) reports
+	 * once instead of paging on every attempt (REQ-QR-022).
+	 */
+	async #denyPaidFallback(params: {
+		message: string;
+		from: string;
+		to: string;
+		role: string;
+		reasonCode: PaidFallbackDenialReasonCode;
+		attemptedPosition: number;
+		correlationId: string;
+	}): Promise<void> {
+		const dedupeKey = `${params.from}|${params.to}|${params.reasonCode}`;
+		if (this.#deniedPaidFallbackKeys.has(dedupeKey)) return;
+		this.#deniedPaidFallbackKeys.add(dedupeKey);
+		await this.#host.emitSessionEvent({
+			type: "notice",
+			level: "warning",
+			message: params.message,
+			source: "ProviderOutcomeClassifier",
+		});
+		await this.#host.emitSessionEvent({
+			type: "paid_fallback_denied",
+			from: params.from,
+			to: params.to,
+			role: params.role,
+			reasonCode: params.reasonCode,
+			status: "denied",
+			attemptedPosition: params.attemptedPosition,
+			correlationId: params.correlationId,
+			emittedAt: Date.now(),
+		});
+	}
+	/**
+	 * Canonical `provider/id[:thinkingLevel]` for a denial's `to` field. A
+	 * fallback-chain entry commonly omits an explicit effort suffix and
+	 * inherits the session's configured level, so `selector.raw` alone can
+	 * under-report the effective target; this reproduces the same inherited
+	 * level `applyRetryFallbackCandidate` uses when it actually applies one.
+	 */
+	#formatDeniedSelector(selector: RetryFallbackSelector): string {
+		return formatModelSelectorValue(
+			`${selector.provider}/${selector.id}`,
+			selector.thinkingLevel ?? this.#host.configuredThinkingLevel(),
+		);
+	}
+
 	async #maybeApplyUsageAwareFallback(signal: AbortSignal, confirmer?: UsageFallbackConfirmer): Promise<boolean> {
 		if (!this.#host.settings.get("retry.usageAwareFallback")) return false;
 		const currentModel = this.#host.model();
@@ -1507,15 +1567,21 @@ export class TurnRecovery {
 		let fallback: { role: string; selector: RetryFallbackSelector; apiKey: string } | undefined;
 		const ceiling = this.#host.thinkingLevelCeiling();
 		const chainKeys = this.retryFallbackChainKeys(currentSelector, currentModel);
+		const correlationId = randomUUID();
 		for (const role of chainKeys) {
+			let attemptedPosition = 0;
 			for (const candidate of this.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
+				attemptedPosition++;
 				if (isOpenRouterPaidSelector(candidate)) {
 					// Paid OpenRouter requires a live turn 429 classifier receipt; pre-flight usage health cannot authorize paid fallback.
-					await this.#host.emitSessionEvent({
-						type: "notice",
-						level: "warning",
-						message: `Paid fallback denied: missing_current_turn_429 for ${candidate.raw} at position 0`,
-						source: "ProviderOutcomeClassifier",
+					await this.#denyPaidFallback({
+						message: `Paid fallback denied: non-429 for ${candidate.raw} at position ${attemptedPosition}`,
+						from: currentSelector,
+						to: this.#formatDeniedSelector(candidate),
+						role,
+						reasonCode: "non-429",
+						attemptedPosition,
+						correlationId,
 					});
 					continue;
 				}
@@ -1524,11 +1590,14 @@ export class TurnRecovery {
 				const candidateModel = resolved.model ?? this.#host.modelRegistry.find(candidate.provider, candidate.id);
 				if (!candidateModel || !this.#host.modelRegistry.hasConfiguredAuth(candidateModel)) continue;
 				if (isOpenRouterPaidCandidate(candidateModel)) {
-					await this.#host.emitSessionEvent({
-						type: "notice",
-						level: "warning",
-						message: `Paid fallback denied: missing_current_turn_429 for ${candidate.raw} at position 0`,
-						source: "ProviderOutcomeClassifier",
+					await this.#denyPaidFallback({
+						message: `Paid fallback denied: non-429 for ${candidate.raw} at position ${attemptedPosition}`,
+						from: currentSelector,
+						to: this.#formatDeniedSelector(candidate),
+						role,
+						reasonCode: "non-429",
+						attemptedPosition,
+						correlationId,
 					});
 					continue;
 				}
@@ -1635,7 +1704,13 @@ export class TurnRecovery {
 		role: string,
 		selector: RetryFallbackSelector,
 		currentSelector: string,
-		options?: { pinFallback?: boolean; apiKey?: string; signal?: AbortSignal },
+		options?: {
+			pinFallback?: boolean;
+			apiKey?: string;
+			signal?: AbortSignal;
+			attemptedPosition?: number;
+			correlationId?: string;
+		},
 	): Promise<boolean> {
 		const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 		const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
@@ -1665,7 +1740,9 @@ export class TurnRecovery {
 		if (isOpenRouterPaidSelector(selector) || isOpenRouterPaidCandidate(candidate)) {
 			// PRE-QR-8 / POST-QR-20 / SEQ-QR-14..16 / INV-QR-16 / FORBIDDEN-QR-14:
 			// Emit paid-use notification before applying/requesting the paid candidate.
-			const now = Date.now();
+			const emittedAt = Date.now();
+			const correlationId = options?.correlationId ?? randomUUID();
+			const attemptedPosition = options?.attemptedPosition ?? 0;
 			await this.#host.emitSessionEvent({
 				type: "notice",
 				level: "warning",
@@ -1678,13 +1755,11 @@ export class TurnRecovery {
 				to: selector.raw,
 				role,
 				source: "PaidUsageNotifier",
-				emittedAt: now,
-				timestamp: now,
-				notificationTimestamp: now,
-				notificationEmittedAt: now,
+				emittedAt,
+				correlationId,
 				requestedEffort: nextThinkingLevel,
-				attemptedPosition: 0,
-				authoritativeQuotaSignal: "429",
+				attemptedPosition,
+				authoritativeQuotaSignal: "quota_exhausted",
 			});
 		}
 
@@ -1746,16 +1821,22 @@ export class TurnRecovery {
 		const latestAssistant = this.#host.agent.state.messages.findLast(
 			(message): message is AssistantMessage => message.role === "assistant" && message !== failedMessage,
 		);
+		const correlationId = randomUUID();
 		for (const role of this.retryFallbackChainKeys(currentSelector)) {
+			let attemptedPosition = 0;
 			for (const selector of this.findRetryFallbackCandidates(role, currentSelector)) {
+				attemptedPosition++;
 				const isPaid = isOpenRouterPaidSelector(selector);
 				if (this.isRetryFallbackSelectorSuppressed(selector)) {
 					if (isPaid) {
-						await this.#host.emitSessionEvent({
-							type: "notice",
-							level: "warning",
+						await this.#denyPaidFallback({
 							message: `Paid fallback denied: Candidate selector ${selector.raw} is currently suppressed in cooldown`,
-							source: "ProviderOutcomeClassifier",
+							from: currentSelector,
+							to: selector.raw,
+							role,
+							reasonCode: "candidate_suppressed",
+							attemptedPosition,
+							correlationId,
 						});
 					}
 					continue;
@@ -1764,11 +1845,14 @@ export class TurnRecovery {
 				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
 				if (!candidate) {
 					if (isPaid) {
-						await this.#host.emitSessionEvent({
-							type: "notice",
-							level: "warning",
+						await this.#denyPaidFallback({
 							message: `Paid fallback denied: Candidate model ${selector.raw} not found in registry`,
-							source: "ProviderOutcomeClassifier",
+							from: currentSelector,
+							to: selector.raw,
+							role,
+							reasonCode: "candidate_not_found",
+							attemptedPosition,
+							correlationId,
 						});
 					}
 					continue;
@@ -1783,14 +1867,18 @@ export class TurnRecovery {
 					const auth = authorizePaidFallback({
 						currentSelector,
 						failedMessage,
+						authFailure: AIError.is(this.#classifyRetryMessage(failedMessage), AIError.Flag.AuthFailed),
 					});
 					if (!auth.authorized) {
 						// Emit structured diagnostic notice on paid-candidate denial (REQ-QR-019, REQ-QR-022, ERRORS-QR-11)
-						await this.#host.emitSessionEvent({
-							type: "notice",
-							level: "warning",
+						await this.#denyPaidFallback({
 							message: `Paid fallback denied: ${auth.denialReason}`,
-							source: "ProviderOutcomeClassifier",
+							from: currentSelector,
+							to: this.#formatDeniedSelector(selector),
+							role,
+							reasonCode: auth.reasonCode,
+							attemptedPosition,
+							correlationId,
 						});
 						continue;
 					}
@@ -1817,11 +1905,14 @@ export class TurnRecovery {
 				// clamped UP past the cap by its model floor — skip it entirely.
 				if (ceiling !== undefined && !modelSupportsEffortCeiling(candidate, ceiling)) {
 					if (isPaid || isOpenRouterPaidCandidate(candidate)) {
-						await this.#host.emitSessionEvent({
-							type: "notice",
-							level: "warning",
+						await this.#denyPaidFallback({
 							message: `Paid fallback denied: Candidate model ${selector.raw} effort exceeds session ceiling`,
-							source: "ProviderOutcomeClassifier",
+							from: currentSelector,
+							to: selector.raw,
+							role,
+							reasonCode: "effort_ceiling_exceeded",
+							attemptedPosition,
+							correlationId,
 						});
 					}
 					continue;
@@ -1831,11 +1922,14 @@ export class TurnRecovery {
 				// judge the request that will actually be sent (issue #8065).
 				if (!this.#host.contextFitsModel(candidate, failedMessage)) {
 					if (isPaid || isOpenRouterPaidCandidate(candidate)) {
-						await this.#host.emitSessionEvent({
-							type: "notice",
-							level: "warning",
+						await this.#denyPaidFallback({
 							message: `Paid fallback denied: Live context exceeds candidate model window (${selector.raw})`,
-							source: "ProviderOutcomeClassifier",
+							from: currentSelector,
+							to: selector.raw,
+							role,
+							reasonCode: "context_window_exceeded",
+							attemptedPosition,
+							correlationId,
 						});
 					}
 					continue;
@@ -1843,16 +1937,24 @@ export class TurnRecovery {
 				const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
 				if (!apiKey) {
 					if (isPaid || isOpenRouterPaidCandidate(candidate)) {
-						await this.#host.emitSessionEvent({
-							type: "notice",
-							level: "warning",
+						await this.#denyPaidFallback({
 							message: `Paid fallback denied: No API key available for candidate model ${selector.raw}`,
-							source: "ProviderOutcomeClassifier",
+							from: currentSelector,
+							to: this.#formatDeniedSelector(selector),
+							role,
+							reasonCode: "auth",
+							attemptedPosition,
+							correlationId,
 						});
 					}
 					continue;
 				}
-				return this.applyRetryFallbackCandidate(role, selector, currentSelector, { ...options, apiKey });
+				return this.applyRetryFallbackCandidate(role, selector, currentSelector, {
+					...options,
+					apiKey,
+					attemptedPosition,
+					correlationId,
+				});
 			}
 		}
 

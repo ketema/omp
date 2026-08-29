@@ -139,6 +139,7 @@ const exhaustiveSessionEventTypes: Record<AgentSessionEvent["type"], true> = {
 	irc_message: true,
 	notice: true,
 	paid_fallback_active: true,
+	paid_fallback_denied: true,
 	thinking_level_changed: true,
 	model_changed: true,
 	goal_updated: true,
