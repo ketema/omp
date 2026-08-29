@@ -54,6 +54,17 @@ export type AgentSessionEvent =
 	| { type: "irc_message"; message: CustomMessage }
 	| { type: "notice"; level: "info" | "warning" | "error"; message: string; source?: string }
 	| {
+			type: "paid_fallback_active";
+			from: string;
+			to: string;
+			role?: string;
+			source?: string;
+			emittedAt?: number;
+			timestamp?: number;
+			notificationTimestamp?: number;
+			notificationEmittedAt?: number;
+	  }
+	| {
 			type: "thinking_level_changed";
 			thinkingLevel: ThinkingLevel | undefined;
 			/** The user-configured selector when it differs from the effective level. */

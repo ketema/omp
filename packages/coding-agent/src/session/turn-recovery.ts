@@ -88,6 +88,57 @@ function hasNonWhitespace(value: string): boolean {
 	return NON_WHITESPACE_RE.test(value);
 }
 
+function isOpenRouterPaidSelector(selector: RetryFallbackSelector | string): boolean {
+	const raw = typeof selector === "string" ? selector : selector.raw;
+	const provider = typeof selector === "string" ? selector.split("/")[0] : selector.provider;
+	return provider === "openrouter" || raw.startsWith("openrouter/");
+}
+
+function isOpenRouterPaidCandidate(candidate: { provider: string } | null | undefined): boolean {
+	return candidate?.provider === "openrouter";
+}
+
+function isRawStatus429(errorStatus: unknown): boolean {
+	return errorStatus === 429 || errorStatus === "429";
+}
+
+function isGoogleAntigravityIdentity(options: {
+	currentSelector?: string;
+	currentModel?: Model | null;
+	failedMessage?: AssistantMessage;
+	originalSelector?: string;
+}): boolean {
+	const { currentSelector, currentModel, failedMessage, originalSelector } = options;
+	if (
+		currentModel?.provider === "google-antigravity" ||
+		currentModel?.provider === "antigravity" ||
+		failedMessage?.provider === "google-antigravity" ||
+		failedMessage?.provider === "antigravity"
+	) {
+		return true;
+	}
+	if (
+		currentSelector?.startsWith("google-antigravity/") ||
+		currentSelector?.startsWith("antigravity/") ||
+		originalSelector?.startsWith("google-antigravity/") ||
+		originalSelector?.startsWith("antigravity/") ||
+		currentSelector?.includes("google-antigravity") ||
+		originalSelector?.includes("google-antigravity")
+	) {
+		return true;
+	}
+	if (
+		currentModel?.id === "gemini-3.7-flash-tiered" ||
+		currentModel?.id?.startsWith("gemini-3.7-flash-tiered") ||
+		failedMessage?.model === "gemini-3.7-flash-tiered" ||
+		failedMessage?.model?.startsWith("gemini-3.7-flash-tiered") ||
+		((currentModel?.provider === "google" || failedMessage?.provider === "google" || currentSelector?.startsWith("google/")) &&
+			(currentModel?.id?.includes("gemini-3.7-flash") || failedMessage?.model?.includes("gemini-3.7-flash") || currentSelector?.includes("gemini-3.7-flash")))
+	) {
+		return true;
+	}
+	return false;
+}
 function syntheticToolResultTailStart(messages: readonly AgentMessage[]): number {
 	let index = messages.length;
 	while (index > 0 && isSyntheticToolResultMessage(messages[index - 1])) {
@@ -1580,6 +1631,28 @@ export class TurnRecovery {
 			throw new Error(`No API key for retry fallback ${selector.raw}`);
 		}
 		if (options?.signal?.aborted) return false;
+		if (isOpenRouterPaidSelector(selector) || isOpenRouterPaidCandidate(candidate)) {
+			// PRE-QR-8 / POST-QR-20 / SEQ-QR-14..16 / INV-QR-16 / FORBIDDEN-QR-14:
+			// Emit paid-use notification before applying/requesting the paid candidate.
+			const now = Date.now();
+			await this.#host.emitSessionEvent({
+				type: "notice",
+				level: "warning",
+				message: `Paid fallback active: routing from ${currentSelector} to ${selector.raw}`,
+				source: "PaidUsageNotifier",
+			});
+			await this.#host.emitSessionEvent({
+				type: "paid_fallback_active",
+				from: currentSelector,
+				to: selector.raw,
+				role,
+				source: "PaidUsageNotifier",
+				emittedAt: now,
+				timestamp: now,
+				notificationTimestamp: now,
+				notificationEmittedAt: now,
+			});
+		}
 
 		// Capture the configured selector (auto-aware) so a fallback chain preserves
 		// `auto` instead of collapsing it to the level it resolved to this turn.
@@ -1656,6 +1729,27 @@ export class TurnRecovery {
 				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
 				if (!candidate) continue;
+				// PRE-QR-8, POST-QR-18, POST-QR-19, POST-QR-22, INV-QR-12, INV-QR-15, INV-QR-16,
+				// SEQ-QR-12..16, ERRORS-QR-10..12, FORBIDDEN-QR-13, FORBIDDEN-QR-14:
+				// Gating paid OpenRouter fallback:
+				// Only a selected Google Antigravity request with raw errorStatus exactly 429 may advance to paid OpenRouter.
+				// 401/403, timeout/transport, any 5xx, absent/malformed/unknown status, non-Google 429, and caller-authored
+				// category/receipt fields stop before paid selection.
+				if (isOpenRouterPaidSelector(selector) || isOpenRouterPaidCandidate(candidate)) {
+					const currentModel = this.#host.model();
+					const isGoogleAntigravity = isGoogleAntigravityIdentity({
+						currentSelector,
+						currentModel,
+						failedMessage,
+						originalSelector: this.#activeRetryFallback?.originalSelector,
+					});
+					if (!isGoogleAntigravity) {
+						continue;
+					}
+					if (!isRawStatus429(failedMessage.errorStatus)) {
+						continue;
+					}
+				}
 				// Anthropic signatures and redacted blocks are model-bound, while the
 				// latest assistant response must remain byte-identical. A same-provider
 				// model switch can satisfy neither constraint, so keep retrying the
@@ -1683,7 +1777,7 @@ export class TurnRecovery {
 				if (!this.#host.contextFitsModel(candidate, failedMessage)) continue;
 				const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
 				if (!apiKey) continue;
-				return this.applyRetryFallbackCandidate(role, selector, currentSelector, options);
+				return this.applyRetryFallbackCandidate(role, selector, currentSelector, { ...options, apiKey });
 			}
 		}
 
@@ -1763,7 +1857,21 @@ export class TurnRecovery {
 		if (this.#hasReplayUnsafeOutput(message)) return false;
 		const currentSelector = formatRetryFallbackSelector(model, this.#host.thinkingLevel());
 		return this.retryFallbackChainKeys(currentSelector).some(
-			role => this.findRetryFallbackCandidates(role, currentSelector).length > 0,
+			role =>
+				this.findRetryFallbackCandidates(role, currentSelector).some(candidateSelector => {
+					if (isOpenRouterPaidSelector(candidateSelector)) {
+						// PRE-QR-8, POST-QR-18/19, ERRORS-QR-11:
+						// Only a selected Google Antigravity request with raw errorStatus exactly 429 may advance to paid OpenRouter.
+						const isGoogleAntigravity = isGoogleAntigravityIdentity({
+							currentSelector,
+							currentModel: model,
+							failedMessage: message,
+							originalSelector: this.#activeRetryFallback?.originalSelector,
+						});
+						return isGoogleAntigravity && isRawStatus429(message.errorStatus);
+					}
+					return true;
+				}),
 		);
 	}
 
