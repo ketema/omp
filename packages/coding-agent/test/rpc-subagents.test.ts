@@ -598,4 +598,101 @@ function handle(frame) {
 		expect(active).toEqual(activeFrame);
 		expect(denied).toEqual(deniedFrame);
 	});
+	test("POST-QR-28, POST-QR-29, REQ-QR-029: RPC forwards paid_fallback_active with costProvider, decision correlationId, and canonical effort-qualified selectors", async () => {
+		/**
+		 * CONTRACT TRACEABILITY:
+		 * - Contract: contracts/omp_quota_router.contract.py
+		 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-029
+		 * - Enforces:
+		 *   - POST-QR-28: Typed active and denial events record one emittedAt, one immutable decision identity as correlationId, role, effective effort-qualified from/to selectors, actual chain position, exact classified signal, status, receipt-consumption outcome, selected outcome, and costProvider.
+		 *   - POST-QR-29: Every denial reason uses the same canonical effective selector formatter and identical denials are deduplicated without collapsing distinct decisions.
+		 * - Category: integration / RPC / observability
+		 * - Risk tier: High — RPC clients (CLI/UI) require costProvider and canonical correlationId for accurate spend attribution
+		 * - Adversarial: Implementation-blind
+		 *
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites POST-QR-28, POST-QR-29, REQ-QR-029 in contracts/omp_quota_router.contract.py
+		 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (asserts exact forwarded schema with costProvider and correlationId)
+		 *   [✓] C3 NON-DUPLICATIVE: uniquely tests SLICE-3 costProvider and 3-tier selector fields over RPC transport
+		 *   [✓] C4 NOT FUTURE-EDIT: enforces contracted RPC event schema for 3-tier Vertex paid fallback
+		 */
+		const scriptPath = path.join(os.tmpdir(), `omp-rpc-vertex-observability-${Date.now()}.js`);
+		tempPaths.push(scriptPath);
+		const vertexActiveFrame = {
+			type: "paid_fallback_active",
+			correlationId: "corr-vertex-slice3-1",
+			attemptedPosition: 2,
+			requestedEffort: "high",
+			authoritativeQuotaSignal: "quota_exhausted",
+			costProvider: "google-vertex",
+			emittedAt: 1700000010,
+			from: "google-antigravity/gemini-3.7-flash-tiered:high",
+			to: "google-vertex/gemini-3.7-flash:high",
+			role: "task",
+		};
+		const vertexDeniedFrame = {
+			type: "paid_fallback_denied",
+			from: "google-vertex/gemini-3.7-flash:high",
+			to: "openrouter/google/gemini-3.7-flash:high",
+			role: "task",
+			reasonCode: "adc_missing",
+			attemptedPosition: 2,
+			status: "denied",
+			correlationId: "corr-vertex-slice3-2",
+			emittedAt: 1700000012,
+		};
+		await Bun.write(
+			scriptPath,
+			`
+let buffer = "";
+function write(frame) {
+	process.stdout.write(JSON.stringify(frame) + "\\n");
+}
+write({ type: "ready" });
+process.stdin.on("data", chunk => {
+	buffer += chunk.toString("utf8");
+	let index = buffer.indexOf("\\n");
+	while (index !== -1) {
+		const line = buffer.slice(0, index).trim();
+		buffer = buffer.slice(index + 1);
+		if (line) handle(JSON.parse(line));
+		index = buffer.indexOf("\\n");
+	}
+});
+function handle(frame) {
+	if (frame.type === "prompt") {
+		write({ id: frame.id, type: "response", command: "prompt", success: true });
+		write(${JSON.stringify(vertexActiveFrame)});
+		write(${JSON.stringify(vertexDeniedFrame)});
+		write({ type: "agent_end", messages: [] });
+	}
+}
+`,
+		);
+
+		using client = new RpcClient({ cliPath: scriptPath });
+		const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
+		client.onSessionEvent(event => {
+			sessionEvents.push(event as unknown as { type: string; [key: string]: unknown });
+		});
+
+		await client.start();
+		await client.promptAndWait("Forward Vertex paid observability frames");
+
+		const active = sessionEvents.find(event => event.type === "paid_fallback_active");
+		const denied = sessionEvents.find(event => event.type === "paid_fallback_denied");
+
+		if (!active || active.costProvider !== "google-vertex" || active.to !== "google-vertex/gemini-3.7-flash:high") {
+			throw new Error(
+				"1. WHAT: test_rpc_forwards_vertex_paid_observability FAILED\n" +
+					"2. WHY: POST-QR-28 / REQ-QR-029 violation - RPC must forward paid_fallback_active with costProvider='google-vertex' and exact Vertex selector\n" +
+					`3. EXPECTED: costProvider='google-vertex', to='google-vertex/gemini-3.7-flash:high'\n` +
+					`4. ACTUAL: active=${JSON.stringify(active)}\n` +
+					"5. GUIDANCE: Include costProvider on the forwarded paid_fallback_active session event.",
+			);
+		}
+
+		expect(active).toEqual(vertexActiveFrame);
+		expect(denied).toEqual(vertexDeniedFrame);
+	});
 });

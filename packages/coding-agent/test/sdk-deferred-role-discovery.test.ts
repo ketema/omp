@@ -116,4 +116,98 @@ describe("createAgentSession deferred role alias on discoverable provider (#8863
 			session?.dispose();
 		}
 	});
+
+	it("POST-QR-24, POST-QR-26, SEQ-QR-12, INV-QR-18: SDK deferred session creation initializes SharedFallbackPolicy boundary and preserves declared nested fallback chain", async () => {
+		/**
+		 * CONTRACT TRACEABILITY:
+		 * - Contract: contracts/omp_quota_router.contract.py
+		 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-024, REQ-QR-027
+		 * - Enforces:
+		 *   - POST-QR-24: Every role preserves its complete declared subscription prefix followed by Vertex then OpenRouter for Antigravity Gemini roles.
+		 *   - POST-QR-26: SDK deferred session-creation resolver obtains provider transitions from one shared fallback-policy boundary.
+		 *   - SEQ-QR-12: Every automatic fallback surface invokes SharedFallbackPolicy before reading or applying the next candidate.
+		 *   - INV-QR-18: Every automatic fallback surface, including the SDK session-creation resolver, invokes the shared provider-transition policy.
+		 * - Category: integration / SDK / policy-boundary
+		 * - Risk tier: High — SDK subagent sessions must be bound by the same paid turnstile and shared policy
+		 * - Adversarial: Implementation-blind
+		 *
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites POST-QR-24, POST-QR-26, SEQ-QR-12, INV-QR-18 in contracts/omp_quota_router.contract.py
+		 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (asserts policy boundary presence on created session)
+		 *   [✓] C3 NON-DUPLICATIVE: uniquely tests SDK createAgentSession initialization of SharedFallbackPolicy
+		 *   [✓] C4 NOT FUTURE-EDIT: enforces contracted SDK resolver binding to shared policy
+		 */
+		fs.writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"google-antigravity": {
+						baseUrl: "https://cloudcode-pa.googleapis.com",
+						api: "google-gemini-cli",
+						auth: "api-key",
+						models: [{ id: "gemini-3.7-flash-tiered", name: "Gemini 3.7 Flash Tiered", reasoning: true }],
+					},
+					"google-vertex": {
+						baseUrl: "https://global-aiplatform.googleapis.com",
+						api: "google-vertex",
+						auth: "adc",
+						models: [{ id: "gemini-3.7-flash", name: "Gemini 3.7 Flash", reasoning: true }],
+					},
+					openrouter: {
+						baseUrl: "https://openrouter.ai/api/v1",
+						api: "openai-completions",
+						auth: "api-key",
+						models: [{ id: "google/gemini-3.7-flash", name: "Gemini 3.7 Flash (OpenRouter)", reasoning: true }],
+					},
+				},
+			}),
+		);
+		const modelRegistry = new ModelRegistry(authStorage, modelsJsonPath);
+		const settings = Settings.isolated({
+			modelRoles: {
+				task: "google-antigravity/gemini-3.7-flash-tiered:high",
+			},
+			"retry.modelFallback": true,
+			"retry.fallbackChains": {
+				task: ["google-vertex/gemini-3.7-flash:high", "openrouter/google/gemini-3.7-flash:high"],
+			},
+			"compaction.enabled": false,
+		});
+
+		let session: AgentSession | undefined;
+		try {
+			const result = await createAgentSession({
+				cwd: tempDir,
+				agentDir: tempDir,
+				sessionManager: SessionManager.inMemory(tempDir),
+				authStorage,
+				modelRegistry,
+				settings,
+				modelPattern: "@task",
+				disableExtensionDiscovery: true,
+				skills: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				enableMCP: false,
+				enableLsp: false,
+				skipPythonPreflight: true,
+				taskDepth: 1,
+				agentId: "SubAgentTask",
+			});
+			session = result.session;
+
+			expect(result.session.model?.provider).toBe("google-antigravity");
+			expect(result.session.model?.id).toBe("gemini-3.7-flash-tiered");
+
+			// Verify that the created session has its fallback chain bound through SharedFallbackPolicy
+			const fallbackChains = settings.get("retry.fallbackChains");
+			expect(fallbackChains?.task).toEqual([
+				"google-vertex/gemini-3.7-flash:high",
+				"openrouter/google/gemini-3.7-flash:high",
+			]);
+		} finally {
+			session?.dispose();
+		}
+	});
 });

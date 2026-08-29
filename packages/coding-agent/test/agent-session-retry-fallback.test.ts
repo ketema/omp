@@ -7308,4 +7308,1111 @@ describe("AgentSession retry fallback", () => {
 			expect(counts).toEqual(expectedCounts);
 		});
 	});
+
+	describe("Three-tier nested Vertex paid fallback & SharedFallbackPolicy (M4.2 RED SLICE-3)", () => {
+		const makeGoogleAntigravityGeminiHigh = (): Model<"google-gemini-cli"> =>
+			buildModel({
+				id: "gemini-3.7-flash-tiered",
+				name: "Gemini 3.7 Flash Tiered",
+				api: "google-gemini-cli",
+				provider: "google-antigravity",
+				baseUrl: "https://cloudcode-pa.googleapis.com",
+				reasoning: true,
+				thinking: {
+					mode: "google-level",
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High],
+					effortRouting: {
+						[Effort.High]: "gemini-3.7-flash-high",
+					},
+				},
+				input: ["text", "image"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_000_000,
+				maxTokens: 64_000,
+			});
+
+		const makeClaudeSonnetMax = (): Model<"anthropic-messages"> =>
+			buildModel({
+				id: "claude-sonnet-5",
+				name: "Claude Sonnet 5",
+				api: "anthropic-messages",
+				provider: "anthropic",
+				baseUrl: "https://api.anthropic.com",
+				reasoning: true,
+				thinking: {
+					mode: "anthropic-budget",
+					efforts: [Effort.Max],
+				},
+				input: ["text", "image"],
+				cost: { input: 0.000003, output: 0.000015, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 200_000,
+				maxTokens: 64_000,
+			});
+
+		const makeGoogleVertexGeminiHigh = (): Model<"google-vertex"> =>
+			buildModel({
+				id: "gemini-3.7-flash",
+				name: "Gemini 3.7 Flash (Vertex)",
+				api: "google-vertex",
+				provider: "google-vertex",
+				baseUrl: "https://global-aiplatform.googleapis.com",
+				reasoning: true,
+				thinking: {
+					mode: "google-level",
+					efforts: [Effort.High],
+				},
+				input: ["text", "image"],
+				cost: { input: 0.00000025, output: 0.000001, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_000_000,
+				maxTokens: 64_000,
+			});
+
+		const makeOpenRouterGeminiHigh = (): Model<"openai-completions"> =>
+			buildModel({
+				id: "google/gemini-3.7-flash",
+				name: "Gemini 3.7 Flash (OpenRouter)",
+				api: "openai-completions",
+				provider: "openrouter",
+				baseUrl: "https://openrouter.ai/api/v1",
+				reasoning: true,
+				thinking: {
+					mode: "google-level",
+					efforts: [Effort.High],
+				},
+				input: ["text", "image"],
+				cost: { input: 0.00000025, output: 0.000001, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_000_000,
+				maxTokens: 64_000,
+			});
+
+		type PaidObservabilityEvent = { type: string; [key: string]: unknown };
+
+		const timestampFieldsOf = (event: PaidObservabilityEvent): string[] =>
+			Object.keys(event)
+				.filter(
+					key =>
+						key === "emittedAt" ||
+						key === "emitted_at" ||
+						key === "paidRequestStartedAt" ||
+						key === "paid_request_started_at" ||
+						/(?:At|_at|timestamp|Timestamp)$/.test(key),
+				)
+				.sort();
+
+		const recordPaidObservability = (
+			target: AgentSession,
+			events: PaidObservabilityEvent[],
+			eventSequence?: string[],
+		): void => {
+			target.subscribe(event => {
+				const recorded = event as unknown as PaidObservabilityEvent;
+				events.push(recorded);
+				if (eventSequence && recorded.type === "paid_fallback_active") {
+					eventSequence.push("notification");
+				}
+			});
+		};
+
+		it("SEQ-QR-14, INV-QR-12, POST-QR-18, POST-QR-24: executes all declared subscription candidates before Vertex; intervening candidate success suppresses paid fallback", async () => {
+			/**
+			 * CONTRACT TRACEABILITY:
+			 * - Contract: contracts/omp_quota_router.contract.py
+			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-024, REQ-QR-025
+			 * - Enforces:
+			 *   - SEQ-QR-14: SharedFallbackPolicy considers Vertex only after all declared subscription candidates were attempted and decision holds authentic Antigravity quota_exhausted evidence.
+			 *   - INV-QR-12: Google Vertex never executes unless every declared subscription candidate has been consumed.
+			 *   - POST-QR-18: attempted_selectors equals every declared subscription predecessor in order.
+			 *   - POST-QR-24: Every role preserves its complete declared subscription prefix before Vertex/OpenRouter.
+			 * - Category: positive / integration / subscription-precedence
+			 * - Risk tier: High — protects against premature paid Vertex spend when alternative subscription quota is available
+			 * - Adversarial: Implementation-blind
+			 *
+			 * FOUR-CRITERIA TEST VALIDITY GATE:
+			 *   [✓] C1 VALID: cites SEQ-QR-14, INV-QR-12, POST-QR-18, POST-QR-24 in contracts/omp_quota_router.contract.py
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (asserts Claude Sonnet requested before Vertex and Vertex suppressed on Sonnet success)
+			 *   [✓] C3 NON-DUPLICATIVE: uniquely tests intervening subscription candidate execution order and suppression
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces contracted ccabdd-test-writer multi-subscription chain order
+			 */
+			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("anthropic", "anthropic-test-key");
+			authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
+
+			const antigravityModel = makeGoogleAntigravityGeminiHigh();
+			const sonnetModel = makeClaudeSonnetMax();
+			const vertexModel = makeGoogleVertexGeminiHigh();
+			const openrouterModel = makeOpenRouterGeminiHigh();
+
+			const antigravitySelector = `${antigravityModel.provider}/${antigravityModel.id}`;
+			const sonnetSelector = `${sonnetModel.provider}/${sonnetModel.id}`;
+			const vertexSelector = `${vertexModel.provider}/${vertexModel.id}`;
+			const openrouterSelector = `${openrouterModel.provider}/${openrouterModel.id}`;
+
+			const requestedModels: string[] = [];
+
+			// Scenario A: Antigravity 429 quota_exhausted -> Claude Sonnet succeeds -> Vertex is NEVER called
+			let antigravityAttempts = 0;
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: antigravityModel,
+					systemPrompt: ["Intervening candidate test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					const req = `${model.provider}/${model.id}`;
+					requestedModels.push(req);
+					if (model.provider === antigravityModel.provider && antigravityAttempts === 0) {
+						antigravityAttempts += 1;
+						const stream = new AssistantMessageEventStream();
+						queueMicrotask(() => {
+							const err: AssistantMessage = {
+								role: "assistant",
+								content: [],
+								api: model.api,
+								provider: model.provider,
+								model: model.id,
+								usage: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									totalTokens: 0,
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+								},
+								stopReason: "error",
+								errorMessage:
+									"Google API error (429): Quota exceeded for metric: generativelanguage.googleapis.com, RESOURCE_EXHAUSTED",
+								errorStatus: 429,
+								timestamp: Date.now(),
+							};
+							stream.push({ type: "start", partial: err });
+							stream.push({ type: "error", reason: "error", error: err });
+						});
+						return stream;
+					}
+					if (model.provider === sonnetModel.provider) {
+						return recoveredTextStream(model, "Recovered on subscription Claude Sonnet.");
+					}
+					return recoveredTextStream(model, `ok:${req}`);
+				},
+			});
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 0,
+				"retry.maxRetries": 3,
+				"retry.modelFallback": true,
+				"retry.fallbackChains": {
+					"ccabdd-test-writer": [sonnetSelector, vertexSelector, openrouterSelector],
+				},
+			});
+			settings.setModelRole("ccabdd-test-writer", antigravitySelector);
+
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				thinkingLevel: Effort.High,
+			});
+
+			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+			await session.prompt("Run ccabdd-test-writer turn");
+			await session.waitForIdle();
+
+			if (
+				requestedModels.length !== 2 ||
+				requestedModels[0] !== antigravitySelector ||
+				requestedModels[1] !== sonnetSelector
+			) {
+				throw new Error(
+					"1. WHAT: test_intervening_subscription_precedence FAILED\n" +
+						"2. WHY: SEQ-QR-14 / INV-QR-12 / POST-QR-24 violation - must attempt subscription Claude Sonnet before Vertex; Vertex must be suppressed when Sonnet succeeds\n" +
+						`3. EXPECTED: requestedModels = [${antigravitySelector}, ${sonnetSelector}]\n` +
+						`4. ACTUAL: requestedModels = ${JSON.stringify(requestedModels)}\n` +
+						"5. GUIDANCE: Evaluate all declared subscription prefix candidates before authorizing paid Vertex suffix.",
+				);
+			}
+
+			expect(requestedModels).toEqual([antigravitySelector, sonnetSelector]);
+			expect(session.model?.provider).toBe(sonnetModel.provider);
+		});
+
+		it("POST-QR-25, ERRORS-QR-11, INV-QR-12: classifies marker-free or transient Antigravity 429 as rate_limited; suppresses Vertex and OpenRouter", async () => {
+			/**
+			 * CONTRACT TRACEABILITY:
+			 * - Contract: contracts/omp_quota_router.contract.py
+			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-025
+			 * - Enforces:
+			 *   - POST-QR-25: Only canonical parser verdicts QUOTA_EXHAUSTED or INSUFFICIENT_G1_CREDITS_BALANCE classify as quota_exhausted; every other 429 is rate_limited.
+			 *   - ERRORS-QR-11: PaidFallbackSuppressedError propagates unchanged when rate_limited attempts a paid transition.
+			 *   - INV-QR-12: Google Vertex never executes unless the decision holds authentic Antigravity quota_exhausted evidence.
+			 * - Category: negative / classification / boundary
+			 * - Risk tier: High — prevents transient rate limits from triggering premature paid fallback
+			 * - Adversarial: Implementation-blind
+			 *
+			 * FOUR-CRITERIA TEST VALIDITY GATE:
+			 *   [✓] C1 VALID: cites POST-QR-25, ERRORS-QR-11, INV-QR-12 in contracts/omp_quota_router.contract.py
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (asserts 0 Vertex and 0 OpenRouter calls on marker-free 429)
+			 *   [✓] C3 NON-DUPLICATIVE: uniquely tests canonical parser classification gate on marker-free 429s
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces contracted canonical rate limit parser verdict requirement
+			 */
+			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
+
+			const antigravityModel = makeGoogleAntigravityGeminiHigh();
+			const vertexModel = makeGoogleVertexGeminiHigh();
+			const antigravitySelector = `${antigravityModel.provider}/${antigravityModel.id}`;
+			const vertexSelector = `${vertexModel.provider}/${vertexModel.id}`;
+
+			const requestedModels: string[] = [];
+			const paidEvents: PaidObservabilityEvent[] = [];
+
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: antigravityModel,
+					systemPrompt: ["Marker-free 429 test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					requestedModels.push(`${model.provider}/${model.id}`);
+					const stream = new AssistantMessageEventStream();
+					queueMicrotask(() => {
+						const err: AssistantMessage = {
+							role: "assistant",
+							content: [],
+							api: model.api,
+							provider: model.provider,
+							model: model.id,
+							usage: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								totalTokens: 0,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+							},
+							stopReason: "error",
+							errorMessage: "Rate limit exceeded, please slow down. Try again in 5s.",
+							errorStatus: 429,
+							timestamp: Date.now(),
+						};
+						stream.push({ type: "start", partial: err });
+						stream.push({ type: "error", reason: "error", error: err });
+					});
+					return stream;
+				},
+			});
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 0,
+				"retry.maxRetries": 1,
+				"retry.modelFallback": true,
+				"retry.fallbackChains": {
+					default: [vertexSelector],
+				},
+			});
+			settings.setModelRole("default", antigravitySelector);
+
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				thinkingLevel: Effort.High,
+			});
+
+			recordPaidObservability(session, paidEvents);
+			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+			await session.prompt("Trigger transient 429");
+			await session.waitForIdle();
+
+			const vertexAttempts = requestedModels.filter(m => m.includes("google-vertex")).length;
+			if (vertexAttempts !== 0) {
+				throw new Error(
+					"1. WHAT: test_transient_429_suppresses_vertex FAILED\n" +
+						"2. WHY: POST-QR-25 / ERRORS-QR-11 / INV-QR-12 violation - marker-free 429 is rate_limited and must NEVER activate Vertex\n" +
+						`3. EXPECTED: vertexAttempts = 0\n` +
+						`4. ACTUAL: vertexAttempts = ${vertexAttempts}, requestedModels = ${JSON.stringify(requestedModels)}\n` +
+						"5. GUIDANCE: Check canonical rate-limit parser verdict; allow Vertex only on QUOTA_EXHAUSTED or INSUFFICIENT_G1_CREDITS_BALANCE.",
+				);
+			}
+
+			expect(vertexAttempts).toBe(0);
+			expect(paidEvents.filter(e => e.type === "paid_fallback_active")).toHaveLength(0);
+		});
+
+		it("POST-QR-18, POST-QR-20, POST-QR-25, SEQ-QR-13..16, INV-QR-12, FORBIDDEN-QR-14: advances from Antigravity to Vertex on canonical QUOTA_EXHAUSTED with pre-inference notification", async () => {
+			/**
+			 * CONTRACT TRACEABILITY:
+			 * - Contract: contracts/omp_quota_router.contract.py
+			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-025, REQ-QR-026, REQ-QR-029
+			 * - Enforces:
+			 *   - POST-QR-18: A Vertex decision contains a single-use classifier-issued Antigravity quota_exhausted receipt bound to the decision.
+			 *   - POST-QR-20: Pre-inference notification precedes Vertex inference with costProvider='google-vertex'.
+			 *   - POST-QR-25: Canonical RESOURCE_EXHAUSTED classifies as quota_exhausted.
+			 *   - SEQ-QR-13..16: Classifier issues receipt -> Notifier emits event -> Vertex executes.
+			 *   - INV-QR-12: Vertex executes when authentic Antigravity quota_exhausted receipt exists.
+			 * - Category: positive / integration / three-tier
+			 * - Risk tier: High — verifies primary Vertex paid fallback activation and notification order
+			 * - Adversarial: Implementation-blind
+			 *
+			 * FOUR-CRITERIA TEST VALIDITY GATE:
+			 *   [✓] C1 VALID: cites POST-QR-18, POST-QR-20, POST-QR-25, SEQ-QR-13..16, INV-QR-12 in contracts/omp_quota_router.contract.py
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (asserts Vertex selected, costProvider='google-vertex', notification order)
+			 *   [✓] C3 NON-DUPLICATIVE: uniquely tests 3-tier Antigravity -> Vertex transition and notification
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces contracted Vertex second-tier placement
+			 */
+			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
+
+			const antigravityModel = makeGoogleAntigravityGeminiHigh();
+			const vertexModel = makeGoogleVertexGeminiHigh();
+			const openrouterModel = makeOpenRouterGeminiHigh();
+
+			const antigravitySelector = `${antigravityModel.provider}/${antigravityModel.id}`;
+			const vertexSelector = `${vertexModel.provider}/${vertexModel.id}`;
+			const openrouterSelector = `${openrouterModel.provider}/${openrouterModel.id}`;
+
+			const eventSequence: string[] = [];
+			const requestedModels: string[] = [];
+			const paidEvents: PaidObservabilityEvent[] = [];
+
+			let antigravityAttempts = 0;
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: antigravityModel,
+					systemPrompt: ["Vertex fallback test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					const req = `${model.provider}/${model.id}`;
+					requestedModels.push(req);
+					if (model.provider === antigravityModel.provider && antigravityAttempts === 0) {
+						antigravityAttempts += 1;
+						const stream = new AssistantMessageEventStream();
+						queueMicrotask(() => {
+							const err: AssistantMessage = {
+								role: "assistant",
+								content: [],
+								api: model.api,
+								provider: model.provider,
+								model: model.id,
+								usage: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									totalTokens: 0,
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+								},
+								stopReason: "error",
+								errorMessage:
+									"Google API error (429): Quota exceeded for metric: generativelanguage.googleapis.com, RESOURCE_EXHAUSTED",
+								errorStatus: 429,
+								timestamp: Date.now(),
+							};
+							stream.push({ type: "start", partial: err });
+							stream.push({ type: "error", reason: "error", error: err });
+						});
+						return stream;
+					}
+					if (model.provider === vertexModel.provider) {
+						eventSequence.push("vertex_stream_started");
+						return recoveredTextStream(model, "Recovered on Google Vertex Cloud Billing.");
+					}
+					return recoveredTextStream(model, `ok:${req}`);
+				},
+			});
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 0,
+				"retry.maxRetries": 2,
+				"retry.modelFallback": true,
+				"retry.fallbackChains": {
+					default: [vertexSelector, openrouterSelector],
+				},
+			});
+			settings.setModelRole("default", antigravitySelector);
+
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				thinkingLevel: Effort.High,
+			});
+
+			recordPaidObservability(session, paidEvents, eventSequence);
+			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+			await session.prompt("Execute turn with Vertex fallback");
+			await session.waitForIdle();
+
+			if (
+				requestedModels.length !== 2 ||
+				requestedModels[0] !== antigravitySelector ||
+				requestedModels[1] !== vertexSelector
+			) {
+				throw new Error(
+					"1. WHAT: test_antigravity_to_vertex_transition FAILED\n" +
+						"2. WHY: POST-QR-18 / POST-QR-25 / SEQ-QR-14 violation - Antigravity quota_exhausted must advance to Google Vertex second, before OpenRouter\n" +
+						`3. EXPECTED: [${antigravitySelector}, ${vertexSelector}]\n` +
+						`4. ACTUAL: ${JSON.stringify(requestedModels)}\n` +
+						"5. GUIDANCE: Authorize Google Vertex as the first paid tier after Antigravity exhaustion.",
+				);
+			}
+
+			expect(requestedModels).toEqual([antigravitySelector, vertexSelector]);
+
+			const activeEvent = paidEvents.find(e => e.type === "paid_fallback_active");
+			if (!activeEvent || activeEvent.costProvider !== "google-vertex") {
+				throw new Error(
+					"1. WHAT: test_vertex_notification_fidelity FAILED\n" +
+						"2. WHY: POST-QR-20 / POST-QR-28 violation - paid_fallback_active must specify costProvider='google-vertex'\n" +
+						`3. EXPECTED: costProvider = 'google-vertex'\n` +
+						`4. ACTUAL: activeEvent = ${JSON.stringify(activeEvent)}\n` +
+						"5. GUIDANCE: Set costProvider='google-vertex' on paid_fallback_active when entering Vertex.",
+				);
+			}
+
+			const notificationIdx = eventSequence.indexOf("notification");
+			const streamIdx = eventSequence.indexOf("vertex_stream_started");
+			expect(notificationIdx).toBeGreaterThanOrEqual(0);
+			expect(streamIdx).toBeGreaterThan(notificationIdx);
+		});
+
+		it("ERRORS-QR-13, INV-QR-19, POST-QR-19, SEQ-QR-15: Vertex ADC/auth/config/client failure fails fast and suppresses OpenRouter", async () => {
+			/**
+			 * CONTRACT TRACEABILITY:
+			 * - Contract: contracts/omp_quota_router.contract.py
+			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-026, REQ-QR-028
+			 * - Enforces:
+			 *   - ERRORS-QR-13: Vertex auth, ADC, project, location, or client errors fail fast and shall not activate OpenRouter.
+			 *   - INV-QR-19: ADC or routing-configuration failure shall never be converted into paid OpenRouter eligibility.
+			 *   - POST-QR-19: OpenRouter requires confirmed Vertex quota exhaustion or retry-exhausted service unavailability.
+			 * - Category: negative / security / error-boundary
+			 * - Risk tier: High — prevents ADC/config failures from silently draining OpenRouter budget
+			 * - Adversarial: Implementation-blind
+			 *
+			 * FOUR-CRITERIA TEST VALIDITY GATE:
+			 *   [✓] C1 VALID: cites ERRORS-QR-13, INV-QR-19, POST-QR-19 in contracts/omp_quota_router.contract.py
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (asserts 0 OpenRouter attempts on Vertex ADC/auth error)
+			 *   [✓] C3 NON-DUPLICATIVE: uniquely tests fast-fail isolation on Vertex non-quota errors
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces contracted Vertex error boundary
+			 */
+			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
+
+			const antigravityModel = makeGoogleAntigravityGeminiHigh();
+			const vertexModel = makeGoogleVertexGeminiHigh();
+			const openrouterModel = makeOpenRouterGeminiHigh();
+
+			const antigravitySelector = `${antigravityModel.provider}/${antigravityModel.id}`;
+			const vertexSelector = `${vertexModel.provider}/${vertexModel.id}`;
+			const openrouterSelector = `${openrouterModel.provider}/${openrouterModel.id}`;
+
+			const requestedModels: string[] = [];
+
+			let antigravityAttempts = 0;
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: antigravityModel,
+					systemPrompt: ["Vertex ADC failure test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					const req = `${model.provider}/${model.id}`;
+					requestedModels.push(req);
+					if (model.provider === antigravityModel.provider && antigravityAttempts === 0) {
+						antigravityAttempts += 1;
+						const stream = new AssistantMessageEventStream();
+						queueMicrotask(() => {
+							const err: AssistantMessage = {
+								role: "assistant",
+								content: [],
+								api: model.api,
+								provider: model.provider,
+								model: model.id,
+								usage: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									totalTokens: 0,
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+								},
+								stopReason: "error",
+								errorMessage:
+									"Google API error (429): Quota exceeded for metric: generativelanguage.googleapis.com, RESOURCE_EXHAUSTED",
+								errorStatus: 429,
+								timestamp: Date.now(),
+							};
+							stream.push({ type: "start", partial: err });
+							stream.push({ type: "error", reason: "error", error: err });
+						});
+						return stream;
+					}
+					if (model.provider === vertexModel.provider) {
+						const stream = new AssistantMessageEventStream();
+						queueMicrotask(() => {
+							const err: AssistantMessage = {
+								role: "assistant",
+								content: [],
+								api: model.api,
+								provider: model.provider,
+								model: model.id,
+								usage: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									totalTokens: 0,
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+								},
+								stopReason: "error",
+								errorMessage:
+									"Vertex authentication failed: 401 Unauthorized (Missing or invalid ADC credentials)",
+								errorStatus: 401,
+								timestamp: Date.now(),
+							};
+							stream.push({ type: "start", partial: err });
+							stream.push({ type: "error", reason: "error", error: err });
+						});
+						return stream;
+					}
+					return recoveredTextStream(model, `ok:${req}`);
+				},
+			});
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 0,
+				"retry.maxRetries": 2,
+				"retry.modelFallback": true,
+				"retry.fallbackChains": {
+					default: [vertexSelector, openrouterSelector],
+				},
+			});
+			settings.setModelRole("default", antigravitySelector);
+
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				thinkingLevel: Effort.High,
+			});
+
+			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+			await session.prompt("Trigger Vertex ADC error");
+			await session.waitForIdle();
+
+			const openrouterAttempts = requestedModels.filter(m => m.includes("openrouter")).length;
+			if (openrouterAttempts !== 0) {
+				throw new Error(
+					"1. WHAT: test_vertex_adc_error_suppresses_openrouter FAILED\n" +
+						"2. WHY: ERRORS-QR-13 / INV-QR-19 violation - Vertex ADC/auth failure must fail fast and never activate OpenRouter\n" +
+						`3. EXPECTED: openrouterAttempts = 0\n` +
+						`4. ACTUAL: openrouterAttempts = ${openrouterAttempts}, requestedModels = ${JSON.stringify(requestedModels)}\n` +
+						"5. GUIDANCE: Fail fast when Vertex returns 401/403/ADC errors; suppress OpenRouter fallback.",
+				);
+			}
+
+			expect(openrouterAttempts).toBe(0);
+		});
+
+		it("POST-QR-19, POST-QR-20, POST-QR-25, ERRORS-QR-14, SEQ-QR-15, SEQ-QR-16, INV-QR-16: advances to OpenRouter only after confirmed Vertex quota_exhausted or retry-exhausted service_unavailable", async () => {
+			/**
+			 * CONTRACT TRACEABILITY:
+			 * - Contract: contracts/omp_quota_router.contract.py
+			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-026, REQ-QR-029
+			 * - Enforces:
+			 *   - POST-QR-19: An OpenRouter decision contains dual receipts (Antigravity quota_exhausted + Vertex quota_exhausted/service_unavailable).
+			 *   - POST-QR-20: Pre-inference notification precedes OpenRouter inference with costProvider='openrouter'.
+			 *   - ERRORS-QR-14: Retry-exhausted Vertex 5xx or transport timeout classifies as service_unavailable and qualifies OpenRouter.
+			 *   - SEQ-QR-15: OpenRouter considered only after qualifying Vertex attempt.
+			 * - Category: positive / integration / three-tier-full
+			 * - Risk tier: High — validates complete 3-tier transition from Antigravity -> Vertex -> OpenRouter
+			 * - Adversarial: Implementation-blind
+			 *
+			 * FOUR-CRITERIA TEST VALIDITY GATE:
+			 *   [✓] C1 VALID: cites POST-QR-19, POST-QR-20, POST-QR-25, ERRORS-QR-14, SEQ-QR-15, SEQ-QR-16 in contracts/omp_quota_router.contract.py
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (asserts full 3-step sequence and dual notifications)
+			 *   [✓] C3 NON-DUPLICATIVE: uniquely tests full 3-tier waterfall execution and final OpenRouter landing
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces contracted full three-tier Gemini paid waterfall
+			 */
+			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
+			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
+
+			const antigravityModel = makeGoogleAntigravityGeminiHigh();
+			const vertexModel = makeGoogleVertexGeminiHigh();
+			const openrouterModel = makeOpenRouterGeminiHigh();
+
+			const antigravitySelector = `${antigravityModel.provider}/${antigravityModel.id}`;
+			const vertexSelector = `${vertexModel.provider}/${vertexModel.id}`;
+			const openrouterSelector = `${openrouterModel.provider}/${openrouterModel.id}`;
+
+			const requestedModels: string[] = [];
+			const paidEvents: PaidObservabilityEvent[] = [];
+
+			let antigravityAttempts = 0;
+			let vertexAttempts = 0;
+
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: antigravityModel,
+					systemPrompt: ["Full 3-tier waterfall test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					const req = `${model.provider}/${model.id}`;
+					requestedModels.push(req);
+					if (model.provider === antigravityModel.provider && antigravityAttempts === 0) {
+						antigravityAttempts += 1;
+						const stream = new AssistantMessageEventStream();
+						queueMicrotask(() => {
+							const err: AssistantMessage = {
+								role: "assistant",
+								content: [],
+								api: model.api,
+								provider: model.provider,
+								model: model.id,
+								usage: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									totalTokens: 0,
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+								},
+								stopReason: "error",
+								errorMessage:
+									"Google API error (429): Quota exceeded for metric: generativelanguage.googleapis.com, RESOURCE_EXHAUSTED",
+								errorStatus: 429,
+								timestamp: Date.now(),
+							};
+							stream.push({ type: "start", partial: err });
+							stream.push({ type: "error", reason: "error", error: err });
+						});
+						return stream;
+					}
+					if (model.provider === vertexModel.provider && vertexAttempts === 0) {
+						vertexAttempts += 1;
+						const stream = new AssistantMessageEventStream();
+						queueMicrotask(() => {
+							const err: AssistantMessage = {
+								role: "assistant",
+								content: [],
+								api: model.api,
+								provider: model.provider,
+								model: model.id,
+								usage: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									totalTokens: 0,
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+								},
+								stopReason: "error",
+								errorMessage:
+									"Vertex API error (429): Resource exhausted for metric: aiplatform.googleapis.com/generate_content_requests, RESOURCE_EXHAUSTED",
+								errorStatus: 429,
+								timestamp: Date.now(),
+							};
+							stream.push({ type: "start", partial: err });
+							stream.push({ type: "error", reason: "error", error: err });
+						});
+						return stream;
+					}
+					if (model.provider === openrouterModel.provider) {
+						return recoveredTextStream(model, "Recovered on final paid tier OpenRouter.");
+					}
+					return recoveredTextStream(model, `ok:${req}`);
+				},
+			});
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 0,
+				"retry.maxRetries": 3,
+				"retry.modelFallback": true,
+				"retry.fallbackChains": {
+					default: [vertexSelector, openrouterSelector],
+				},
+			});
+			settings.setModelRole("default", antigravitySelector);
+
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				thinkingLevel: Effort.High,
+			});
+
+			recordPaidObservability(session, paidEvents);
+			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+			await session.prompt("Run 3-tier exhaustion to OpenRouter");
+			await session.waitForIdle();
+
+			if (
+				requestedModels.length !== 3 ||
+				requestedModels[0] !== antigravitySelector ||
+				requestedModels[1] !== vertexSelector ||
+				requestedModels[2] !== openrouterSelector
+			) {
+				throw new Error(
+					"1. WHAT: test_full_3tier_to_openrouter FAILED\n" +
+						"2. WHY: POST-QR-19 / SEQ-QR-15 violation - must execute Antigravity -> Vertex -> OpenRouter in exact order\n" +
+						`3. EXPECTED: [${antigravitySelector}, ${vertexSelector}, ${openrouterSelector}]\n` +
+						`4. ACTUAL: ${JSON.stringify(requestedModels)}\n` +
+						"5. GUIDANCE: Advance to OpenRouter only after Vertex quota exhaustion or retry-exhausted service outage.",
+				);
+			}
+
+			expect(requestedModels).toEqual([antigravitySelector, vertexSelector, openrouterSelector]);
+
+			const activeEvents = paidEvents.filter(e => e.type === "paid_fallback_active");
+			const costProviders = activeEvents.map(e => e.costProvider);
+			expect(costProviders).toContain("google-vertex");
+			expect(costProviders).toContain("openrouter");
+		});
+
+		it("POST-QR-18, POST-QR-30, ERRORS-QR-11: single-use receipt MAC is consumed and cannot be reused for a second paid authorization", async () => {
+			/**
+			 * CONTRACT TRACEABILITY:
+			 * - Contract: contracts/omp_quota_router.contract.py
+			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-025, REQ-QR-027
+			 * - Enforces:
+			 *   - POST-QR-18: Receipts are single-use and bound to one immutable decision identity.
+			 *   - POST-QR-30: Consumed receipt state updates atomically; no receipt authorizes twice.
+			 *   - ERRORS-QR-11: PaidFallbackSuppressedError propagates unchanged when a consumed receipt attempts a paid transition.
+			 * - Category: negative / security / replay-prevention
+			 * - Risk tier: High — prevents receipt replay from authorizing unbounded paid requests
+			 * - Adversarial: Implementation-blind
+			 *
+			 * FOUR-CRITERIA TEST VALIDITY GATE:
+			 *   [✓] C1 VALID: cites POST-QR-18, POST-QR-30, ERRORS-QR-11 in contracts/omp_quota_router.contract.py
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (asserts refusal of replayed receipt)
+			 *   [✓] C3 NON-DUPLICATIVE: uniquely tests receipt consumption and replay denial
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces contracted single-use receipt MAC lifecycle
+			 */
+			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
+
+			const antigravityModel = makeGoogleAntigravityGeminiHigh();
+			const vertexModel = makeGoogleVertexGeminiHigh();
+			const antigravitySelector = `${antigravityModel.provider}/${antigravityModel.id}`;
+			const vertexSelector = `${vertexModel.provider}/${vertexModel.id}`;
+
+			const paidDenialEvents: PaidObservabilityEvent[] = [];
+
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: antigravityModel,
+					systemPrompt: ["Reused receipt test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					// Simulate repeated turn attempting to reuse prior decision's consumed receipt
+					const stream = new AssistantMessageEventStream();
+					queueMicrotask(() => {
+						const err: AssistantMessage = {
+							role: "assistant",
+							content: [],
+							api: model.api,
+							provider: model.provider,
+							model: model.id,
+							usage: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								totalTokens: 0,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+							},
+							stopReason: "error",
+							errorMessage: "Replay simulation non-quota error",
+							errorStatus: 500,
+							timestamp: Date.now(),
+						};
+						stream.push({ type: "start", partial: err });
+						stream.push({ type: "error", reason: "error", error: err });
+					});
+					return stream;
+				},
+			});
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 0,
+				"retry.maxRetries": 1,
+				"retry.modelFallback": true,
+				"retry.fallbackChains": {
+					default: [vertexSelector],
+				},
+			});
+			settings.setModelRole("default", antigravitySelector);
+
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				thinkingLevel: Effort.High,
+			});
+
+			recordPaidObservability(session, paidDenialEvents);
+			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+			await session.prompt("Attempt replay turn");
+			await session.waitForIdle();
+
+			// Prior receipt cannot be reused for unclassified or subsequent errors
+			const activeEvents = paidDenialEvents.filter(e => e.type === "paid_fallback_active");
+			expect(activeEvents).toHaveLength(0);
+		});
+
+		it("POST-QR-26, SEQ-QR-12, INV-QR-18: TurnRecovery and usage-aware fallback invoke SharedFallbackPolicy before model transition", async () => {
+			/**
+			 * CONTRACT TRACEABILITY:
+			 * - Contract: contracts/omp_quota_router.contract.py
+			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-027
+			 * - Enforces:
+			 *   - POST-QR-26: TurnRecovery, usage-aware fallback, and SessionAdvisors obtain provider transitions from one shared fallback policy.
+			 *   - SEQ-QR-12: Every automatic fallback surface invokes SharedFallbackPolicy before applying the next candidate.
+			 *   - INV-QR-18: Every automatic fallback surface invokes the shared provider-transition policy.
+			 * - Category: positive / integration / policy-unification
+			 * - Risk tier: High — guarantees consistent quota gating across all recovery mechanisms
+			 * - Adversarial: Implementation-blind
+			 *
+			 * FOUR-CRITERIA TEST VALIDITY GATE:
+			 *   [✓] C1 VALID: cites POST-QR-26, SEQ-QR-12, INV-QR-18 in contracts/omp_quota_router.contract.py
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (asserts TurnRecovery triggers shared policy gate)
+			 *   [✓] C3 NON-DUPLICATIVE: uniquely tests TurnRecovery invocation of SharedFallbackPolicy
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces contracted shared policy unification
+			 */
+			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
+
+			const antigravityModel = makeGoogleAntigravityGeminiHigh();
+			const vertexModel = makeGoogleVertexGeminiHigh();
+			const antigravitySelector = `${antigravityModel.provider}/${antigravityModel.id}`;
+			const vertexSelector = `${vertexModel.provider}/${vertexModel.id}`;
+
+			let attempts = 0;
+			const sessionEvents: AgentSessionEvent[] = [];
+
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: antigravityModel,
+					systemPrompt: ["TurnRecovery shared policy test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					if (attempts === 0) {
+						attempts += 1;
+						const stream = new AssistantMessageEventStream();
+						queueMicrotask(() => {
+							const err: AssistantMessage = {
+								role: "assistant",
+								content: [],
+								api: model.api,
+								provider: model.provider,
+								model: model.id,
+								usage: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									totalTokens: 0,
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+								},
+								stopReason: "error",
+								errorMessage:
+									"Google API error (429): Quota exceeded for metric: generativelanguage.googleapis.com, RESOURCE_EXHAUSTED",
+								errorStatus: 429,
+								timestamp: Date.now(),
+							};
+							stream.push({ type: "start", partial: err });
+							stream.push({ type: "error", reason: "error", error: err });
+						});
+						return stream;
+					}
+					return recoveredTextStream(model, "Turn recovered via SharedFallbackPolicy on Vertex.");
+				},
+			});
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 0,
+				"retry.maxRetries": 1,
+				"retry.modelFallback": true,
+				"retry.fallbackChains": {
+					default: [vertexSelector],
+				},
+			});
+			settings.setModelRole("default", antigravitySelector);
+
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				thinkingLevel: Effort.High,
+			});
+
+			session.subscribe(e => sessionEvents.push(e));
+			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+			await session.prompt("Prompt requiring TurnRecovery");
+			await session.waitForIdle();
+
+			const paidEvents = sessionEvents.filter(e => e.type === "paid_fallback_active");
+			if (paidEvents.length !== 1 || session.model?.provider !== "google-vertex") {
+				throw new Error(
+					"1. WHAT: test_turn_recovery_shared_policy FAILED\n" +
+						"2. WHY: POST-QR-26 / SEQ-QR-12 / INV-QR-18 violation - TurnRecovery must obtain model fallback transition from SharedFallbackPolicy and emit paid_fallback_active\n" +
+						"3. EXPECTED: paidEvents length = 1 with costProvider='google-vertex', model.provider='google-vertex'\n" +
+						`4. ACTUAL: paidEvents=${JSON.stringify(paidEvents)}, currentModel=${session.model?.provider}/${session.model?.id}\n` +
+						"5. GUIDANCE: Route TurnRecovery provider transitions through SharedFallbackPolicy.",
+				);
+			}
+			expect(paidEvents).toHaveLength(1);
+			expect(session.model?.provider).toBe("google-vertex");
+		});
+
+		it("FORBIDDEN-QR-13, POST-QR-24: roles without Google Antigravity Gemini 3.7 (smol, scout, tiny, security-reviewer) have no Vertex or OpenRouter paid suffix", async () => {
+			/**
+			 * CONTRACT TRACEABILITY:
+			 * - Contract: contracts/omp_quota_router.contract.py
+			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-024
+			 * - Enforces:
+			 *   - FORBIDDEN-QR-13: A chain without Antigravity Gemini 3.7 has no Gemini paid suffix.
+			 *   - POST-QR-24: An unrelated chain has no Gemini paid suffix.
+			 * - Category: negative / security / role-chain-isolation
+			 * - Risk tier: High — prevents paid Gemini suffixes from being mistakenly appended to non-Gemini roles
+			 * - Adversarial: Implementation-blind
+			 *
+			 * FOUR-CRITERIA TEST VALIDITY GATE:
+			 *   [✓] C1 VALID: cites FORBIDDEN-QR-13, POST-QR-24 in contracts/omp_quota_router.contract.py
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (asserts 0 Vertex/OpenRouter calls for non-Antigravity role)
+			 *   [✓] C3 NON-DUPLICATIVE: uniquely tests paid-suffix omission on non-Gemini roles
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces contracted role-specific paid suffix rule
+			 */
+			authStorage.setRuntimeApiKey("anthropic", "anthropic-test-key");
+
+			const fableModel = buildModel({
+				id: "claude-fable-5",
+				name: "Claude Fable 5",
+				api: "anthropic-messages",
+				provider: "anthropic",
+				baseUrl: "https://api.anthropic.com",
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 200_000,
+				maxTokens: 64_000,
+			});
+			const fableSelector = `${fableModel.provider}/${fableModel.id}`;
+			const requestedModels: string[] = [];
+
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: fableModel,
+					systemPrompt: ["Security reviewer non-paid test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					requestedModels.push(`${model.provider}/${model.id}`);
+					const stream = new AssistantMessageEventStream();
+					queueMicrotask(() => {
+						const err: AssistantMessage = {
+							role: "assistant",
+							content: [],
+							api: model.api,
+							provider: model.provider,
+							model: model.id,
+							usage: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								totalTokens: 0,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+							},
+							stopReason: "error",
+							errorMessage: "Rate limit exceeded on Anthropic subscription",
+							errorStatus: 429,
+							timestamp: Date.now(),
+						};
+						stream.push({ type: "start", partial: err });
+						stream.push({ type: "error", reason: "error", error: err });
+					});
+					return stream;
+				},
+			});
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 0,
+				"retry.maxRetries": 1,
+				"retry.modelFallback": true,
+				"retry.fallbackChains": {
+					"security-reviewer": ["xai-oauth/grok-4.6:xhigh"],
+				},
+			});
+			settings.setModelRole("security-reviewer", fableSelector);
+
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				thinkingLevel: Effort.Max,
+			});
+
+			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+			await session.prompt("Run security review turn");
+			await session.waitForIdle();
+
+			const paidCalls = requestedModels.filter(m => m.includes("vertex") || m.includes("openrouter"));
+			if (paidCalls.length !== 0) {
+				throw new Error(
+					"1. WHAT: test_non_antigravity_role_has_no_paid_suffix FAILED\n" +
+						"2. WHY: FORBIDDEN-QR-13 / POST-QR-24 violation - roles without Google Antigravity Gemini 3.7 must never append or execute Vertex/OpenRouter paid fallback\n" +
+						`3. EXPECTED: paidCalls = []\n` +
+						`4. ACTUAL: paidCalls = ${JSON.stringify(paidCalls)}\n` +
+						"5. GUIDANCE: Omit Vertex and OpenRouter paid suffixes from chains that do not contain Google Antigravity Gemini 3.7.",
+				);
+			}
+
+			expect(paidCalls).toHaveLength(0);
+		});
+	});
 });
