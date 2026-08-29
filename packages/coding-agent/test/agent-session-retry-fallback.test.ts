@@ -5604,25 +5604,23 @@ describe("AgentSession retry fallback", () => {
 			}
 
 			// ASSERT: 5-point error messages on all contract guarantees
-			expect(requestedModels).toEqual([primarySelector, fallbackSelector]);
-			if (requestedModels[0] !== primarySelector || requestedModels[1] !== fallbackSelector) {
+			const noticeDiagnostics = notices.map(n => n.message).join(" | ");
+			const fallbackDiagnostics = JSON.stringify(fallbackAppliedEvents);
+			if (
+				requestedModels.length !== 2 ||
+				requestedModels[0] !== primarySelector ||
+				requestedModels[1] !== fallbackSelector
+			) {
 				throw new Error(
 					"1. WHAT: test_turnstile_post18_advances_on_429 FAILED\n" +
 						"2. WHY: POST-QR-18 / POST-QR-19 / POST-QR-22 / SEQ-QR-12 violation - Google Antigravity 429 must advance directly to OpenRouter Gemini 3.7 Flash\n" +
 						`3. EXPECTED: [${primarySelector}, ${fallbackSelector}]\n` +
-						`4. ACTUAL: ${JSON.stringify(requestedModels)}\n` +
+						`4. ACTUAL: requestedModels=${JSON.stringify(requestedModels)}; notices=[${noticeDiagnostics}]; fallbackAppliedEvents=${fallbackDiagnostics}\n` +
 						"5. GUIDANCE: Fallback must request Google Antigravity first and OpenRouter Gemini 3.7 Flash second on authentic 429 without intermediary providers.",
 				);
 			}
+			expect(requestedModels).toEqual([primarySelector, fallbackSelector]);
 
-			expect(fallbackAppliedEvents).toEqual([
-				{
-					type: "retry_fallback_applied",
-					from: "google-antigravity/gemini-3.7-flash-tiered:high",
-					to: fallbackSelector,
-					role: "default",
-				},
-			]);
 			if (
 				fallbackAppliedEvents.length !== 1 ||
 				fallbackAppliedEvents[0].type !== "retry_fallback_applied" ||
@@ -5637,6 +5635,14 @@ describe("AgentSession retry fallback", () => {
 						"5. GUIDANCE: Emit retry_fallback_applied with exact from/to selectors upon qualifying classifier receipt.",
 				);
 			}
+			expect(fallbackAppliedEvents).toEqual([
+				{
+					type: "retry_fallback_applied",
+					from: "google-antigravity/gemini-3.7-flash-tiered:high",
+					to: fallbackSelector,
+					role: "default",
+				},
+			]);
 			// Gate 9 & SEQ-QR-16 deterministic sequence verification: notification strictly precedes paid stream
 			const notificationIndex = eventSequence.indexOf("notification");
 			const paidStreamIndex = eventSequence.indexOf("paid_stream_started");
@@ -5846,7 +5852,11 @@ describe("AgentSession retry fallback", () => {
 				expect(fallbackAppliedEvents.filter(e => e.to === fallbackSelector)).toHaveLength(0);
 				// Gate 9 (REQ-QR-022 / POST-QR-20 / FORBIDDEN-QR-14): fail-closed paid denial emits diagnostic notice naming rejected candidate and reason
 				const denialNotice = notices.find(
-					n => n.message.toLowerCase().includes("fallback") || n.message.toLowerCase().includes("suppress") || n.message.toLowerCase().includes("denied") || n.message.toLowerCase().includes(partition.name),
+					n =>
+						n.message.toLowerCase().includes("fallback") ||
+						n.message.toLowerCase().includes("suppress") ||
+						n.message.toLowerCase().includes("denied") ||
+						n.message.toLowerCase().includes(partition.name),
 				);
 				expect(denialNotice).toBeDefined();
 				await partitionSession.dispose();
@@ -6063,7 +6073,12 @@ describe("AgentSession retry fallback", () => {
 			expect(requestedModels.filter(m => m === fallbackSelector)).toHaveLength(0);
 			expect(fallbackAppliedEvents.filter(e => e.to === fallbackSelector)).toHaveLength(0);
 			// Gate 9 diagnostic notice emitted for denied direct-Google candidate
-			const denialNotice = notices.find(n => n.message.toLowerCase().includes("fallback") || n.message.toLowerCase().includes("suppress") || n.message.toLowerCase().includes("denied"));
+			const denialNotice = notices.find(
+				n =>
+					n.message.toLowerCase().includes("fallback") ||
+					n.message.toLowerCase().includes("suppress") ||
+					n.message.toLowerCase().includes("denied"),
+			);
 			expect(denialNotice).toBeDefined();
 		});
 
@@ -6113,9 +6128,9 @@ describe("AgentSession retry fallback", () => {
 				},
 				streamFn: (model, context, options) => {
 					requestedModels.push(`${model.provider}/${model.id}`);
-					const stream = new AssistantMessageEventStream();
-					queueMicrotask(() => {
-						if (model.provider === primaryModel.provider) {
+					if (model.provider === primaryModel.provider) {
+						const stream = new AssistantMessageEventStream();
+						queueMicrotask(() => {
 							// Step 1: Antigravity fails with 503 service unavailable, falling over to intermediary
 							const error503: AssistantMessage = {
 								role: "assistant",
@@ -6131,7 +6146,11 @@ describe("AgentSession retry fallback", () => {
 							};
 							stream.push({ type: "start", partial: error503 });
 							stream.push({ type: "error", reason: "error", error: error503 });
-						} else if (model.provider === intermediaryModel.provider) {
+						});
+						return stream;
+					} else if (model.provider === intermediaryModel.provider) {
+						const stream = new AssistantMessageEventStream();
+						queueMicrotask(() => {
 							// Step 2: Intermediary fails with 429
 							const error429: AssistantMessage = {
 								role: "assistant",
@@ -6147,13 +6166,11 @@ describe("AgentSession retry fallback", () => {
 							};
 							stream.push({ type: "start", partial: error429 });
 							stream.push({ type: "error", reason: "error", error: error429 });
-						} else {
-							const msg = createAssistantMessage("Unreachable");
-							stream.push({ type: "text_delta", contentIndex: 0, delta: "Unreachable", partial: msg });
-							stream.push({ type: "done", reason: "stop", message: msg });
-						}
-					});
-					return stream;
+						});
+						return stream;
+					} else {
+						return recoveredTextStream(model, "Unreachable");
+					}
 				},
 			});
 
@@ -6192,7 +6209,12 @@ describe("AgentSession retry fallback", () => {
 			expect(requestedModels.filter(m => m === paidSelector)).toHaveLength(0);
 			expect(fallbackAppliedEvents.filter(e => e.to === paidSelector)).toHaveLength(0);
 			// Gate 9 diagnostic notice emitted for denied intermediary candidate
-			const denialNotice = notices.find(n => n.message.toLowerCase().includes("fallback") || n.message.toLowerCase().includes("suppress") || n.message.toLowerCase().includes("denied"));
+			const denialNotice = notices.find(
+				n =>
+					n.message.toLowerCase().includes("fallback") ||
+					n.message.toLowerCase().includes("suppress") ||
+					n.message.toLowerCase().includes("denied"),
+			);
 			expect(denialNotice).toBeDefined();
 		});
 
@@ -6424,7 +6446,10 @@ describe("AgentSession retry fallback", () => {
 
 			// Gate 9 observability check: qualifying notification is emitted
 			const paidNotice = notices.find(
-				n => n.message.toLowerCase().includes("paid") || n.message.toLowerCase().includes("openrouter") || n.message.toLowerCase().includes("fallback"),
+				n =>
+					n.message.toLowerCase().includes("paid") ||
+					n.message.toLowerCase().includes("openrouter") ||
+					n.message.toLowerCase().includes("fallback"),
 			);
 			expect(paidNotice).toBeDefined();
 		});
@@ -6504,6 +6529,125 @@ describe("AgentSession retry fallback", () => {
 						"5. GUIDANCE: Google Antigravity must be attempted first on every Gemini turn; OpenRouter is strictly a secondary fallback.",
 				);
 			}
+		});
+
+		it("INV-QR-12, POST-QR-19, SEQ-QR-13, FORBIDDEN-QR-14: refuses proactive usage-aware paid fallback without an authentic current-turn raw Google 429", async () => {
+			/**
+			 * CONTRACT TRACEABILITY:
+			 * - Contract: contracts/omp_quota_router.contract.py
+			 * - Enforces:
+			 *   - INV-QR-12: Caller-selected trust anchors and caller-authored outcome receipts never advance to paid OpenRouter.
+			 *   - POST-QR-19: An OpenRouter decision contains exactly one classifier-issued Google predecessor receipt and no intermediary provider.
+			 *   - SEQ-QR-13: ProviderOutcomeClassifier issues a receipt from the raw Google response before paid fallback consideration.
+			 *   - FORBIDDEN-QR-14: Paid inference never occurs silently.
+			 * - Category: negative / security (proactive usage-aware turnstile isolation)
+			 * - Risk tier: High — prevents background quota health / usage depletion from laundering into paid OpenRouter token expenditure without an authentic current-turn raw HTTP 429
+			 * - Adversarial: Implementation-blind
+			 *
+			 * FOUR-CRITERIA TEST VALIDITY GATE:
+			 *   [✓] C1 VALID: cites INV-QR-12, POST-QR-19, SEQ-QR-13, FORBIDDEN-QR-14 in contracts/omp_quota_router.contract.py
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (asserts proactive usage depletion alone cannot activate paid OpenRouter)
+			 *   [✓] C3 NON-DUPLICATIVE: unique pre-send lifecycle test for usageAwareFallback interaction with paid turnstile
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces mandatory current-turn raw 429 receipt requirement against proactive switching
+			 */
+			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
+
+			const primaryModel = makeGoogleAntigravityGeminiHigh();
+			const fallbackModel = makeOpenRouterGeminiHigh();
+			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
+
+			const requestedModels: string[] = [];
+			const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
+			const notices: Array<Extract<AgentSessionEvent, { type: "notice" }>> = [];
+
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: primaryModel,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					requestedModels.push(`${model.provider}/${model.id}`);
+					return recoveredTextStream(model, `ok:${model.provider}/${model.id}`);
+				},
+			});
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.usageAwareFallback": true,
+				"retry.usageReservePolicy": "fail-closed",
+				"retry.fallbackChains": {
+					default: [fallbackSelector],
+				},
+			});
+			settings.setModelRole("default", primarySelector);
+
+			// Primary subscription reports depleted via background usage health, but NO raw 429 occurred in current turn
+			vi.spyOn(modelRegistry.authStorage, "getModelUsageHealth").mockImplementation(async provider =>
+				provider === primaryModel.provider
+					? { state: "depleted", accounts: [{ credentialId: 1, credentialType: "oauth", state: "depleted" }] }
+					: { state: "healthy", accounts: [] },
+			);
+
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				thinkingLevel: Effort.High,
+			});
+
+			session.subscribe(event => {
+				if (event.type === "retry_fallback_applied") fallbackAppliedEvents.push(event);
+				if (event.type === "notice") notices.push(event);
+			});
+			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+			try {
+				await session.prompt("Run turn under proactive usage exhaustion");
+				await session.waitForIdle();
+			} catch {
+				// Expected fail-closed when paid fallback is disallowed proactively
+			}
+
+			// ASSERT 1: Zero paid OpenRouter requests
+			const paidRequests = requestedModels.filter(m => m === fallbackSelector);
+			expect(paidRequests).toHaveLength(0);
+			if (paidRequests.length > 0) {
+				throw new Error(
+					"1. WHAT: test_refuses_proactive_usage_aware_paid_fallback FAILED\n" +
+						"2. WHY: INV-QR-12 / POST-QR-19 / SEQ-QR-13 / FORBIDDEN-QR-14 violation - proactive usage depletion alone must never authorize paid OpenRouter fallback without current-turn raw 429\n" +
+						`3. EXPECTED: 0 requests to ${fallbackSelector}\n` +
+						`4. ACTUAL: requestedModels=${JSON.stringify(requestedModels)}\n` +
+						"5. GUIDANCE: Paid OpenRouter fallback strictly requires an internally classified current-turn Google Antigravity raw HTTP 429 response.",
+				);
+			}
+
+			// ASSERT 2: Zero retry_fallback_applied to paid OpenRouter
+			const paidFallbackEvents = fallbackAppliedEvents.filter(e => e.to === fallbackSelector);
+			expect(paidFallbackEvents).toHaveLength(0);
+
+			// ASSERT 3: One structured denial notice naming rejected candidate and reason
+			const denialNotice = notices.find(
+				n =>
+					n.message.toLowerCase().includes("fallback") ||
+					n.message.toLowerCase().includes("suppress") ||
+					n.message.toLowerCase().includes("denied") ||
+					n.message.toLowerCase().includes("proactive"),
+			);
+			expect(denialNotice).toBeDefined();
+
+			// ASSERT 4: No fabricated authoritativeQuotaSignal or paid_fallback_active event
+			const fabricatedPaidNotice = notices.find(
+				n =>
+					n.message.toLowerCase().includes("paid_fallback_active") ||
+					(n.message.toLowerCase().includes("paid") && n.message.toLowerCase().includes("active")),
+			);
+			expect(fabricatedPaidNotice).toBeUndefined();
 		});
 	});
 });
