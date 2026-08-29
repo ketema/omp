@@ -1509,10 +1509,29 @@ export class TurnRecovery {
 		const chainKeys = this.retryFallbackChainKeys(currentSelector, currentModel);
 		for (const role of chainKeys) {
 			for (const candidate of this.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
+				if (isOpenRouterPaidSelector(candidate)) {
+					// Paid OpenRouter requires a live turn 429 classifier receipt; pre-flight usage health cannot authorize paid fallback.
+					await this.#host.emitSessionEvent({
+						type: "notice",
+						level: "warning",
+						message: `Paid fallback denied: missing_current_turn_429 for ${candidate.raw} at position 0`,
+						source: "ProviderOutcomeClassifier",
+					});
+					continue;
+				}
 				if (this.isRetryFallbackSelectorSuppressed(candidate)) continue;
 				const resolved = resolveModelOverride([candidate.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidateModel = resolved.model ?? this.#host.modelRegistry.find(candidate.provider, candidate.id);
 				if (!candidateModel || !this.#host.modelRegistry.hasConfiguredAuth(candidateModel)) continue;
+				if (isOpenRouterPaidCandidate(candidateModel)) {
+					await this.#host.emitSessionEvent({
+						type: "notice",
+						level: "warning",
+						message: `Paid fallback denied: missing_current_turn_429 for ${candidate.raw} at position 0`,
+						source: "ProviderOutcomeClassifier",
+					});
+					continue;
+				}
 				if (ceiling !== undefined && !modelSupportsEffortCeiling(candidateModel, ceiling)) continue;
 				// A usage fallback must also fit: skip a candidate whose window cannot
 				// hold the live context so we never switch onto an oversized request
