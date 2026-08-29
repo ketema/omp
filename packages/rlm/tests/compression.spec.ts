@@ -127,8 +127,8 @@ describe("RLM Dill Compression Contracts & Validators", () => {
     let lastProvError: string | null = null;
 
     try {
-      // Safe probe: verify interpreter has required dependencies (dill, numpy)
-      let probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy"], {
+      // Safe probe: verify interpreter has required dependencies (dill, numpy, rlm)
+      let probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy, rlm"], {
         cwd: pythonDir,
         env: { ...process.env, PYTHONPATH: pythonDir },
         stdout: "pipe",
@@ -148,8 +148,9 @@ describe("RLM Dill Compression Contracts & Validators", () => {
             ]);
             if (venvExit === 0) {
               const uvPython = path.join(tempVenvBase, "bin", "python3");
+              const rlmRuntimeDir = path.join(pythonDir, "rlm-runtime");
               const pipProc = Bun.spawn(
-                [uvPath, "pip", "install", "--python", uvPython, "dill", "numpy", "ipykernel"],
+                [uvPath, "pip", "install", "--python", uvPython, "dill", "numpy", "ipykernel", rlmRuntimeDir],
                 { stdout: "ignore", stderr: "pipe" },
               );
               const [pipErr, pipExit] = await Promise.all([
@@ -158,7 +159,7 @@ describe("RLM Dill Compression Contracts & Validators", () => {
               ]);
               if (pipExit === 0 && fs.existsSync(uvPython)) {
                 pythonExe = uvPython;
-                probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy"], {
+                probe = Bun.spawnSync([pythonExe, "-c", "import dill, numpy, rlm"], {
                   cwd: pythonDir,
                   env: { ...process.env, PYTHONPATH: pythonDir },
                   stdout: "pipe",
@@ -180,7 +181,7 @@ describe("RLM Dill Compression Contracts & Validators", () => {
         const probeErr = new TextDecoder().decode(probe.stderr);
         const provContext = lastProvError ? ` (auto-provision detail: ${lastProvError})` : "";
         throw new Error(
-          `Python runtime environment at '${pythonExe}' is missing required dependencies (dill, numpy): ${probeErr}${provContext}`,
+          `Python runtime environment at '${pythonExe}' is missing required dependencies (dill, numpy, rlm): ${probeErr}${provContext}`,
         );
       }
 
