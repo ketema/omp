@@ -2557,7 +2557,13 @@ describe("AgentSession retry fallback", () => {
 		]);
 	});
 
-	it("re-prefixes the failing model's bare id for id-prefixed wildcard chain entries", async () => {
+	it("re-prefixes the failing model's bare id for id-prefixed wildcard chain entries and fails closed for paid candidates without authentic 429", async () => {
+		/**
+		 * CONTRACT TRACEABILITY:
+		 * - Enforces: INV-QR-12, INV-QR-16, FORBIDDEN-QR-14
+		 * - Category: negative / security (fail-closed paid fallback suppression)
+		 * - Risk tier: High
+		 */
 		const primaryModel = getBundledModel("google", "gemini-2.5-flash");
 		const fallbackModel = getBundledModel("openrouter", "google/gemini-2.5-flash");
 		if (!primaryModel || !fallbackModel) {
@@ -2571,6 +2577,9 @@ describe("AgentSession retry fallback", () => {
 		// `openrouter/google/*` splits into provider `openrouter` + id prefix
 		// `google`: the failing bare id is re-prefixed into the aggregator's
 		// namespace (google/gemini-2.5-flash -> openrouter/google/gemini-2.5-flash).
+		// However, because the resolved candidate is paid OpenRouter and the
+		// failing predecessor is non-Antigravity/generic Google without an
+		// authentic 429 receipt, turn recovery fails closed without paid inference.
 		const settings = Settings.isolated({
 			"compaction.enabled": false,
 			"retry.maxRetries": 1,
@@ -2592,23 +2601,17 @@ describe("AgentSession retry fallback", () => {
 			}
 		});
 
-		await session.prompt("Recover via id-prefixed wildcard entry");
-		await session.waitForIdle();
+		try {
+			await session.prompt("Recover via id-prefixed wildcard entry");
+			await session.waitForIdle();
+		} catch {
+			// Expected fail-closed when paid fallback is suppressed
+		}
 
-		expect(requestedModels).toEqual([
-			`${primaryModel.provider}/${primaryModel.id}`,
-			`${fallbackModel.provider}/${fallbackModel.id}`,
-		]);
-		expect(session.model?.provider).toBe("openrouter");
-		expect(session.model?.id).toBe(`google/${primaryModel.id}`);
-		expect(fallbackAppliedEvents).toEqual([
-			{
-				type: "retry_fallback_applied",
-				from: `${primaryModel.provider}/${primaryModel.id}`,
-				to: `openrouter/google/${primaryModel.id}`,
-				role: "google/*",
-			},
-		]);
+		// Fail-closed under INV-QR-12, INV-QR-16, and FORBIDDEN-QR-14:
+		// Paid OpenRouter inference is suppressed without an authentic Google Antigravity 429.
+		expect(requestedModels).toEqual([`${primaryModel.provider}/${primaryModel.id}`]);
+		expect(fallbackAppliedEvents.filter(e => e.to === `${fallbackModel.provider}/${fallbackModel.id}`)).toHaveLength(0);
 	});
 
 	it("matches id-prefixed wildcard keys and strips the vendor prefix for direct-provider targets", async () => {
@@ -5482,6 +5485,10 @@ describe("AgentSession retry fallback", () => {
 			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
 			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
 
+			// AuthStorage provider contract seam: markUsageLimitReached returns switched: false (no alternate subscription credential)
+			const markLimitSpy = vi
+				.spyOn(modelRegistry.authStorage, "markUsageLimitReached")
+				.mockResolvedValue({ switched: false });
 			let notificationTimestamp: number | undefined;
 			let paidInferenceStartTimestamp: number | undefined;
 			const requestedModels: string[] = [];
@@ -5489,7 +5496,28 @@ describe("AgentSession retry fallback", () => {
 			const fallbackSucceededEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_succeeded" }>> = [];
 			const notices: Array<Extract<AgentSessionEvent, { type: "notice" }>> = [];
 
-			const mock = createMockModel();
+			const makeGoogleAntigravity429Stream = (model: Model<Api>): AssistantMessageEventStream => {
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					const errorPartial: AssistantMessage = {
+						role: "assistant",
+						content: [],
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+						usage: emptyUsage(),
+						stopReason: "error",
+						errorMessage:
+							"Google API error (429): Quota exceeded for metric: generativelanguage.googleapis.com, RESOURCE_EXHAUSTED",
+						errorStatus: 429,
+						timestamp: Date.now(),
+					};
+					stream.push({ type: "start", partial: errorPartial });
+					stream.push({ type: "error", reason: "error", error: errorPartial });
+				});
+				return stream;
+			};
+
 			let primaryAttempts = 0;
 			const agent = new Agent({
 				getApiKey: model => `${model.provider}-test-key`,
@@ -5504,22 +5532,13 @@ describe("AgentSession retry fallback", () => {
 					requestedModels.push(requested);
 					if (model.provider === primaryModel.provider && primaryAttempts === 0) {
 						primaryAttempts += 1;
-						const error429 = Object.assign(
-							new Error("Google API error (429): Quota exceeded for metric: generativelanguage.googleapis.com, RESOURCE_EXHAUSTED"),
-							{
-								status: 429,
-								errorStatus: 429,
-								providerCode: "RESOURCE_EXHAUSTED",
-							},
-						);
-						mock.push({ throw: error429 });
+						return makeGoogleAntigravity429Stream(model);
 					} else if (model.provider === fallbackModel.provider) {
 						paidInferenceStartTimestamp = Date.now();
-						mock.push({ content: ["Recovered on OpenRouter paid Gemini 3.7 Flash."] });
+						return recoveredTextStream(model, "Recovered on OpenRouter paid Gemini 3.7 Flash.");
 					} else {
-						mock.push({ content: [`ok:${requested}`] });
+						return recoveredTextStream(model, `ok:${requested}`);
 					}
-					return mock.stream(model, context, options);
 				},
 			});
 
@@ -5565,6 +5584,18 @@ describe("AgentSession retry fallback", () => {
 			// ACT
 			await session.prompt("Execute Gemini 3.7 task with authentic 429 fallback");
 			await session.waitForIdle();
+
+			// ASSERT: SEQ-QR-12 / SEQ-QR-13 verify subscription pool exhaustion before paid fallback
+			expect(markLimitSpy).toHaveBeenCalled();
+			if (!markLimitSpy.mock.calls.length) {
+				throw new Error(
+					"1. WHAT: test_turnstile_post18_advances_on_429 FAILED\n" +
+						"2. WHY: SEQ-QR-12 / SEQ-QR-13 violation - must prove subscription account pool is exhausted via markUsageLimitReached before paid fallback\n" +
+						"3. EXPECTED: markUsageLimitReached called on failing Google Antigravity credential returning { switched: false }\n" +
+						"4. ACTUAL: markUsageLimitReached was not called\n" +
+						"5. GUIDANCE: Query AuthStorage markUsageLimitReached to verify no alternate subscription credential exists before paid fallback.",
+				);
+			}
 
 			// ASSERT: 5-point error messages on all contract guarantees
 			expect(requestedModels).toEqual([primarySelector, fallbackSelector]);
@@ -6015,6 +6046,10 @@ describe("AgentSession retry fallback", () => {
 			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
 			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
 
+			// AuthStorage provider contract seam: markUsageLimitReached returns switched: false (no alternate subscription credential)
+			const markLimitSpy = vi
+				.spyOn(modelRegistry.authStorage, "markUsageLimitReached")
+				.mockResolvedValue({ switched: false });
 			let notificationEmittedAt: number | undefined;
 			let paidStreamStartedAt: number | undefined;
 			const mock = createMockModel();
@@ -6073,6 +6108,7 @@ describe("AgentSession retry fallback", () => {
 			await session.prompt("Test notification timing invariant");
 			await session.waitForIdle();
 
+			expect(markLimitSpy).toHaveBeenCalled();
 			expect(notificationEmittedAt).toBeDefined();
 			expect(paidStreamStartedAt).toBeDefined();
 			expect(notificationEmittedAt! <= paidStreamStartedAt!).toBe(true);
