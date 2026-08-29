@@ -5456,6 +5456,34 @@ describe("AgentSession retry fallback", () => {
 				maxTokens: 64_000,
 			});
 
+		type PaidObservabilityEvent = { type: string; [key: string]: unknown };
+
+		const timestampFieldsOf = (event: PaidObservabilityEvent): string[] =>
+			Object.keys(event)
+				.filter(
+					key =>
+						key === "emittedAt" ||
+						key === "emitted_at" ||
+						key === "paidRequestStartedAt" ||
+						key === "paid_request_started_at" ||
+						/(?:At|_at|timestamp|Timestamp)$/.test(key),
+				)
+				.sort();
+
+		const recordPaidObservability = (
+			target: AgentSession,
+			events: PaidObservabilityEvent[],
+			eventSequence?: string[],
+		): void => {
+			target.subscribe(event => {
+				const recorded = event as unknown as PaidObservabilityEvent;
+				events.push(recorded);
+				if (eventSequence && recorded.type === "paid_fallback_active") {
+					eventSequence.push("notification");
+				}
+			});
+		};
+
 		it("POST-QR-18, POST-QR-19, POST-QR-20, POST-QR-22, INV-QR-15, INV-QR-16, SEQ-QR-12..16, FORBIDDEN-QR-14: advances from Google Antigravity to paid OpenRouter Gemini 3.7 Flash only after authentic HTTP 429 with pre-inference notification", async () => {
 			/**
 			 * CONTRACT TRACEABILITY:
@@ -6579,7 +6607,7 @@ describe("AgentSession retry fallback", () => {
 			const settings = Settings.isolated({
 				"compaction.enabled": false,
 				"retry.usageAwareFallback": true,
-				"retry.usageReservePolicy": "fail-closed",
+				"retry.usageReservePolicy": "auto",
 				"retry.fallbackChains": {
 					default: [fallbackSelector],
 				},
@@ -6648,6 +6676,636 @@ describe("AgentSession retry fallback", () => {
 					(n.message.toLowerCase().includes("paid") && n.message.toLowerCase().includes("active")),
 			);
 			expect(fabricatedPaidNotice).toBeUndefined();
+		});
+
+		it("REQ-QR-022, POST-QR-20, INV-QR-16, SEQ-QR-14..16, FORBIDDEN-QR-14: paid_fallback_active has emittedAt only, correlationId, real attemptedPosition, requestedEffort, and authoritativeQuotaSignal", async () => {
+			/**
+			 * CONTRACT TRACEABILITY:
+			 * - Contract: contracts/omp_quota_router.contract.py
+			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-022
+			 * - Enforces:
+			 *   - REQ-QR-022: Each resolution records requested role and effort, exact selector attempted at each position, authoritative quota or rate-limit signal, selected selector, whether a paid route was reached, and the active notification emitted before paid inference.
+			 *   - POST-QR-20: The internal PaidUsageNotifier receipt authenticates request identity, event, selector, payload digest, emission time, and paid-request start time before inference.
+			 *   - INV-QR-16: Paid OpenRouter inference never begins without an internally issued notifier receipt whose MAC covers both ordering timestamps.
+			 *   - SEQ-QR-14: PaidUsageNotifier issues a receipt only after a qualifying classifier receipt.
+			 *   - SEQ-QR-15: ModelFallbackResolver selects paid OpenRouter only after the matching notifier receipt.
+			 *   - SEQ-QR-16: The selected adapter begins inference only after resolver selection and any required paid notification timestamp.
+			 *   - FORBIDDEN-QR-14: Paid inference never occurs silently.
+			 * - Category: positive / integration / observability
+			 * - Risk tier: High — wrong position or silent paid use drains credits without a countable signal
+			 * - Adversarial: Implementation-blind
+			 *
+			 * FOUR-CRITERIA TEST VALIDITY GATE:
+			 *   [✓] C1 VALID: cites POST-QR-20, INV-QR-16, SEQ-QR-14, SEQ-QR-15, SEQ-QR-16, FORBIDDEN-QR-14 in contracts/omp_quota_router.contract.py and REQ-QR-022
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (exact field set, exact position 2, exact effort, exact quota signal)
+			 *   [✓] C3 NON-DUPLICATIVE: unique suppressed-intermediary position proof for paid_fallback_active schema; existing tests only assert prose notices
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces current REQ-QR-022 observability fields on the contracted paid-active notification
+			 */
+			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("openai", "openai-test-key");
+			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
+
+			const primaryModel = makeGoogleAntigravityGeminiHigh();
+			const intermediaryModel = getBundledModel("openai", "gpt-4o-mini");
+			const fallbackModel = makeOpenRouterGeminiHigh();
+			if (!intermediaryModel) {
+				throw new Error("Expected bundled openai/gpt-4o-mini intermediary model");
+			}
+			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+			const intermediarySelector = `${intermediaryModel.provider}/${intermediaryModel.id}`;
+			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
+			const paidContractSelector = "openrouter/google/gemini-3.7-flash:high";
+
+			vi.spyOn(modelRegistry.authStorage, "markUsageLimitReached").mockResolvedValue({ switched: false });
+			const suppressUntil = Date.now() + 60_000;
+			modelRegistry.suppressSelector(intermediarySelector, suppressUntil);
+			modelRegistry.suppressSelector(`${intermediarySelector}:high`, suppressUntil);
+
+			const eventSequence: string[] = [];
+			const observabilityEvents: PaidObservabilityEvent[] = [];
+			const requestedModels: string[] = [];
+
+			const makeGoogleAntigravity429Stream = (model: Model<Api>): AssistantMessageEventStream => {
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					const errorPartial: AssistantMessage = {
+						role: "assistant",
+						content: [],
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+						usage: emptyUsage(),
+						stopReason: "error",
+						errorMessage:
+							"Google API error (429): Quota exceeded for metric: generativelanguage.googleapis.com, RESOURCE_EXHAUSTED",
+						errorStatus: 429,
+						timestamp: Date.now(),
+					};
+					stream.push({ type: "start", partial: errorPartial });
+					stream.push({ type: "error", reason: "error", error: errorPartial });
+				});
+				return stream;
+			};
+
+			let primaryAttempts = 0;
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: primaryModel,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					requestedModels.push(`${model.provider}/${model.id}`);
+					if (model.provider === primaryModel.provider && primaryAttempts === 0) {
+						primaryAttempts += 1;
+						return makeGoogleAntigravity429Stream(model);
+					}
+					if (model.provider === fallbackModel.provider) {
+						eventSequence.push("paid_stream_started");
+						return recoveredTextStream(model, "Recovered on OpenRouter paid Gemini 3.7 Flash.");
+					}
+					return recoveredTextStream(model, `ok:${model.provider}/${model.id}`);
+				},
+			});
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 0,
+				"retry.maxRetries": 3,
+				"retry.modelFallback": true,
+				"retry.fallbackChains": {
+					default: [intermediarySelector, fallbackSelector],
+				},
+			});
+			settings.setModelRole("default", primarySelector);
+
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				thinkingLevel: Effort.High,
+			});
+			recordPaidObservability(session, observabilityEvents, eventSequence);
+			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+			await session.prompt("Execute Gemini 3.7 task with suppressed intermediary before paid");
+			await session.waitForIdle();
+
+			if (requestedModels.includes(intermediarySelector)) {
+				throw new Error(
+					"1. WHAT: test_paid_fallback_active_real_attempted_position FAILED\n" +
+						"2. WHY: SEQ-QR-15 / REQ-QR-022 violation - suppressed intermediary must not be attempted before paid OpenRouter\n" +
+						`3. EXPECTED: requestedModels excludes ${intermediarySelector}\n` +
+						`4. ACTUAL: requestedModels=${JSON.stringify(requestedModels)}\n` +
+						"5. GUIDANCE: Skip the suppressed intermediary slot and retain its chain position when emitting paid_fallback_active.",
+				);
+			}
+
+			const activeEvents = observabilityEvents.filter(event => event.type === "paid_fallback_active");
+			if (activeEvents.length !== 1) {
+				throw new Error(
+					"1. WHAT: test_paid_fallback_active_schema FAILED\n" +
+						"2. WHY: REQ-QR-022 / POST-QR-20 / SEQ-QR-14 / FORBIDDEN-QR-14 violation - exactly one typed paid_fallback_active event must be emitted before paid inference\n" +
+						"3. EXPECTED: 1 event with type paid_fallback_active\n" +
+						`4. ACTUAL: ${JSON.stringify(activeEvents)}\n` +
+						"5. GUIDANCE: Emit a machine-readable paid_fallback_active session event; do not rely on prose notices.",
+				);
+			}
+			const active = activeEvents[0];
+			const timestampFields = timestampFieldsOf(active);
+			if (timestampFields.length !== 1 || timestampFields[0] !== "emittedAt") {
+				throw new Error(
+					"1. WHAT: test_paid_fallback_active_schema FAILED\n" +
+						"2. WHY: POST-QR-20 / INV-QR-16 / REQ-QR-022 violation - paid_fallback_active must expose exactly one timestamp field named emittedAt\n" +
+						'3. EXPECTED: timestamp fields ["emittedAt"]\n' +
+						`4. ACTUAL: ${JSON.stringify(timestampFields)} on ${JSON.stringify(active)}\n` +
+						"5. GUIDANCE: Public paid-active observability uses emittedAt only; do not publish a second request-start timestamp on the session event.",
+				);
+			}
+			if (typeof active.emittedAt !== "number" || !Number.isFinite(active.emittedAt) || active.emittedAt <= 0) {
+				throw new Error(
+					"1. WHAT: test_paid_fallback_active_schema FAILED\n" +
+						"2. WHY: POST-QR-20 violation - emittedAt must be a finite positive timestamp\n" +
+						"3. EXPECTED: finite emittedAt > 0\n" +
+						`4. ACTUAL: emittedAt=${String(active.emittedAt)}\n` +
+						"5. GUIDANCE: Stamp paid_fallback_active with the notifier emission time.",
+				);
+			}
+			if (typeof active.correlationId !== "string" || active.correlationId.trim().length === 0) {
+				throw new Error(
+					"1. WHAT: test_paid_fallback_active_schema FAILED\n" +
+						"2. WHY: POST-QR-20 / REQ-QR-022 violation - paid_fallback_active must carry a nonempty correlationId\n" +
+						"3. EXPECTED: nonempty string correlationId\n" +
+						`4. ACTUAL: correlationId=${JSON.stringify(active.correlationId)}\n` +
+						"5. GUIDANCE: Correlate the active notification to the request identity authenticated by the notifier receipt.",
+				);
+			}
+			if (active.attemptedPosition !== 2) {
+				throw new Error(
+					"1. WHAT: test_paid_fallback_active_real_attempted_position FAILED\n" +
+						"2. WHY: REQ-QR-022 violation - attemptedPosition must be the real 0-based index in primary plus fallback chain, including the suppressed intermediary slot\n" +
+						"3. EXPECTED: attemptedPosition === 2 (primary=0, suppressed intermediary=1, paid=2)\n" +
+						`4. ACTUAL: attemptedPosition=${JSON.stringify(active.attemptedPosition)} events=${JSON.stringify(activeEvents)}\n` +
+						"5. GUIDANCE: Record the paid selector's actual chain position; do not hardcode 1 or compact away suppressed slots.",
+				);
+			}
+			if (active.requestedEffort !== "high") {
+				throw new Error(
+					"1. WHAT: test_paid_fallback_active_schema FAILED\n" +
+						"2. WHY: REQ-QR-022 / POST-QR-20 violation - paid_fallback_active must record requested effort high\n" +
+						'3. EXPECTED: requestedEffort === "high"\n' +
+						`4. ACTUAL: requestedEffort=${JSON.stringify(active.requestedEffort)}\n` +
+						"5. GUIDANCE: Record the requested high Gemini effort on the active notification.",
+				);
+			}
+			if (active.authoritativeQuotaSignal !== "quota_exhausted") {
+				throw new Error(
+					"1. WHAT: test_paid_fallback_active_schema FAILED\n" +
+						"2. WHY: REQ-QR-022 / SEQ-QR-14 violation - authoritativeQuotaSignal must be the classifier quota_exhausted outcome for RESOURCE_EXHAUSTED HTTP 429\n" +
+						'3. EXPECTED: authoritativeQuotaSignal === "quota_exhausted"\n' +
+						`4. ACTUAL: authoritativeQuotaSignal=${JSON.stringify(active.authoritativeQuotaSignal)}\n` +
+						"5. GUIDANCE: Copy the classifier-issued quota or rate-limit category onto the active notification.",
+				);
+			}
+			expect(active).toEqual(
+				expect.objectContaining({
+					type: "paid_fallback_active",
+					attemptedPosition: 2,
+					requestedEffort: "high",
+					authoritativeQuotaSignal: "quota_exhausted",
+				}),
+			);
+			expect(typeof active.correlationId).toBe("string");
+			expect((active.correlationId as string).length).toBeGreaterThan(0);
+			expect(timestampFieldsOf(active)).toEqual(["emittedAt"]);
+
+			const notificationIndex = eventSequence.indexOf("notification");
+			const paidStreamIndex = eventSequence.indexOf("paid_stream_started");
+			if (notificationIndex < 0 || paidStreamIndex < 0 || notificationIndex >= paidStreamIndex) {
+				throw new Error(
+					"1. WHAT: test_paid_fallback_active_schema FAILED\n" +
+						"2. WHY: SEQ-QR-16 / INV-QR-16 / FORBIDDEN-QR-14 violation - typed paid_fallback_active must strictly precede paid stream start\n" +
+						"3. EXPECTED: notificationSequenceIndex < paidStreamSequenceIndex\n" +
+						`4. ACTUAL: notificationIndex=${notificationIndex}, paidStreamIndex=${paidStreamIndex}, eventSequence=${JSON.stringify(eventSequence)}\n` +
+						"5. GUIDANCE: Emit paid_fallback_active before OpenRouter inference begins.",
+				);
+			}
+			expect(paidStreamIndex).toBeGreaterThan(notificationIndex);
+			expect(session.servingModel?.selector).toBe(paidContractSelector);
+		});
+
+		it("REQ-QR-022, POST-QR-20, SEQ-QR-14, FORBIDDEN-QR-14: every paid denial emits typed paid_fallback_denied with from/to/role, reasonCode, attemptedPosition, status, correlationId, emittedAt", async () => {
+			/**
+			 * CONTRACT TRACEABILITY:
+			 * - Contract: contracts/omp_quota_router.contract.py
+			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-022
+			 * - Enforces:
+			 *   - REQ-QR-022: Each resolution records requested role and effort, exact selector attempted at each position, authoritative quota or rate-limit signal, and whether a paid route was reached.
+			 *   - POST-QR-20: The internal PaidUsageNotifier receipt authenticates request identity, event, selector, payload digest, emission time, and paid-request start time before inference.
+			 *   - SEQ-QR-14: PaidUsageNotifier issues a receipt only after a qualifying classifier receipt.
+			 *   - FORBIDDEN-QR-14: Paid inference never occurs silently.
+			 * - Category: negative / observability
+			 * - Risk tier: High — prose-only denials cannot be counted or correlated
+			 * - Adversarial: Implementation-blind
+			 *
+			 * FOUR-CRITERIA TEST VALIDITY GATE:
+			 *   [✓] C1 VALID: cites POST-QR-20, SEQ-QR-14, FORBIDDEN-QR-14 in contracts/omp_quota_router.contract.py and REQ-QR-022
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (exact from/to/role/reasonCode/position/status; ignores notices)
+			 *   [✓] C3 NON-DUPLICATIVE: unique typed paid_fallback_denied schema test; existing denials only match notice substrings
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces current fail-closed denial observability, not a hypothetical extra event family
+			 */
+			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
+
+			const primaryModel = makeGoogleAntigravityGeminiHigh();
+			const fallbackModel = makeOpenRouterGeminiHigh();
+			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
+			const observabilityEvents: PaidObservabilityEvent[] = [];
+			const requestedModels: string[] = [];
+			const mock = createMockModel();
+
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: primaryModel,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					requestedModels.push(`${model.provider}/${model.id}`);
+					if (model.provider === primaryModel.provider) {
+						mock.push({
+							throw: Object.assign(new Error("Google Antigravity authentication failed: 401 Unauthorized"), {
+								status: 401,
+								errorStatus: 401,
+							}),
+						});
+					} else {
+						mock.push({ content: ["Unreachable paid response"] });
+					}
+					return mock.stream(model, context, options);
+				},
+			});
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 0,
+				"retry.maxRetries": 2,
+				"retry.modelFallback": true,
+				"retry.fallbackChains": {
+					default: [fallbackSelector],
+				},
+			});
+			settings.setModelRole("default", primarySelector);
+
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				thinkingLevel: Effort.High,
+			});
+			recordPaidObservability(session, observabilityEvents);
+			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+			try {
+				await session.prompt("Trigger auth denial of paid fallback");
+				await session.waitForIdle();
+			} catch {
+				// Expected fail-closed
+			}
+
+			expect(requestedModels.filter(model => model === fallbackSelector)).toHaveLength(0);
+
+			const deniedEvents = observabilityEvents.filter(event => event.type === "paid_fallback_denied");
+			if (deniedEvents.length !== 1) {
+				throw new Error(
+					"1. WHAT: test_paid_fallback_denied_typed_event FAILED\n" +
+						"2. WHY: REQ-QR-022 / FORBIDDEN-QR-14 / SEQ-QR-14 violation - every paid denial must emit exactly one typed paid_fallback_denied event, not a prose notice\n" +
+						"3. EXPECTED: 1 event with type paid_fallback_denied\n" +
+						`4. ACTUAL: ${JSON.stringify(deniedEvents)}\n` +
+						"5. GUIDANCE: Emit machine-readable paid_fallback_denied; observability must not depend on notice message text.",
+				);
+			}
+			const denied = deniedEvents[0];
+			const expectedFrom = "google-antigravity/gemini-3.7-flash-tiered:high";
+			const expectedTo = "openrouter/google/gemini-3.7-flash:high";
+			if (
+				denied.from !== expectedFrom ||
+				denied.to !== expectedTo ||
+				denied.role !== "default" ||
+				denied.reasonCode !== "auth" ||
+				denied.attemptedPosition !== 1 ||
+				denied.status !== "denied"
+			) {
+				throw new Error(
+					"1. WHAT: test_paid_fallback_denied_typed_event FAILED\n" +
+						"2. WHY: REQ-QR-022 / POST-QR-20 violation - paid_fallback_denied must carry from, to, role, reasonCode, attemptedPosition, and status\n" +
+						`3. EXPECTED: { type: "paid_fallback_denied", from: "${expectedFrom}", to: "${expectedTo}", role: "default", reasonCode: "auth", attemptedPosition: 1, status: "denied" }\n` +
+						`4. ACTUAL: ${JSON.stringify(denied)}\n` +
+						"5. GUIDANCE: Record the rejected paid candidate identity, auth reason, chain position, and denied status on the typed event.",
+				);
+			}
+			if (typeof denied.correlationId !== "string" || denied.correlationId.trim().length === 0) {
+				throw new Error(
+					"1. WHAT: test_paid_fallback_denied_typed_event FAILED\n" +
+						"2. WHY: POST-QR-20 / REQ-QR-022 violation - paid_fallback_denied must carry a nonempty correlationId\n" +
+						"3. EXPECTED: nonempty string correlationId\n" +
+						`4. ACTUAL: correlationId=${JSON.stringify(denied.correlationId)}\n` +
+						"5. GUIDANCE: Correlate the denial to the request identity.",
+				);
+			}
+			if (timestampFieldsOf(denied).join(",") !== "emittedAt") {
+				throw new Error(
+					"1. WHAT: test_paid_fallback_denied_typed_event FAILED\n" +
+						"2. WHY: POST-QR-20 violation - paid_fallback_denied must expose exactly one timestamp field named emittedAt\n" +
+						'3. EXPECTED: timestamp fields ["emittedAt"]\n' +
+						`4. ACTUAL: ${JSON.stringify(timestampFieldsOf(denied))} on ${JSON.stringify(denied)}\n` +
+						"5. GUIDANCE: Stamp the typed denial with emittedAt only.",
+				);
+			}
+			expect(denied).toEqual(
+				expect.objectContaining({
+					type: "paid_fallback_denied",
+					from: expectedFrom,
+					to: expectedTo,
+					role: "default",
+					reasonCode: "auth",
+					attemptedPosition: 1,
+					status: "denied",
+				}),
+			);
+			expect(observabilityEvents.filter(event => event.type === "paid_fallback_active")).toHaveLength(0);
+		});
+
+		it("REQ-QR-022, FORBIDDEN-QR-14: repeated identical usage-aware paid denial within one session emits one typed paid_fallback_denied", async () => {
+			/**
+			 * CONTRACT TRACEABILITY:
+			 * - Contract: contracts/omp_quota_router.contract.py
+			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-022
+			 * - Enforces:
+			 *   - REQ-QR-022: Each resolution records whether a paid route was reached and the authoritative signal; duplicate identical denials are not additional metric samples.
+			 *   - FORBIDDEN-QR-14: Paid inference never occurs silently.
+			 * - Category: invariant / observability / dedup
+			 * - Risk tier: High — duplicate denial events inflate denied counts
+			 * - Adversarial: Implementation-blind
+			 *
+			 * FOUR-CRITERIA TEST VALIDITY GATE:
+			 *   [✓] C1 VALID: cites FORBIDDEN-QR-14 in contracts/omp_quota_router.contract.py and REQ-QR-022
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (exactly 1 typed denial after two identical prompts)
+			 *   [✓] C3 NON-DUPLICATIVE: unique same-session usage-aware denial dedup; sibling tests cover schema and 401 denial fields
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces current countable denial signal, not an uncontracted log-sampling feature
+			 */
+			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
+
+			const primaryModel = makeGoogleAntigravityGeminiHigh();
+			const fallbackModel = makeOpenRouterGeminiHigh();
+			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
+			const observabilityEvents: PaidObservabilityEvent[] = [];
+			const requestedModels: string[] = [];
+
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: primaryModel,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					requestedModels.push(`${model.provider}/${model.id}`);
+					return recoveredTextStream(model, `ok:${model.provider}/${model.id}`);
+				},
+			});
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.usageAwareFallback": true,
+				"retry.usageReservePolicy": "auto",
+				"retry.fallbackChains": {
+					default: [fallbackSelector],
+				},
+			});
+			settings.setModelRole("default", primarySelector);
+
+			vi.spyOn(modelRegistry.authStorage, "getModelUsageHealth").mockImplementation(async provider =>
+				provider === primaryModel.provider
+					? { state: "depleted", accounts: [{ credentialId: 1, credentialType: "oauth", state: "depleted" }] }
+					: { state: "healthy", accounts: [] },
+			);
+
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				thinkingLevel: Effort.High,
+			});
+			recordPaidObservability(session, observabilityEvents);
+			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+			for (const prompt of ["First usage-aware paid denial", "Second identical usage-aware paid denial"]) {
+				try {
+					await session.prompt(prompt);
+					await session.waitForIdle();
+				} catch {
+					// Expected fail-closed when paid fallback is disallowed proactively
+				}
+			}
+
+			expect(requestedModels.filter(model => model === fallbackSelector)).toHaveLength(0);
+
+			const deniedEvents = observabilityEvents.filter(event => event.type === "paid_fallback_denied");
+			if (deniedEvents.length !== 1) {
+				throw new Error(
+					"1. WHAT: test_usage_aware_paid_denial_dedup FAILED\n" +
+						"2. WHY: REQ-QR-022 / FORBIDDEN-QR-14 violation - repeated identical usage-aware paid denial in one session must emit exactly one typed paid_fallback_denied\n" +
+						"3. EXPECTED: 1 paid_fallback_denied event\n" +
+						`4. ACTUAL: count=${deniedEvents.length} events=${JSON.stringify(deniedEvents)}\n` +
+						"5. GUIDANCE: Deduplicate identical usage-aware paid denials to a single countable typed event per session.",
+				);
+			}
+			const denied = deniedEvents[0];
+			if (
+				denied.from !== "google-antigravity/gemini-3.7-flash-tiered:high" ||
+				denied.to !== "openrouter/google/gemini-3.7-flash:high" ||
+				denied.role !== "default" ||
+				denied.reasonCode !== "non-429" ||
+				denied.status !== "denied"
+			) {
+				throw new Error(
+					"1. WHAT: test_usage_aware_paid_denial_dedup FAILED\n" +
+						"2. WHY: REQ-QR-022 violation - the deduplicated denial must name the paid candidate and non-429 reason\n" +
+						'3. EXPECTED: { from: "google-antigravity/gemini-3.7-flash-tiered:high", to: "openrouter/google/gemini-3.7-flash:high", role: "default", reasonCode: "non-429", status: "denied" }\n' +
+						`4. ACTUAL: ${JSON.stringify(denied)}\n` +
+						"5. GUIDANCE: Classify proactive usage-aware paid denial as non-429 with status denied.",
+				);
+			}
+			expect(deniedEvents).toHaveLength(1);
+			expect(observabilityEvents.filter(event => event.type === "paid_fallback_active")).toHaveLength(0);
+		});
+
+		it("REQ-QR-022, POST-QR-20, SEQ-QR-14..16: session events are countable attempted, denied, active, and success signals by type, reason, and status", async () => {
+			/**
+			 * CONTRACT TRACEABILITY:
+			 * - Contract: contracts/omp_quota_router.contract.py
+			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-022
+			 * - Enforces:
+			 *   - REQ-QR-022: Each resolution records whether a paid route was reached and the active notification; event type, reason, and status are the metric dimensions.
+			 *   - POST-QR-20: The internal PaidUsageNotifier receipt authenticates request identity, event, selector, payload digest, emission time, and paid-request start time before inference.
+			 *   - SEQ-QR-14: PaidUsageNotifier issues a receipt only after a qualifying classifier receipt.
+			 *   - SEQ-QR-15: ModelFallbackResolver selects paid OpenRouter only after the matching notifier receipt.
+			 *   - SEQ-QR-16: The selected adapter begins inference only after resolver selection and any required paid notification timestamp.
+			 * - Category: positive / observability / metrics
+			 * - Risk tier: High — uncountable signals make paid spend unobservable
+			 * - Adversarial: Implementation-blind
+			 *
+			 * FOUR-CRITERIA TEST VALIDITY GATE:
+			 *   [✓] C1 VALID: cites POST-QR-20, SEQ-QR-14, SEQ-QR-15, SEQ-QR-16 in contracts/omp_quota_router.contract.py and REQ-QR-022
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (exact counts by type/reason/status)
+			 *   [✓] C3 NON-DUPLICATIVE: unique metric aggregation over session events; sibling tests assert schema, position, and denial fields
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces current countable session-event signals, not a separate metrics backend
+			 */
+			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
+
+			const primaryModel = makeGoogleAntigravityGeminiHigh();
+			const fallbackModel = makeOpenRouterGeminiHigh();
+			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
+			const observabilityEvents: PaidObservabilityEvent[] = [];
+
+			const makeGoogleAntigravity429Stream = (model: Model<Api>): AssistantMessageEventStream => {
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					const errorPartial: AssistantMessage = {
+						role: "assistant",
+						content: [],
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+						usage: emptyUsage(),
+						stopReason: "error",
+						errorMessage:
+							"Google API error (429): Quota exceeded for metric: generativelanguage.googleapis.com, RESOURCE_EXHAUSTED",
+						errorStatus: 429,
+						timestamp: Date.now(),
+					};
+					stream.push({ type: "start", partial: errorPartial });
+					stream.push({ type: "error", reason: "error", error: errorPartial });
+				});
+				return stream;
+			};
+
+			let primaryAttempts = 0;
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: primaryModel,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					if (model.provider === primaryModel.provider && primaryAttempts === 0) {
+						primaryAttempts += 1;
+						return makeGoogleAntigravity429Stream(model);
+					}
+					if (model.provider === fallbackModel.provider) {
+						return recoveredTextStream(model, "Recovered on OpenRouter paid Gemini 3.7 Flash.");
+					}
+					return recoveredTextStream(model, `ok:${model.provider}/${model.id}`);
+				},
+			});
+
+			vi.spyOn(modelRegistry.authStorage, "markUsageLimitReached").mockResolvedValue({ switched: false });
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 0,
+				"retry.maxRetries": 2,
+				"retry.modelFallback": true,
+				"retry.fallbackChains": {
+					default: [fallbackSelector],
+				},
+			});
+			settings.setModelRole("default", primarySelector);
+
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				thinkingLevel: Effort.High,
+			});
+			recordPaidObservability(session, observabilityEvents);
+			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+			await session.prompt("Count paid fallback metric signals");
+			await session.waitForIdle();
+
+			const metricKey = (event: PaidObservabilityEvent): string => {
+				const reason =
+					typeof event.reasonCode === "string"
+						? event.reasonCode
+						: typeof event.authoritativeQuotaSignal === "string"
+							? event.authoritativeQuotaSignal
+							: "";
+				const status = typeof event.status === "string" ? event.status : "";
+				return `${event.type}/${reason}/${status}`;
+			};
+			const counts: Record<string, number> = {};
+			for (const event of observabilityEvents) {
+				if (
+					event.type !== "paid_fallback_active" &&
+					event.type !== "paid_fallback_denied" &&
+					event.type !== "retry_fallback_succeeded"
+				) {
+					continue;
+				}
+				const key = metricKey(event);
+				counts[key] = (counts[key] ?? 0) + 1;
+			}
+			const attempted = observabilityEvents.filter(
+				event => event.type === "paid_fallback_active" || event.type === "paid_fallback_denied",
+			).length;
+			const denied = observabilityEvents.filter(event => event.type === "paid_fallback_denied").length;
+			const active = observabilityEvents.filter(event => event.type === "paid_fallback_active").length;
+			const success = observabilityEvents.filter(event => event.type === "retry_fallback_succeeded").length;
+			const expectedCounts = {
+				"paid_fallback_active/quota_exhausted/": 1,
+				"retry_fallback_succeeded//": 1,
+			};
+			if (
+				attempted !== 1 ||
+				denied !== 0 ||
+				active !== 1 ||
+				success !== 1 ||
+				counts["paid_fallback_active/quota_exhausted/"] !== 1 ||
+				counts["retry_fallback_succeeded//"] !== 1
+			) {
+				throw new Error(
+					"1. WHAT: test_paid_fallback_metric_counts FAILED\n" +
+						"2. WHY: REQ-QR-022 / POST-QR-20 / SEQ-QR-14..16 violation - session events must provide exact countable attempted, denied, active, and success signals by type, reason, and status\n" +
+						`3. EXPECTED: attempted=1 denied=0 active=1 success=1 counts=${JSON.stringify(expectedCounts)}\n` +
+						`4. ACTUAL: attempted=${attempted} denied=${denied} active=${active} success=${success} counts=${JSON.stringify(counts)} events=${JSON.stringify(observabilityEvents.filter(event => event.type === "paid_fallback_active" || event.type === "paid_fallback_denied" || event.type === "retry_fallback_succeeded"))}\n` +
+						"5. GUIDANCE: Emit one paid_fallback_active with quota_exhausted and one retry_fallback_succeeded; emit zero paid_fallback_denied on a successful paid turn.",
+				);
+			}
+			expect({ attempted, denied, active, success }).toEqual({
+				attempted: 1,
+				denied: 0,
+				active: 1,
+				success: 1,
+			});
+			expect(counts).toEqual(expectedCounts);
 		});
 	});
 });

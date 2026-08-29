@@ -472,4 +472,127 @@ function handle(frame) {
 			paid_request_started_at: 1700000001,
 		});
 	});
+
+	test("REQ-QR-022, POST-QR-20, INV-QR-16, SEQ-QR-14..16, FORBIDDEN-QR-14: forwards paid_fallback_active and paid_fallback_denied session events verbatim", async () => {
+		/**
+		 * CONTRACT TRACEABILITY:
+		 * - Contract: contracts/omp_quota_router.contract.py
+		 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-022
+		 * - Enforces:
+		 *   - REQ-QR-022: Each resolution records requested effort, position, quota signal, and whether a paid route was reached.
+		 *   - POST-QR-20: The internal PaidUsageNotifier receipt authenticates request identity, event, selector, payload digest, emission time, and paid-request start time before inference.
+		 *   - INV-QR-16: Paid OpenRouter inference never begins without an internally issued notifier receipt whose MAC covers both ordering timestamps.
+		 *   - SEQ-QR-14: PaidUsageNotifier issues a receipt only after a qualifying classifier receipt.
+		 *   - SEQ-QR-15: ModelFallbackResolver selects paid OpenRouter only after the matching notifier receipt.
+		 *   - SEQ-QR-16: The selected adapter begins inference only after resolver selection and any required paid notification timestamp.
+		 *   - FORBIDDEN-QR-14: Paid inference never occurs silently.
+		 * - Category: integration / observability
+		 * - Risk tier: High — dropped RPC frames hide paid spend from remote clients
+		 * - Adversarial: Implementation-blind
+		 * - Mock Contract: stub CLI writes exact session frames; RpcClient must forward them unchanged
+		 * - Double type: Fake (in-process RPC child writing contracted session frames)
+		 *
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites POST-QR-20, INV-QR-16, SEQ-QR-14, SEQ-QR-15, SEQ-QR-16, FORBIDDEN-QR-14 and REQ-QR-022
+		 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (exact verbatim objects for active and denied)
+		 *   [✓] C3 NON-DUPLICATIVE: unique RPC forwarding surface for typed denied + camelCase active schema; existing test covers snake_case receipt frame dispatch
+		 *   [✓] C4 NOT FUTURE-EDIT: enforces current session-event forwarding, not a new metrics channel
+		 */
+		const scriptPath = path.join(os.tmpdir(), `omp-rpc-paid-observability-${Date.now()}.js`);
+		tempPaths.push(scriptPath);
+		const activeFrame = {
+			type: "paid_fallback_active",
+			correlationId: "corr-active-1",
+			attemptedPosition: 2,
+			requestedEffort: "high",
+			authoritativeQuotaSignal: "quota_exhausted",
+			emittedAt: 1700000000,
+			from: "google-antigravity/gemini-3.7-flash-tiered:high",
+			to: "openrouter/google/gemini-3.7-flash:high",
+			role: "default",
+		};
+		const deniedFrame = {
+			type: "paid_fallback_denied",
+			from: "google-antigravity/gemini-3.7-flash-tiered:high",
+			to: "openrouter/google/gemini-3.7-flash:high",
+			role: "default",
+			reasonCode: "non-429",
+			attemptedPosition: 1,
+			status: "denied",
+			correlationId: "corr-denied-1",
+			emittedAt: 1700000002,
+		};
+		await Bun.write(
+			scriptPath,
+			`
+let buffer = "";
+function write(frame) {
+	process.stdout.write(JSON.stringify(frame) + "\\n");
+}
+write({ type: "ready" });
+process.stdin.on("data", chunk => {
+	buffer += chunk.toString("utf8");
+	let index = buffer.indexOf("\\n");
+	while (index !== -1) {
+		const line = buffer.slice(0, index).trim();
+		buffer = buffer.slice(index + 1);
+		if (line) handle(JSON.parse(line));
+		index = buffer.indexOf("\\n");
+	}
+});
+function handle(frame) {
+	if (frame.type === "prompt") {
+		write({ id: frame.id, type: "response", command: "prompt", success: true });
+		write(${JSON.stringify(activeFrame)});
+		write(${JSON.stringify(deniedFrame)});
+		write({ type: "agent_end", messages: [] });
+	}
+}
+`,
+		);
+
+		using client = new RpcClient({ cliPath: scriptPath });
+		const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
+		client.onSessionEvent(event => {
+			sessionEvents.push(event as unknown as { type: string; [key: string]: unknown });
+		});
+
+		await client.start();
+		await client.promptAndWait("Forward paid observability frames");
+
+		const active = sessionEvents.find(event => event.type === "paid_fallback_active");
+		const denied = sessionEvents.find(event => event.type === "paid_fallback_denied");
+		if (!active || JSON.stringify(active) !== JSON.stringify(activeFrame)) {
+			throw new Error(
+				"1. WHAT: test_rpc_forwards_paid_fallback_active_verbatim FAILED\n" +
+					"2. WHY: REQ-QR-022 / POST-QR-20 / SEQ-QR-14..16 / FORBIDDEN-QR-14 violation - RPC must forward paid_fallback_active verbatim with emittedAt, correlationId, attemptedPosition, requestedEffort, and authoritativeQuotaSignal\n" +
+					`3. EXPECTED: ${JSON.stringify(activeFrame)}\n` +
+					`4. ACTUAL: ${JSON.stringify(active)}\n` +
+					"5. GUIDANCE: Forward the typed paid_fallback_active session event unchanged; do not drop camelCase observability fields or require a second timestamp.",
+			);
+		}
+		if (!denied || JSON.stringify(denied) !== JSON.stringify(deniedFrame)) {
+			throw new Error(
+				"1. WHAT: test_rpc_forwards_paid_fallback_denied_verbatim FAILED\n" +
+					"2. WHY: REQ-QR-022 / POST-QR-20 / SEQ-QR-14 / FORBIDDEN-QR-14 violation - RPC must forward paid_fallback_denied verbatim with from, to, role, reasonCode, attemptedPosition, status, correlationId, and emittedAt\n" +
+					`3. EXPECTED: ${JSON.stringify(deniedFrame)}\n` +
+					`4. ACTUAL: ${JSON.stringify(denied)}\n` +
+					"5. GUIDANCE: Forward typed paid denials over RPC; observability must not depend on prose notices.",
+			);
+		}
+		const activeTimestampKeys = Object.keys(active)
+			.filter(key => /(?:At|_at|timestamp|Timestamp)$/.test(key) || key === "emitted_at" || key === "paid_request_started_at")
+			.sort();
+		if (activeTimestampKeys.join(",") !== "emittedAt") {
+			throw new Error(
+				"1. WHAT: test_rpc_forwards_paid_fallback_active_verbatim FAILED\n" +
+					"2. WHY: POST-QR-20 / INV-QR-16 violation - forwarded paid_fallback_active must have exactly one timestamp field emittedAt\n" +
+					'3. EXPECTED: ["emittedAt"]\n' +
+					`4. ACTUAL: ${JSON.stringify(activeTimestampKeys)}\n` +
+					"5. GUIDANCE: Do not forward a second paid-request start timestamp on the session event.",
+			);
+		}
+		expect(active).toEqual(activeFrame);
+		expect(denied).toEqual(deniedFrame);
+	});
 });
