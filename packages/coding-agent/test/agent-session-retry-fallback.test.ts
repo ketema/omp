@@ -28,23 +28,11 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { ServingModel } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import {
-	__setSharedFallbackPolicyForTests,
-	SharedFallbackPolicy,
+	resolveKeychainTrustAnchors,
+	sharedFallbackPolicy,
 } from "@oh-my-pi/pi-coding-agent/session/shared-fallback-policy";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
-
-/**
- * Verified fake contract satisfying PRE-QR-14: distinct, >=32 bytes.
- * Fake only replaces Keychain storage; MAC/classifier behavior remains production code.
- */
-function installTestSharedFallbackPolicy(): SharedFallbackPolicy {
-	const classifierKey = Buffer.alloc(32, 1);
-	const notifierKey = Buffer.alloc(32, 2);
-	const policy = new SharedFallbackPolicy({ classifierKey, notifierKey });
-	__setSharedFallbackPolicyForTests(policy);
-	return policy;
-}
 
 type AutoRetryStartEvent = Extract<AgentSessionEvent, { type: "auto_retry_start" }>;
 type AutoRetryEndEvent = Extract<AgentSessionEvent, { type: "auto_retry_end" }>;
@@ -200,11 +188,16 @@ describe("AgentSession retry fallback", () => {
 		// (default 5-minute suppression) so state never leaks between tests.
 		modelRegistry = sharedRegistry;
 		modelRegistry.clearSuppressedSelectors();
-		installTestSharedFallbackPolicy();
+		sharedFallbackPolicy.setTrustAnchorResolverForTests(async () => ({
+			classifierKey: new Uint8Array(32).fill(1),
+			notifierKey: new Uint8Array(32).fill(2),
+		}));
+		sharedFallbackPolicy.reset();
 	});
 
 	afterEach(async () => {
-		__setSharedFallbackPolicyForTests(undefined);
+		sharedFallbackPolicy.reset();
+		sharedFallbackPolicy.setTrustAnchorResolverForTests(resolveKeychainTrustAnchors);
 		if (session) {
 			await session.dispose();
 			session = undefined;

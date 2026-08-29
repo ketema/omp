@@ -16,11 +16,13 @@ import { type Api, type AssistantMessage, Effort, type Model } from "@oh-my-pi/p
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { parseModelString } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import type { RetryFallbackSelector } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
+import {
+	parseRetryFallbackSelector,
+	type RetryFallbackSelector,
+} from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
 import {
 	SessionAdvisors,
 	type SessionAdvisorsHost,
@@ -29,23 +31,11 @@ import {
 import { createCodexCompactionContext as createMaintenanceCodexCompactionContext } from "@oh-my-pi/pi-coding-agent/session/session-maintenance";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import {
-	__setSharedFallbackPolicyForTests,
-	SharedFallbackPolicy,
+	resolveKeychainTrustAnchors,
+	sharedFallbackPolicy,
 } from "@oh-my-pi/pi-coding-agent/session/shared-fallback-policy";
 import { YieldQueue } from "@oh-my-pi/pi-coding-agent/session/yield-queue";
 import { TempDir } from "@oh-my-pi/pi-utils";
-
-/**
- * Verified fake contract satisfying PRE-QR-14: distinct, >=32 bytes.
- * Fake only replaces Keychain storage; MAC/classifier behavior remains production code.
- */
-function installTestSharedFallbackPolicy(): SharedFallbackPolicy {
-	const classifierKey = Buffer.alloc(32, 1);
-	const notifierKey = Buffer.alloc(32, 2);
-	const policy = new SharedFallbackPolicy({ classifierKey, notifierKey });
-	__setSharedFallbackPolicyForTests(policy);
-	return policy;
-}
 
 describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () => {
 	let tempDir: TempDir;
@@ -62,13 +52,18 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 	});
 
 	beforeEach(async () => {
-		installTestSharedFallbackPolicy();
+		sharedFallbackPolicy.setTrustAnchorResolverForTests(async () => ({
+			classifierKey: new Uint8Array(32).fill(1),
+			notifierKey: new Uint8Array(32).fill(2),
+		}));
+		sharedFallbackPolicy.reset();
 		authStorage = await AuthStorage.create(":memory:");
 		modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
 	});
 
 	afterEach(async () => {
-		__setSharedFallbackPolicyForTests(undefined);
+		sharedFallbackPolicy.reset();
+		sharedFallbackPolicy.setTrustAnchorResolverForTests(resolveKeychainTrustAnchors);
 		try {
 			await session?.dispose();
 		} finally {
@@ -121,15 +116,9 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 			): RetryFallbackSelector[] => {
 				const chains = targetSession.settings.get("retry.fallbackChains") as Record<string, string[]> | undefined;
 				const rawList = chains?.[role ?? "default"] ?? [];
-				return rawList.map(raw => {
-					const parsed = parseModelString(raw);
-					return {
-						raw,
-						provider: parsed?.provider ?? "unknown",
-						id: parsed?.id ?? raw,
-						thinkingLevel: parsed?.thinkingLevel,
-					};
-				});
+				return rawList
+					.map(raw => parseRetryFallbackSelector(raw, targetSession.modelRegistry))
+					.filter((s): s is RetryFallbackSelector => s !== undefined);
 			},
 			isRetryFallbackSelectorSuppressed: () => false,
 			noteRetryFallbackCooldown: () => {},
