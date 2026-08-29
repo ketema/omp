@@ -19,8 +19,13 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { SessionAdvisors, type SessionAdvisorsOptions } from "@oh-my-pi/pi-coding-agent/session/session-advisors";
+import {
+	SessionAdvisors,
+	type SessionAdvisorsHost,
+	type SessionAdvisorsOptions,
+} from "@oh-my-pi/pi-coding-agent/session/session-advisors";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { YieldQueue } from "@oh-my-pi/pi-coding-agent/session/yield-queue";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () => {
@@ -49,6 +54,56 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 			authStorage.close();
 		}
 	});
+
+	function createAdvisorHost(targetSession: AgentSession, events?: AgentSessionEvent[]): SessionAdvisorsHost {
+		const yieldQueue = new YieldQueue({
+			isStreaming: () => false,
+			injectIdle: async () => {},
+			scheduleIdleFlush: () => {},
+		});
+		const host = {
+			agent: targetSession.agent,
+			sessionManager: targetSession.sessionManager,
+			settings: targetSession.settings,
+			modelRegistry: targetSession.modelRegistry,
+			yieldQueue,
+			obfuscator: undefined,
+			providerSessionState: new Map(),
+			preferWebsockets: undefined,
+			onPayload: undefined,
+			onResponse: undefined,
+			onSseEvent: undefined,
+			isDisposed: () => false,
+			abortInProgress: () => false,
+			allowAgentInitiatedTurns: () => true,
+			planModeState: () => undefined,
+			clientBridge: () => undefined,
+			emitSessionEvent: (event: AgentSessionEvent) => {
+				events?.push(event);
+			},
+			emitNotice: () => {},
+			sendCustomMessage: async () => {},
+			extractQueuedAdvisorCards: () => [],
+			dropPendingAdvisorCards: () => {},
+			preserveAdvisorCard: () => {},
+			hasPendingNextTurnMessages: () => false,
+			convertToLlmForSideRequest: () => [],
+			effectiveServiceTier: () => undefined,
+			resolveContextPromotionTarget: () => undefined,
+			resolveCompactionModelCandidates: () => [],
+			resolveRetryFallbackRole: (role: string) => targetSession.settings.getModelRole(role),
+			retryFallbackChainKeys: () => Object.keys(targetSession.settings.get("retry.fallbackChains") ?? {}),
+			findRetryFallbackCandidates: (role?: string) =>
+				(targetSession.settings.get("retry.fallbackChains") as Record<string, string[]> | undefined)?.[
+					role ?? "default"
+				] ?? [],
+			isRetryFallbackSelectorSuppressed: () => false,
+			noteRetryFallbackCooldown: () => {},
+			createCodexCompactionContext: () => undefined,
+			sessionId: () => targetSession.sessionManager.getSessionId(),
+		} satisfies SessionAdvisorsHost;
+		return host;
+	}
 
 	const makeGoogleAntigravityGeminiHigh = (): Model<"google-gemini-cli"> =>
 		buildModel({
@@ -234,10 +289,11 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 		});
 		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 
+		const host = createAdvisorHost(session, sessionEvents);
 		const advisorOptions: SessionAdvisorsOptions = {
 			enabled: true,
 		};
-		const advisors = new SessionAdvisors(session, advisorOptions);
+		const advisors = new SessionAdvisors(host, advisorOptions);
 		await advisors.buildRuntime();
 		const advisorAgent = advisors.getAdvisorAgent();
 		if (!advisorAgent) {
@@ -350,10 +406,11 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 		});
 		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 
+		const host = createAdvisorHost(session, sessionEvents);
 		const advisorOptions: SessionAdvisorsOptions = {
 			enabled: true,
 		};
-		const advisors = new SessionAdvisors(session, advisorOptions);
+		const advisors = new SessionAdvisors(host, advisorOptions);
 		advisors.applyAdvisorConfigs(
 			[
 				{ name: "Architecture", model: primarySelector },
@@ -432,10 +489,11 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 			thinkingLevel: Effort.High,
 		});
 
+		const host = createAdvisorHost(session);
 		const advisorOptions: SessionAdvisorsOptions = {
 			enabled: true,
 		};
-		const advisors = new SessionAdvisors(session, advisorOptions);
+		const advisors = new SessionAdvisors(host, advisorOptions);
 
 		// Direct attempt to apply paid Vertex model config without qualifying quota receipts
 		let threw = false;
