@@ -9,7 +9,23 @@ import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import {
+	__setSharedFallbackPolicyForTests,
+	SharedFallbackPolicy,
+} from "@oh-my-pi/pi-coding-agent/session/shared-fallback-policy";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+
+/**
+ * Verified fake contract satisfying PRE-QR-14: distinct, >=32 bytes.
+ * Fake only replaces Keychain storage; MAC/classifier behavior remains production code.
+ */
+function installTestSharedFallbackPolicy(): SharedFallbackPolicy {
+	const classifierKey = Buffer.alloc(32, 1);
+	const notifierKey = Buffer.alloc(32, 2);
+	const policy = new SharedFallbackPolicy({ classifierKey, notifierKey });
+	__setSharedFallbackPolicyForTests(policy);
+	return policy;
+}
 
 // Regression for #8863: a deferred `--model @<role>` whose role maps to a model
 // on a discovery-backed provider (ollama/oMLX/llama-swap) must trigger the
@@ -24,6 +40,7 @@ describe("createAgentSession deferred role alias on discoverable provider (#8863
 	const savedOllamaEnv: Record<string, string | undefined> = {};
 
 	beforeEach(async () => {
+		installTestSharedFallbackPolicy();
 		for (const key of ["OLLAMA_BASE_URL", "OLLAMA_HOST", "OLLAMA_CONTEXT_LENGTH"] as const) {
 			savedOllamaEnv[key] = Bun.env[key];
 			delete Bun.env[key];
@@ -35,6 +52,7 @@ describe("createAgentSession deferred role alias on discoverable provider (#8863
 	});
 
 	afterEach(() => {
+		__setSharedFallbackPolicyForTests(undefined);
 		for (const key of ["OLLAMA_BASE_URL", "OLLAMA_HOST", "OLLAMA_CONTEXT_LENGTH"] as const) {
 			const original = savedOllamaEnv[key];
 			if (original === undefined) delete Bun.env[key];

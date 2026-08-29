@@ -682,7 +682,7 @@ function handle(frame) {
 		const active = sessionEvents.find(event => event.type === "paid_fallback_active");
 		const denied = sessionEvents.find(event => event.type === "paid_fallback_denied");
 
-		if (!active || active.costProvider !== "google-vertex" || active.to !== "google-vertex/gemini-3.7-flash:high") {
+		if (active?.costProvider !== "google-vertex" || active?.to !== "google-vertex/gemini-3.7-flash:high") {
 			throw new Error(
 				"1. WHAT: test_rpc_forwards_vertex_paid_observability FAILED\n" +
 					"2. WHY: POST-QR-28 / REQ-QR-029 violation - RPC must forward paid_fallback_active with costProvider='google-vertex' and exact Vertex selector\n" +

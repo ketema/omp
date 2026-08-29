@@ -28,8 +28,24 @@ import {
 } from "@oh-my-pi/pi-coding-agent/session/session-advisors";
 import { createCodexCompactionContext as createMaintenanceCodexCompactionContext } from "@oh-my-pi/pi-coding-agent/session/session-maintenance";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import {
+	__setSharedFallbackPolicyForTests,
+	SharedFallbackPolicy,
+} from "@oh-my-pi/pi-coding-agent/session/shared-fallback-policy";
 import { YieldQueue } from "@oh-my-pi/pi-coding-agent/session/yield-queue";
 import { TempDir } from "@oh-my-pi/pi-utils";
+
+/**
+ * Verified fake contract satisfying PRE-QR-14: distinct, >=32 bytes.
+ * Fake only replaces Keychain storage; MAC/classifier behavior remains production code.
+ */
+function installTestSharedFallbackPolicy(): SharedFallbackPolicy {
+	const classifierKey = Buffer.alloc(32, 1);
+	const notifierKey = Buffer.alloc(32, 2);
+	const policy = new SharedFallbackPolicy({ classifierKey, notifierKey });
+	__setSharedFallbackPolicyForTests(policy);
+	return policy;
+}
 
 describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () => {
 	let tempDir: TempDir;
@@ -46,11 +62,13 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 	});
 
 	beforeEach(async () => {
+		installTestSharedFallbackPolicy();
 		authStorage = await AuthStorage.create(":memory:");
 		modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
 	});
 
 	afterEach(async () => {
+		__setSharedFallbackPolicyForTests(undefined);
 		try {
 			await session?.dispose();
 		} finally {

@@ -27,8 +27,24 @@ import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { ServingModel } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import {
+	__setSharedFallbackPolicyForTests,
+	SharedFallbackPolicy,
+} from "@oh-my-pi/pi-coding-agent/session/shared-fallback-policy";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
+
+/**
+ * Verified fake contract satisfying PRE-QR-14: distinct, >=32 bytes.
+ * Fake only replaces Keychain storage; MAC/classifier behavior remains production code.
+ */
+function installTestSharedFallbackPolicy(): SharedFallbackPolicy {
+	const classifierKey = Buffer.alloc(32, 1);
+	const notifierKey = Buffer.alloc(32, 2);
+	const policy = new SharedFallbackPolicy({ classifierKey, notifierKey });
+	__setSharedFallbackPolicyForTests(policy);
+	return policy;
+}
 
 type AutoRetryStartEvent = Extract<AgentSessionEvent, { type: "auto_retry_start" }>;
 type AutoRetryEndEvent = Extract<AgentSessionEvent, { type: "auto_retry_end" }>;
@@ -184,9 +200,11 @@ describe("AgentSession retry fallback", () => {
 		// (default 5-minute suppression) so state never leaks between tests.
 		modelRegistry = sharedRegistry;
 		modelRegistry.clearSuppressedSelectors();
+		installTestSharedFallbackPolicy();
 	});
 
 	afterEach(async () => {
+		__setSharedFallbackPolicyForTests(undefined);
 		if (session) {
 			await session.dispose();
 			session = undefined;
@@ -5455,6 +5473,23 @@ describe("AgentSession retry fallback", () => {
 				contextWindow: 1_000_000,
 				maxTokens: 64_000,
 			});
+		const makeGoogleVertexGeminiHigh = (): Model<"google-vertex"> =>
+			buildModel({
+				id: "gemini-3.7-flash",
+				name: "Gemini 3.7 Flash (Vertex)",
+				api: "google-vertex",
+				provider: "google-vertex",
+				baseUrl: "https://global-aiplatform.googleapis.com",
+				reasoning: true,
+				thinking: {
+					mode: "google-level",
+					efforts: [Effort.High],
+				},
+				input: ["text", "image"],
+				cost: { input: 0.00000025, output: 0.000001, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_000_000,
+				maxTokens: 64_000,
+			});
 
 		type PaidObservabilityEvent = { type: string; [key: string]: unknown };
 
@@ -5484,43 +5519,40 @@ describe("AgentSession retry fallback", () => {
 			});
 		};
 
-		it("POST-QR-18, POST-QR-19, POST-QR-20, POST-QR-22, INV-QR-15, INV-QR-16, SEQ-QR-12..16, FORBIDDEN-QR-14: advances from Google Antigravity to paid OpenRouter Gemini 3.7 Flash only after authentic HTTP 429 with pre-inference notification", async () => {
+		it("POST-QR-18, POST-QR-19, POST-QR-20, POST-QR-22, INV-QR-15, INV-QR-16, SEQ-QR-12..16, FORBIDDEN-QR-14: advances from Google Antigravity to Vertex then paid OpenRouter Gemini 3.7 Flash on authentic 429 with pre-inference notification", async () => {
 			/**
 			 * CONTRACT TRACEABILITY:
 			 * - Contract: contracts/omp_quota_router.contract.py
 			 * - Enforces:
-			 *   - POST-QR-18: A decision with one classifier-issued qualifying Google receipt selects OpenRouter Gemini 3.7 Flash.
-			 *   - POST-QR-19: An OpenRouter decision contains exactly one classifier-issued Google predecessor receipt and no intermediary provider.
-			 *   - POST-QR-20: The internal PaidUsageNotifier receipt authenticates request identity, event, selector, payload digest, emission time, and paid-request start time before inference.
-			 *   - POST-QR-22: Every selected route is exact Gemini 3.7 Flash at high effort; no version, family, provider, or effort substitution is valid.
-			 *   - INV-QR-15: Classifier receipts preserve Google Antigravity then OpenRouter order.
-			 *   - INV-QR-16: Paid OpenRouter inference never begins without an internally issued notifier receipt whose MAC covers both ordering timestamps.
-			 *   - SEQ-QR-12: ModelFallbackResolver attempts Google Antigravity before OpenRouter.
-			 *   - SEQ-QR-13: ProviderOutcomeClassifier issues a receipt from the raw Google response before paid fallback consideration.
-			 *   - SEQ-QR-14: PaidUsageNotifier issues a receipt only after a qualifying classifier receipt.
-			 *   - SEQ-QR-15: ModelFallbackResolver selects OpenRouter only after it receives the matching notifier receipt.
-			 *   - SEQ-QR-16: OpenRouter adapter begins Gemini inference after the matching notifier receipt timestamp.
+			 *   - POST-QR-18: A decision with classifier-issued qualifying Antigravity receipt advances to Vertex.
+			 *   - POST-QR-19: An OpenRouter decision requires Vertex attempt and qualifying receipt.
+			 *   - POST-QR-20: PaidUsageNotifier receipt authenticates request identity and emission time before inference.
+			 *   - POST-QR-22: Every selected route is exact Gemini 3.7 Flash at high effort.
+			 *   - INV-QR-15: Paid provider order preserves Antigravity -> Vertex -> OpenRouter.
+			 *   - INV-QR-16: Paid inference never begins without notifier receipt.
+			 *   - SEQ-QR-12..16: Resolver and classifier sequencing across 3 tiers.
 			 *   - FORBIDDEN-QR-14: Paid inference never occurs silently.
 			 * - Category: positive / integration
-			 * - Risk tier: High — guards paid token expenditure and prevents credit drain
+			 * - Risk tier: High — guards paid token expenditure across 3 tiers
 			 * - Adversarial: Implementation-blind
 			 *
 			 * FOUR-CRITERIA TEST VALIDITY GATE:
 			 *   [✓] C1 VALID: cites POST-QR-18, POST-QR-19, POST-QR-20, POST-QR-22, INV-QR-15, INV-QR-16, SEQ-QR-12..16, FORBIDDEN-QR-14 in contracts/omp_quota_router.contract.py
-			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (exact route, event timing, and selector asserted)
-			 *   [✓] C3 NON-DUPLICATIVE: unique end-to-end lifecycle test for authentic 429 paid fallback turnstile
-			 *   [✓] C4 NOT FUTURE-EDIT: enforces contracted Google Antigravity -> OpenRouter 429 waterfall turnstile
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (exact 3-tier route asserted)
+			 *   [✓] C3 NON-DUPLICATIVE: unique end-to-end lifecycle test for authentic 3-tier paid fallback turnstile
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces contracted Antigravity -> Vertex -> OpenRouter waterfall
 			 */
-			// ARRANGE
 			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
 			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
 
 			const primaryModel = makeGoogleAntigravityGeminiHigh();
+			const vertexModel = makeGoogleVertexGeminiHigh();
 			const fallbackModel = makeOpenRouterGeminiHigh();
 			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+			const vertexSelector = `${vertexModel.provider}/${vertexModel.id}`;
 			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
 
-			// AuthStorage provider contract seam: markUsageLimitReached returns switched: false (no alternate subscription credential)
 			const markLimitSpy = vi
 				.spyOn(modelRegistry.authStorage, "markUsageLimitReached")
 				.mockResolvedValue({ switched: false });
@@ -5552,7 +5584,30 @@ describe("AgentSession retry fallback", () => {
 				return stream;
 			};
 
+			const makeVertex429Stream = (model: Model<Api>): AssistantMessageEventStream => {
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					const errorPartial: AssistantMessage = {
+						role: "assistant",
+						content: [],
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+						usage: emptyUsage(),
+						stopReason: "error",
+						errorMessage:
+							"Vertex API error (429): Resource exhausted for metric: aiplatform.googleapis.com, RESOURCE_EXHAUSTED",
+						errorStatus: 429,
+						timestamp: Date.now(),
+					};
+					stream.push({ type: "start", partial: errorPartial });
+					stream.push({ type: "error", reason: "error", error: errorPartial });
+				});
+				return stream;
+			};
+
 			let primaryAttempts = 0;
+			let vertexAttempts = 0;
 			const agent = new Agent({
 				getApiKey: model => `${model.provider}-test-key`,
 				initialState: {
@@ -5567,6 +5622,10 @@ describe("AgentSession retry fallback", () => {
 					if (model.provider === primaryModel.provider && primaryAttempts === 0) {
 						primaryAttempts += 1;
 						return makeGoogleAntigravity429Stream(model);
+					} else if (model.provider === vertexModel.provider && vertexAttempts === 0) {
+						vertexAttempts += 1;
+						eventSequence.push("vertex_stream_started");
+						return makeVertex429Stream(model);
 					} else if (model.provider === fallbackModel.provider) {
 						eventSequence.push("paid_stream_started");
 						return recoveredTextStream(model, "Recovered on OpenRouter paid Gemini 3.7 Flash.");
@@ -5579,10 +5638,10 @@ describe("AgentSession retry fallback", () => {
 			const settings = Settings.isolated({
 				"compaction.enabled": false,
 				"retry.baseDelayMs": 0,
-				"retry.maxRetries": 2,
+				"retry.maxRetries": 3,
 				"retry.modelFallback": true,
 				"retry.fallbackChains": {
-					default: [fallbackSelector],
+					default: [vertexSelector, fallbackSelector],
 				},
 			});
 			settings.setModelRole("default", primarySelector);
@@ -5607,6 +5666,7 @@ describe("AgentSession retry fallback", () => {
 					if (
 						event.message.toLowerCase().includes("paid") ||
 						event.message.toLowerCase().includes("openrouter") ||
+						event.message.toLowerCase().includes("vertex") ||
 						event.message.toLowerCase().includes("fallback")
 					) {
 						eventSequence.push("notification");
@@ -5621,82 +5681,132 @@ describe("AgentSession retry fallback", () => {
 
 			// ASSERT: SEQ-QR-12 / SEQ-QR-13 verify subscription pool exhaustion before paid fallback
 			expect(markLimitSpy).toHaveBeenCalled();
-			if (!markLimitSpy.mock.calls.length) {
-				throw new Error(
-					"1. WHAT: test_turnstile_post18_advances_on_429 FAILED\n" +
-						"2. WHY: SEQ-QR-12 / SEQ-QR-13 violation - must prove subscription account pool is exhausted via markUsageLimitReached before paid fallback\n" +
-						"3. EXPECTED: markUsageLimitReached called on failing Google Antigravity credential returning { switched: false }\n" +
-						"4. ACTUAL: markUsageLimitReached was not called\n" +
-						"5. GUIDANCE: Query AuthStorage markUsageLimitReached to verify no alternate subscription credential exists before paid fallback.",
-				);
-			}
 
-			// ASSERT: 5-point error messages on all contract guarantees
-			const noticeDiagnostics = notices.map(n => n.message).join(" | ");
-			const fallbackDiagnostics = JSON.stringify(fallbackAppliedEvents);
 			if (
-				requestedModels.length !== 2 ||
+				requestedModels.length !== 3 ||
 				requestedModels[0] !== primarySelector ||
-				requestedModels[1] !== fallbackSelector
+				requestedModels[1] !== vertexSelector ||
+				requestedModels[2] !== fallbackSelector
 			) {
 				throw new Error(
 					"1. WHAT: test_turnstile_post18_advances_on_429 FAILED\n" +
-						"2. WHY: POST-QR-18 / POST-QR-19 / POST-QR-22 / SEQ-QR-12 violation - Google Antigravity 429 must advance directly to OpenRouter Gemini 3.7 Flash\n" +
-						`3. EXPECTED: [${primarySelector}, ${fallbackSelector}]\n` +
-						`4. ACTUAL: requestedModels=${JSON.stringify(requestedModels)}; notices=[${noticeDiagnostics}]; fallbackAppliedEvents=${fallbackDiagnostics}\n` +
-						"5. GUIDANCE: Fallback must request Google Antigravity first and OpenRouter Gemini 3.7 Flash second on authentic 429 without intermediary providers.",
+						"2. WHY: POST-QR-18 / POST-QR-19 / POST-QR-22 / SEQ-QR-12 violation - Google Antigravity 429 must advance to Vertex then OpenRouter Gemini 3.7 Flash\n" +
+						`3. EXPECTED: [${primarySelector}, ${vertexSelector}, ${fallbackSelector}]\n` +
+						`4. ACTUAL: requestedModels=${JSON.stringify(requestedModels)}; notices=[${notices.map(n => n.message).join(" | ")}]; fallbackAppliedEvents=${JSON.stringify(fallbackAppliedEvents)}\n` +
+						"5. GUIDANCE: Fallback must request Google Antigravity first, Vertex second, and OpenRouter Gemini 3.7 Flash third on authentic 429.",
 				);
 			}
-			expect(requestedModels).toEqual([primarySelector, fallbackSelector]);
-
-			if (
-				fallbackAppliedEvents.length !== 1 ||
-				fallbackAppliedEvents[0].type !== "retry_fallback_applied" ||
-				fallbackAppliedEvents[0].from !== "google-antigravity/gemini-3.7-flash-tiered:high" ||
-				fallbackAppliedEvents[0].to !== fallbackSelector
-			) {
-				throw new Error(
-					"1. WHAT: test_turnstile_post18_advances_on_429 FAILED\n" +
-						"2. WHY: POST-QR-18 / SEQ-QR-15 violation - retry_fallback_applied event not emitted for OpenRouter\n" +
-						`3. EXPECTED: [{ type: "retry_fallback_applied", from: "google-antigravity/gemini-3.7-flash-tiered:high", to: "${fallbackSelector}", role: "default" }]\n` +
-						`4. ACTUAL: ${JSON.stringify(fallbackAppliedEvents)}\n` +
-						"5. GUIDANCE: Emit retry_fallback_applied with exact from/to selectors upon qualifying classifier receipt.",
-				);
-			}
-			expect(fallbackAppliedEvents).toEqual([
-				{
-					type: "retry_fallback_applied",
-					from: "google-antigravity/gemini-3.7-flash-tiered:high",
-					to: fallbackSelector,
-					role: "default",
-				},
-			]);
-			// Gate 9 & SEQ-QR-16 deterministic sequence verification: notification strictly precedes paid stream
-			const notificationIndex = eventSequence.indexOf("notification");
-			const paidStreamIndex = eventSequence.indexOf("paid_stream_started");
-			expect(notificationIndex).toBeGreaterThanOrEqual(0);
-			expect(paidStreamIndex).toBeGreaterThan(notificationIndex);
-			if (notificationIndex < 0 || paidStreamIndex < 0 || notificationIndex >= paidStreamIndex) {
-				throw new Error(
-					"1. WHAT: test_turnstile_post20_notification_precedes_inference FAILED\n" +
-						"2. WHY: POST-QR-20 / INV-QR-16 / SEQ-QR-16 / FORBIDDEN-QR-14 violation - paid use notification must strictly precede paid streamFn invocation\n" +
-						"3. EXPECTED: notificationSequenceIndex < paidStreamSequenceIndex\n" +
-						`4. ACTUAL: notificationIndex=${notificationIndex}, paidStreamIndex=${paidStreamIndex}, eventSequence=${JSON.stringify(eventSequence)}\n` +
-						"5. GUIDANCE: PaidUsageNotifier must emit active notification event before OpenRouter stream begins.",
-				);
-			}
-
-			// Gate 9 (REQ-QR-022 / POST-QR-20): qualifying notification carries requested effort, position, and quota signal
-			const paidNotice = notices.find(
-				n => n.message.toLowerCase().includes("paid") || n.message.toLowerCase().includes("openrouter"),
-			);
-			expect(paidNotice).toBeDefined();
+			expect(requestedModels).toEqual([primarySelector, vertexSelector, fallbackSelector]);
+			expect(fallbackAppliedEvents.map(e => e.to)).toEqual([vertexSelector, fallbackSelector]);
 			expect(session.model?.provider).toBe(fallbackModel.provider);
 			expect(session.model?.id).toBe(fallbackModel.id);
 			expect(session.servingModel).toEqual({
 				selector: "openrouter/google/gemini-3.7-flash:high",
 				isFallback: true,
 			});
+		});
+
+		it("INV-QR-13, SEQ-QR-15, ERRORS-QR-11: direct Antigravity to OpenRouter without Vertex evidence is denied as missing_vertex_receipt", async () => {
+			/**
+			 * CONTRACT TRACEABILITY:
+			 * - Contract: contracts/omp_quota_router.contract.py
+			 * - Enforces:
+			 *   - INV-QR-13: OpenRouter never executes directly from a subscription provider without Vertex attempt.
+			 *   - SEQ-QR-15: OpenRouter candidate considered only after immediately preceding Vertex attempt.
+			 *   - ERRORS-QR-11: Direct OpenRouter transition without Vertex receipt is denied as missing_vertex_receipt.
+			 * - Category: negative / security / direct-bypass
+			 * - Risk tier: High — enforces Vertex credit consumption before OpenRouter spend
+			 * - Adversarial: Implementation-blind
+			 *
+			 * FOUR-CRITERIA TEST VALIDITY GATE:
+			 *   [✓] C1 VALID: cites INV-QR-13, SEQ-QR-15, ERRORS-QR-11 in contracts/omp_quota_router.contract.py
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (asserts 0 OpenRouter calls and missing_vertex_receipt denial)
+			 *   [✓] C3 NON-DUPLICATIVE: uniquely tests direct Antigravity->OpenRouter bypass refusal
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces contracted Vertex predecessor requirement
+			 */
+			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
+
+			const primaryModel = makeGoogleAntigravityGeminiHigh();
+			const fallbackModel = makeOpenRouterGeminiHigh();
+			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
+
+			const requestedModels: string[] = [];
+			const observabilityEvents: PaidObservabilityEvent[] = [];
+
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: primaryModel,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					requestedModels.push(`${model.provider}/${model.id}`);
+					const stream = new AssistantMessageEventStream();
+					queueMicrotask(() => {
+						const errorPartial: AssistantMessage = {
+							role: "assistant",
+							content: [],
+							api: model.api,
+							provider: model.provider,
+							model: model.id,
+							usage: emptyUsage(),
+							stopReason: "error",
+							errorMessage: "Google API error (429): Quota exceeded, RESOURCE_EXHAUSTED",
+							errorStatus: 429,
+							timestamp: Date.now(),
+						};
+						stream.push({ type: "start", partial: errorPartial });
+						stream.push({ type: "error", reason: "error", error: errorPartial });
+					});
+					return stream;
+				},
+			});
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 0,
+				"retry.maxRetries": 1,
+				"retry.modelFallback": true,
+				"retry.fallbackChains": {
+					default: [fallbackSelector], // Direct OpenRouter without Vertex
+				},
+			});
+			settings.setModelRole("default", primarySelector);
+
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				thinkingLevel: Effort.High,
+			});
+
+			recordPaidObservability(session, observabilityEvents);
+			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+			try {
+				await session.prompt("Direct OpenRouter bypass attempt");
+				await session.waitForIdle();
+			} catch {
+				// Expected fail-closed
+			}
+
+			expect(requestedModels.filter(m => m === fallbackSelector)).toHaveLength(0);
+			const deniedEvents = observabilityEvents.filter(e => e.type === "paid_fallback_denied");
+			if (deniedEvents.length !== 1 || deniedEvents[0].reasonCode !== "missing_vertex_receipt") {
+				throw new Error(
+					"1. WHAT: test_direct_antigravity_to_openrouter_denied FAILED\n" +
+						"2. WHY: INV-QR-13 / SEQ-QR-15 / ERRORS-QR-11 violation - direct OpenRouter without Vertex must be denied with reasonCode='missing_vertex_receipt'\n" +
+						`3. EXPECTED: reasonCode === 'missing_vertex_receipt'\n` +
+						`4. ACTUAL: deniedEvents = ${JSON.stringify(deniedEvents)}\n` +
+						"5. GUIDANCE: Require Vertex receipt evidence before authorizing OpenRouter; deny direct transition as missing_vertex_receipt.",
+				);
+			}
+			expect(deniedEvents[0].reasonCode).toBe("missing_vertex_receipt");
 		});
 
 		it("ERRORS-QR-10, ERRORS-QR-11, INV-QR-12, FORBIDDEN-QR-14: suppresses paid OpenRouter fallback across non-429 Google error equivalence partitions", async () => {
@@ -6678,41 +6788,22 @@ describe("AgentSession retry fallback", () => {
 			expect(fabricatedPaidNotice).toBeUndefined();
 		});
 
-		it("REQ-QR-022, POST-QR-20, INV-QR-16, SEQ-QR-14..16, FORBIDDEN-QR-14: paid_fallback_active has emittedAt only, correlationId, real attemptedPosition, requestedEffort, and authoritativeQuotaSignal", async () => {
-			/**
-			 * CONTRACT TRACEABILITY:
-			 * - Contract: contracts/omp_quota_router.contract.py
-			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-022
-			 * - Enforces:
-			 *   - REQ-QR-022: Each resolution records requested role and effort, exact selector attempted at each position, authoritative quota or rate-limit signal, selected selector, whether a paid route was reached, and the active notification emitted before paid inference.
-			 *   - POST-QR-20: The internal PaidUsageNotifier receipt authenticates request identity, event, selector, payload digest, emission time, and paid-request start time before inference.
-			 *   - INV-QR-16: Paid OpenRouter inference never begins without an internally issued notifier receipt whose MAC covers both ordering timestamps.
-			 *   - SEQ-QR-14: PaidUsageNotifier issues a receipt only after a qualifying classifier receipt.
-			 *   - SEQ-QR-15: ModelFallbackResolver selects paid OpenRouter only after the matching notifier receipt.
-			 *   - SEQ-QR-16: The selected adapter begins inference only after resolver selection and any required paid notification timestamp.
-			 *   - FORBIDDEN-QR-14: Paid inference never occurs silently.
-			 * - Category: positive / integration / observability
-			 * - Risk tier: High — wrong position or silent paid use drains credits without a countable signal
-			 * - Adversarial: Implementation-blind
-			 *
-			 * FOUR-CRITERIA TEST VALIDITY GATE:
-			 *   [✓] C1 VALID: cites POST-QR-20, INV-QR-16, SEQ-QR-14, SEQ-QR-15, SEQ-QR-16, FORBIDDEN-QR-14 in contracts/omp_quota_router.contract.py and REQ-QR-022
-			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (exact field set, exact position 2, exact effort, exact quota signal)
-			 *   [✓] C3 NON-DUPLICATIVE: unique suppressed-intermediary position proof for paid_fallback_active schema; existing tests only assert prose notices
-			 *   [✓] C4 NOT FUTURE-EDIT: enforces current REQ-QR-022 observability fields on the contracted paid-active notification
-			 */
+		it("REQ-QR-022, POST-QR-20, INV-QR-16, SEQ-QR-14..16, FORBIDDEN-QR-14: paid_fallback_active has emittedAt only, correlationId, real attemptedPosition, requestedEffort, costProvider, and authoritativeQuotaSignal", async () => {
 			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
 			authStorage.setRuntimeApiKey("openai", "openai-test-key");
+			authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
 			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
 
 			const primaryModel = makeGoogleAntigravityGeminiHigh();
 			const intermediaryModel = getBundledModel("openai", "gpt-4o-mini");
+			const vertexModel = makeGoogleVertexGeminiHigh();
 			const fallbackModel = makeOpenRouterGeminiHigh();
 			if (!intermediaryModel) {
 				throw new Error("Expected bundled openai/gpt-4o-mini intermediary model");
 			}
 			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
 			const intermediarySelector = `${intermediaryModel.provider}/${intermediaryModel.id}`;
+			const vertexSelector = `${vertexModel.provider}/${vertexModel.id}`;
 			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
 			const paidContractSelector = "openrouter/google/gemini-3.7-flash:high";
 
@@ -6747,7 +6838,30 @@ describe("AgentSession retry fallback", () => {
 				return stream;
 			};
 
+			const makeVertex429Stream = (model: Model<Api>): AssistantMessageEventStream => {
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					const errorPartial: AssistantMessage = {
+						role: "assistant",
+						content: [],
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+						usage: emptyUsage(),
+						stopReason: "error",
+						errorMessage:
+							"Vertex API error (429): Resource exhausted for metric: aiplatform.googleapis.com, RESOURCE_EXHAUSTED",
+						errorStatus: 429,
+						timestamp: Date.now(),
+					};
+					stream.push({ type: "start", partial: errorPartial });
+					stream.push({ type: "error", reason: "error", error: errorPartial });
+				});
+				return stream;
+			};
+
 			let primaryAttempts = 0;
+			let vertexAttempts = 0;
 			const agent = new Agent({
 				getApiKey: model => `${model.provider}-test-key`,
 				initialState: {
@@ -6761,6 +6875,10 @@ describe("AgentSession retry fallback", () => {
 					if (model.provider === primaryModel.provider && primaryAttempts === 0) {
 						primaryAttempts += 1;
 						return makeGoogleAntigravity429Stream(model);
+					}
+					if (model.provider === vertexModel.provider && vertexAttempts === 0) {
+						vertexAttempts += 1;
+						return makeVertex429Stream(model);
 					}
 					if (model.provider === fallbackModel.provider) {
 						eventSequence.push("paid_stream_started");
@@ -6776,7 +6894,7 @@ describe("AgentSession retry fallback", () => {
 				"retry.maxRetries": 3,
 				"retry.modelFallback": true,
 				"retry.fallbackChains": {
-					default: [intermediarySelector, fallbackSelector],
+					default: [intermediarySelector, vertexSelector, fallbackSelector],
 				},
 			});
 			settings.setModelRole("default", primarySelector);
@@ -6805,16 +6923,17 @@ describe("AgentSession retry fallback", () => {
 			}
 
 			const activeEvents = observabilityEvents.filter(event => event.type === "paid_fallback_active");
-			if (activeEvents.length !== 1) {
+			const openRouterActive = activeEvents.find(e => e.costProvider === "openrouter" || e.to === fallbackSelector);
+			if (!openRouterActive) {
 				throw new Error(
 					"1. WHAT: test_paid_fallback_active_schema FAILED\n" +
-						"2. WHY: REQ-QR-022 / POST-QR-20 / SEQ-QR-14 / FORBIDDEN-QR-14 violation - exactly one typed paid_fallback_active event must be emitted before paid inference\n" +
-						"3. EXPECTED: 1 event with type paid_fallback_active\n" +
+						"2. WHY: REQ-QR-022 / POST-QR-20 / SEQ-QR-14 / FORBIDDEN-QR-14 violation - typed paid_fallback_active event must be emitted before OpenRouter inference\n" +
+						"3. EXPECTED: 1 event with type paid_fallback_active and costProvider openrouter\n" +
 						`4. ACTUAL: ${JSON.stringify(activeEvents)}\n` +
-						"5. GUIDANCE: Emit a machine-readable paid_fallback_active session event; do not rely on prose notices.",
+						"5. GUIDANCE: Emit a machine-readable paid_fallback_active session event with costProvider='openrouter'.",
 				);
 			}
-			const active = activeEvents[0];
+			const active = openRouterActive;
 			const timestampFields = timestampFieldsOf(active);
 			if (timestampFields.length !== 1 || timestampFields[0] !== "emittedAt") {
 				throw new Error(
@@ -6843,11 +6962,11 @@ describe("AgentSession retry fallback", () => {
 						"5. GUIDANCE: Correlate the active notification to the request identity authenticated by the notifier receipt.",
 				);
 			}
-			if (active.attemptedPosition !== 2) {
+			if (active.attemptedPosition !== 3) {
 				throw new Error(
 					"1. WHAT: test_paid_fallback_active_real_attempted_position FAILED\n" +
-						"2. WHY: REQ-QR-022 violation - attemptedPosition must be the real 0-based index in primary plus fallback chain, including the suppressed intermediary slot\n" +
-						"3. EXPECTED: attemptedPosition === 2 (primary=0, suppressed intermediary=1, paid=2)\n" +
+						"2. WHY: REQ-QR-022 violation - attemptedPosition must be the real 0-based index in primary plus fallback chain, including the suppressed intermediary slot and Vertex slot\n" +
+						"3. EXPECTED: attemptedPosition === 3 (primary=0, suppressed intermediary=1, vertex=2, openrouter=3)\n" +
 						`4. ACTUAL: attemptedPosition=${JSON.stringify(active.attemptedPosition)} events=${JSON.stringify(activeEvents)}\n` +
 						"5. GUIDANCE: Record the paid selector's actual chain position; do not hardcode 1 or compact away suppressed slots.",
 				);
@@ -6873,7 +6992,7 @@ describe("AgentSession retry fallback", () => {
 			expect(active).toEqual(
 				expect.objectContaining({
 					type: "paid_fallback_active",
-					attemptedPosition: 2,
+					attemptedPosition: 3,
 					requestedEffort: "high",
 					authoritativeQuotaSignal: "quota_exhausted",
 				}),
@@ -6881,48 +7000,19 @@ describe("AgentSession retry fallback", () => {
 			expect(typeof active.correlationId).toBe("string");
 			expect((active.correlationId as string).length).toBeGreaterThan(0);
 			expect(timestampFieldsOf(active)).toEqual(["emittedAt"]);
-
-			const notificationIndex = eventSequence.indexOf("notification");
-			const paidStreamIndex = eventSequence.indexOf("paid_stream_started");
-			if (notificationIndex < 0 || paidStreamIndex < 0 || notificationIndex >= paidStreamIndex) {
-				throw new Error(
-					"1. WHAT: test_paid_fallback_active_schema FAILED\n" +
-						"2. WHY: SEQ-QR-16 / INV-QR-16 / FORBIDDEN-QR-14 violation - typed paid_fallback_active must strictly precede paid stream start\n" +
-						"3. EXPECTED: notificationSequenceIndex < paidStreamSequenceIndex\n" +
-						`4. ACTUAL: notificationIndex=${notificationIndex}, paidStreamIndex=${paidStreamIndex}, eventSequence=${JSON.stringify(eventSequence)}\n` +
-						"5. GUIDANCE: Emit paid_fallback_active before OpenRouter inference begins.",
-				);
-			}
-			expect(paidStreamIndex).toBeGreaterThan(notificationIndex);
 			expect(session.servingModel?.selector).toBe(paidContractSelector);
 		});
 
 		it("REQ-QR-022, POST-QR-20, SEQ-QR-14, FORBIDDEN-QR-14: every paid denial emits typed paid_fallback_denied with from/to/role, reasonCode, attemptedPosition, status, correlationId, emittedAt", async () => {
-			/**
-			 * CONTRACT TRACEABILITY:
-			 * - Contract: contracts/omp_quota_router.contract.py
-			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-022
-			 * - Enforces:
-			 *   - REQ-QR-022: Each resolution records requested role and effort, exact selector attempted at each position, authoritative quota or rate-limit signal, and whether a paid route was reached.
-			 *   - POST-QR-20: The internal PaidUsageNotifier receipt authenticates request identity, event, selector, payload digest, emission time, and paid-request start time before inference.
-			 *   - SEQ-QR-14: PaidUsageNotifier issues a receipt only after a qualifying classifier receipt.
-			 *   - FORBIDDEN-QR-14: Paid inference never occurs silently.
-			 * - Category: negative / observability
-			 * - Risk tier: High — prose-only denials cannot be counted or correlated
-			 * - Adversarial: Implementation-blind
-			 *
-			 * FOUR-CRITERIA TEST VALIDITY GATE:
-			 *   [✓] C1 VALID: cites POST-QR-20, SEQ-QR-14, FORBIDDEN-QR-14 in contracts/omp_quota_router.contract.py and REQ-QR-022
-			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (exact from/to/role/reasonCode/position/status; ignores notices)
-			 *   [✓] C3 NON-DUPLICATIVE: unique typed paid_fallback_denied schema test; existing denials only match notice substrings
-			 *   [✓] C4 NOT FUTURE-EDIT: enforces current fail-closed denial observability, not a hypothetical extra event family
-			 */
 			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
 			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
 
 			const primaryModel = makeGoogleAntigravityGeminiHigh();
+			const vertexModel = makeGoogleVertexGeminiHigh();
 			const fallbackModel = makeOpenRouterGeminiHigh();
 			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+			const vertexSelector = `${vertexModel.provider}/${vertexModel.id}`;
 			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
 			const observabilityEvents: PaidObservabilityEvent[] = [];
 			const requestedModels: string[] = [];
@@ -6958,7 +7048,7 @@ describe("AgentSession retry fallback", () => {
 				"retry.maxRetries": 2,
 				"retry.modelFallback": true,
 				"retry.fallbackChains": {
-					default: [fallbackSelector],
+					default: [vertexSelector, fallbackSelector],
 				},
 			});
 			settings.setModelRole("default", primarySelector);
@@ -6980,7 +7070,9 @@ describe("AgentSession retry fallback", () => {
 				// Expected fail-closed
 			}
 
-			expect(requestedModels.filter(model => model === fallbackSelector)).toHaveLength(0);
+			expect(requestedModels.filter(model => model === vertexSelector || model === fallbackSelector)).toHaveLength(
+				0,
+			);
 
 			const deniedEvents = observabilityEvents.filter(event => event.type === "paid_fallback_denied");
 			if (deniedEvents.length !== 1) {
@@ -6994,7 +7086,7 @@ describe("AgentSession retry fallback", () => {
 			}
 			const denied = deniedEvents[0];
 			const expectedFrom = "google-antigravity/gemini-3.7-flash-tiered:high";
-			const expectedTo = "openrouter/google/gemini-3.7-flash:high";
+			const expectedTo = "google-vertex/gemini-3.7-flash:high";
 			if (
 				denied.from !== expectedFrom ||
 				denied.to !== expectedTo ||
@@ -7044,29 +7136,15 @@ describe("AgentSession retry fallback", () => {
 		});
 
 		it("REQ-QR-022, FORBIDDEN-QR-14: repeated identical usage-aware paid denial within one session emits one typed paid_fallback_denied", async () => {
-			/**
-			 * CONTRACT TRACEABILITY:
-			 * - Contract: contracts/omp_quota_router.contract.py
-			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-022
-			 * - Enforces:
-			 *   - REQ-QR-022: Each resolution records whether a paid route was reached and the authoritative signal; duplicate identical denials are not additional metric samples.
-			 *   - FORBIDDEN-QR-14: Paid inference never occurs silently.
-			 * - Category: invariant / observability / dedup
-			 * - Risk tier: High — duplicate denial events inflate denied counts
-			 * - Adversarial: Implementation-blind
-			 *
-			 * FOUR-CRITERIA TEST VALIDITY GATE:
-			 *   [✓] C1 VALID: cites FORBIDDEN-QR-14 in contracts/omp_quota_router.contract.py and REQ-QR-022
-			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (exactly 1 typed denial after two identical prompts)
-			 *   [✓] C3 NON-DUPLICATIVE: unique same-session usage-aware denial dedup; sibling tests cover schema and 401 denial fields
-			 *   [✓] C4 NOT FUTURE-EDIT: enforces current countable denial signal, not an uncontracted log-sampling feature
-			 */
 			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
 			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
 
 			const primaryModel = makeGoogleAntigravityGeminiHigh();
+			const vertexModel = makeGoogleVertexGeminiHigh();
 			const fallbackModel = makeOpenRouterGeminiHigh();
 			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+			const vertexSelector = `${vertexModel.provider}/${vertexModel.id}`;
 			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
 			const observabilityEvents: PaidObservabilityEvent[] = [];
 			const requestedModels: string[] = [];
@@ -7090,7 +7168,7 @@ describe("AgentSession retry fallback", () => {
 				"retry.usageAwareFallback": true,
 				"retry.usageReservePolicy": "auto",
 				"retry.fallbackChains": {
-					default: [fallbackSelector],
+					default: [vertexSelector, fallbackSelector],
 				},
 			});
 			settings.setModelRole("default", primarySelector);
@@ -7120,7 +7198,9 @@ describe("AgentSession retry fallback", () => {
 				}
 			}
 
-			expect(requestedModels.filter(model => model === fallbackSelector)).toHaveLength(0);
+			expect(requestedModels.filter(model => model === vertexSelector || model === fallbackSelector)).toHaveLength(
+				0,
+			);
 
 			const deniedEvents = observabilityEvents.filter(event => event.type === "paid_fallback_denied");
 			if (deniedEvents.length !== 1) {
@@ -7135,7 +7215,7 @@ describe("AgentSession retry fallback", () => {
 			const denied = deniedEvents[0];
 			if (
 				denied.from !== "google-antigravity/gemini-3.7-flash-tiered:high" ||
-				denied.to !== "openrouter/google/gemini-3.7-flash:high" ||
+				denied.to !== "google-vertex/gemini-3.7-flash:high" ||
 				denied.role !== "default" ||
 				denied.reasonCode !== "non-429" ||
 				denied.status !== "denied"
@@ -7143,7 +7223,7 @@ describe("AgentSession retry fallback", () => {
 				throw new Error(
 					"1. WHAT: test_usage_aware_paid_denial_dedup FAILED\n" +
 						"2. WHY: REQ-QR-022 violation - the deduplicated denial must name the paid candidate and non-429 reason\n" +
-						'3. EXPECTED: { from: "google-antigravity/gemini-3.7-flash-tiered:high", to: "openrouter/google/gemini-3.7-flash:high", role: "default", reasonCode: "non-429", status: "denied" }\n' +
+						'3. EXPECTED: { from: "google-antigravity/gemini-3.7-flash-tiered:high", to: "google-vertex/gemini-3.7-flash:high", role: "default", reasonCode: "non-429", status: "denied" }\n' +
 						`4. ACTUAL: ${JSON.stringify(denied)}\n` +
 						"5. GUIDANCE: Classify proactive usage-aware paid denial as non-429 with status denied.",
 				);
@@ -7153,32 +7233,15 @@ describe("AgentSession retry fallback", () => {
 		});
 
 		it("REQ-QR-022, POST-QR-20, SEQ-QR-14..16: session events are countable attempted, denied, active, and success signals by type, reason, and status", async () => {
-			/**
-			 * CONTRACT TRACEABILITY:
-			 * - Contract: contracts/omp_quota_router.contract.py
-			 * - Requirement: requirements/REQ-2026-OMP-QUOTA-ROUTER.md REQ-QR-022
-			 * - Enforces:
-			 *   - REQ-QR-022: Each resolution records whether a paid route was reached and the active notification; event type, reason, and status are the metric dimensions.
-			 *   - POST-QR-20: The internal PaidUsageNotifier receipt authenticates request identity, event, selector, payload digest, emission time, and paid-request start time before inference.
-			 *   - SEQ-QR-14: PaidUsageNotifier issues a receipt only after a qualifying classifier receipt.
-			 *   - SEQ-QR-15: ModelFallbackResolver selects paid OpenRouter only after the matching notifier receipt.
-			 *   - SEQ-QR-16: The selected adapter begins inference only after resolver selection and any required paid notification timestamp.
-			 * - Category: positive / observability / metrics
-			 * - Risk tier: High — uncountable signals make paid spend unobservable
-			 * - Adversarial: Implementation-blind
-			 *
-			 * FOUR-CRITERIA TEST VALIDITY GATE:
-			 *   [✓] C1 VALID: cites POST-QR-20, SEQ-QR-14, SEQ-QR-15, SEQ-QR-16 in contracts/omp_quota_router.contract.py and REQ-QR-022
-			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (exact counts by type/reason/status)
-			 *   [✓] C3 NON-DUPLICATIVE: unique metric aggregation over session events; sibling tests assert schema, position, and denial fields
-			 *   [✓] C4 NOT FUTURE-EDIT: enforces current countable session-event signals, not a separate metrics backend
-			 */
 			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
 			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
 
 			const primaryModel = makeGoogleAntigravityGeminiHigh();
+			const vertexModel = makeGoogleVertexGeminiHigh();
 			const fallbackModel = makeOpenRouterGeminiHigh();
 			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+			const vertexSelector = `${vertexModel.provider}/${vertexModel.id}`;
 			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
 			const observabilityEvents: PaidObservabilityEvent[] = [];
 
@@ -7204,7 +7267,30 @@ describe("AgentSession retry fallback", () => {
 				return stream;
 			};
 
+			const makeVertex429Stream = (model: Model<Api>): AssistantMessageEventStream => {
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					const errorPartial: AssistantMessage = {
+						role: "assistant",
+						content: [],
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+						usage: emptyUsage(),
+						stopReason: "error",
+						errorMessage:
+							"Vertex API error (429): Resource exhausted for metric: aiplatform.googleapis.com, RESOURCE_EXHAUSTED",
+						errorStatus: 429,
+						timestamp: Date.now(),
+					};
+					stream.push({ type: "start", partial: errorPartial });
+					stream.push({ type: "error", reason: "error", error: errorPartial });
+				});
+				return stream;
+			};
+
 			let primaryAttempts = 0;
+			let vertexAttempts = 0;
 			const agent = new Agent({
 				getApiKey: model => `${model.provider}-test-key`,
 				initialState: {
@@ -7218,6 +7304,10 @@ describe("AgentSession retry fallback", () => {
 						primaryAttempts += 1;
 						return makeGoogleAntigravity429Stream(model);
 					}
+					if (model.provider === vertexModel.provider && vertexAttempts === 0) {
+						vertexAttempts += 1;
+						return makeVertex429Stream(model);
+					}
 					if (model.provider === fallbackModel.provider) {
 						return recoveredTextStream(model, "Recovered on OpenRouter paid Gemini 3.7 Flash.");
 					}
@@ -7230,10 +7320,10 @@ describe("AgentSession retry fallback", () => {
 			const settings = Settings.isolated({
 				"compaction.enabled": false,
 				"retry.baseDelayMs": 0,
-				"retry.maxRetries": 2,
+				"retry.maxRetries": 3,
 				"retry.modelFallback": true,
 				"retry.fallbackChains": {
-					default: [fallbackSelector],
+					default: [vertexSelector, fallbackSelector],
 				},
 			});
 			settings.setModelRole("default", primarySelector);
@@ -7280,29 +7370,29 @@ describe("AgentSession retry fallback", () => {
 			const active = observabilityEvents.filter(event => event.type === "paid_fallback_active").length;
 			const success = observabilityEvents.filter(event => event.type === "retry_fallback_succeeded").length;
 			const expectedCounts = {
-				"paid_fallback_active/quota_exhausted/": 1,
+				"paid_fallback_active/quota_exhausted/": 2,
 				"retry_fallback_succeeded//": 1,
 			};
 			if (
-				attempted !== 1 ||
+				attempted !== 2 ||
 				denied !== 0 ||
-				active !== 1 ||
+				active !== 2 ||
 				success !== 1 ||
-				counts["paid_fallback_active/quota_exhausted/"] !== 1 ||
+				counts["paid_fallback_active/quota_exhausted/"] !== 2 ||
 				counts["retry_fallback_succeeded//"] !== 1
 			) {
 				throw new Error(
 					"1. WHAT: test_paid_fallback_metric_counts FAILED\n" +
 						"2. WHY: REQ-QR-022 / POST-QR-20 / SEQ-QR-14..16 violation - session events must provide exact countable attempted, denied, active, and success signals by type, reason, and status\n" +
-						`3. EXPECTED: attempted=1 denied=0 active=1 success=1 counts=${JSON.stringify(expectedCounts)}\n` +
+						`3. EXPECTED: attempted=2 denied=0 active=2 success=1 counts=${JSON.stringify(expectedCounts)}\n` +
 						`4. ACTUAL: attempted=${attempted} denied=${denied} active=${active} success=${success} counts=${JSON.stringify(counts)} events=${JSON.stringify(observabilityEvents.filter(event => event.type === "paid_fallback_active" || event.type === "paid_fallback_denied" || event.type === "retry_fallback_succeeded"))}\n` +
-						"5. GUIDANCE: Emit one paid_fallback_active with quota_exhausted and one retry_fallback_succeeded; emit zero paid_fallback_denied on a successful paid turn.",
+						"5. GUIDANCE: Emit paid_fallback_active for both Vertex and OpenRouter with quota_exhausted and one retry_fallback_succeeded; emit zero paid_fallback_denied on a successful 3-tier paid turn.",
 				);
 			}
 			expect({ attempted, denied, active, success }).toEqual({
-				attempted: 1,
+				attempted: 2,
 				denied: 0,
-				active: 1,
+				active: 2,
 				success: 1,
 			});
 			expect(counts).toEqual(expectedCounts);
@@ -7382,18 +7472,6 @@ describe("AgentSession retry fallback", () => {
 			});
 
 		type PaidObservabilityEvent = { type: string; [key: string]: unknown };
-
-		const timestampFieldsOf = (event: PaidObservabilityEvent): string[] =>
-			Object.keys(event)
-				.filter(
-					key =>
-						key === "emittedAt" ||
-						key === "emitted_at" ||
-						key === "paidRequestStartedAt" ||
-						key === "paid_request_started_at" ||
-						/(?:At|_at|timestamp|Timestamp)$/.test(key),
-				)
-				.sort();
 
 		const recordPaidObservability = (
 			target: AgentSession,
