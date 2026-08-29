@@ -581,7 +581,10 @@ function handle(frame) {
 			);
 		}
 		const activeTimestampKeys = Object.keys(active)
-			.filter(key => /(?:At|_at|timestamp|Timestamp)$/.test(key) || key === "emitted_at" || key === "paid_request_started_at")
+			.filter(
+				key =>
+					/(?:At|_at|timestamp|Timestamp)$/.test(key) || key === "emitted_at" || key === "paid_request_started_at",
+			)
 			.sort();
 		if (activeTimestampKeys.join(",") !== "emittedAt") {
 			throw new Error(
