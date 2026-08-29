@@ -5588,8 +5588,7 @@ describe("AgentSession retry fallback", () => {
 						model: model.id,
 						usage: emptyUsage(),
 						stopReason: "error",
-						errorMessage:
-							"Vertex API error (429): Resource exhausted for metric: aiplatform.googleapis.com, RESOURCE_EXHAUSTED",
+						errorMessage: "Vertex API error (429): Quota exceeded for aiplatform.googleapis.com, QUOTA_EXHAUSTED",
 						errorStatus: 429,
 						timestamp: Date.now(),
 					};
@@ -6842,8 +6841,7 @@ describe("AgentSession retry fallback", () => {
 						model: model.id,
 						usage: emptyUsage(),
 						stopReason: "error",
-						errorMessage:
-							"Vertex API error (429): Resource exhausted for metric: aiplatform.googleapis.com, RESOURCE_EXHAUSTED",
+						errorMessage: "Vertex API error (429): Quota exceeded for aiplatform.googleapis.com, QUOTA_EXHAUSTED",
 						errorStatus: 429,
 						timestamp: Date.now(),
 					};
@@ -7037,6 +7035,7 @@ describe("AgentSession retry fallback", () => {
 
 			const settings = Settings.isolated({
 				"compaction.enabled": false,
+				"retry.usageAwareFallback": false,
 				"retry.baseDelayMs": 0,
 				"retry.maxRetries": 2,
 				"retry.modelFallback": true,
@@ -7256,7 +7255,6 @@ describe("AgentSession retry fallback", () => {
 						"5. GUIDANCE: Classify proactive usage-aware paid denial for Vertex as non-429 with status denied.",
 				);
 			}
-
 			if (
 				!openRouterDenial ||
 				openRouterDenial.from !== "google-antigravity/gemini-3.7-flash-tiered:high" ||
@@ -7323,8 +7321,7 @@ describe("AgentSession retry fallback", () => {
 						model: model.id,
 						usage: emptyUsage(),
 						stopReason: "error",
-						errorMessage:
-							"Vertex API error (429): Resource exhausted for metric: aiplatform.googleapis.com, RESOURCE_EXHAUSTED",
+						errorMessage: "Vertex API error (429): Quota exceeded for aiplatform.googleapis.com, QUOTA_EXHAUSTED",
 						errorStatus: 429,
 						timestamp: Date.now(),
 					};
@@ -8151,7 +8148,7 @@ describe("AgentSession retry fallback", () => {
 								},
 								stopReason: "error",
 								errorMessage:
-									"Vertex API error (429): Resource exhausted for metric: aiplatform.googleapis.com/generate_content_requests, RESOURCE_EXHAUSTED",
+									"Vertex API error (429): Quota exceeded for aiplatform.googleapis.com, QUOTA_EXHAUSTED",
 								errorStatus: 429,
 								timestamp: Date.now(),
 							};
