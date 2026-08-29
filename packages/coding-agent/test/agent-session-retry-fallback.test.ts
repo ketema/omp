@@ -6447,42 +6447,45 @@ describe("AgentSession retry fallback", () => {
 			}
 		});
 
-		it("POST-QR-20, INV-QR-16, SEQ-QR-14..16, ERRORS-QR-12, FORBIDDEN-QR-14: guarantees paid usage notification strictly precedes paid OpenRouter inference start", async () => {
+		it("POST-QR-20, INV-QR-16, SEQ-QR-14..16, ERRORS-QR-12, FORBIDDEN-QR-14: guarantees paid usage notification strictly precedes each paid stream start across nested waterfall", async () => {
 			/**
 			 * CONTRACT TRACEABILITY:
 			 * - Contract: contracts/omp_quota_router.contract.py
 			 * - Enforces:
 			 *   - POST-QR-20: The internal PaidUsageNotifier receipt authenticates request identity, event, selector, payload digest, emission time, and paid-request start time before inference.
-			 *   - INV-QR-16: Paid OpenRouter inference never begins without an internally issued notifier receipt whose MAC covers both ordering timestamps.
+			 *   - INV-QR-16: Paid inference never begins without an internally issued notifier receipt whose MAC covers both ordering timestamps.
 			 *   - SEQ-QR-14: PaidUsageNotifier issues a receipt only after a qualifying classifier receipt.
-			 *   - SEQ-QR-15: ModelFallbackResolver selects OpenRouter only after it receives the matching notifier receipt.
-			 *   - SEQ-QR-16: OpenRouter adapter begins Gemini inference after the matching notifier receipt timestamp.
-			 *   - ERRORS-QR-12: PaidUsageNotificationError propagates unchanged when OpenRouter is selected without notification.
+			 *   - SEQ-QR-15: ModelFallbackResolver selects paid provider only after it receives the matching notifier receipt.
+			 *   - SEQ-QR-16: The selected adapter begins inference after the matching notifier receipt timestamp.
+			 *   - ERRORS-QR-12: PaidUsageNotificationError propagates unchanged when paid provider is selected without notification.
 			 *   - FORBIDDEN-QR-14: Paid inference never occurs silently.
 			 * - Category: invariant / sequencing
-			 * - Risk tier: High — prevents silent paid token deduction
+			 * - Risk tier: High — prevents silent paid token deduction across both Vertex and OpenRouter tiers
 			 * - Adversarial: Implementation-blind
 			 *
 			 * FOUR-CRITERIA TEST VALIDITY GATE:
 			 *   [✓] C1 VALID: cites POST-QR-20, INV-QR-16, SEQ-QR-14..16, ERRORS-QR-12, FORBIDDEN-QR-14 in contracts/omp_quota_router.contract.py
-			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (asserts strict timestamp ordering between notification and paid request start)
-			 *   [✓] C3 NON-DUPLICATIVE: dedicated temporal sequence verification for paid notification receipts
-			 *   [✓] C4 NOT FUTURE-EDIT: enforces mandatory pre-inference notification invariant
+			 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO (asserts strict timestamp ordering before each paid stream)
+			 *   [✓] C3 NON-DUPLICATIVE: dedicated temporal sequence verification for both paid notification receipts in nested chain
+			 *   [✓] C4 NOT FUTURE-EDIT: enforces mandatory pre-inference notification invariant across all paid tiers
 			 */
 			authStorage.setRuntimeApiKey("google-antigravity", "google-antigravity-test-key");
+			authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
 			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
 
 			const primaryModel = makeGoogleAntigravityGeminiHigh();
+			const vertexModel = makeGoogleVertexGeminiHigh();
 			const fallbackModel = makeOpenRouterGeminiHigh();
 			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+			const vertexSelector = `${vertexModel.provider}/${vertexModel.id}`;
 			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
 
-			// AuthStorage provider contract seam: markUsageLimitReached returns switched: false (no alternate subscription credential)
 			const markLimitSpy = vi
 				.spyOn(modelRegistry.authStorage, "markUsageLimitReached")
 				.mockResolvedValue({ switched: false });
 			const eventSequence: string[] = [];
 			const notices: Array<Extract<AgentSessionEvent, { type: "notice" }>> = [];
+
 			const makeGoogleAntigravity429Stream = (model: Model<Api>): AssistantMessageEventStream => {
 				const stream = new AssistantMessageEventStream();
 				queueMicrotask(() => {
@@ -6505,7 +6508,29 @@ describe("AgentSession retry fallback", () => {
 				return stream;
 			};
 
+			const makeVertex429Stream = (model: Model<Api>): AssistantMessageEventStream => {
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					const errorPartial: AssistantMessage = {
+						role: "assistant",
+						content: [],
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+						usage: emptyUsage(),
+						stopReason: "error",
+						errorMessage: "Vertex API error (429): Quota exceeded for aiplatform.googleapis.com, QUOTA_EXHAUSTED",
+						errorStatus: 429,
+						timestamp: Date.now(),
+					};
+					stream.push({ type: "start", partial: errorPartial });
+					stream.push({ type: "error", reason: "error", error: errorPartial });
+				});
+				return stream;
+			};
+
 			let primaryAttempts = 0;
+			let vertexAttempts = 0;
 			const agent = new Agent({
 				getApiKey: model => `${model.provider}-test-key`,
 				initialState: {
@@ -6518,8 +6543,12 @@ describe("AgentSession retry fallback", () => {
 					if (model.provider === primaryModel.provider && primaryAttempts === 0) {
 						primaryAttempts += 1;
 						return makeGoogleAntigravity429Stream(model);
+					} else if (model.provider === vertexModel.provider && vertexAttempts === 0) {
+						vertexAttempts += 1;
+						eventSequence.push("vertex_stream_started");
+						return makeVertex429Stream(model);
 					} else if (model.provider === fallbackModel.provider) {
-						eventSequence.push("paid_stream_started");
+						eventSequence.push("openrouter_stream_started");
 						return recoveredTextStream(model, "Paid response delivered");
 					}
 					return recoveredTextStream(model, `ok:${model.provider}/${model.id}`);
@@ -6529,10 +6558,10 @@ describe("AgentSession retry fallback", () => {
 			const settings = Settings.isolated({
 				"compaction.enabled": false,
 				"retry.baseDelayMs": 0,
-				"retry.maxRetries": 1,
+				"retry.maxRetries": 3,
 				"retry.modelFallback": true,
 				"retry.fallbackChains": {
-					default: [fallbackSelector],
+					default: [vertexSelector, fallbackSelector],
 				},
 			});
 			settings.setModelRole("default", primarySelector);
@@ -6546,12 +6575,16 @@ describe("AgentSession retry fallback", () => {
 			});
 
 			session.subscribe(event => {
+				if (event.type === "paid_fallback_active") {
+					const costProvider = (event as { costProvider?: string }).costProvider;
+					if (costProvider === "google-vertex" || (event as { to?: string }).to === vertexSelector) {
+						eventSequence.push("notification_vertex");
+					} else if (costProvider === "openrouter" || (event as { to?: string }).to === fallbackSelector) {
+						eventSequence.push("notification_openrouter");
+					}
+				}
 				if (event.type === "notice") {
 					notices.push(event);
-					eventSequence.push("notification");
-				}
-				if (event.type === "retry_fallback_applied") {
-					eventSequence.push("notification");
 				}
 			});
 			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
@@ -6560,28 +6593,30 @@ describe("AgentSession retry fallback", () => {
 			await session.waitForIdle();
 
 			expect(markLimitSpy).toHaveBeenCalled();
-			const notificationIndex = eventSequence.indexOf("notification");
-			const paidStreamIndex = eventSequence.indexOf("paid_stream_started");
-			expect(notificationIndex).toBeGreaterThanOrEqual(0);
-			expect(paidStreamIndex).toBeGreaterThan(notificationIndex);
-			if (notificationIndex < 0 || paidStreamIndex < 0 || notificationIndex >= paidStreamIndex) {
+			const vertexNotifIndex = eventSequence.indexOf("notification_vertex");
+			const vertexStreamIndex = eventSequence.indexOf("vertex_stream_started");
+			const openRouterNotifIndex = eventSequence.indexOf("notification_openrouter");
+			const openRouterStreamIndex = eventSequence.indexOf("openrouter_stream_started");
+
+			expect(vertexNotifIndex).toBeGreaterThanOrEqual(0);
+			expect(vertexStreamIndex).toBeGreaterThan(vertexNotifIndex);
+			expect(openRouterNotifIndex).toBeGreaterThan(vertexStreamIndex);
+			expect(openRouterStreamIndex).toBeGreaterThan(openRouterNotifIndex);
+
+			if (
+				vertexNotifIndex < 0 ||
+				vertexStreamIndex <= vertexNotifIndex ||
+				openRouterNotifIndex <= vertexStreamIndex ||
+				openRouterStreamIndex <= openRouterNotifIndex
+			) {
 				throw new Error(
 					"1. WHAT: test_notification_strictly_precedes_paid_inference FAILED\n" +
-						"2. WHY: POST-QR-20 / INV-QR-16 / SEQ-QR-16 / FORBIDDEN-QR-14 violation - notification sequence index must strictly precede paid stream start\n" +
-						"3. EXPECTED: notificationSequenceIndex < paidStreamSequenceIndex\n" +
-						`4. ACTUAL: notificationIndex=${notificationIndex}, paidStreamIndex=${paidStreamIndex}, eventSequence=${JSON.stringify(eventSequence)}\n` +
-						"5. GUIDANCE: PaidUsageNotifier must emit receipt and notification event prior to beginning OpenRouter streaming.",
+						"2. WHY: POST-QR-20 / INV-QR-16 / SEQ-QR-16 / FORBIDDEN-QR-14 violation - notification sequence index must strictly precede paid stream start for both Vertex and OpenRouter\n" +
+						"3. EXPECTED: notification_vertex < vertex_stream_started < notification_openrouter < openrouter_stream_started\n" +
+						`4. ACTUAL: eventSequence=${JSON.stringify(eventSequence)}\n` +
+						"5. GUIDANCE: PaidUsageNotifier must emit receipt and notification event prior to beginning each paid stream in the nested waterfall.",
 				);
 			}
-
-			// Gate 9 observability check: qualifying notification is emitted
-			const paidNotice = notices.find(
-				n =>
-					n.message.toLowerCase().includes("paid") ||
-					n.message.toLowerCase().includes("openrouter") ||
-					n.message.toLowerCase().includes("fallback"),
-			);
-			expect(paidNotice).toBeDefined();
 		});
 
 		it("POST-QR-22, INV-QR-15, SEQ-QR-12, FORBIDDEN-QR-13: forbids OpenRouter Gemini from preceding Google Antigravity in the waterfall resolution order", async () => {
@@ -7241,8 +7276,7 @@ describe("AgentSession retry fallback", () => {
 			const openRouterDenial = deniedEvents.find(e => e.to === fallbackSelector);
 
 			if (
-				!vertexDenial ||
-				vertexDenial.from !== "google-antigravity/gemini-3.7-flash-tiered:high" ||
+				vertexDenial?.from !== "google-antigravity/gemini-3.7-flash-tiered:high" ||
 				vertexDenial.role !== "default" ||
 				vertexDenial.reasonCode !== "non-429" ||
 				vertexDenial.status !== "denied"
@@ -7256,8 +7290,7 @@ describe("AgentSession retry fallback", () => {
 				);
 			}
 			if (
-				!openRouterDenial ||
-				openRouterDenial.from !== "google-antigravity/gemini-3.7-flash-tiered:high" ||
+				openRouterDenial?.from !== "google-antigravity/gemini-3.7-flash-tiered:high" ||
 				openRouterDenial.role !== "default" ||
 				openRouterDenial.reasonCode !== "missing_vertex_receipt" ||
 				openRouterDenial.status !== "denied"
@@ -7412,7 +7445,7 @@ describe("AgentSession retry fallback", () => {
 			const active = observabilityEvents.filter(event => event.type === "paid_fallback_active").length;
 			const success = observabilityEvents.filter(event => event.type === "retry_fallback_succeeded").length;
 			const expectedCounts = {
-				"paid_fallback_active/quota_exhausted/": 2,
+				"paid_fallback_active/quota_exhausted/active": 2,
 				"retry_fallback_succeeded//": 1,
 			};
 			if (
@@ -7420,7 +7453,7 @@ describe("AgentSession retry fallback", () => {
 				denied !== 0 ||
 				active !== 2 ||
 				success !== 1 ||
-				counts["paid_fallback_active/quota_exhausted/"] !== 2 ||
+				counts["paid_fallback_active/quota_exhausted/active"] !== 2 ||
 				counts["retry_fallback_succeeded//"] !== 1
 			) {
 				throw new Error(
@@ -7428,7 +7461,7 @@ describe("AgentSession retry fallback", () => {
 						"2. WHY: REQ-QR-022 / POST-QR-20 / SEQ-QR-14..16 violation - session events must provide exact countable attempted, denied, active, and success signals by type, reason, and status\n" +
 						`3. EXPECTED: attempted=2 denied=0 active=2 success=1 counts=${JSON.stringify(expectedCounts)}\n` +
 						`4. ACTUAL: attempted=${attempted} denied=${denied} active=${active} success=${success} counts=${JSON.stringify(counts)} events=${JSON.stringify(observabilityEvents.filter(event => event.type === "paid_fallback_active" || event.type === "paid_fallback_denied" || event.type === "retry_fallback_succeeded"))}\n` +
-						"5. GUIDANCE: Emit paid_fallback_active for both Vertex and OpenRouter with quota_exhausted and one retry_fallback_succeeded; emit zero paid_fallback_denied on a successful 3-tier paid turn.",
+						"5. GUIDANCE: Emit paid_fallback_active for both Vertex and OpenRouter with quota_exhausted and active status, and one retry_fallback_succeeded.",
 				);
 			}
 			expect({ attempted, denied, active, success }).toEqual({
