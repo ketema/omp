@@ -20,7 +20,7 @@ import {
 } from "../../../requirements/contracts/rlm-dill-compression.contract.ts";
 
 describe("RLM Dill Compression Contracts & Validators", () => {
-  test("INV-SNAP-DETECT-1: validateSnapshotMagic identifies LZMA, Gzip, and Raw headers", () => {
+  test("INV-DETECT-1: validateSnapshotMagic identifies LZMA, Gzip, and Raw headers", () => {
     const lzmaHeader = new Uint8Array([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00, 0x01]);
     const gzipHeader = new Uint8Array([0x1f, 0x8b, 0x08, 0x00]);
     const rawHeader = new Uint8Array([0x80, 0x04, 0x95]);
@@ -69,7 +69,7 @@ describe("RLM Dill Compression Contracts & Validators", () => {
     expect(() => validateSnapshotMagic(unknownHeader)).toThrow(UnsupportedCodecError);
   });
 
-  test("INV-SNAP-RATIO-1: validateCompressionRatio calculates correct ratio and bounds", () => {
+  test("INV-RATIO-1: validateCompressionRatio calculates correct ratio and bounds", () => {
     // 5.0 MB uncompressed, 1.0 MB compressed = 80.0% savings
     const ratio = validateCompressionRatio(5_000_000, 1_000_000);
     expect(ratio).toBe(80.0);
@@ -79,7 +79,7 @@ describe("RLM Dill Compression Contracts & Validators", () => {
     expect(() => validateCompressionRatio(1_000_000, 900_000, 50.0)).toThrow(RlmSnapshotCompressionError);
   });
 
-  test("POST-SNAP-MANIFEST-1: validateCompressionHeader enforces metadata shape", () => {
+  test("POST-MANIFEST-1: validateCompressionHeader enforces metadata shape", () => {
     const validMetadata = {
       version: 1,
       savedNames: ["A", "df"],
@@ -113,7 +113,7 @@ describe("RLM Dill Compression Contracts & Validators", () => {
     expect(() => validateCompressionHeader(invalidMetadata)).toThrow(UnsupportedCodecError);
   });
 
-  test("POST-SNAP-COMPRESS-1/POST-SNAP-RESTORE-1: Python unittest suite passes 100%", async () => {
+  test("POST-COMPRESS-1/POST-RESTORE-1: Python unittest suite passes 100%", async () => {
     const rlmDir = path.join(import.meta.dir, "..");
     const pythonDir = path.join(rlmDir, "python");
     const testFile = path.join(pythonDir, "test_rlm_dill_compression.py");

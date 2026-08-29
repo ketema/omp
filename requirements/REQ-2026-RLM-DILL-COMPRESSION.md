@@ -74,9 +74,9 @@ RLM kernel runner DEPENDS ON Python standard library compression modules (lzma, 
 |----|--------|--------|-------------|-----------------|
 | IP-1 | Kernel manager scheduleSnapshot | RLM transport writeSnapshot | path, manifestPath, maxBytes | SEQ-KM-8 |
 | IP-2 | RLM transport writeSnapshot | RLM kernel runner stdin | snapshot_write op JSON line | POST-TRANS-4 |
-| IP-3 | RLM kernel runner snapshot_write | filesystem kernel-state.dill | compressed binary payload | POST-SNAP-COMPRESS-1 |
-| IP-4 | RLM kernel runner snapshot_write | filesystem kernel-state.json | snapshot manifest with compression info | POST-SNAP-MANIFEST-1 |
-| IP-5 | RLM kernel runner snapshot_restore | filesystem kernel-state.dill | restored variables into user_ns | POST-SNAP-RESTORE-1 |
+| IP-3 | RLM kernel runner snapshot_write | filesystem kernel-state.dill | compressed binary payload | POST-COMPRESS-1 |
+| IP-4 | RLM kernel runner snapshot_write | filesystem kernel-state.json | snapshot manifest with compression info | POST-MANIFEST-1 |
+| IP-5 | RLM kernel runner snapshot_restore | filesystem kernel-state.dill | restored variables into user_ns | POST-RESTORE-1 |
 
 ### Lifecycle Paths
 
@@ -90,13 +90,14 @@ RLM kernel runner DEPENDS ON Python standard library compression modules (lzma, 
 
 | ID | Category | Invariant |
 |----|----------|-----------|
-| INV-SNAP-COMPAT-1 | Compatibility | RLM kernel runner SHALL NOT fail when restoring legacy uncompressed snapshot files. |
-| INV-SNAP-DETECT-1 | Detection | RLM kernel runner SHALL inspect deterministic magic byte headers to select the decompression codec. |
-| INV-SNAP-RATIO-1 | Efficiency | RLM kernel runner SHALL achieve at least 50 percent disk reduction on structured numerical or text state payloads. |
-| INV-SNAP-TIME-1 | Latency Bound | RLM kernel runner SHALL complete snapshot stream compression within 3000 milliseconds. |
+| INV-COMPAT-1 | Compatibility | RLM kernel runner SHALL NOT fail when restoring legacy uncompressed snapshot files. |
+| INV-DETECT-1 | Detection | RLM kernel runner SHALL inspect deterministic magic byte headers to select the decompression codec. |
+| INV-RATIO-1 | Efficiency | RLM kernel runner SHALL achieve at least 50 percent disk reduction on structured numerical or text state payloads. |
+| INV-TIME-1 | Latency Bound | RLM kernel runner SHALL complete snapshot stream compression within 3000 milliseconds. |
 | FORBIDDEN-1 | Write | RLM kernel runner SHALL NOT emit uncompressed snapshot files under active compression. |
 | FORBIDDEN-2 | Atomicity | RLM kernel runner SHALL NOT overwrite target snapshot file until temporary file verification completes. |
 | FORBIDDEN-3 | Teardown | RLM kernel runner SHALL NOT leave orphaned temporary snapshot files on disk when serialization fails. |
+| FORBIDDEN-4 | Configuration | RLM kernel runner SHALL NOT re-resolve the snapshot compression codec from the environment after bootstrap. |
 
 ## 5. High-Entropy Zones (Adjudicated)
 
@@ -166,3 +167,4 @@ Parent capability manifest: `requirements/REQUIREMENT_MANIFEST.md` (REQ-RLM-2026
 | Date | Author | Change |
 |------|--------|--------|
 | 2026-08-22 | K. Harris | Finalized requirements manifest for issue #15 transparent dill compression with normalized clause IDs and failure modes |
+| 2026-08-29 | K. Harris | Added FORBIDDEN-4 to the Hard Invariants table; it was declared in the contract file but missing from this manifest and both plan clause-tracking lists. |

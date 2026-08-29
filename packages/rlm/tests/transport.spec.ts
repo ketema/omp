@@ -626,7 +626,7 @@ time.sleep(30)`,
     const artifacts = join(workRoot, "art-snap")
     fs.mkdirSync(artifacts, { recursive: true })
     const first = createTransport(liveConfig(artifacts))
-    // Same suite-safety guarantee as POST-SNAP-COMPRESS-1/RESTORE-1 live below:
+    // Same suite-safety guarantee as POST-COMPRESS-1/RESTORE-1 live below:
     // two real kernel processes, both torn down on every exit path so an
     // assertion failure cannot leave a live runner poisoning later tests.
     let second: RlmTransport | null = null
@@ -676,11 +676,11 @@ time.sleep(30)`,
     }
   }, 60_000)
 
-  test("POST-SNAP-COMPRESS-1/POST-SNAP-RESTORE-1 live: transparent stream compression round-trips with verified magic header and manifest", async () => {
+  test("POST-COMPRESS-1/POST-RESTORE-1 live: transparent stream compression round-trips with verified magic header and manifest", async () => {
     /**
      * CONTRACT TRACEABILITY:
      * - Authority: requirements/contracts/rlm-dill-compression.contract.ts
-     * - Enforces: POST-SNAP-COMPRESS-1, POST-SNAP-RESTORE-1, POST-SNAP-MANIFEST-1, SEQ-3, SEQ-4, IP-2, IP-3, IP-4, IP-5
+     * - Enforces: POST-COMPRESS-1, POST-RESTORE-1, POST-MANIFEST-1, SEQ-3, SEQ-4, IP-2, IP-3, IP-4, IP-5
      * - Category: Live transport stream compression round-trip
      */
     const artifacts = join(workRoot, "art-dill-compress")

@@ -45,7 +45,7 @@ class TestRlmDillCompression(unittest.TestCase):
         rlm_kernel_runner._FROZEN_SNAPSHOT_CODEC = None
 
     def test_post_snap_compress_1_lzma_header(self):
-        """POST-SNAP-COMPRESS-1, SEQ-3, IP-3: Snapshot file is compressed with LZMA magic header by default."""
+        """POST-COMPRESS-1, SEQ-3, IP-3: Snapshot file is compressed with LZMA magic header by default."""
         ns = rlm_kernel_runner._get_ns()
         ns["arr"] = np.arange(10000)
         ns["msg"] = "hello transparent compression"
@@ -63,7 +63,7 @@ class TestRlmDillCompression(unittest.TestCase):
         self.assertIn("compressionDurationMs", result)
 
     def test_post_snap_compress_1_gzip_header(self):
-        """POST-SNAP-COMPRESS-1, SEQ-3, IP-3: Snapshot file is compressed with Gzip header when configured."""
+        """POST-COMPRESS-1, SEQ-3, IP-3: Snapshot file is compressed with Gzip header when configured."""
         ns = rlm_kernel_runner._get_ns()
         ns["matrix"] = np.arange(40000).reshape(200, 200)
 
@@ -78,7 +78,7 @@ class TestRlmDillCompression(unittest.TestCase):
         self.assertEqual(result["compression"], "gzip")
 
     def test_post_snap_restore_1_decompression_roundtrip(self):
-        """POST-SNAP-RESTORE-1, SEQ-4, SEQ-5, IP-5: _snapshot_restore decompresses and restores exact namespace variables."""
+        """POST-RESTORE-1, SEQ-4, SEQ-5, IP-5: _snapshot_restore decompresses and restores exact namespace variables."""
         ns = rlm_kernel_runner._get_ns()
         test_arr = np.linspace(0, 100, 5000)
         test_dict = {"a": 1, "b": [1, 2, 3], "c": "test"}
@@ -103,7 +103,7 @@ class TestRlmDillCompression(unittest.TestCase):
         self.assertEqual(ns["test_dict"], test_dict)
 
     def test_inv_snap_compat_1_legacy_uncompressed_restore(self):
-        """INV-SNAP-COMPAT-1, SEQ-4, IP-5: Legacy uncompressed snapshots starting with 0x80 restore cleanly."""
+        """INV-COMPAT-1, SEQ-4, IP-5: Legacy uncompressed snapshots starting with 0x80 restore cleanly."""
         ns = rlm_kernel_runner._get_ns()
         legacy_data = {"legacy_x": 42, "legacy_msg": "uncompressed legacy"}
 
@@ -125,7 +125,7 @@ class TestRlmDillCompression(unittest.TestCase):
         self.assertEqual(ns["legacy_msg"], "uncompressed legacy")
 
     def test_inv_snap_detect_1_codec_detection(self):
-        """INV-SNAP-DETECT-1: _detect_codec correctly classifies LZMA, Gzip, and Raw headers."""
+        """INV-DETECT-1: _detect_codec correctly classifies LZMA, Gzip, and Raw headers."""
         lzma_buf = bytes([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00, 0x01, 0x02])
         gzip_buf = bytes([0x1f, 0x8b, 0x08, 0x00])
         raw_buf = bytes([0x80, 0x04, 0x95])
@@ -135,7 +135,7 @@ class TestRlmDillCompression(unittest.TestCase):
         self.assertEqual(_detect_codec(raw_buf), "raw")
 
     def test_inv_snap_ratio_1_size_reduction(self):
-        """INV-SNAP-RATIO-1, IP-4: Compression achieves >= 50% reduction on numerical array payload."""
+        """INV-RATIO-1, IP-4: Compression achieves >= 50% reduction on numerical array payload."""
         ns = rlm_kernel_runner._get_ns()
         ns["big_array"] = np.arange(250000).reshape(500, 500)
 
@@ -155,7 +155,7 @@ class TestRlmDillCompression(unittest.TestCase):
         )
 
     def test_inv_snap_time_1_latency_bound(self):
-        """INV-SNAP-TIME-1, POST-SNAP-TIME-1: Serialization and stream compression completes in < 3000ms."""
+        """INV-TIME-1, POST-TIME-1: Serialization and stream compression completes in < 3000ms."""
         ns = rlm_kernel_runner._get_ns()
         ns["array_5mb"] = np.arange(625000).reshape(1000, 625)
 
@@ -263,7 +263,7 @@ class TestRlmDillCompression(unittest.TestCase):
             rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
 
     def test_inv_snap_stream_counting_accuracy(self):
-        """POST-SNAP-COMPRESS-1, POST-SNAP-MANIFEST-1: _CountingWriter measures exact uncompressed byte size of serialized dictionary."""
+        """POST-COMPRESS-1, POST-MANIFEST-1: _CountingWriter measures exact uncompressed byte size of serialized dictionary."""
         ns = rlm_kernel_runner._get_ns()
         ns["k1"] = [1, 2, 3, 4, 5]
         ns["k2"] = {"hello": "world", "nested": [10, 20]}
@@ -283,7 +283,7 @@ class TestRlmDillCompression(unittest.TestCase):
         self.assertEqual(manifest["compressionDurationMs"], res["compressionDurationMs"])
 
     def test_post_snap_restore_1_atomic_namespace_isolation(self):
-        """POST-SNAP-RESTORE-1: Failed unpickling of any variable leaves active user_ns completely untouched."""
+        """POST-RESTORE-1: Failed unpickling of any variable leaves active user_ns completely untouched."""
         ns = rlm_kernel_runner._get_ns()
         ns["original_var"] = "untouched"
 
@@ -543,7 +543,7 @@ class TestRlmDillCompression(unittest.TestCase):
         self.assertFalse(os.path.exists(self.snapshot_path + ".bak"))
 
     def test_post_snap_skip_1_unpicklable_and_oversize_handling(self):
-        """POST-SNAP-SKIP-1, SEQ-2, IP-4: Unpicklable and oversize objects recorded in skipped list while valid state persists."""
+        """POST-SKIP-1, SEQ-2, IP-4: Unpicklable and oversize objects recorded in skipped list while valid state persists."""
         ns = rlm_kernel_runner._get_ns()
         ns["valid_val"] = "persists"
         # Generator is unpicklable in standard dill configurations

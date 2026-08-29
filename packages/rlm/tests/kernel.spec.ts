@@ -443,11 +443,11 @@ test("SEQ-KM-3 coalescing: successive executions defer to one snapshot per quiet
 // ---------------------------------------------------------------------------
 
 
-test("POST-SNAP-MANIFEST-1: KernelManager persists full compression telemetry when writing manifest", async () => {
+test("POST-MANIFEST-1: KernelManager persists full compression telemetry when writing manifest", async () => {
   /**
    * CONTRACT TRACEABILITY:
    * - Authority: requirements/contracts/rlm-dill-compression.contract.ts
-   * - Enforces: POST-SNAP-MANIFEST-1, IP-4
+   * - Enforces: POST-MANIFEST-1, IP-4
    * - Category: integration (KernelManager manifest rewrite carries compression telemetry)
    */
   const dir = artifactsDir()

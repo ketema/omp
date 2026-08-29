@@ -233,48 +233,48 @@ export function validateCompressionHeader(metadata: unknown): asserts metadata i
 // =============================================================================
 
 export const CONTRACT_RLM_DILL_COMPRESSION = {
-  "POST-SNAP-COMPRESS-1": {
-    id: "POST-SNAP-COMPRESS-1",
+  "POST-COMPRESS-1": {
+    id: "POST-COMPRESS-1",
     description: "Snapshot file is compressed and begins with the exact magic byte header for active codec",
     verification: "test",
   },
-  "POST-SNAP-RESTORE-1": {
-    id: "POST-SNAP-RESTORE-1",
+  "POST-RESTORE-1": {
+    id: "POST-RESTORE-1",
     description: "Restores namespace variables identically to uncompressed state with full object equivalence",
     verification: "test",
   },
-  "POST-SNAP-MANIFEST-1": {
-    id: "POST-SNAP-MANIFEST-1",
+  "POST-MANIFEST-1": {
+    id: "POST-MANIFEST-1",
     description: "Manifest JSON contains compression, uncompressedBytes, compressedBytes, and compressionRatio",
     verification: "test",
   },
-  "POST-SNAP-TIME-1": {
-    id: "POST-SNAP-TIME-1",
+  "POST-TIME-1": {
+    id: "POST-TIME-1",
     description: "Snapshot serialization and stream compression completes in < 3000ms",
     verification: "test",
   },
-  "POST-SNAP-SKIP-1": {
-    id: "POST-SNAP-SKIP-1",
+  "POST-SKIP-1": {
+    id: "POST-SKIP-1",
     description: "Unpicklable or oversize objects are recorded in skipped list while remaining state is persisted",
     verification: "test",
   },
-  "INV-SNAP-COMPAT-1": {
-    id: "INV-SNAP-COMPAT-1",
+  "INV-COMPAT-1": {
+    id: "INV-COMPAT-1",
     description: "Legacy raw uncompressed snapshots starting with 0x80 restore without error",
     verification: "test",
   },
-  "INV-SNAP-DETECT-1": {
-    id: "INV-SNAP-DETECT-1",
+  "INV-DETECT-1": {
+    id: "INV-DETECT-1",
     description: "Dynamic codec selection is determined solely by inspecting the first 6 magic bytes",
     verification: "test",
   },
-  "INV-SNAP-RATIO-1": {
-    id: "INV-SNAP-RATIO-1",
+  "INV-RATIO-1": {
+    id: "INV-RATIO-1",
     description: "Compression achieves >= 50% disk space reduction on non-trivial state payloads",
     verification: "test",
   },
-  "INV-SNAP-TIME-1": {
-    id: "INV-SNAP-TIME-1",
+  "INV-TIME-1": {
+    id: "INV-TIME-1",
     description: "Snapshot stream compression completes within 3000ms latency ceiling",
     verification: "test",
   },
