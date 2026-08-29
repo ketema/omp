@@ -5580,16 +5580,22 @@ describe("AgentSession retry fallback", () => {
 
 			expect(fallbackAppliedEvents).toEqual([
 				{
-					from: primarySelector,
+					type: "retry_fallback_applied",
+					from: "google-antigravity/gemini-3.7-flash-tiered:high",
 					to: fallbackSelector,
 					role: "default",
 				},
 			]);
-			if (fallbackAppliedEvents.length !== 1 || fallbackAppliedEvents[0].to !== fallbackSelector) {
+			if (
+				fallbackAppliedEvents.length !== 1 ||
+				fallbackAppliedEvents[0].type !== "retry_fallback_applied" ||
+				fallbackAppliedEvents[0].from !== "google-antigravity/gemini-3.7-flash-tiered:high" ||
+				fallbackAppliedEvents[0].to !== fallbackSelector
+			) {
 				throw new Error(
 					"1. WHAT: test_turnstile_post18_advances_on_429 FAILED\n" +
 						"2. WHY: POST-QR-18 / SEQ-QR-15 violation - retry_fallback_applied event not emitted for OpenRouter\n" +
-						`3. EXPECTED: [{ from: "${primarySelector}", to: "${fallbackSelector}", role: "default" }]\n` +
+						`3. EXPECTED: [{ type: "retry_fallback_applied", from: "google-antigravity/gemini-3.7-flash-tiered:high", to: "${fallbackSelector}", role: "default" }]\n` +
 						`4. ACTUAL: ${JSON.stringify(fallbackAppliedEvents)}\n` +
 						"5. GUIDANCE: Emit retry_fallback_applied with exact from/to selectors upon qualifying classifier receipt.",
 				);
