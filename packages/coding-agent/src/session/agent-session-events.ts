@@ -59,7 +59,10 @@ export type AgentSessionEvent =
 			to: string;
 			role?: string;
 			source?: string;
-			emittedAt?: number;
+			emittedAt: number;
+			requestedEffort?: string;
+			attemptedPosition?: number;
+			authoritativeQuotaSignal?: string | number;
 			timestamp?: number;
 			notificationTimestamp?: number;
 			notificationEmittedAt?: number;

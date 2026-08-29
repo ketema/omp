@@ -116,24 +116,37 @@ const agentEventTypes = new Set<AgentEvent["type"]>([
 	"tool_execution_end",
 ]);
 
-const sessionEventTypes = new Set<AgentSessionEvent["type"]>([
-	...agentEventTypes,
-	"auto_compaction_start",
-	"auto_compaction_end",
-	"auto_retry_start",
-	"auto_retry_end",
-	"retry_fallback_applied",
-	"retry_fallback_succeeded",
-	"ttsr_triggered",
-	"todo_reminder",
-	"todo_auto_clear",
-	"irc_message",
-	"notice",
-	"thinking_level_changed",
-	"model_changed",
-	"goal_updated",
-	"paid_fallback_active",
-]);
+const exhaustiveSessionEventTypes: Record<AgentSessionEvent["type"], true> = {
+	agent_start: true,
+	agent_end: true,
+	turn_start: true,
+	turn_end: true,
+	message_start: true,
+	message_update: true,
+	message_end: true,
+	tool_execution_start: true,
+	tool_execution_update: true,
+	tool_execution_end: true,
+	auto_compaction_start: true,
+	auto_compaction_end: true,
+	auto_retry_start: true,
+	auto_retry_end: true,
+	retry_fallback_applied: true,
+	retry_fallback_succeeded: true,
+	ttsr_triggered: true,
+	todo_reminder: true,
+	todo_auto_clear: true,
+	irc_message: true,
+	notice: true,
+	paid_fallback_active: true,
+	thinking_level_changed: true,
+	model_changed: true,
+	goal_updated: true,
+};
+
+const sessionEventTypes = new Set<AgentSessionEvent["type"]>(
+	Object.keys(exhaustiveSessionEventTypes) as AgentSessionEvent["type"][],
+);
 
 function isRpcResponse(value: unknown): value is RpcResponse {
 	if (!isRecord(value)) return false;

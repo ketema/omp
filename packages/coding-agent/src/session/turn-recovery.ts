@@ -98,50 +98,39 @@ function isOpenRouterPaidCandidate(candidate: { provider: string } | null | unde
 	return candidate?.provider === "openrouter";
 }
 
-function isRawStatus429(errorStatus: unknown): boolean {
-	return errorStatus === 429 || errorStatus === "429";
+interface PaidFallbackAuthorizationResult {
+	authorized: boolean;
+	denialReason?: string;
 }
 
-function isGoogleAntigravityIdentity(options: {
+/**
+ * Authorizes advancement to paid OpenRouter only when the immediately failing
+ * request is exact Google Antigravity with raw errorStatus 429.
+ *
+ * Rejects non-Google providers, non-429 statuses, plain/direct google routes,
+ * and mid-chain non-Antigravity models (no originalSelector widening).
+ */
+function authorizePaidFallback(options: {
 	currentSelector?: string;
-	currentModel?: Model | null;
 	failedMessage?: AssistantMessage;
-	originalSelector?: string;
-}): boolean {
-	const { currentSelector, currentModel, failedMessage, originalSelector } = options;
-	if (
-		currentModel?.provider === "google-antigravity" ||
-		currentModel?.provider === "antigravity" ||
-		failedMessage?.provider === "google-antigravity" ||
-		failedMessage?.provider === "antigravity"
-	) {
-		return true;
+}): PaidFallbackAuthorizationResult {
+	const { currentSelector, failedMessage } = options;
+
+	if (!currentSelector?.startsWith("google-antigravity/")) {
+		return {
+			authorized: false,
+			denialReason: `Failing selector is not Google Antigravity (${currentSelector ?? "unknown"})`,
+		};
 	}
-	if (
-		currentSelector?.startsWith("google-antigravity/") ||
-		currentSelector?.startsWith("antigravity/") ||
-		originalSelector?.startsWith("google-antigravity/") ||
-		originalSelector?.startsWith("antigravity/") ||
-		currentSelector?.includes("google-antigravity") ||
-		originalSelector?.includes("google-antigravity")
-	) {
-		return true;
+
+	const status = failedMessage?.errorStatus;
+	if (status !== 429) {
+		return {
+			authorized: false,
+			denialReason: `Error status ${status ?? "unknown"} is not 429 rate limit or quota exhaustion`,
+		};
 	}
-	if (
-		currentModel?.id === "gemini-3.7-flash-tiered" ||
-		currentModel?.id?.startsWith("gemini-3.7-flash-tiered") ||
-		failedMessage?.model === "gemini-3.7-flash-tiered" ||
-		failedMessage?.model?.startsWith("gemini-3.7-flash-tiered") ||
-		((currentModel?.provider === "google" ||
-			failedMessage?.provider === "google" ||
-			currentSelector?.startsWith("google/")) &&
-			(currentModel?.id?.includes("gemini-3.7-flash") ||
-				failedMessage?.model?.includes("gemini-3.7-flash") ||
-				currentSelector?.includes("gemini-3.7-flash")))
-	) {
-		return true;
-	}
-	return false;
+	return { authorized: true };
 }
 function syntheticToolResultTailStart(messages: readonly AgentMessage[]): number {
 	let index = messages.length;
@@ -712,11 +701,19 @@ export class TurnRecovery {
 		return retryErrors;
 	}
 
-	#isRecoverableProviderEmptyOutput(_message: AssistantMessage): boolean {
-		// Stop reason 'error' turns are errors (including quota/usage limit and transport failures)
-		// and must not be captured by empty-stop recovery; they proceed to usage-limit classification
-		// and retryable/hard error recovery.
-		return false;
+	#isRecoverableProviderEmptyOutput(message: AssistantMessage): boolean {
+		if (message.stopReason !== "error") return false;
+		// Narrow exclusion: exact Google Antigravity raw-429 error turns must bypass
+		// empty-stop recovery and continue to quota fallback.
+		const isGoogleAntigravity429 =
+			(message.provider === "google-antigravity" || this.#host.model()?.provider === "google-antigravity") &&
+			message.errorStatus === 429;
+		if (isGoogleAntigravity429) return false;
+		const id = this.#classifyRetryMessage(message);
+		if (!AIError.is(id, AIError.Flag.EmptyResponse)) return false;
+		return message.content.every(
+			block => block.type === "thinking" || (block.type === "text" && !hasNonWhitespace(block.text)),
+		);
 	}
 
 	async #handleEmptyAssistantStop(assistantMessage: AssistantMessage): Promise<"continue" | "terminal" | undefined> {
@@ -1633,6 +1630,19 @@ export class TurnRecovery {
 			throw new Error(`No API key for retry fallback ${selector.raw}`);
 		}
 		if (options?.signal?.aborted) return false;
+
+		// Capture the configured selector (auto-aware) so a fallback chain preserves
+		// `auto` instead of collapsing it to the level it resolved to this turn.
+		const currentThinkingLevel = this.#host.configuredThinkingLevel();
+		const requestedThinkingLevel = selector.thinkingLevel ?? currentThinkingLevel;
+		// A fallback selector's explicit level (or the carried level after the
+		// replacement model's floor clamp) must never exceed the session's
+		// per-spawn effort ceiling.
+		const nextThinkingLevel =
+			requestedThinkingLevel === AUTO_THINKING
+				? requestedThinkingLevel
+				: clampThinkingLevelToCeiling(candidate, requestedThinkingLevel, this.#host.thinkingLevelCeiling());
+
 		if (isOpenRouterPaidSelector(selector) || isOpenRouterPaidCandidate(candidate)) {
 			// PRE-QR-8 / POST-QR-20 / SEQ-QR-14..16 / INV-QR-16 / FORBIDDEN-QR-14:
 			// Emit paid-use notification before applying/requesting the paid candidate.
@@ -1653,20 +1663,12 @@ export class TurnRecovery {
 				timestamp: now,
 				notificationTimestamp: now,
 				notificationEmittedAt: now,
+				requestedEffort: nextThinkingLevel,
+				attemptedPosition: 0,
+				authoritativeQuotaSignal: "429",
 			});
 		}
 
-		// Capture the configured selector (auto-aware) so a fallback chain preserves
-		// `auto` instead of collapsing it to the level it resolved to this turn.
-		const currentThinkingLevel = this.#host.configuredThinkingLevel();
-		const requestedThinkingLevel = selector.thinkingLevel ?? currentThinkingLevel;
-		// A fallback selector's explicit level (or the carried level after the
-		// replacement model's floor clamp) must never exceed the session's
-		// per-spawn effort ceiling.
-		const nextThinkingLevel =
-			requestedThinkingLevel === AUTO_THINKING
-				? requestedThinkingLevel
-				: clampThinkingLevelToCeiling(candidate, requestedThinkingLevel, this.#host.thinkingLevelCeiling());
 		const candidateSelector = formatModelStringWithRouting(candidate);
 		const previousModel = this.#host.model();
 		// Mark routing BEFORE the swap: `setModelWithProviderSessionReset` moves the
@@ -1727,28 +1729,50 @@ export class TurnRecovery {
 		);
 		for (const role of this.retryFallbackChainKeys(currentSelector)) {
 			for (const selector of this.findRetryFallbackCandidates(role, currentSelector)) {
-				if (this.isRetryFallbackSelectorSuppressed(selector)) continue;
+				const isPaid = isOpenRouterPaidSelector(selector);
+				if (this.isRetryFallbackSelectorSuppressed(selector)) {
+					if (isPaid) {
+						await this.#host.emitSessionEvent({
+							type: "notice",
+							level: "warning",
+							message: `Paid fallback denied: Candidate selector ${selector.raw} is currently suppressed in cooldown`,
+							source: "ProviderOutcomeClassifier",
+						});
+					}
+					continue;
+				}
 				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
-				if (!candidate) continue;
+				if (!candidate) {
+					if (isPaid) {
+						await this.#host.emitSessionEvent({
+							type: "notice",
+							level: "warning",
+							message: `Paid fallback denied: Candidate model ${selector.raw} not found in registry`,
+							source: "ProviderOutcomeClassifier",
+						});
+					}
+					continue;
+				}
 				// PRE-QR-8, POST-QR-18, POST-QR-19, POST-QR-22, INV-QR-12, INV-QR-15, INV-QR-16,
 				// SEQ-QR-12..16, ERRORS-QR-10..12, FORBIDDEN-QR-13, FORBIDDEN-QR-14:
 				// Gating paid OpenRouter fallback:
 				// Only a selected Google Antigravity request with raw errorStatus exactly 429 may advance to paid OpenRouter.
 				// 401/403, timeout/transport, any 5xx, absent/malformed/unknown status, non-Google 429, and caller-authored
 				// category/receipt fields stop before paid selection.
-				if (isOpenRouterPaidSelector(selector) || isOpenRouterPaidCandidate(candidate)) {
-					const currentModel = this.#host.model();
-					const isGoogleAntigravity = isGoogleAntigravityIdentity({
+				if (isPaid || isOpenRouterPaidCandidate(candidate)) {
+					const auth = authorizePaidFallback({
 						currentSelector,
-						currentModel,
 						failedMessage,
-						originalSelector: this.#activeRetryFallback?.originalSelector,
 					});
-					if (!isGoogleAntigravity) {
-						continue;
-					}
-					if (!isRawStatus429(failedMessage.errorStatus)) {
+					if (!auth.authorized) {
+						// Emit structured diagnostic notice on paid-candidate denial (REQ-QR-019, REQ-QR-022, ERRORS-QR-11)
+						await this.#host.emitSessionEvent({
+							type: "notice",
+							level: "warning",
+							message: `Paid fallback denied: ${auth.denialReason}`,
+							source: "ProviderOutcomeClassifier",
+						});
 						continue;
 					}
 				}
@@ -1772,13 +1796,43 @@ export class TurnRecovery {
 				}
 				// A candidate whose effort floor exceeds the per-spawn ceiling would be
 				// clamped UP past the cap by its model floor — skip it entirely.
-				if (ceiling !== undefined && !modelSupportsEffortCeiling(candidate, ceiling)) continue;
+				if (ceiling !== undefined && !modelSupportsEffortCeiling(candidate, ceiling)) {
+					if (isPaid || isOpenRouterPaidCandidate(candidate)) {
+						await this.#host.emitSessionEvent({
+							type: "notice",
+							level: "warning",
+							message: `Paid fallback denied: Candidate model ${selector.raw} effort exceeds session ceiling`,
+							source: "ProviderOutcomeClassifier",
+						});
+					}
+					continue;
+				}
 				// Skip a candidate whose window cannot hold the retry context. The
 				// failed assistant is removed before continue(), so exclude it here to
 				// judge the request that will actually be sent (issue #8065).
-				if (!this.#host.contextFitsModel(candidate, failedMessage)) continue;
+				if (!this.#host.contextFitsModel(candidate, failedMessage)) {
+					if (isPaid || isOpenRouterPaidCandidate(candidate)) {
+						await this.#host.emitSessionEvent({
+							type: "notice",
+							level: "warning",
+							message: `Paid fallback denied: Live context exceeds candidate model window (${selector.raw})`,
+							source: "ProviderOutcomeClassifier",
+						});
+					}
+					continue;
+				}
 				const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
-				if (!apiKey) continue;
+				if (!apiKey) {
+					if (isPaid || isOpenRouterPaidCandidate(candidate)) {
+						await this.#host.emitSessionEvent({
+							type: "notice",
+							level: "warning",
+							message: `Paid fallback denied: No API key available for candidate model ${selector.raw}`,
+							source: "ProviderOutcomeClassifier",
+						});
+					}
+					continue;
+				}
 				return this.applyRetryFallbackCandidate(role, selector, currentSelector, { ...options, apiKey });
 			}
 		}
@@ -1858,21 +1912,8 @@ export class TurnRecovery {
 		}
 		if (this.#hasReplayUnsafeOutput(message)) return false;
 		const currentSelector = formatRetryFallbackSelector(model, this.#host.thinkingLevel());
-		return this.retryFallbackChainKeys(currentSelector).some(role =>
-			this.findRetryFallbackCandidates(role, currentSelector).some(candidateSelector => {
-				if (isOpenRouterPaidSelector(candidateSelector)) {
-					// PRE-QR-8, POST-QR-18/19, ERRORS-QR-11:
-					// Only a selected Google Antigravity request with raw errorStatus exactly 429 may advance to paid OpenRouter.
-					const isGoogleAntigravity = isGoogleAntigravityIdentity({
-						currentSelector,
-						currentModel: model,
-						failedMessage: message,
-						originalSelector: this.#activeRetryFallback?.originalSelector,
-					});
-					return isGoogleAntigravity && isRawStatus429(message.errorStatus);
-				}
-				return true;
-			}),
+		return this.retryFallbackChainKeys(currentSelector).some(
+			role => this.findRetryFallbackCandidates(role, currentSelector).length > 0,
 		);
 	}
 
