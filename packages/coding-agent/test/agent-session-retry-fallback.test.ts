@@ -7339,10 +7339,6 @@ describe("AgentSession retry fallback", () => {
 				provider: "anthropic",
 				baseUrl: "https://api.anthropic.com",
 				reasoning: true,
-				thinking: {
-					mode: "anthropic-budget",
-					efforts: [Effort.Max],
-				},
 				input: ["text", "image"],
 				cost: { input: 0.000003, output: 0.000015, cacheRead: 0, cacheWrite: 0 },
 				contextWindow: 200_000,

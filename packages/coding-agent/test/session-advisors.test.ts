@@ -19,13 +19,8 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import {
-	SessionAdvisors,
-	type SessionAdvisorsHost,
-	type SessionAdvisorsOptions,
-} from "@oh-my-pi/pi-coding-agent/session/session-advisors";
+import { SessionAdvisors, type SessionAdvisorsOptions } from "@oh-my-pi/pi-coding-agent/session/session-advisors";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { YieldQueue } from "@oh-my-pi/pi-coding-agent/session/yield-queue";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () => {
@@ -54,35 +49,6 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 			authStorage.close();
 		}
 	});
-	function createAdvisorHost(targetSession: AgentSession, events: AgentSessionEvent[] = []): SessionAdvisorsHost {
-		const yieldQueue = new YieldQueue({
-			isStreaming: () => false,
-			injectIdle: async () => {},
-			scheduleIdleFlush: () => {},
-		});
-		const host = {
-			agent: targetSession.agent,
-			settings: targetSession.settings,
-			modelRegistry: targetSession.modelRegistry,
-			sessionManager: targetSession.sessionManager,
-			yieldQueue,
-			sessionId: () => targetSession.sessionManager.getSessionId(),
-			cwd: tempDir.path(),
-			agentDir: tempDir.path(),
-			isDisposed: () => false,
-			emitEvent: (event: AgentSessionEvent) => {
-				events.push(event);
-			},
-			subscribe: (listener: (event: AgentSessionEvent) => void) => targetSession.subscribe(listener),
-			get model() {
-				return targetSession.model;
-			},
-			get servingModel() {
-				return targetSession.servingModel;
-			},
-		} satisfies SessionAdvisorsHost;
-		return host;
-	}
 
 	const makeGoogleAntigravityGeminiHigh = (): Model<"google-gemini-cli"> =>
 		buildModel({
@@ -156,7 +122,7 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 		return stream;
 	};
 
-	const makeSuccessStream = (model: Model<Api>, text: string): AssistantMessageEventStream => {
+	function recoveredTextStream(model: Model<Api>, text: string): AssistantMessageEventStream {
 		const stream = new AssistantMessageEventStream();
 		queueMicrotask(() => {
 			const partial: AssistantMessage = {
@@ -177,11 +143,13 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 				timestamp: Date.now(),
 			};
 			stream.push({ type: "start", partial });
-			stream.push({ type: "text", text });
-			stream.push({ type: "done", message: partial });
+			stream.push({ type: "text_start", contentIndex: 0, partial });
+			stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial });
+			stream.push({ type: "text_end", contentIndex: 0, content: text, partial });
+			stream.push({ type: "done", reason: "stop", message: partial });
 		});
 		return stream;
-	};
+	}
 
 	it("POST-QR-26, SEQ-QR-12, INV-QR-18, FORBIDDEN-QR-16: SessionAdvisors routes advisor fallback through SharedFallbackPolicy before transitioning models", async () => {
 		/**
@@ -231,9 +199,9 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 					return makeAntigravity429Stream(model);
 				}
 				if (model.provider === vertexModel.provider) {
-					return makeSuccessStream(model, "Advisor advice delivered on Vertex.");
+					return recoveredTextStream(model, "Advisor advice delivered on Vertex.");
 				}
-				return makeSuccessStream(model, `ok:${requested}`);
+				return recoveredTextStream(model, `ok:${requested}`);
 			},
 		});
 
@@ -266,14 +234,10 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 		});
 		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 
-		const host = createAdvisorHost(session, sessionEvents);
 		const advisorOptions: SessionAdvisorsOptions = {
 			enabled: true,
-			syncBacklog: "1",
-			immuneTurns: 0,
-			tools: [],
 		};
-		const advisors = new SessionAdvisors(host, advisorOptions);
+		const advisors = new SessionAdvisors(session, advisorOptions);
 		await advisors.buildRuntime();
 		const advisorAgent = advisors.getAdvisorAgent();
 		if (!advisorAgent) {
@@ -287,7 +251,7 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 		}
 
 		await session.prompt("Check code quality");
-		await advisors.waitForAdvisorCatchup();
+		await advisors.waitForAdvisorCatchup(1000);
 		await advisors.stopRuntime();
 
 		const paidActiveEvents = sessionEvents.filter(e => e.type === "paid_fallback_active");
@@ -351,9 +315,9 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 				}
 				if (model.provider === vertexModel.provider) {
 					vertexInferenceCount += 1;
-					return makeSuccessStream(model, "Advice from Vertex single-flight.");
+					return recoveredTextStream(model, "Advice from Vertex single-flight.");
 				}
-				return makeSuccessStream(model, "ok");
+				return recoveredTextStream(model, "ok");
 			},
 		});
 
@@ -386,23 +350,22 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 		});
 		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 
-		const host = createAdvisorHost(session, sessionEvents);
 		const advisorOptions: SessionAdvisorsOptions = {
 			enabled: true,
-			syncBacklog: "1",
-			immuneTurns: 0,
-			tools: [],
 		};
-		const advisors = new SessionAdvisors(host, advisorOptions);
-		advisors.applyAdvisorConfigs([
-			{ name: "Architecture", model: primarySelector },
-			{ name: "Security", model: primarySelector },
-		]);
+		const advisors = new SessionAdvisors(session, advisorOptions);
+		advisors.applyAdvisorConfigs(
+			[
+				{ name: "Architecture", model: primarySelector },
+				{ name: "Security", model: primarySelector },
+			],
+			undefined,
+		);
 		await advisors.buildRuntime();
 
 		// ACT: Prompt session and wait for concurrent advisors to catch up under rate-limiting
 		await session.prompt("Concurrent advice trigger");
-		await advisors.waitForAdvisorCatchup();
+		await advisors.waitForAdvisorCatchup(1000);
 		await advisors.stopRuntime();
 
 		const paidNotifications = sessionEvents.filter(e => e.type === "paid_fallback_active");
@@ -420,6 +383,7 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 		expect(vertexInferenceCount).toBe(1);
 		expect(paidNotifications).toHaveLength(1);
 	});
+
 	it("INV-QR-18, FORBIDDEN-QR-16: direct model swap to Vertex or OpenRouter around SharedFallbackPolicy is rejected with a typed denial", async () => {
 		/**
 		 * CONTRACT TRACEABILITY:
@@ -443,6 +407,7 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 		const primaryModel = makeGoogleAntigravityGeminiHigh();
 		const vertexModel = makeGoogleVertexGeminiHigh();
 		const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+		const vertexSelector = `${vertexModel.provider}/${vertexModel.id}`;
 
 		const agent = new Agent({
 			getApiKey: model => `${model.provider}-test-key`,
@@ -467,18 +432,15 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 			thinkingLevel: Effort.High,
 		});
 
-		const host = createAdvisorHost(session);
 		const advisorOptions: SessionAdvisorsOptions = {
 			enabled: true,
-			syncBacklog: "1",
-			immuneTurns: 0,
-			tools: [],
 		};
-		const advisors = new SessionAdvisors(host, advisorOptions);
+		const advisors = new SessionAdvisors(session, advisorOptions);
+
 		// Direct attempt to apply paid Vertex model config without qualifying quota receipts
 		let threw = false;
 		try {
-			advisors.applyAdvisorConfigs([{ name: "DirectVertex", model: vertexSelector }]);
+			advisors.applyAdvisorConfigs([{ name: "DirectVertex", model: vertexSelector }], undefined);
 			await advisors.buildRuntime();
 			await advisors.stopRuntime();
 		} catch (err: unknown) {
@@ -494,6 +456,7 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 					"5. GUIDANCE: Require SharedFallbackPolicy validation before applying any paid model in applyAdvisorConfigs on SessionAdvisors.",
 			);
 		}
+
 		expect(threw).toBe(true);
 	});
 });
