@@ -16,7 +16,18 @@ export type PaidFallbackDenialReasonCode =
 	| "candidate_suppressed"
 	| "candidate_not_found"
 	| "effort_ceiling_exceeded"
-	| "context_window_exceeded";
+	| "context_window_exceeded"
+	/** SEQ-QR-14/15: the required predecessor's classified signal does not qualify (e.g. rate_limited, not quota_exhausted). */
+	| "not_quota_exhausted"
+	/** POST-QR-18/19: no receipt is bound to this decision yet for the required predecessor selector. */
+	| "missing_receipt"
+	/** PRE-QR-13/POST-QR-27: Vertex ADC/project/location boundary is violated (Express/API-key branch or conflicting location). */
+	| "vertex_credential_boundary"
+	/** PRE-QR-14: the classifier/notifier Keychain trust anchors could not be resolved. */
+	| "trust_anchor_unavailable";
+
+/** Paid provider about to incur cost for one authorized transition (POST-QR-28 "provider about to incur cost"). */
+export type PaidCostProvider = "google-vertex" | "openrouter";
 
 /** Session-specific events that extend the core AgentEvent. */
 export type AgentSessionEvent =
@@ -74,6 +85,8 @@ export type AgentSessionEvent =
 			requestedEffort?: string;
 			attemptedPosition: number;
 			authoritativeQuotaSignal: string;
+			/** Paid provider about to incur cost for this transition (POST-QR-28). Absent for non-governed (legacy) paid transitions. */
+			costProvider?: PaidCostProvider;
 	  }
 	| {
 			type: "paid_fallback_denied";
