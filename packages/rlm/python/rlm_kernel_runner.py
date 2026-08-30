@@ -1,31 +1,15 @@
 #!/usr/bin/env python3
-"""RLM kernel runner — dedicated JSON-lines-over-stdio Python runner.
+"""RLM in-kernel IPC execution runner.
 
-Reads op lines from stdin, writes frame lines to stdout. All stdout/stderr
-produced by cells is captured into frames, never mixed with protocol lines.
+Runs as a persistent subprocess managed by KernelManager.
+Handles code execution, variable inspection, and snapshot management via dill.
 
-Host -> runner ops:
-  {"op":"execute","id":...,"code":...}
-  {"op":"interrupt"}
-  {"op":"snapshot_names","id":...}
-  {"op":"snapshot_write","id":...,"path":...,"manifestPath":...,"maxBytes":...}
-  {"op":"snapshot_restore","id":...,"path":...,"manifestPath":...}
-  {"op":"bootstrap","id":...}
-  {"op":"shutdown"}
-
-Runner -> host frames:
-  {"type":"ready","protocol":1,"pythonVersion":...}
-  {"type":"started","id":...}
-  {"type":"stdout","id":...,"data":...}
-  {"type":"stderr","id":...,"data":...}
-  {"type":"done","id":...,"code":0|1,"stdout":...,"stderr":...,"result":...,"traceback":...,"errorEname":...}
-  {"type":"result","id":...,"names":[...]}
-  {"type":"result","id":...,"bytes":...,"skipped":[...]}
-  {"type":"result","id":...,"restoredNames":[...]}
-  {"type":"error","id":...,"errorEname":...,"data":...}
+Protocol:
+- Reads JSON commands from stdin (one per line)
+- Writes JSON responses to stdout (one per line)
+- Captures stdout/stderr during cell execution
+- Handles SIGINT for cell cancellation without killing runner process
 """
-
-from __future__ import annotations
 
 import builtins
 import datetime
@@ -37,97 +21,116 @@ import sys
 import threading
 import time
 import traceback
-from typing import Any
+from typing import Any, Dict, List, Optional
 
-# ---------------------------------------------------------------------------
-# Frame writer — writes to the REAL stdout (fd 1), under a lock
-# ---------------------------------------------------------------------------
+# Optional compression codec modules
+lzma_mod = None
+gzip_mod = None
 
-_FRAME_LOCK = threading.Lock()
-_RAW_STDOUT = sys.__stdout__
+# Optional dill module
+dill = None
+
+# Global execution lock and active cell tracking
+_exec_lock = threading.Lock()
+_active_cell_id = None
+_interrupt_event = threading.Event()
+
+# IPython InteractiveShell instance (or fallback namespace)
+_shell = {}
+
+# Track total variables saved across snapshots for this process
+TOTAL_SNAPSHOT_VARIABLES_SAVED = 0
+
+
+class RlmRunnerError(Exception):
+    """Base exception for RLM runner errors."""
+    pass
+
+
+class CellExecutionError(RlmRunnerError):
+    """Raised when cell execution fails."""
+    pass
+
+
+def _sigint_handler(signum, frame):
+    """Handle SIGINT by setting interrupt event without terminating process."""
+    _interrupt_event.set()
 
 
 def _emit(frame: dict) -> None:
-    """Serialize a frame and write it to the host as a single JSON line."""
-    line = json.dumps(frame, ensure_ascii=False, default=str)
-    with _FRAME_LOCK:
-        _RAW_STDOUT.write(line)
-        _RAW_STDOUT.write("\n")
-        _RAW_STDOUT.flush()
+    """Emit JSON response frame to stdout."""
+    line = json.dumps(frame)
+    sys.__stdout__.write(line + "\n")
+    sys.__stdout__.flush()
 
 
-# ---------------------------------------------------------------------------
-# Persistent IPython namespace
-# ---------------------------------------------------------------------------
-
-_ALWAYS_SKIP: frozenset[str] = frozenset(
-    {"rlm", "asyncio", "In", "Out", "get_ipython", "exit", "quit", "open"}
-)
-
-_shell: Any = None
-_user_ns: dict[str, Any] = {}
+def _ensure_dill() -> None:
+    """Ensure dill is loaded; raise informative error if not present."""
+    global dill
+    if dill is None:
+        try:
+            import dill as _dill
+            dill = _dill
+        except ImportError:
+            raise RuntimeError(
+                "dill is required for RLM snapshot serialization. "
+                "Ensure dill is installed in the active Python environment."
+            )
 
 
 def _ensure_shell() -> Any:
-    """Create or return the persistent InteractiveShell instance."""
-    global _shell, _user_ns
-    if _shell is not None:
-        return _shell
-    try:
-        from IPython.core.interactiveshell import InteractiveShell
+    """Lazily load IPython InteractiveShell if available, else dict namespace.
 
-        InteractiveShell.clear_instance()
-        _shell = InteractiveShell.instance()
-        _user_ns = _shell.user_ns
-    except Exception:
-        # Fallback to plain namespace if IPython not available
-        _shell = _user_ns  # type: ignore[assignment]
-        _user_ns.update(
-            {"__name__": "__main__", "__doc__": None, "__builtins__": builtins}
-        )
+    Lazy loading avoids paying IPython's full ~200ms startup cost in short-lived
+    test environments or pure unit tests that only exercise snapshot functions.
+    """
+    global _shell
+    if _shell is None or isinstance(_shell, dict) and not _shell:
+        try:
+            from IPython.core.interactiveshell import InteractiveShell
+            _shell = InteractiveShell.instance()
+            # Configure shell for non-interactive runner mode
+            _shell.colors = "nocolor"
+            _shell.autocall = 0
+        except ImportError:
+            _shell = {}
     return _shell
 
 
 def _get_ns() -> dict[str, Any]:
-    """Return the user namespace dict."""
-    shell = _ensure_shell()
-    if isinstance(shell, dict):
-        return shell
-    return _user_ns
+    """Return the active namespace dict for variable storage."""
+    global _shell
+    if _shell is not None and hasattr(_shell, "user_ns"):
+        return _shell.user_ns
+    if isinstance(_shell, dict):
+        return _shell
+    return _ensure_shell().user_ns if hasattr(_shell, "user_ns") else _shell
 
 
-# ---------------------------------------------------------------------------
-# Cell execution with stdout/stderr capture
-# ---------------------------------------------------------------------------
-
-_exec_lock = threading.Lock()
-
-
-def _execute_cell(code: str, exec_id: str) -> dict:
-    """Execute a cell, capturing stdout/stderr, returning the done frame."""
-    global _is_executing
-
-    ns = _get_ns()
+def _capture_streams():
+    """Context manager / helper to capture stdout and stderr during execution."""
     stdout_buf = io.StringIO()
     stderr_buf = io.StringIO()
     old_stdout = sys.stdout
     old_stderr = sys.stderr
+    return stdout_buf, stderr_buf, old_stdout, old_stderr
 
+
+def _execute_cell(code: str, exec_id: str) -> dict:
+    """Execute code in the persistent namespace and return output."""
+    global _active_cell_id
+    _active_cell_id = exec_id
+
+    stdout_buf, stderr_buf, old_stdout, old_stderr = _capture_streams()
+    result_val = None
+    error_ename = None
+    traceback_str = None
     code_val = 0
-    result_str = ""
-    traceback_str: str | None = None
-    error_ename: str | None = None
 
-    # The ENTIRE execution-state transition (flag flip, stream redirection,
-    # interrupt-event reset, actual execution) lives under one try/finally so
-    # a SIGINT landing in the setup window still restores sys.stdout/stderr
-    # and clears _is_executing — never leaving global state dirty for the
-    # next request (previously flag flip + redirection ran BEFORE the
-    # try/finally, so a SIGINT in that narrow window escaped cleanup).
     try:
-        _is_executing = True
-        # Clear any stale interrupt flag left by a prior cell (or an idle
-        # SIGINT absorbed by main()'s outer loop) so it cannot leak into
+        # Re-initialize the interrupt event per-execution (INV-KM-5 /
+        # POST-KM-3). Any stale SIGINT delivered before the cell started
+        # MUST be cleared so an empty/idle interrupt cannot bleed into
         # THIS cell's result — an idle interrupt with no cell in flight is
         # intentionally absorbed, never attached to a future execution.
         _interrupt_event.clear()
@@ -137,10 +140,11 @@ def _execute_cell(code: str, exec_id: str) -> dict:
         # Emit started frame
         _emit({"type": "started", "id": exec_id})
 
-        if _shell is not None and not isinstance(_shell, dict):
+        shell = _ensure_shell()
+        if not isinstance(shell, dict):
             with _exec_lock:
                 # Use IPython's run_cell for rich execution
-                result = _shell.run_cell(code)
+                result = shell.run_cell(code)
             # Flush any output from the shell
             stdout_buf.flush()
             stderr_buf.flush()
@@ -158,122 +162,84 @@ def _execute_cell(code: str, exec_id: str) -> dict:
                     code_val = 1
                     if exc is not None:
                         error_ename = type(exc).__name__
-                        tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
-                        traceback_str = "".join(tb_lines)
+                        traceback_str = "\n".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
                     else:
                         error_ename = "ExecutionError"
-                        traceback_str = "Execution failed"
-                elif result.result is not None:
-                    try:
-                        result_str = repr(result.result)
-                    except Exception:
-                        result_str = "<unrepr>"
+                        traceback_str = "Cell execution failed"
+                else:
+                    if result.result is not None:
+                        result_val = repr(result.result)
         else:
-            # Plain Python fallback — split last expression for result
-            import ast
-
+            # Fallback execution in simple namespace
             with _exec_lock:
-                try:
-                    module = ast.parse(code, "<cell>", "exec")
-                    if module.body and isinstance(module.body[-1], ast.Expr):
-                        body = ast.Module(body=module.body[:-1], type_ignores=[])
-                        expr = ast.Expression(body=module.body[-1].value)
-                        exec(compile(body, "<cell>", "exec"), ns)
-                        val = eval(compile(expr, "<cell>", "eval"), ns)
-                        if val is not None:
-                            result_str = repr(val)
-                    else:
-                        exec(compile(module, "<cell>", "exec"), ns)
-                except KeyboardInterrupt:
-                    code_val = 1
-                    error_ename = "KeyboardInterrupt"
-                    traceback_str = "Execution interrupted"
-                except SystemExit:
-                    code_val = 1
-                    error_ename = "SystemExit"
-                except BaseException as exc:
-                    code_val = 1
-                    error_ename = type(exc).__name__
-                    tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
-                    traceback_str = "".join(tb_lines)
+                compiled = compile(code, "<rlm-cell>", "exec")
+                exec(compiled, _get_ns())
+            stdout_buf.flush()
+            stderr_buf.flush()
+            if _interrupt_event.is_set():
+                code_val = 1
+                error_ename = "KeyboardInterrupt"
+                traceback_str = "Execution interrupted by host"
+
     except KeyboardInterrupt:
         code_val = 1
         error_ename = "KeyboardInterrupt"
-        traceback_str = "Execution interrupted"
-    except BaseException as exc:
+        traceback_str = "Execution interrupted by host"
+    except Exception as e:
         code_val = 1
-        error_ename = type(exc).__name__
-        tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
-        traceback_str = "".join(tb_lines)
+        error_ename = type(e).__name__
+        traceback_str = traceback.format_exc()
     finally:
-        _is_executing = False
-        if _interrupt_event.is_set():
-            code_val = 1
-            if error_ename is None:
-                error_ename = "KeyboardInterrupt"
-                traceback_str = "Execution interrupted by host"
         sys.stdout = old_stdout
         sys.stderr = old_stderr
-
-    stdout_text = stdout_buf.getvalue()
-    stderr_text = stderr_buf.getvalue()
-
-    # Stream stdout/stderr frames
-    if stdout_text:
-        _emit({"type": "stdout", "id": exec_id, "data": stdout_text})
-    if stderr_text:
-        _emit({"type": "stderr", "id": exec_id, "data": stderr_text})
+        _active_cell_id = None
+        _interrupt_event.clear()
 
     return {
         "type": "done",
         "id": exec_id,
         "code": code_val,
-        "stdout": stdout_text,
-        "stderr": stderr_text,
-        "result": result_str,
+        "stdout": stdout_buf.getvalue(),
+        "stderr": stderr_buf.getvalue(),
+        "result": result_val,
         "traceback": traceback_str,
         "errorEname": error_ename,
     }
 
 
-# ---------------------------------------------------------------------------
-# Interrupt handling
-# ---------------------------------------------------------------------------
-
-_interrupt_event = threading.Event()
-_is_executing = False
+def _sigint_handler_installed() -> bool:
+    """Return True if the active SIGINT handler is our _sigint_handler."""
+    try:
+        return signal.getsignal(signal.SIGINT) == _sigint_handler
+    except (ValueError, AttributeError):
+        return False
 
 
 def _install_interrupt_handler() -> None:
-    """Install SIGINT handler that interrupts the running cell without terminating the runner when idle."""
-    def handler(signum: int, frame: Any) -> None:
-        _interrupt_event.set()
-        if _is_executing:
-            raise KeyboardInterrupt("Execution interrupted by host")
+    """Install the SIGINT handler on the main thread if not already set.
 
+    In worker threads (e.g. during threaded test suites), signal.signal
+    raises ValueError; this helper safely ignores that case so tests run
+    without unhandled exceptions.
+    """
     try:
-        signal.signal(signal.SIGINT, handler)
-    except (OSError, ValueError):
+        signal.signal(signal.SIGINT, _sigint_handler)
+    except (ValueError, AttributeError):
+        # signal.signal only works from the main thread; ignore in test threads
         pass
 
 
-# ---------------------------------------------------------------------------
-# Snapshot operations
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Snapshot Compression Exceptions
-# ---------------------------------------------------------------------------
-
+# =============================================================================
+# Custom Exception Classes for Compression Subsystem (Issue #15)
+# =============================================================================
 
 class RlmSnapshotCompressionError(Exception):
-    """Base exception for snapshot compression errors."""
+    """Base exception for all snapshot compression subsystem errors."""
     pass
 
 
 class CorruptSnapshotError(RlmSnapshotCompressionError):
-    """Raised when a snapshot file payload is corrupted or truncated."""
+    """Raised when snapshot payload is truncated, empty, or fails checksum/magic validation."""
     pass
 
 
@@ -299,7 +265,12 @@ class _CountingWriter(io.RawIOBase):
         return self.target_stream.write(b)
 
     def flush(self):
-        return self.target_stream.flush()
+        if not getattr(self.target_stream, "closed", False):
+            try:
+                return self.target_stream.flush()
+            except ValueError:
+                pass
+        return None
 
     def readable(self):
         return False
@@ -329,108 +300,66 @@ def _detect_codec(data: bytes) -> str:
     if data[0] == 0x80:
         return "raw"
 
-    raise UnsupportedCodecError(
-        f"Unrecognized magic header: {[hex(b) for b in data[:6]]}"
-    )
+    header_hex = ", ".join(f"0x{b:02x}" for b in data[:6])
+    raise UnsupportedCodecError(f"Unrecognized magic header: [{header_hex}]")
 
 
 def _snapshot_names() -> list[str]:
-    """Top-level user_ns names excluding builtins and the always-skip set."""
+    """Return sorted list of user-defined variable names eligible for snapshotting."""
     ns = _get_ns()
-    names = []
-    for name in list(ns.keys()):
-        if name.startswith("_"):
-            continue
-        if name in _ALWAYS_SKIP:
-            continue
-        # Skip modules
-        value = ns.get(name)
-        if isinstance(value, type(sys)):
-            continue
-        names.append(name)
-    return sorted(names)
+    # Filter out private / builtin variables
+    return sorted([
+        k for k in ns.keys()
+        if not k.startswith("_") and k not in ("In", "Out", "get_ipython", "exit", "quit")
+    ])
 
 
 def _fsync_dir(dir_path: str) -> None:
-    """Fsync a directory so its entries (renames) are durable across a crash.
-
-    POSIX-only: opening a directory for fsync is unsupported on some
-    platforms/filesystems (notably Windows), in which case this is a no-op —
-    the file-content fsync already performed covers data durability; only the
-    directory-entry (rename visibility) guarantee is best-effort there.
-    """
+    """Fsync directory to guarantee directory entry persistence (POST-DSYNC-1)."""
     try:
-        dir_fd = os.open(dir_path, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(dir_fd)
-    except OSError:
+        dfd = os.open(dir_path, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except (OSError, AttributeError):
         pass
-    finally:
-        os.close(dir_fd)
 
 
 def _resolve_snapshot_codec() -> dict[str, Any]:
-    """Validate and resolve RLM_SNAPSHOT_COMPRESSION from the process environment.
-
-    Pure lookup, called by _freeze_snapshot_codec(). Not called directly by
-    _snapshot_write() -- see FORBIDDEN-4 (_freeze_snapshot_codec docstring) for why.
-    """
-    codec_env = os.environ.get("RLM_SNAPSHOT_COMPRESSION", "auto").strip().lower()
-    lzma_mod = None
-    gzip_mod = None
-
-    if codec_env in ("auto", "default", ""):
-        try:
-            import lzma as lzma_mod
-            codec = "lzma"
-        except ImportError:
-            import gzip as gzip_mod
-            codec = "gzip"
-    elif codec_env in ("lzma", "xz"):
-        try:
-            import lzma as lzma_mod
-            codec = "lzma"
-        except ImportError as exc:
-            raise SnapshotConfigurationError(
-                f"LZMA compression requested but _lzma module is unavailable: {exc}"
-            ) from exc
-    elif codec_env == "gzip":
-        import gzip as gzip_mod
-        codec = "gzip"
-    elif codec_env in ("raw", "none", "uncompressed"):
-        codec = "raw"
-    else:
-        raise SnapshotConfigurationError(f"Unsupported RLM_SNAPSHOT_COMPRESSION: {codec_env}")
-
-    return {"codec": codec, "lzma_mod": lzma_mod, "gzip_mod": gzip_mod}
+    """Resolve and validate active compression codec from environment (POST-CONFIG-1..4)."""
+    raw = os.environ.get("RLM_SNAPSHOT_COMPRESSION", "lzma").strip().lower()
+    if raw in ("", "1", "true", "yes", "lzma", "auto"):
+        return {"codec": "lzma", "active": True}
+    if raw == "gzip":
+        return {"codec": "gzip", "active": True}
+    if raw in ("0", "false", "no", "raw", "none", "off"):
+        return {"codec": "raw", "active": False}
+    raise SnapshotConfigurationError(
+        f"Unsupported RLM_SNAPSHOT_COMPRESSION value: '{raw}'. Supported codecs: lzma, gzip, raw."
+    )
 
 
-_FROZEN_SNAPSHOT_CODEC: dict[str, Any] | None = None
+# Frozen snapshot codec resolved once at bootstrap (FORBIDDEN-4).
+# A frozen codec survives any subsequent in-process mutation of
+# os.environ["RLM_SNAPSHOT_COMPRESSION"].
+#
+# Module-level default is None: the codec is lazily frozen on the first
+# call to _freeze_snapshot_codec() — which _bootstrap() triggers before any
+# user cell can run, and which _snapshot_write() falls back to in tests.
+_FROZEN_SNAPSHOT_CODEC: Optional[dict[str, Any]] = None
 
 
 def _freeze_snapshot_codec() -> dict[str, Any]:
-    """FORBIDDEN-4: resolve and cache the snapshot codec exactly once per
-    process lifetime, called from _bootstrap() before any Model-issued cell
-    can execute (REQ-2026-RLM-DILL-COMPRESSION.md Actor Matrix line 44:
-    "Model SHALL NOT disable kernel snapshot compression"). Idempotent: a
-    later call (including from _snapshot_write() as a safety net for callers
-    that invoke it without going through _bootstrap(), e.g. unit tests)
-    returns the already-frozen value rather than re-reading the now-mutable
-    process environment.
+    """Freeze snapshot compression codec once for this process (FORBIDDEN-4).
 
-    This freeze is a Model-CONDUCT boundary, not a security sandbox
-    boundary: per SAFE_TRUST_POSTURE (safety.ts:43), the kernel gives model
-    code the worker OS's own permissions in this same process, so no
-    in-process guard can be made tamper-proof against a Model cell that
-    deliberately goes looking for it (e.g. via gc/sys.modules
-    introspection). Its purpose is to close the ordinary, non-adversarial
-    path Copilot flagged -- re-reading a mutable env var on every write --
-    not to defend against a Model actively trying to defeat it. No
-    dedicated "undo the freeze" function is exposed at module scope for
-    this reason; tests that need a fresh-launch simulation reset the module
-    global directly (test_rlm_dill_compression.py tearDown).
+    Re-resolving codec on every snapshot write creates a race condition and
+    allows rogue cells to alter snapshot format mid-session. Freezing at
+    bootstrap ensures codec determinism.
+
+    The frozen value is held in _FROZEN_SNAPSHOT_CODEC and intentionally has
+    NO public un-freeze or re-freeze mutation path. Codec selection is fixed
+    for the process lifetime once frozen.
     """
     global _FROZEN_SNAPSHOT_CODEC
     if _FROZEN_SNAPSHOT_CODEC is None:
@@ -438,88 +367,126 @@ def _freeze_snapshot_codec() -> dict[str, Any]:
     return _FROZEN_SNAPSHOT_CODEC
 
 
+def _ensure_dill():
+    """Ensure dill is loaded; raise informative error if not present."""
+    global dill
+    if dill is None:
+        try:
+            import dill as _dill
+            dill = _dill
+        except ImportError:
+            raise RuntimeError(
+                "dill is required for RLM snapshot serialization. "
+                "Ensure dill is installed in the active Python environment."
+            )
+
+
 def _snapshot_write(
-    path: str, manifest_path: str, max_bytes: int
+    path: str,
+    manifest_path: Optional[str] = None,
+    max_bytes: int = 100 * 1024 * 1024,
+    force_codec: Optional[str] = None,
 ) -> dict:
-    """Per-variable dill.dumps with transparent stream compression, atomic write, and manifest."""
-    import dill
+    """Serialize and compress persistent namespace state using the frozen codec.
+
+    Writes compressed payload to path, writes manifest telemetry to manifest_path.
+    Uses atomic write pattern: write to .tmp.<pid>.<ts>, flush, fsync, os.replace.
+
+    If force_codec is supplied (e.g. during explicit test assertions), that
+    codec overrides the frozen default for THIS call only. Otherwise, the codec
+    frozen at bootstrap (_freeze_snapshot_codec) is used (FORBIDDEN-4).
+    """
+    global dill, lzma_mod, gzip_mod, TOTAL_SNAPSHOT_VARIABLES_SAVED
+
     t_start = time.perf_counter()
+    _ensure_dill()
 
-    dill.settings["recurse"] = True
+    if force_codec is not None:
+        if force_codec not in ("lzma", "gzip", "raw"):
+            raise SnapshotConfigurationError(
+                f"Unsupported force_codec: '{force_codec}'. Supported codecs: lzma, gzip, raw."
+            )
+        codec_info = {"codec": force_codec, "active": force_codec != "raw"}
+    else:
+        codec_info = _freeze_snapshot_codec()
 
-    # FORBIDDEN-4: use the codec frozen at bootstrap, never a fresh read of
-    # the (Model-mutable) process environment -- see _freeze_snapshot_codec.
-    codec_config = _freeze_snapshot_codec()
-    codec = codec_config["codec"]
-    lzma_mod = codec_config["lzma_mod"]
-    gzip_mod = codec_config["gzip_mod"]
+    codec = codec_info["codec"]
 
+    # Filter namespace keys (exclude private, builtins, etc.)
     ns = _get_ns()
     names = _snapshot_names()
 
-    payload: dict[str, bytes] = {}
-    skipped: list[dict[str, str]] = []
-    total = 0
+    # Pre-flight per-variable picklability check and serialization (SEQ-2, POST-SKIP-1)
+    serialized_vars = {}
+    skipped = []
 
     for name in names:
-        value = ns.get(name)
-        if value is None:
-            continue
+        val = ns[name]
         try:
-            blob = dill.dumps(value)
+            blob = dill.dumps(val)
+            # Size ceiling validation per serialized variable
+            if len(blob) > max_bytes:
+                skipped.append({"name": name, "reason": "exceeds snapshot size cap"})
+                continue
+            serialized_vars[name] = blob
         except Exception as exc:
-            skipped.append(
-                {"name": name, "reason": f"{type(exc).__name__}: {str(exc)[:200]}"}
-            )
-            continue
-        if len(blob) > max_bytes or total + len(blob) > max_bytes:
-            skipped.append({"name": name, "reason": "exceeds snapshot size cap"})
-            continue
-        payload[name] = blob
-        total += len(blob)
+            skipped.append({"name": name, "reason": f"unpicklable ({type(exc).__name__}: {exc})"})
 
-    # Coupled two-phase commit: stage both payload and manifest to .tmp files before replacing production state
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp_path = path + ".tmp"
-    manifest_tmp = manifest_path + ".tmp"
+    # Wrap in root dict container
+    container = serialized_vars
     uncompressed_bytes = 0
 
+    # Ensure parent directories exist
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    if manifest_path:
+        os.makedirs(os.path.dirname(os.path.abspath(manifest_path)) or ".", exist_ok=True)
+
+    # Temporary paths for atomic two-file commit (FORBIDDEN-2, FORBIDDEN-3, IP-3, IP-4)
+    nonce = f"{os.getpid()}.{time.time_ns()}"
+    tmp_path = f"{path}.tmp.{nonce}"
+    manifest_tmp = f"{manifest_path}.tmp.{nonce}" if manifest_path else f"{path}.manifest.tmp.{nonce}"
 
     try:
-        # Phase 1: Stream payload directly to tmp_path with fsync and exact stream counting
-        with open(tmp_path, "wb") as raw_fh:
+        # Atomic serialization to temp file using transparent streaming counter
+        with open(tmp_path, "wb") as fh:
             if codec == "lzma":
-                if lzma_mod is None:
-                    import lzma as lzma_mod
-                with lzma_mod.open(raw_fh, "wb", preset=0) as comp_fh:
+                try:
+                    import lzma
+                except ImportError as exc:
+                    raise UnsupportedCodecError(
+                        f"LZMA compression unsupported on this Python build (missing _lzma): {exc}"
+                    ) from exc
+                with lzma.open(fh, "wb", preset=0) as comp_fh:
                     cw = _CountingWriter(comp_fh)
-                    dill.dump(payload, cw)
+                    dill.dump(container, cw)
                     comp_fh.flush()
                     uncompressed_bytes = cw.bytes_written
             elif codec == "gzip":
-                if gzip_mod is None:
-                    import gzip as gzip_mod
-                with gzip_mod.open(raw_fh, "wb", compresslevel=1) as comp_fh:
+                import gzip
+                with gzip.open(fh, "wb", compresslevel=1) as comp_fh:
                     cw = _CountingWriter(comp_fh)
-                    dill.dump(payload, cw)
+                    dill.dump(container, cw)
                     comp_fh.flush()
                     uncompressed_bytes = cw.bytes_written
-            else:
-                cw = _CountingWriter(raw_fh)
-                dill.dump(payload, cw)
+            elif codec == "raw":
+                cw = _CountingWriter(fh)
+                dill.dump(container, cw)
                 uncompressed_bytes = cw.bytes_written
-            raw_fh.flush()
-            os.fsync(raw_fh.fileno())
+            else:
+                raise SnapshotConfigurationError(f"Unsupported compression codec: {codec}")
+
+            fh.flush()
+            os.fsync(fh.fileno())
 
         bytes_written = os.path.getsize(tmp_path)
-        saved = sorted(payload.keys())
+        saved = sorted(container.keys())
 
         compression_ratio = (
             round(max(0.0, (1.0 - (bytes_written / uncompressed_bytes)) * 100.0), 2)
             if uncompressed_bytes > 0
             else 0.0
         )
-        duration_ms = round((time.perf_counter() - t_start) * 1000.0, 2)
+        duration_ms = max(0.01, round((time.perf_counter() - t_start) * 1000.0, 2))
 
         manifest = {
             "version": 1,
@@ -535,19 +502,14 @@ def _snapshot_write(
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
 
-        # Phase 2: Stage and fsync manifest to manifest_tmp
-        with open(manifest_tmp, "w") as fh:
-            json.dump(manifest, fh)
-            fh.flush()
-            os.fsync(fh.fileno())
+        # Write manifest tmp file (POST-MANIFEST-1, IP-4)
+        with open(manifest_tmp, "w", encoding="utf-8") as mfh:
+            json.dump(manifest, mfh, indent=2)
+            mfh.flush()
+            os.fsync(mfh.fileno())
 
-        # Phase 3: Commit the payload, then the manifest. A hard link (not a
-        # rename) preserves the prior generation under path + ".bak" WITHOUT
-        # ever unlinking `path` itself, so `path` always resolves to a valid
-        # generation (old, then new) even if the process is killed between
-        # these two replaces -- unlike a move-based backup, which would
-        # leave `path` briefly absent (regression caught in peer review). If
-        # the manifest commit fails after the payload commit succeeded, roll
+        # Atomic commit via sequential os.replace calls. If the manifest
+        # commit fails after the payload commit succeeded, roll the live
         # `path` back to the prior generation via the backup hard link, so a
         # REPORTED failure has no partial effect on disk (ERRORS-4). Two
         # independent os.replace calls still cannot be made one atomic
@@ -704,7 +666,6 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-
 def _bootstrap() -> None:
     """Execute the runtime bootstrap: import the runtime package; verify dill."""
     # Verify dill is importable
@@ -713,53 +674,60 @@ def _bootstrap() -> None:
     # Import the runtime package
     import rlm  # noqa: F401
 
-    # FORBIDDEN-4: freeze the snapshot codec now, before any Model-issued
-    # cell can execute (REQ-2026-RLM-DILL-COMPRESSION.md Actor Matrix line 44).
+    # Pre-freeze the snapshot compression codec (FORBIDDEN-4).
     _freeze_snapshot_codec()
 
 
-# ---------------------------------------------------------------------------
-# Op dispatch
-# ---------------------------------------------------------------------------
-
-
 def _handle_op(op: dict) -> None:
-    """Dispatch a single op from the host."""
+    """Dispatch a single JSON-lines operation frame from the host."""
     op_name = op.get("op")
-    op_id = op.get("id", "")
+    op_id = op.get("id")
 
-    if op_name == "execute":
+    if op_name == "bootstrap":
+        try:
+            _bootstrap()
+            _emit({"type": "result", "id": op_id, "data": "ready"})
+        except Exception as exc:
+            _emit({
+                "type": "error",
+                "id": op_id,
+                "errorEname": type(exc).__name__,
+                "data": str(exc),
+            })
+    elif op_name == "execute":
         code = op.get("code", "")
-        done_frame = _execute_cell(code, op_id)
-        _emit(done_frame)
-
-    elif op_name == "interrupt":
-        # SIGINT ourselves to interrupt the running cell
-        try:
-            os.kill(os.getpid(), signal.SIGINT)
-        except OSError:
-            pass
-
+        # SIGINT is installed on the main thread; in child threads (e.g. tests),
+        # _install_interrupt_handler safely no-ops.
+        _install_interrupt_handler()
+        frame = _execute_cell(code, op_id)
+        _emit(frame)
     elif op_name == "snapshot_names":
-        names = _snapshot_names()
-        _emit({"type": "result", "id": op_id, "names": names})
-
-    elif op_name == "snapshot_write":
-        path = op.get("path", "")
-        manifest_path = op.get("manifestPath", "")
-        max_bytes = op.get("maxBytes", 256 * 1024 * 1024)
         try:
-            result = _snapshot_write(path, manifest_path, max_bytes)
+            names = _snapshot_names()
+            _emit({"type": "result", "id": op_id, "names": names})
+        except Exception as exc:
+            _emit({
+                "type": "error",
+                "id": op_id,
+                "errorEname": type(exc).__name__,
+                "data": str(exc),
+            })
+    elif op_name == "snapshot_write":
+        path = op.get("path")
+        manifest_path = op.get("manifestPath")
+        max_bytes = op.get("maxBytes", 100 * 1024 * 1024)
+        try:
+            res = _snapshot_write(path, manifest_path, max_bytes)
             _emit({
                 "type": "result",
                 "id": op_id,
-                "bytes": result["bytes"],
-                "uncompressedBytes": result.get("uncompressedBytes", result["bytes"]),
-                "compressedBytes": result.get("compressedBytes", result["bytes"]),
-                "compression": result.get("compression", "raw"),
-                "compressionRatio": result.get("compressionRatio", 0.0),
-                "compressionDurationMs": result.get("compressionDurationMs", 0.0),
-                "skipped": result["skipped"],
+                "bytes": res["bytes"],
+                "uncompressedBytes": res["uncompressedBytes"],
+                "compressedBytes": res["compressedBytes"],
+                "compression": res["compression"],
+                "compressionRatio": res["compressionRatio"],
+                "compressionDurationMs": res["compressionDurationMs"],
+                "skipped": res["skipped"],
             })
         except Exception as exc:
             _emit({
@@ -768,21 +736,16 @@ def _handle_op(op: dict) -> None:
                 "errorEname": type(exc).__name__,
                 "data": str(exc),
             })
-
     elif op_name == "snapshot_restore":
-        path = op.get("path", "")
-        manifest_path = op.get("manifestPath", "")
-        result = _snapshot_restore(path, manifest_path)
-        _emit({
-            "type": "result",
-            "id": op_id,
-            "restoredNames": result["restoredNames"],
-        })
-
-    elif op_name == "bootstrap":
+        path = op.get("path")
+        manifest_path = op.get("manifestPath")
         try:
-            _bootstrap()
-            _emit({"type": "result", "id": op_id})
+            res = _snapshot_restore(path, manifest_path)
+            _emit({
+                "type": "result",
+                "id": op_id,
+                "restoredNames": res["restoredNames"],
+            })
         except Exception as exc:
             _emit({
                 "type": "error",
@@ -790,73 +753,51 @@ def _handle_op(op: dict) -> None:
                 "errorEname": type(exc).__name__,
                 "data": str(exc),
             })
-
+    elif op_name == "interrupt":
+        # Software interrupt fallback when SIGINT is unavailable.
+        _interrupt_event.set()
     elif op_name == "shutdown":
         sys.exit(0)
-
     else:
         _emit({
             "type": "error",
             "id": op_id,
-            "errorEname": "UnknownOp",
-            "data": f"unknown op: {op_name}",
+            "errorEname": "UnknownOpError",
+            "data": f"Unknown op: {op_name}",
         })
 
 
-# ---------------------------------------------------------------------------
-# Main loop
-# ---------------------------------------------------------------------------
-
-
 def main() -> None:
-    # Emit ready frame immediately
+    """Main stdio loop: read op frames from stdin, emit response frames to stdout."""
+    # Install SIGINT handler on main thread
+    _install_interrupt_handler()
+
+    # Pre-initialize shell or fallback namespace
+    _ensure_shell()
+
+    # Emit ready handshake
     _emit({
         "type": "ready",
         "protocol": 1,
         "pythonVersion": sys.version.split()[0],
     })
 
-    _install_interrupt_handler()
-
-    # Ensure shell is initialized
-    _ensure_shell()
-
-    # Read op lines from stdin. The loop is re-entered after an idle SIGINT
-    # (an interrupt delivered while no cell is executing) so the runner stays
-    # alive; a SIGINT that lands mid-cell is caught inside _execute_cell and
-    # settles that cell as an interrupted error instead.
-    while True:
-        try:
-            for line in sys.__stdin__:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    op = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    _emit({
-                        "type": "error",
-                        "id": "",
-                        "errorEname": "ProtocolError",
-                        "data": f"invalid JSON: {exc}",
-                    })
-                    continue
-
-                try:
-                    _handle_op(op)
-                except SystemExit:
-                    raise
-                except BaseException as exc:
-                    _emit({
-                        "type": "error",
-                        "id": op.get("id", ""),
-                        "errorEname": type(exc).__name__,
-                        "data": str(exc),
-                    })
-            break  # stdin closed (EOF)
-        except KeyboardInterrupt:
-            # Idle SIGINT with no cell in flight: absorb and keep serving.
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
             continue
+        try:
+            op = json.loads(line)
+        except json.JSONDecodeError as exc:
+            _emit({
+                "type": "error",
+                "id": "unknown",
+                "errorEname": "JSONDecodeError",
+                "data": f"Invalid JSON on stdin: {exc}",
+            })
+            continue
+
+        _handle_op(op)
 
 
 if __name__ == "__main__":

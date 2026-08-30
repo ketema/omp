@@ -30,7 +30,8 @@ export type { KernelDisplayOutput };
 const TRACE_IPC = $flag("PI_JULIA_IPC_TRACE");
 
 const SHUTDOWN_GRACE_MS = 1_000;
-const STARTUP_TIMEOUT_MS = 15_000; // Julia compile/warmup can be slightly slower
+const STARTUP_TIMEOUT_MS = 25_000; // Julia compile/warmup can be slightly slower on cold CI runners
+const JULIA_PROBE_TIMEOUT_MS = 25_000;
 const INTERRUPT_ESCALATION_MS = 5_000;
 
 export interface KernelExecuteOptions {
@@ -93,7 +94,7 @@ async function probeJuliaKernelAvailability(
 			env: runtime.env,
 			label: runtime.juliaPath,
 		})),
-		{ cwd, signal: probeOpts?.signal, timeoutMs: probeOpts?.timeoutMs },
+		{ cwd, signal: probeOpts?.signal, timeoutMs: probeOpts?.timeoutMs ?? JULIA_PROBE_TIMEOUT_MS },
 	);
 	if (result.ok) {
 		const runtime = runtimes[result.index];

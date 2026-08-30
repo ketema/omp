@@ -25,3 +25,9 @@ runs:
              echo "$HOME/.cargo/bin" >> $GITHUB_PATH
              export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
            fi
+      - name: Warm up runtime caches (Julia)
+        shell: bash
+        run: |
+           if command -v julia >/dev/null 2>&1; then
+             julia -e 'exit(0)' 2>/dev/null || true
+           fi
