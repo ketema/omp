@@ -33,13 +33,13 @@ export function isLocalSessionEnv(env: Record<string, string | undefined>): bool
 	return !env.SSH_CONNECTION && !env.SSH_CLIENT && !env.SSH_TTY;
 }
 
-const CORE_GRAPHICS_FRAMEWORK = "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics";
+let coreGraphicsFrameworkPath = "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics";
 let combinedSessionFlagsReader: (() => number) | null | undefined;
 
 function getCombinedSessionFlagsReader(): (() => number) | null {
 	if (combinedSessionFlagsReader !== undefined) return combinedSessionFlagsReader;
 	try {
-		const coreGraphics = dlopen(CORE_GRAPHICS_FRAMEWORK, {
+		const coreGraphics = dlopen(coreGraphicsFrameworkPath, {
 			CGEventSourceFlagsState: { args: [FFIType.i32], returns: FFIType.u64 },
 		});
 		combinedSessionFlagsReader = () =>
@@ -70,4 +70,16 @@ export function isNativeModifierPressed(key: ModifierKey): boolean {
  */
 export function __setCombinedSessionFlagsReaderForTest(reader: (() => number) | null | undefined): void {
 	combinedSessionFlagsReader = reader;
+}
+
+/**
+ * Test-only: point the CoreGraphics dlopen call at an alternate path — a
+ * genuinely nonexistent path forces the real dlopen() call to throw and
+ * exercises the actual catch block, rather than injecting its outcome via
+ * __setCombinedSessionFlagsReaderForTest. Pass `undefined` to restore the
+ * real framework path. Not part of the audited behavioral contract — pure
+ * test infrastructure.
+ */
+export function __setCoreGraphicsFrameworkPathForTest(path: string | undefined): void {
+	coreGraphicsFrameworkPath = path ?? "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics";
 }

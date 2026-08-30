@@ -14,11 +14,10 @@ import {
  * Contract-derived CoreGraphics reader fake.
  *
  * Contract: requirements/contracts/native-modifier-detection.contract.ts
- * Derives: POST-2, INV-1, ERRORS-1. Injected through the implementation's
- * test-only __setCombinedSessionFlagsReaderForTest seam, standing in for one
- * raw CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState) read
- * (Apple CoreGraphics/CGEventTypes.h documented behavior: returns the current
- * CGEventFlags bitmask for the given event source state). Double type: Fake.
+ * Derives: PROVIDER-1 (the external CoreGraphics call's own documented
+ * shape — a synchronous CGEventFlags bitmask), consumed by POST-2, INV-1,
+ * ERRORS-1. Injected through the implementation's test-only
+ * __setCombinedSessionFlagsReaderForTest seam. Double type: Fake.
  */
 const fakeReaderState = { flags: 0 };
 
@@ -265,17 +264,20 @@ describe("native modifier API", () => {
 		}
 	});
 
-	it("degrades a CoreGraphics load failure to false without throwing", async () => {
+	it("degrades a genuine CoreGraphics load failure to false without throwing", async () => {
 		/**
 		 * CONTRACT TRACEABILITY: INV-1 and ERRORS-1 — no FFI outcome propagates; failures degrade to false.
 		 * Category: invariant/error; Test level: Unit; Risk tier: High — keyboard input cannot crash the TUI.
-		 * FOUR-CRITERIA TEST VALIDITY GATE: [✓] C1 INV-1 and ERRORS-1 exist; [✓] C2 fault is injected at the
-		 * resolved-reader boundary (an unavailable CoreGraphics load resolves to null, matching production);
-		 * [✓] C3 unique loader-unavailable path; [✓] C4 current non-fatal FFI obligation.
-		 * Mock Contract: native-modifier-detection.contract.ts ERRORS-1; Double type: Fake.
+		 * FOUR-CRITERIA TEST VALIDITY GATE: [✓] C1 INV-1 and ERRORS-1 exist; [✓] C2 fault is injected by
+		 * pointing the real dlopen() call at a genuinely nonexistent path, so the actual try/catch in
+		 * getCombinedSessionFlagsReader executes for real rather than having its outcome substituted;
+		 * [✓] C3 unique genuine-loader-failure path; [✓] C4 current non-fatal FFI obligation.
+		 * Mock Contract: native-modifier-detection.contract.ts PROVIDER-1, ERRORS-1; Double type: none —
+		 * this exercises the real dlopen() call against a deliberately invalid path, not an injected outcome.
 		 */
-		const { isNativeModifierPressed, __setCombinedSessionFlagsReaderForTest } = await nativeModifiers();
-		__setCombinedSessionFlagsReaderForTest(null);
+		const { isNativeModifierPressed, __setCombinedSessionFlagsReaderForTest, __setCoreGraphicsFrameworkPathForTest } = await nativeModifiers();
+		__setCoreGraphicsFrameworkPathForTest("/nonexistent/CoreGraphics.framework/CoreGraphics-does-not-exist");
+		__setCombinedSessionFlagsReaderForTest(undefined);
 		let result: boolean | undefined;
 		let thrown: unknown;
 		try {
@@ -283,8 +285,9 @@ describe("native modifier API", () => {
 		} catch (error) {
 			thrown = error;
 		}
-		assertExact("isNativeModifierPressed unavailable reader does not throw", "INV-1", thrown, undefined, "Contain native-query failures so input dispatch continues.");
-		assertExact("isNativeModifierPressed unavailable reader result", "ERRORS-1", result, false, "Degrade unavailable CoreGraphics state to an unpressed modifier.");
+		__setCoreGraphicsFrameworkPathForTest(undefined);
+		assertExact("isNativeModifierPressed genuine dlopen failure does not throw", "INV-1", thrown, undefined, "Contain native-query failures so input dispatch continues.");
+		assertExact("isNativeModifierPressed genuine dlopen failure result", "ERRORS-1", result, false, "Degrade unavailable CoreGraphics state to an unpressed modifier.");
 	});
 
 	it("exercises the real CoreGraphics dlopen path when the test seam is reset", async () => {
