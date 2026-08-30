@@ -11,6 +11,7 @@ import {
 	suppressTerminalStderr,
 } from "@oh-my-pi/pi-utils";
 import { setKittyProtocolActive } from "./keys";
+import { isLocalSessionEnv, isNativeModifierPressed, NATIVE_SHIFT_ENTER_SEQUENCE } from "./native-modifiers";
 import { StdinBuffer } from "./stdin-buffer";
 import {
 	isInsideTerminalMultiplexer,
@@ -1030,7 +1031,14 @@ export class ProcessTerminal implements Terminal {
 				this.#osc99ResponseBuffer.length === 0
 			) {
 				if (this.#inputHandler) {
-					this.#inputHandler(sequence);
+					const input =
+						sequence === "\r" &&
+						process.platform === "darwin" &&
+						isLocalSessionEnv(Bun.env) &&
+						isNativeModifierPressed("shift")
+							? NATIVE_SHIFT_ENTER_SEQUENCE
+							: sequence;
+					this.#inputHandler(input);
 				}
 				return;
 			}
