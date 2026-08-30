@@ -49,6 +49,34 @@ export const CG_EVENT_SOURCE_STATE_COMBINED_SESSION_STATE = 0;
 export const NATIVE_SHIFT_ENTER_SEQUENCE = "\x1b[13;2u";
 
 // =============================================================================
+// Artifact 1.5: External Provider Contract (CoreGraphics)
+// =============================================================================
+
+/**
+ * PROVIDER-1: CoreGraphics.framework's `CGEventSourceFlagsState` function,
+ *   given a valid `CGEventSourceStateID` (a signed 32-bit integer; this
+ *   module only ever passes `CG_EVENT_SOURCE_STATE_COMBINED_SESSION_STATE`),
+ *   returns synchronously — no callback, no async boundary — a `CGEventFlags`
+ *   bitmask (an unsigned 64-bit value) representing the CURRENT physical
+ *   keyboard/mouse modifier state at call time. Per Apple's CoreGraphics
+ *   documentation, this call has exactly two failure modes, both resolved
+ *   before any call reaches this symbol: (a) the framework itself fails to
+ *   load (dlopen failure — the framework is absent or the host lacks the
+ *   required entitlement), or (b) the `CGEventSourceFlagsState` symbol is
+ *   not present in a loaded framework (an unexpected/incompatible framework
+ *   version). The function itself does not document throwing, returning an
+ *   error sentinel, or blocking.
+ * PROVIDER-2: This module governs its OWN consumption of PROVIDER-1's
+ *   guarantee (POST-2, ERRORS-1) independently of PROVIDER-1 itself —
+ *   PROVIDER-1 is Apple's contract, not this repository's, and is not
+ *   re-verified by any test in this repository beyond the two failure
+ *   modes named above. A fake standing in for PROVIDER-1's return value
+ *   (see the test suite's CoreGraphics reader Fake) derives its behavior
+ *   from PROVIDER-1's documented shape (a synchronous `u64` bitmask), not
+ *   from POST-2's wrapper-level restatement of it.
+ */
+
+// =============================================================================
 // Artifact 2: Types & Interfaces
 // =============================================================================
 
@@ -138,6 +166,16 @@ export const CONTRACT_NATIVE_MODIFIER_DETECTION = {
   "POST-1": {
     id: "POST-1",
     description: "decodeModifierFlags(flags) reports each modifier true iff its exact CGEventFlags bit is set",
+    verification: "test",
+  },
+  "PROVIDER-1": {
+    id: "PROVIDER-1",
+    description: "CoreGraphics.framework's CGEventSourceFlagsState returns a synchronous CGEventFlags bitmask for a valid CGEventSourceStateID, per Apple's documented API; its only failure modes are framework-load failure or missing symbol",
+    verification: "tool",
+  },
+  "PROVIDER-2": {
+    id: "PROVIDER-2",
+    description: "This module's fakes for the CoreGraphics reader derive their behavior from PROVIDER-1's documented shape, not from POST-2's wrapper-level restatement of it",
     verification: "test",
   },
   "PRE-LOC-1": {
