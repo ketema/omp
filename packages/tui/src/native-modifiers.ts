@@ -10,23 +10,15 @@ export const MODIFIER_FLAG_MASKS = {
 } as const;
 
 /** CGEventSourceStateID for the combined local+remote session state. */
-export const CG_EVENT_SOURCE_STATE_COMBINED_SESSION_STATE = 0;
+const CG_EVENT_SOURCE_STATE_COMBINED_SESSION_STATE = 0;
 
 /** Kitty keyboard protocol CSI-u sequence synthesized for a recovered Shift+Enter. */
 export const NATIVE_SHIFT_ENTER_SEQUENCE = "\x1b[13;2u";
 
 export type ModifierKey = keyof typeof MODIFIER_FLAG_MASKS;
 
-export interface ModifierFlagsState {
-	shift: boolean;
-	control: boolean;
-	option: boolean;
-	command: boolean;
-	fn: boolean;
-}
-
 /** POST-1, INV-1: Decode a raw CGEventFlags value without observable side effects. */
-export function decodeModifierFlags(flags: number): ModifierFlagsState {
+export function decodeModifierFlags(flags: number): Record<ModifierKey, boolean> {
 	return {
 		shift: (flags & MODIFIER_FLAG_MASKS.shift) !== 0,
 		control: (flags & MODIFIER_FLAG_MASKS.control) !== 0,
@@ -68,4 +60,14 @@ export function isNativeModifierPressed(key: ModifierKey): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Test-only: force the CoreGraphics flags reader to a specific function, or to
+ * `null` to simulate an unavailable framework. Pass `undefined` to reset the
+ * lazy cache so the next call re-attempts the real dlopen. Not part of the
+ * audited behavioral contract — pure test infrastructure.
+ */
+export function __setCombinedSessionFlagsReaderForTest(reader: (() => number) | null | undefined): void {
+	combinedSessionFlagsReader = reader;
 }

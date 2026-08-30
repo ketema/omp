@@ -1,8 +1,6 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn, vi } from "bun:test";
-import * as ffi from "bun:ffi";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 import {
-	CG_EVENT_SOURCE_STATE_COMBINED_SESSION_STATE,
 	CONTRACT_NATIVE_MODIFIER_DETECTION,
 	decodeModifierFlags as decodeContractModifierFlags,
 	isLocalSessionEnv as isContractLocalSessionEnv,
@@ -13,43 +11,16 @@ import {
 } from "../../../requirements/contracts/native-modifier-detection.contract";
 
 /**
- * Contract-derived CoreGraphics FFI fake.
+ * Contract-derived CoreGraphics reader fake.
  *
  * Contract: requirements/contracts/native-modifier-detection.contract.ts
- * Derives: POST-2, INV-1, ERRORS-1; it models one raw CGEventFlagsState read.
- * Double type: Fake — it supplies the provider's documented bitmask result,
- * captures the documented combined-session state ID, and can fail at dlopen.
- *
- * Existing repo precedent: packages/coding-agent/test/terminal-title-test-utils.ts
- * uses spyOn(ffi, "dlopen") plus JSCallback and ffi.linkSymbols. No tui-local
- * bun:ffi mock exists; this is the established repository pattern.
+ * Derives: POST-2, INV-1, ERRORS-1. Injected through the implementation's
+ * test-only __setCombinedSessionFlagsReaderForTest seam, standing in for one
+ * raw CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState) read
+ * (Apple CoreGraphics/CGEventTypes.h documented behavior: returns the current
+ * CGEventFlags bitmask for the given event source state). Double type: Fake.
  */
-const ffiState = {
-	flags: 0,
-	throwOnDlopen: false,
-	callCount: 0,
-	lastSourceStateId: undefined as number | undefined,
-	callbacks: [] as ffi.JSCallback[],
-};
-
-const dlopenSpy = spyOn(ffi, "dlopen").mockImplementation((_library, symbols) => {
-	if (ffiState.throwOnDlopen) throw new Error("CoreGraphics unavailable");
-	const callback = new ffi.JSCallback(
-		(sourceStateId: number) => {
-			ffiState.callCount++;
-			ffiState.lastSourceStateId = sourceStateId;
-			return ffiState.flags;
-		},
-		{ args: [ffi.FFIType.i32], returns: ffi.FFIType.u64 },
-	);
-	ffiState.callbacks.push(callback);
-	const definition = Reflect.get(symbols, "CGEventSourceFlagsState");
-	if (!definition || typeof definition !== "object") {
-		throw new Error("CGEventSourceFlagsState symbol definition was absent");
-	}
-	Reflect.set(definition, "ptr", callback.ptr);
-	return ffi.linkSymbols(symbols);
-});
+const fakeReaderState = { flags: 0 };
 
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 const sshKeys = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] as const;
@@ -60,10 +31,6 @@ type ProcessTerminalConstructor = (typeof import("@oh-my-pi/pi-tui/terminal"))["
 
 function nativeModifiers(): Promise<NativeModifiers> {
 	return import("@oh-my-pi/pi-tui/native-modifiers");
-}
-
-function freshNativeModifiers(): Promise<NativeModifiers> {
-	return import("../src/native-modifiers.ts?ffi-load-failure") as Promise<NativeModifiers>;
 }
 
 async function processTerminal(): Promise<ProcessTerminalConstructor> {
@@ -90,11 +57,8 @@ function restoreSshEnvironment(): void {
 	}
 }
 
-function resetFfiState(flags = 0): void {
-	ffiState.flags = flags;
-	ffiState.throwOnDlopen = false;
-	ffiState.callCount = 0;
-	ffiState.lastSourceStateId = undefined;
+function resetFakeReader(flags = 0): void {
+	fakeReaderState.flags = flags;
 }
 
 function failure(
@@ -200,20 +164,17 @@ async function startTerminalInputHarness(): Promise<TerminalInputHarness> {
 	};
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	setPlatform("darwin");
 	clearSshEnvironment();
-	resetFfiState();
+	resetFakeReader();
+	const { __setCombinedSessionFlagsReaderForTest } = await nativeModifiers();
+	__setCombinedSessionFlagsReaderForTest(() => fakeReaderState.flags);
 });
 
 afterEach(() => {
 	restorePlatform();
 	restoreSshEnvironment();
-});
-
-afterAll(() => {
-	dlopenSpy.mockRestore();
-	for (const callback of ffiState.callbacks) callback.close();
 });
 
 describe("native modifier API", () => {
@@ -271,17 +232,16 @@ describe("native modifier API", () => {
 		/**
 		 * CONTRACT TRACEABILITY: POST-2 — darwin query returns true iff the live combined-session bit is set.
 		 * Category: positive/negative; Test level: Unit; Risk tier: High — native state is the recovery signal.
-		 * FOUR-CRITERIA TEST VALIDITY GATE: [✓] C1 POST-2 exists; [✓] C2 exact booleans and state ID;
-		 * [✓] C3 unique FFI success path; [✓] C4 current CoreGraphics query requirement.
+		 * FOUR-CRITERIA TEST VALIDITY GATE: [✓] C1 POST-2 exists; [✓] C2 exact booleans;
+		 * [✓] C3 unique reader-fake success path; [✓] C4 current CoreGraphics query requirement.
 		 * Mock Contract: native-modifier-detection.contract.ts POST-2; Double type: Fake.
 		 */
-		ffiState.flags = MODIFIER_FLAG_MASKS.shift | MODIFIER_FLAG_MASKS.command;
+		fakeReaderState.flags = MODIFIER_FLAG_MASKS.shift | MODIFIER_FLAG_MASKS.command;
 		const { isNativeModifierPressed } = await nativeModifiers();
 		assertExact("isNativeModifierPressed shift", "POST-2", isNativeModifierPressed("shift"), true, "Return true exactly when the queried modifier bit is set in the current native state.");
 		assertExact("isNativeModifierPressed command", "POST-2", isNativeModifierPressed("command"), true, "Return true exactly when the queried modifier bit is set in the current native state.");
 		assertExact("isNativeModifierPressed control", "POST-2", isNativeModifierPressed("control"), false, "Return false when a different modifier bit is set.");
-		assertExact("CGEventSourceFlagsState state ID", "POST-2", ffiState.lastSourceStateId, CG_EVENT_SOURCE_STATE_COMBINED_SESSION_STATE, "Read the combined local-and-remote CoreGraphics session state.");
-		ffiState.flags = Object.values(MODIFIER_FLAG_MASKS).reduce((bits, mask) => bits | mask, 0);
+		fakeReaderState.flags = Object.values(MODIFIER_FLAG_MASKS).reduce((bits, mask) => bits | mask, 0);
 		for (const key of Object.keys(MODIFIER_FLAG_MASKS) as ModifierKey[]) {
 			assertExact(`isNativeModifierPressed ${key} with all bits set`, "POST-2", isNativeModifierPressed(key), true, "Return true for every ModifierKey whose current native bit is set.");
 		}
@@ -298,7 +258,7 @@ describe("native modifier API", () => {
 		const { isNativeModifierPressed } = await nativeModifiers();
 		for (const platform of ["linux", "win32", "freebsd"]) {
 			setPlatform(platform);
-			ffiState.flags = Object.values(MODIFIER_FLAG_MASKS).reduce((bits, mask) => bits | mask, 0);
+			fakeReaderState.flags = Object.values(MODIFIER_FLAG_MASKS).reduce((bits, mask) => bits | mask, 0);
 			for (const key of Object.keys(MODIFIER_FLAG_MASKS) as ModifierKey[]) {
 				assertExact(`isNativeModifierPressed ${key} on ${platform}`, "POST-3", isNativeModifierPressed(key), false, "Return false without treating a CoreGraphics result as available off macOS.");
 			}
@@ -309,12 +269,13 @@ describe("native modifier API", () => {
 		/**
 		 * CONTRACT TRACEABILITY: INV-1 and ERRORS-1 — no FFI outcome propagates; failures degrade to false.
 		 * Category: invariant/error; Test level: Unit; Risk tier: High — keyboard input cannot crash the TUI.
-		 * FOUR-CRITERIA TEST VALIDITY GATE: [✓] C1 INV-1 and ERRORS-1 exist; [✓] C2 fault is injected at FFI boundary;
-		 * [✓] C3 unique loader-failure path; [✓] C4 current non-fatal FFI obligation.
+		 * FOUR-CRITERIA TEST VALIDITY GATE: [✓] C1 INV-1 and ERRORS-1 exist; [✓] C2 fault is injected at the
+		 * resolved-reader boundary (an unavailable CoreGraphics load resolves to null, matching production);
+		 * [✓] C3 unique loader-unavailable path; [✓] C4 current non-fatal FFI obligation.
 		 * Mock Contract: native-modifier-detection.contract.ts ERRORS-1; Double type: Fake.
 		 */
-		ffiState.throwOnDlopen = true;
-		const { isNativeModifierPressed } = await freshNativeModifiers();
+		const { isNativeModifierPressed, __setCombinedSessionFlagsReaderForTest } = await nativeModifiers();
+		__setCombinedSessionFlagsReaderForTest(null);
 		let result: boolean | undefined;
 		let thrown: unknown;
 		try {
@@ -322,8 +283,8 @@ describe("native modifier API", () => {
 		} catch (error) {
 			thrown = error;
 		}
-		assertExact("isNativeModifierPressed dlopen failure does not throw", "INV-1", thrown, undefined, "Contain native-query failures so input dispatch continues.");
-		assertExact("isNativeModifierPressed dlopen failure result", "ERRORS-1", result, false, "Degrade unavailable CoreGraphics state to an unpressed modifier.");
+		assertExact("isNativeModifierPressed unavailable reader does not throw", "INV-1", thrown, undefined, "Contain native-query failures so input dispatch continues.");
+		assertExact("isNativeModifierPressed unavailable reader result", "ERRORS-1", result, false, "Degrade unavailable CoreGraphics state to an unpressed modifier.");
 	});
 
 	it("identifies local and SSH-marked environments without mutating their input", async () => {
@@ -358,9 +319,9 @@ describe("ProcessTerminal native Shift+Enter recovery", () => {
 		 * FOUR-CRITERIA TEST VALIDITY GATE: [✓] C1 POST-4 exists; [✓] C2 exact input-handler sequence;
 		 * [✓] C3 unique affirmative wiring path; [✓] C4 current Shift+Enter recovery behavior.
 		 * Mock Contract: native-modifier-detection.contract.ts POST-2; Double type: Fake.
-		 * SEQ SELF-CHECK: [✓] ProcessTerminal constructed; [✓] observable input handler; [✓] no direct callee call; [✓] FFI fake installed before lifecycle.
+		 * SEQ SELF-CHECK: [✓] ProcessTerminal constructed; [✓] observable input handler; [✓] no direct callee call; [✓] reader fake installed before lifecycle.
 		 */
-		ffiState.flags = MODIFIER_FLAG_MASKS.shift;
+		fakeReaderState.flags = MODIFIER_FLAG_MASKS.shift;
 		const { NATIVE_SHIFT_ENTER_SEQUENCE: implementationShiftEnterSequence } = await nativeModifiers();
 		assertExact("NATIVE_SHIFT_ENTER_SEQUENCE contract bridge", "POST-4", implementationShiftEnterSequence, NATIVE_SHIFT_ENTER_SEQUENCE, "Export the contracted sequence used to represent recovered Shift+Enter.");
 		terminal = await startTerminalInputHarness();
@@ -375,7 +336,7 @@ describe("ProcessTerminal native Shift+Enter recovery", () => {
 		 * FOUR-CRITERIA TEST VALIDITY GATE: [✓] C1 POST-5 exists; [✓] C2 exact handler data for each guard;
 		 * [✓] C3 guards are distinct contract disjuncts; [✓] C4 current ordinary-input preservation.
 		 * Mock Contract: native-modifier-detection.contract.ts POST-2; Double type: Fake.
-		 * SEQ SELF-CHECK: [✓] ProcessTerminal constructed; [✓] observable input handler; [✓] no direct callee call; [✓] FFI fake installed before lifecycle.
+		 * SEQ SELF-CHECK: [✓] ProcessTerminal constructed; [✓] observable input handler; [✓] no direct callee call; [✓] reader fake installed before lifecycle.
 		 */
 		const scenarios: Array<{ name: string; platform: string; ssh: boolean; flags: number }> = [
 			{ name: "Shift up", platform: "darwin", ssh: false, flags: 0 },
@@ -386,7 +347,7 @@ describe("ProcessTerminal native Shift+Enter recovery", () => {
 			setPlatform(scenario.platform);
 			if (scenario.ssh) process.env.SSH_CONNECTION = "client server";
 			else clearSshEnvironment();
-			ffiState.flags = scenario.flags;
+			fakeReaderState.flags = scenario.flags;
 			terminal = await startTerminalInputHarness();
 			terminal.feed("\r");
 			await terminal.waitForReceived(1);
@@ -403,9 +364,9 @@ describe("ProcessTerminal native Shift+Enter recovery", () => {
 		 * FOUR-CRITERIA TEST VALIDITY GATE: [✓] C1 FORBIDDEN-1 exists; [✓] C2 exact unchanged sequences;
 		 * [✓] C3 distinct Ctrl and Option wire representations; [✓] C4 contracted negative space, not future-edit theater.
 		 * Mock Contract: native-modifier-detection.contract.ts POST-2; Double type: Fake.
-		 * SEQ SELF-CHECK: [✓] ProcessTerminal constructed; [✓] observable input handler; [✓] no direct callee call; [✓] FFI fake installed before lifecycle.
+		 * SEQ SELF-CHECK: [✓] ProcessTerminal constructed; [✓] observable input handler; [✓] no direct callee call; [✓] reader fake installed before lifecycle.
 		 */
-		ffiState.flags = MODIFIER_FLAG_MASKS.shift | MODIFIER_FLAG_MASKS.control | MODIFIER_FLAG_MASKS.option;
+		fakeReaderState.flags = MODIFIER_FLAG_MASKS.shift | MODIFIER_FLAG_MASKS.control | MODIFIER_FLAG_MASKS.option;
 		terminal = await startTerminalInputHarness();
 		const ctrlEnter = "\x1b[13;5u";
 		const optionEnter = "\x1b\r";
