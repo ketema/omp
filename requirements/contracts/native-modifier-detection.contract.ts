@@ -84,14 +84,51 @@ export function decodeModifierFlags(flags: number): ModifierFlagsState {
 }
 
 /**
- * PRE-1: none (no environment variables are mutated or required).
- * POST-1: Returns `true` iff none of SSH_CONNECTION, SSH_CLIENT, SSH_TTY are
- *   set in the given environment (mirrors the existing no-SSH predicate in
- *   packages/tui/src/terminal.ts's shouldEnableModifyOtherKeysFallback).
+ * PRE-LOC-1: none (no environment variables are mutated or required).
+ * POST-LOC-1: Returns `true` iff none of SSH_CONNECTION, SSH_CLIENT, SSH_TTY
+ *   are set in the given environment (mirrors the existing no-SSH predicate
+ *   in packages/tui/src/terminal.ts's shouldEnableModifyOtherKeysFallback).
  */
 export function isLocalSessionEnv(env: Record<string, string | undefined>): boolean {
   return !env.SSH_CONNECTION && !env.SSH_CLIENT && !env.SSH_TTY;
 }
+
+/**
+ * isNativeModifierPressed(key) is not reproduced here as a pure validator —
+ * it performs live I/O (a CoreGraphics FFI read) and cannot be redeclared
+ * side-effect-free. Its input and lifecycle obligations are still
+ * contracted below.
+ *
+ * PRE-2: `key` SHALL be one of the five ModifierKey literals ("shift",
+ *   "control", "option", "command", "fn") — the same domain
+ *   decodeModifierFlags accepts per key. TypeScript's compile-time erasure
+ *   of the ModifierKey union is the enforcement mechanism for this
+ *   internal-only, all-TypeScript API: every call site in this repository
+ *   is type-checked, and no external, untyped caller exists. This is a
+ *   documented operational ceiling, not an omission — a future consumer
+ *   outside the TypeScript type-checked call graph (e.g. a dynamic plugin
+ *   API) is the upgrade trigger for adding a runtime PRE-2 check.
+ * INV-2: Once resolved (either a working CoreGraphics reader or `null` for
+ *   unavailable), the native-source availability determination is fixed
+ *   for the process lifetime. isNativeModifierPressed does not retry a
+ *   failed load on a later call — CoreGraphics.framework either exists on
+ *   the host at process start or it does not; this is an intentional
+ *   session-lifetime cache, not a defect.
+ */
+
+// =============================================================================
+// Artifact 3.5: Integration Wiring (SEQ)
+// =============================================================================
+
+/**
+ * SEQ-1: packages/tui/src/terminal.ts's ProcessTerminal#stdinDataHandler
+ *   MUST evaluate `isNativeModifierPressed('shift')` (guarded by
+ *   `platform === 'darwin' && isLocalSessionEnv(Bun.env)`) BEFORE calling
+ *   StdinBuffer.process() on the same raw data event — never after, and
+ *   never only inside the StdinBuffer 'data' listener — so the native
+ *   modifier read happens while the raw keypress is still arriving, ahead
+ *   of StdinBuffer's own raw-paste classification delay.
+ */
 
 // =============================================================================
 // Artifact 4: CONTRACT_NATIVE_MODIFIER_DETECTION Traceability Dictionary
@@ -101,6 +138,26 @@ export const CONTRACT_NATIVE_MODIFIER_DETECTION = {
   "POST-1": {
     id: "POST-1",
     description: "decodeModifierFlags(flags) reports each modifier true iff its exact CGEventFlags bit is set",
+    verification: "test",
+  },
+  "PRE-LOC-1": {
+    id: "PRE-LOC-1",
+    description: "isLocalSessionEnv(env) mutates no environment variables and requires none",
+    verification: "test",
+  },
+  "POST-LOC-1": {
+    id: "POST-LOC-1",
+    description: "isLocalSessionEnv(env) returns true iff none of SSH_CONNECTION, SSH_CLIENT, SSH_TTY are set",
+    verification: "test",
+  },
+  "PRE-2": {
+    id: "PRE-2",
+    description: "isNativeModifierPressed(key) accepts only the five ModifierKey literals, enforced at compile time across this repository's all-TypeScript call graph",
+    verification: "tool",
+  },
+  "INV-2": {
+    id: "INV-2",
+    description: "Once resolved, isNativeModifierPressed's native-source availability determination (working reader or unavailable) is fixed for the process lifetime and is not retried per call",
     verification: "test",
   },
   "POST-2": {
@@ -141,6 +198,11 @@ export const CONTRACT_NATIVE_MODIFIER_DETECTION = {
     id: "FORBIDDEN-1",
     description:
       "The Shift+Enter native fallback SHALL NOT change dispatch behavior for ctrl+enter, option+enter (legacy \\x1b\\r), plain enter, or any other existing Enter-modifier combination",
+    verification: "test",
+  },
+  "SEQ-1": {
+    id: "SEQ-1",
+    description: "ProcessTerminal#stdinDataHandler evaluates isNativeModifierPressed('shift') before calling StdinBuffer.process() on the same raw data event",
     verification: "test",
   },
 } as const;

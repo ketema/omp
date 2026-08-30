@@ -287,6 +287,37 @@ describe("native modifier API", () => {
 		assertExact("isNativeModifierPressed unavailable reader result", "ERRORS-1", result, false, "Degrade unavailable CoreGraphics state to an unpressed modifier.");
 	});
 
+	it("exercises the real CoreGraphics dlopen path when the test seam is reset", async () => {
+		/**
+		 * CONTRACT TRACEABILITY: INV-2 — the resolved-reader cache is real per-process
+		 * state, not just an injected value; the actual dlopen/closure-construction
+		 * code (getCombinedSessionFlagsReader) must execute for real at least once.
+		 * Category: invariant; Test level: Unit; Risk tier: High — the injection seam
+		 * used by every other test in this file must not become the only code path
+		 * ever exercised, or a defect in the real dlopen call would go undetected.
+		 * FOUR-CRITERIA TEST VALIDITY GATE: [✓] C1 INV-2 exists; [✓] C2 exact no-throw
+		 * and typeof-boolean assertions on the genuine FFI call; [✓] C3 unique
+		 * real-path coverage no other test in this file provides; [✓] C4 current
+		 * non-fatal FFI obligation, not a hypothetical future one.
+		 * Coverage note: this exercises the dlopen SUCCESS path (CoreGraphics.framework
+		 * exists on every macOS test runner). The catch/unavailable-framework branch
+		 * remains covered only via the direct `null` injection in the previous test —
+		 * genuinely forcing a real dlopen failure would require FFI-level mocking,
+		 * which this suite intentionally does not reintroduce.
+		 */
+		const { isNativeModifierPressed, __setCombinedSessionFlagsReaderForTest } = await nativeModifiers();
+		__setCombinedSessionFlagsReaderForTest(undefined);
+		let result: boolean | undefined;
+		let thrown: unknown;
+		try {
+			result = isNativeModifierPressed("shift");
+		} catch (error) {
+			thrown = error;
+		}
+		assertExact("isNativeModifierPressed real dlopen path does not throw", "INV-2", thrown, undefined, "The genuine CoreGraphics dlopen and closure-construction path must not throw on a supported platform.");
+		assertExact("isNativeModifierPressed real dlopen path returns a boolean", "INV-2", typeof result, "boolean", "The genuine CoreGraphics read must resolve to a boolean modifier state, not undefined or a thrown error.");
+	});
+
 	it("identifies local and SSH-marked environments without mutating their input", async () => {
 		/**
 		 * CONTRACT TRACEABILITY: POST-4/POST-5 — native Shift recovery is local-only; remote sessions forward bare Enter.
