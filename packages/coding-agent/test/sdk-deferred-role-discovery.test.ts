@@ -10,8 +10,8 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import {
-	resolveKeychainTrustAnchors,
-	sharedFallbackPolicy,
+	__setSharedFallbackPolicyForTests,
+	SharedFallbackPolicy,
 } from "@oh-my-pi/pi-coding-agent/session/shared-fallback-policy";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
@@ -28,11 +28,12 @@ describe("createAgentSession deferred role alias on discoverable provider (#8863
 	const savedOllamaEnv: Record<string, string | undefined> = {};
 
 	beforeEach(async () => {
-		sharedFallbackPolicy.setTrustAnchorResolverForTests(async () => ({
-			classifierKey: new Uint8Array(32).fill(1),
-			notifierKey: new Uint8Array(32).fill(2),
-		}));
-		sharedFallbackPolicy.reset();
+		__setSharedFallbackPolicyForTests(
+			new SharedFallbackPolicy({
+				classifierKey: Buffer.alloc(32, 1),
+				notifierKey: Buffer.alloc(32, 2),
+			}),
+		);
 		for (const key of ["OLLAMA_BASE_URL", "OLLAMA_HOST", "OLLAMA_CONTEXT_LENGTH"] as const) {
 			savedOllamaEnv[key] = Bun.env[key];
 			delete Bun.env[key];
@@ -44,8 +45,7 @@ describe("createAgentSession deferred role alias on discoverable provider (#8863
 	});
 
 	afterEach(() => {
-		sharedFallbackPolicy.reset();
-		sharedFallbackPolicy.setTrustAnchorResolverForTests(resolveKeychainTrustAnchors);
+		__setSharedFallbackPolicyForTests(undefined);
 		for (const key of ["OLLAMA_BASE_URL", "OLLAMA_HOST", "OLLAMA_CONTEXT_LENGTH"] as const) {
 			const original = savedOllamaEnv[key];
 			if (original === undefined) delete Bun.env[key];

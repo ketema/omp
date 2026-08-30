@@ -28,8 +28,8 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { ServingModel } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import {
-	resolveKeychainTrustAnchors,
-	sharedFallbackPolicy,
+	__setSharedFallbackPolicyForTests,
+	SharedFallbackPolicy,
 } from "@oh-my-pi/pi-coding-agent/session/shared-fallback-policy";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -188,16 +188,16 @@ describe("AgentSession retry fallback", () => {
 		// (default 5-minute suppression) so state never leaks between tests.
 		modelRegistry = sharedRegistry;
 		modelRegistry.clearSuppressedSelectors();
-		sharedFallbackPolicy.setTrustAnchorResolverForTests(async () => ({
-			classifierKey: new Uint8Array(32).fill(1),
-			notifierKey: new Uint8Array(32).fill(2),
-		}));
-		sharedFallbackPolicy.reset();
+		__setSharedFallbackPolicyForTests(
+			new SharedFallbackPolicy({
+				classifierKey: Buffer.alloc(32, 1),
+				notifierKey: Buffer.alloc(32, 2),
+			}),
+		);
 	});
 
 	afterEach(async () => {
-		sharedFallbackPolicy.reset();
-		sharedFallbackPolicy.setTrustAnchorResolverForTests(resolveKeychainTrustAnchors);
+		__setSharedFallbackPolicyForTests(undefined);
 		if (session) {
 			await session.dispose();
 			session = undefined;

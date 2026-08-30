@@ -31,8 +31,8 @@ import {
 import { createCodexCompactionContext as createMaintenanceCodexCompactionContext } from "@oh-my-pi/pi-coding-agent/session/session-maintenance";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import {
-	resolveKeychainTrustAnchors,
-	sharedFallbackPolicy,
+	__setSharedFallbackPolicyForTests,
+	SharedFallbackPolicy,
 } from "@oh-my-pi/pi-coding-agent/session/shared-fallback-policy";
 import { YieldQueue } from "@oh-my-pi/pi-coding-agent/session/yield-queue";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -52,18 +52,18 @@ describe("SessionAdvisors SharedFallbackPolicy integration (SLICE-3 RED)", () =>
 	});
 
 	beforeEach(async () => {
-		sharedFallbackPolicy.setTrustAnchorResolverForTests(async () => ({
-			classifierKey: new Uint8Array(32).fill(1),
-			notifierKey: new Uint8Array(32).fill(2),
-		}));
-		sharedFallbackPolicy.reset();
+		__setSharedFallbackPolicyForTests(
+			new SharedFallbackPolicy({
+				classifierKey: Buffer.alloc(32, 1),
+				notifierKey: Buffer.alloc(32, 2),
+			}),
+		);
 		authStorage = await AuthStorage.create(":memory:");
 		modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
 	});
 
 	afterEach(async () => {
-		sharedFallbackPolicy.reset();
-		sharedFallbackPolicy.setTrustAnchorResolverForTests(resolveKeychainTrustAnchors);
+		__setSharedFallbackPolicyForTests(undefined);
 		try {
 			await session?.dispose();
 		} finally {
