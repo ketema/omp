@@ -638,7 +638,11 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
     if not isinstance(payload, dict):
         raise CorruptSnapshotError(f"Expected dict payload, got {type(payload).__name__}")
 
-    # Two-phase atomic restore: unpack into isolated temp dict first to protect active namespace
+    # Staged dictionary restore: unpack all variables into an isolated staging dict
+    # first to guarantee namespace dictionary binding atomicity — preventing partial key
+    # assignments in user_ns if any variable blob fails deserialization. (Note: in-process
+    # deserialization executes __setstate__ / reducer callables during dill.loads, so
+    # transactional heap rollback for custom reducer side effects requires a process fork).
     temp_restored = {}
     for name, blob in payload.items():
         if not isinstance(name, str):
@@ -734,7 +738,7 @@ def _handle_op(op: dict) -> None:
                 "type": "error",
                 "id": op_id,
                 "errorEname": type(exc).__name__,
-                "data": str(exc),
+                "data": f"Snapshot write failed: {str(exc)}",
             })
     elif op_name == "snapshot_restore":
         path = op.get("path")

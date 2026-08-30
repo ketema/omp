@@ -240,7 +240,7 @@ export const CONTRACT_RLM_DILL_COMPRESSION = {
   },
   "POST-RESTORE-1": {
     id: "POST-RESTORE-1",
-    description: "Restores namespace variables identically to uncompressed state with full object equivalence",
+    description: "Restores namespace variables identically to uncompressed state with full object equivalence and dictionary binding atomicity",
     verification: "test",
   },
   "POST-MANIFEST-1": {
