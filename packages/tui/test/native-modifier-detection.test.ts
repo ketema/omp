@@ -126,6 +126,7 @@ function assertExact(
 interface TerminalInputHarness {
 	received: string[];
 	feed(data: string): void;
+	waitForReceived(count?: number, timeoutMs?: number): Promise<string[]>;
 	dispose(): void;
 }
 
@@ -149,12 +150,41 @@ async function startTerminalInputHarness(): Promise<TerminalInputHarness> {
 	const ProcessTerminal = await processTerminal();
 	const terminal = new ProcessTerminal();
 	const received: string[] = [];
-	terminal.start(data => received.push(data), () => {});
+	const listeners: Array<() => void> = [];
+	terminal.start(
+		data => {
+			received.push(data);
+			for (const listener of listeners) listener();
+		},
+		() => {},
+	);
 
 	return {
 		received,
 		feed(data) {
 			process.stdin.emit("data", data);
+		},
+		async waitForReceived(count = 1, timeoutMs = 2000) {
+			if (received.length >= count) return received;
+			return new Promise<string[]>(resolve => {
+				// Integration test waiting for asynchronous terminal input event; timeout bounds test hang.
+				const timer = setTimeout(() => {
+					cleanup();
+					resolve(received);
+				}, timeoutMs);
+				const onData = () => {
+					if (received.length >= count) {
+						cleanup();
+						resolve(received);
+					}
+				};
+				const cleanup = () => {
+					clearTimeout(timer);
+					const idx = listeners.indexOf(onData);
+					if (idx !== -1) listeners.splice(idx, 1);
+				};
+				listeners.push(onData);
+			});
 		},
 		dispose() {
 			terminal.stop();
@@ -359,6 +389,7 @@ describe("ProcessTerminal native Shift+Enter recovery", () => {
 			ffiState.flags = scenario.flags;
 			terminal = await startTerminalInputHarness();
 			terminal.feed("\r");
+			await terminal.waitForReceived(1);
 			assertExact(`ProcessTerminal bare Enter with ${scenario.name}`, "POST-5", terminal.received, ["\r"], "Forward ordinary carriage return unchanged unless every Shift+Enter recovery condition holds.");
 			terminal.dispose();
 			terminal = undefined;
