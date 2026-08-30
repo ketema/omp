@@ -149,8 +149,9 @@ describe("RLM Python Dill Compression Integration Tests", () => {
     }
 
     if (!pythonAvailable) {
-      console.warn(`[SKIP] Python dill/numpy/rlm environment not found (provisioning note: ${lastProvError ?? "no uv"}). Skipping Python test execution.`);
-      return;
+      throw new Error(
+        `Python dill/numpy/rlm environment unavailable: ${lastProvError ?? "uv is not installed"}`,
+      );
     }
 
     const proc = Bun.spawn([detectedPython, testScript], {
