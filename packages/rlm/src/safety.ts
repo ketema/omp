@@ -35,6 +35,7 @@ export const SAFE_SESSION_ENV_KEYS: readonly string[] = [
 	"CCABDD_STATE_SERVER_PATH",
 	"HOME",
 	"PATH",
+	"RLM_SNAPSHOT_COMPRESSION",
 ] as const;
 
 /** A-012/F-267: the only model data permitted into Python — bounded catalog

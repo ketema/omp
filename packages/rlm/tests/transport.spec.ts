@@ -27,6 +27,7 @@ import * as fs from "node:fs"
 import { join } from "node:path"
 
 import {
+  RlmTransportContractError as ContractRlmTransportContractError,
   TRANS_FRAMES,
   TRANS_KILL_GRACE_MS,
   TRANS_OPS,
@@ -41,17 +42,18 @@ import {
   validateTransportConfig,
 } from "../../../requirements/contracts/rlm-transport.contract.ts"
 import {
-  BASE_PACKAGES,
   bootstrapManagedVenv,
   buildKernelEnv,
   type KernelCaps,
   type KernelSession,
 } from "../src/bootstrap.ts"
 import {
+  RlmTransportContractError,
   TransportProtocolError,
   TransportSpawnError,
   TransportUnresponsiveError,
   createTransport,
+  RlmTransport,
   type RlmTransportProcess,
 } from "../src/transport.ts"
 
@@ -154,9 +156,9 @@ describe("transport wire protocol", () => {
     // unready runner (manifest SEQ-12 failure mode).
     const fake = makeFakeProcess()
     const { transport } = makeWireTransport(fake)
-    let rejected = false
-    await transport.execute("e1", "x = 1").catch(() => { rejected = true })
-    expect(rejected).toBe(true)
+    let rejectionError: unknown = null
+    await transport.execute("e1", "x = 1").catch(err => { rejectionError = err })
+    expect(rejectionError).toBeInstanceOf(RlmTransportContractError)
     expect(fake.state.spawnedWith).toBeNull()
   })
 
@@ -168,10 +170,13 @@ describe("transport wire protocol", () => {
     await startReady(fake, transport)
     const spawn = fake.state.spawnedWith
     expect(spawn).not.toBeNull()
-    expect(spawn!.cmd).toBe(CONFIG.interpreter)
-    expect(spawn!.args[spawn!.args.length - 1].endsWith(TRANS_RUNNER_FILE)).toBe(true)
-    expect(spawn!.env).toEqual(CONFIG.env)
-    expect(Object.keys(spawn!.env).sort()).toEqual(Object.keys(CONFIG.env).sort())
+    if (spawn === null) {
+      throw new Error("fake.state.spawnedWith must not be null after startReady")
+    }
+    expect(spawn.cmd).toBe(CONFIG.interpreter)
+    expect(spawn.args[spawn.args.length - 1].endsWith(TRANS_RUNNER_FILE)).toBe(true)
+    expect(spawn.env).toEqual(CONFIG.env)
+    expect(Object.keys(spawn.env).sort()).toEqual(Object.keys(CONFIG.env).sort())
   })
 
   test("ERRORS-TRANS-2: missing readiness frame within the gate raises with bounded stderr tail", async () => {
@@ -300,12 +305,7 @@ describe("transport wire protocol", () => {
     await startReady(fake, transport)
 
     const seen: Array<{ type: string; payload: Record<string, unknown> }> = []
-    const t = transport as unknown as {
-      onHostRequest(
-        handler: (req: { type: string; payload: Record<string, unknown> }) => Promise<Record<string, unknown>>,
-      ): void
-    }
-    t.onHostRequest(async request => {
+    transport.onHostRequest(async request => {
       seen.push(request)
       return { value: 42 }
     })
@@ -381,6 +381,37 @@ describe("transport wire protocol", () => {
     expect(res2.code).toBe(0)
     expect(res2.result).toBe("2")
   })
+
+  test("POST-TRANS-5: bootstrap sends the bootstrap op and resolves only after the matching result frame", async () => {
+    // Deterministically proves bootstrap() performs a real wire round-trip
+    // rather than resolving synchronously as a no-op: a mutated
+    // `async bootstrap(){ return }` would never write a "bootstrap" op to
+    // stdin, and this test would fail on the first assertion below instead
+    // of silently passing (the live-tier POST-TRANS-5 test cannot detect
+    // this class of regression because the target venv already has every
+    // package importable regardless of whether bootstrap() ran).
+    const fake = makeFakeProcess()
+    const { transport } = makeWireTransport(fake)
+    await startReady(fake, transport)
+
+    let resolved = false
+    const pending = transport.bootstrap()
+    pending.then(() => { resolved = true })
+    pending.catch(() => undefined)
+
+    await Bun.sleep(0)
+    const sentOps = fake.state.stdinLines.map(line => JSON.parse(line) as { op: string; id: string })
+    const bootstrapOp = sentOps.find(op => op.op === "bootstrap")
+    expect(bootstrapOp).toBeDefined()
+    expect(resolved).toBe(false)
+
+    if (bootstrapOp === undefined) {
+      throw new Error("bootstrap op was never sent over the wire")
+    }
+    fake.emitFrame({ type: "result", id: bootstrapOp.id })
+    await pending
+    expect(resolved).toBe(true)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -389,9 +420,13 @@ describe("transport wire protocol", () => {
 
 describe("transport contract validators (supporting, not RED)", () => {
   test("TRANS-V1: config validation rejects incomplete configs", () => {
-    expect(() => validateTransportConfig(null)).toThrow()
-    expect(() => validateTransportConfig({ ...CONFIG, interpreter: "  " })).toThrow()
-    expect(() => validateTransportConfig({ ...CONFIG, env: { "": "x" } })).toThrow()
+    expect(() => validateTransportConfig(null)).toThrow(ContractRlmTransportContractError)
+    expect(() => validateTransportConfig({ ...CONFIG, interpreter: "  " })).toThrow(
+      "TRANS-V1 violation: transport config requires interpreter, cwd, artifactsDir, and env",
+    )
+    expect(() => validateTransportConfig({ ...CONFIG, env: { "": "x" } })).toThrow(
+      "TRANS-V1 violation: spawn env keys and values must be non-empty strings",
+    )
     expect(validateTransportConfig(CONFIG)).toEqual(CONFIG)
   })
 
@@ -470,7 +505,14 @@ describe("transport live kernel (real spawn)", () => {
     // Recoverable cleanup: move the work root to the system trash rather than
     // permanently deleting it (no rm).
     if (workRoot !== "") {
-      await Bun.spawn(["trash", workRoot], { stdout: "ignore", stderr: "ignore" }).exited
+      try {
+        const hasTrash = Bun.which("trash") !== null
+        if (hasTrash) {
+          await Bun.spawn(["trash", workRoot], { stdout: "ignore", stderr: "ignore" }).exited
+        } else {
+          fs.rmSync(workRoot, { recursive: true, force: true })
+        }
+      } catch {}
     }
   }, 120_000)
 
@@ -498,43 +540,84 @@ describe("transport live kernel (real spawn)", () => {
     const artifacts = join(workRoot, "art-ready")
     fs.mkdirSync(artifacts, { recursive: true })
     const transport = createTransport(liveConfig(artifacts))
-    const started = Date.now()
-    await transport.start()
-    expect(Date.now() - started).toBeLessThan(TRANS_READY_TIMEOUT_MS + 15_000)
-    expect(transport.alive()).toBe(true)
-    await transport.dispose()
+    try {
+      const started = Date.now()
+      await transport.start()
+      expect(Date.now() - started).toBeLessThan(TRANS_READY_TIMEOUT_MS + 15_000)
+      expect(transport.alive()).toBe(true)
+    } finally {
+      await transport.dispose()
+    }
   }, 60_000)
 
   test("POST-TRANS-2 live: cells execute with streams and error surfaces", async () => {
     const artifacts = join(workRoot, "art-exec")
     fs.mkdirSync(artifacts, { recursive: true })
     const transport = createTransport(liveConfig(artifacts))
-    await transport.start()
-    const ok = await transport.execute("e1", "print('hello rlm')")
-    expect(ok.code).toBe(0)
-    expect(ok.stdout).toContain("hello rlm")
-    const bad = await transport.execute("e2", "raise ValueError('boom')")
-    expect(bad.code).not.toBe(0)
-    expect(bad.errorEname).toBe("ValueError")
-    expect(bad.traceback ?? "").toContain("boom")
-    await transport.dispose()
+    try {
+      await transport.start()
+      const ok = await transport.execute("e1", "print('hello rlm')")
+      expect(ok.code).toBe(0)
+      expect(ok.stdout).toContain("hello rlm")
+      const bad = await transport.execute("e2", "raise ValueError('boom')")
+      expect(bad.code).not.toBe(0)
+      expect(bad.errorEname).toBe("ValueError")
+      expect(bad.traceback ?? "").toContain("boom")
+    } finally {
+      await transport.dispose()
+    }
   }, 60_000)
 
   test("POST-TRANS-3 live: interrupt aborts a running cell and the kernel stays usable", async () => {
+    // Self-contained: creates its own artifacts dir, marker file, and
+    // transport; tears down its own transport on every exit path so this
+    // test cannot pollute state for tests that run after it.
     const artifacts = join(workRoot, "art-intr")
     fs.mkdirSync(artifacts, { recursive: true })
     const transport = createTransport(liveConfig(artifacts))
-    await transport.start()
-    const sleeper = transport.execute("e1", "import time; time.sleep(30)")
-    sleeper.catch(() => undefined)
-    await Bun.sleep(300)
-    await transport.interrupt()
-    const interrupted = await sleeper
-    expect(interrupted.code).not.toBe(0)
-    const next = await transport.execute("e2", "1 + 1")
-    expect(next.code).toBe(0)
-    expect(next.result).toContain("2")
-    await transport.dispose()
+    const markerFile = join(artifacts, "started.marker")
+    try {
+      await transport.start()
+      // The cell writes a marker file as its very first statement, before
+      // sleeping. Polling for that marker is a deterministic signal that
+      // the runner has actually entered cell execution (past the point
+      // where an interrupt is attributable to THIS cell) — a fixed-delay
+      // sleep() is a race against CI scheduling variance: on a loaded
+      // runner the interrupt can arrive before the op is even dispatched,
+      // in which case it is correctly (by design) absorbed as an idle
+      // interrupt and the cell then runs to completion untouched.
+      const sleeper = transport.execute(
+        "e1",
+        `open(${JSON.stringify(markerFile)}, "w").close()
+import time
+time.sleep(30)`,
+      )
+      sleeper.catch(() => undefined)
+
+      const deadline = Date.now() + 10_000
+      while (!fs.existsSync(markerFile)) {
+        if (Date.now() > deadline) {
+          throw new Error(`cell did not signal start via ${markerFile} within 10s`)
+        }
+        await Bun.sleep(10)
+      }
+
+      await transport.interrupt()
+      const interrupted = await sleeper
+      expect(interrupted.code).not.toBe(0)
+      const next = await transport.execute("e2", "1 + 1")
+      expect(next.code).toBe(0)
+      expect(next.result).toContain("2")
+    } finally {
+      await transport.dispose()
+      if (fs.existsSync(markerFile)) {
+        // Best-effort marker cleanup: the whole workRoot is removed in
+        // afterAll regardless, so a failure here must never fail the test.
+        try {
+          fs.rmSync(markerFile, { force: true })
+        } catch {}
+      }
+    }
   }, 60_000)
 
   test("POST-TRANS-4 live: snapshot round-trips and a fresh process revives the namespace", async () => {
@@ -543,33 +626,139 @@ describe("transport live kernel (real spawn)", () => {
     const artifacts = join(workRoot, "art-snap")
     fs.mkdirSync(artifacts, { recursive: true })
     const first = createTransport(liveConfig(artifacts))
-    await first.start()
-    await first.execute("e1", "x = 42\nimport math")
-    const names = await first.snapshotNames()
-    expect(names).toContain("x")
-    const write = await first.writeSnapshot(names.filter(n => n === "x"), 256 * 1024 * 1024)
-    expect(write.bytes).toBeGreaterThan(0)
-    await first.dispose()
+    // Same suite-safety guarantee as POST-COMPRESS-1/RESTORE-1 live below:
+    // two real kernel processes, both torn down on every exit path so an
+    // assertion failure cannot leave a live runner poisoning later tests.
+    let second: RlmTransport | null = null
+    try {
+      await first.start()
+      await first.execute("e1", "x = 42\nimport math")
+      const names = await first.snapshotNames()
+      expect(names).toContain("x")
+      const write = await first.writeSnapshot(names.filter(n => n === "x"), 256 * 1024 * 1024)
+      expect(write.bytes).toBeGreaterThan(0)
+      await first.dispose()
 
-    const second = createTransport(liveConfig(artifacts))
-    await second.start()
-    const restored = await second.restoreSnapshot()
-    expect(restored).toContain("x")
-    const probe = await second.execute("e1", "print(x)")
-    expect(probe.stdout).toContain("42")
-    await second.dispose()
+      second = createTransport(liveConfig(artifacts))
+      await second.start()
+      const restored = await second.restoreSnapshot()
+      expect(restored).toContain("x")
+      const probe = await second.execute("e1", "print(x)")
+      expect(probe.stdout).toContain("42")
+    } finally {
+      try {
+        await first.dispose()
+      } finally {
+        if (second !== null) {
+          await second.dispose()
+        }
+      }
+    }
   }, 120_000)
 
   test("POST-TRANS-5 live: the runtime bootstrap succeeds in the managed venv", async () => {
     // Risk tier: HIGH — the bootstrap cell is the runtime admission gate;
-    // BASE_PACKAGES (ipykernel, rlm-runtime, dill) must import.
+    // ipykernel, dill, and rlm (the rlm-runtime package's import name) must
+    // import. The WIRE-tier test below proves bootstrap() genuinely performs
+    // the op round-trip (would catch a no-op regression); this live test
+    // proves the real runner's _bootstrap() succeeds against a real venv.
     const artifacts = join(workRoot, "art-boot")
     fs.mkdirSync(artifacts, { recursive: true })
     const transport = createTransport(liveConfig(artifacts))
-    await transport.start()
-    await transport.bootstrap()
-    const probe = await transport.execute("e1", `print(${JSON.stringify(BASE_PACKAGES[1])})`)
-    expect(probe.code).toBe(0)
-    await transport.dispose()
+    try {
+      await transport.start()
+      await transport.bootstrap()
+      const probe = await transport.execute("e1", "import ipykernel, dill, rlm; print('bootstrap_ok')")
+      expect(probe.code).toBe(0)
+      expect(probe.stdout).toContain("bootstrap_ok")
+    } finally {
+      await transport.dispose()
+    }
   }, 60_000)
+
+  test("POST-COMPRESS-1/POST-RESTORE-1 live: transparent stream compression round-trips with verified magic header and manifest", async () => {
+    /**
+     * CONTRACT TRACEABILITY:
+     * - Authority: requirements/contracts/rlm-dill-compression.contract.ts
+     * - Enforces: POST-COMPRESS-1, POST-RESTORE-1, POST-MANIFEST-1, SEQ-3, SEQ-4, IP-2, IP-3, IP-4, IP-5
+     * - Category: Live transport stream compression round-trip
+     */
+    const artifacts = join(workRoot, "art-dill-compress")
+    fs.mkdirSync(artifacts, { recursive: true })
+    const config = liveConfig(artifacts)
+    config.env.RLM_SNAPSHOT_COMPRESSION = "lzma"
+    const first = createTransport(config)
+    // Two real kernel processes are spawned across this test (first, then a
+    // fresh second on revival). Both are protected by try/finally so ANY
+    // assertion failure before their explicit dispose() calls still tears
+    // them down — an un-guarded live process left running after a failed
+    // assertion can poison every test that runs after it in the suite.
+    let second: RlmTransport | null = null
+    try {
+      await first.start()
+
+      // Populate large numerical array state in first session
+      await first.execute("e1", "import numpy as np; arr = np.arange(250000).reshape(500, 500); label = 'verified_compression'")
+      const names = await first.snapshotNames()
+      expect(names).toContain("arr")
+      expect(names).toContain("label")
+
+      // Write compressed snapshot
+      const writeResult = await first.writeSnapshot(names, 256 * 1024 * 1024)
+      expect(writeResult.bytes).toBeGreaterThan(0)
+      expect(writeResult.compression).toBe("lzma")
+      // Narrow via explicit guard rather than a non-null assertion: compressedBytes
+      // is optional on KernelSnapshotWriteResult, and a live LZMA write must always
+      // populate it — failing loudly here documents that invariant instead of
+      // silencing the checker with `!`.
+      if (writeResult.compressedBytes === undefined) {
+        throw new Error("writeResult.compressedBytes must be defined for a live lzma write")
+      }
+      expect(writeResult.uncompressedBytes).toBeGreaterThan(writeResult.compressedBytes)
+      expect(writeResult.compressionRatio).toBeGreaterThanOrEqual(50.0)
+      expect(writeResult.compressionDurationMs).toBeGreaterThan(0.0)
+
+      // Inspect on-disk binary snapshot file header
+      const snapshotFile = join(artifacts, "kernel-state.dill")
+      expect(fs.existsSync(snapshotFile)).toBe(true)
+      const fileBytes = fs.readFileSync(snapshotFile)
+
+      // Assert LZMA magic byte header: 0xFD 0x37 0x7A 0x58 0x5A 0x00
+      expect(fileBytes[0]).toBe(0xfd)
+      expect(fileBytes[1]).toBe(0x37)
+      expect(fileBytes[2]).toBe(0x7a)
+      expect(fileBytes[3]).toBe(0x58)
+      expect(fileBytes[4]).toBe(0x5a)
+      expect(fileBytes[5]).toBe(0x00)
+
+      // Inspect manifest JSON
+      const manifestFile = join(artifacts, "kernel-state.json")
+      expect(fs.existsSync(manifestFile)).toBe(true)
+      const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf-8"))
+      expect(manifest.compression).toBe("lzma")
+      expect(manifest.uncompressedBytes).toBeGreaterThan(manifest.compressedBytes)
+      expect(manifest.compressionRatio).toBeGreaterThanOrEqual(50.0)
+
+      // Revive in fresh transport process
+      const secondConfig = liveConfig(artifacts)
+      secondConfig.env.RLM_SNAPSHOT_COMPRESSION = "lzma"
+      second = createTransport(secondConfig)
+      await second.start()
+      const restored = await second.restoreSnapshot()
+      expect(restored).toContain("arr")
+      expect(restored).toContain("label")
+
+      const probe = await second.execute("e2", "print(f'{label}:{arr[10, 10]}')")
+      expect(probe.stdout).toContain("verified_compression:5010")
+    } finally {
+      try {
+        await first.dispose()
+      } finally {
+        if (second !== null) {
+          await second.dispose()
+        }
+      }
+    }
+  }, 120_000)
+
 })

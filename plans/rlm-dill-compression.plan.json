@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.0",
+  "feature_name": "rlm-dill-compression",
+  "manifest_path": "requirements/REQ-2026-RLM-DILL-COMPRESSION.md",
+  "manifest_hash": "sha256:f2fed9812b18f609eb9bcc281140e69d702f1c4f475d086791ea94ef5ff37e2f",
+  "created": "2026-08-22",
+  "last_updated": "2026-08-29",
+  "status": "ACTIVE",
+  "slices": [
+    {
+      "id": "SLICE-1",
+      "clauses_in_scope": [
+        "POST-COMPRESS-1",
+        "POST-RESTORE-1",
+        "POST-MANIFEST-1",
+        "POST-TIME-1",
+        "POST-SKIP-1",
+        "INV-COMPAT-1",
+        "INV-DETECT-1",
+        "INV-RATIO-1",
+        "INV-TIME-1",
+        "SEQ-1",
+        "SEQ-2",
+        "SEQ-3",
+        "SEQ-4",
+        "SEQ-5",
+        "ERRORS-1",
+        "ERRORS-2",
+        "ERRORS-3",
+        "ERRORS-4",
+        "IP-1",
+        "IP-2",
+        "IP-3",
+        "IP-4",
+        "IP-5"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [
+        "FORBIDDEN-1",
+        "FORBIDDEN-2",
+        "FORBIDDEN-3",
+        "FORBIDDEN-4"
+      ],
+      "status": "PENDING",
+      "depends_on": [],
+      "issue": "#15",
+      "pivot_note": "Transparent snapshot compression reduces on-disk footprint by >=50% with deterministic magic header auto-detection on restore."
+    }
+  ],
+  "pivot_guidance": [
+    "After SLICE-1 AUDIT: verify Gate 3 (CL12-E traceability), compression ratio bounds, and legacy uncompressed restore parity."
+  ],
+  "forgotten_invariants": [
+    "INV-COMPAT-1",
+    "INV-DETECT-1",
+    "INV-RATIO-1",
+    "INV-TIME-1",
+    "FORBIDDEN-1",
+    "FORBIDDEN-2",
+    "FORBIDDEN-3",
+    "FORBIDDEN-4"
+  ]
+}
