@@ -1031,14 +1031,12 @@ export class ProcessTerminal implements Terminal {
 				this.#osc99ResponseBuffer.length === 0
 			) {
 				if (this.#inputHandler) {
-					const input =
-						sequence === "\r" &&
-						process.platform === "darwin" &&
-						isLocalSessionEnv(Bun.env) &&
-						isNativeModifierPressed("shift")
-							? NATIVE_SHIFT_ENTER_SEQUENCE
-							: sequence;
-					this.#inputHandler(input);
+					// POST-4/POST-5: native Shift+Enter recovery now happens in
+					// #stdinDataHandler, before raw stdin data reaches
+					// StdinBuffer.process() (see #setupStdinBuffer). By the time a
+					// sequence reaches this handler, the substitution is already
+					// applied — forward it unchanged.
+					this.#inputHandler(sequence);
 				}
 				return;
 			}
@@ -1303,7 +1301,21 @@ export class ProcessTerminal implements Terminal {
 
 		// Handler that pipes stdin data through the buffer
 		this.#stdinDataHandler = (data: string) => {
-			this.#stdinBuffer!.process(data);
+			// POST-4: substitute NATIVE_SHIFT_ENTER_SEQUENCE for a bare `\r`
+			// fast-path chunk before it reaches StdinBuffer.process(), so the
+			// raw-paste classification window (RAW_PASTE_CLASSIFICATION_TIMEOUT_MS)
+			// never delays the native Shift+Enter check past the live keypress.
+			// POST-5/FORBIDDEN-1: every other raw chunk — ordinary bare `\r`
+			// without shift held, and any escape-prefixed sequence such as
+			// legacy Option+Enter (`\x1b\r`) — flows into StdinBuffer unchanged.
+			const input =
+				data === "\r" &&
+				process.platform === "darwin" &&
+				isLocalSessionEnv(Bun.env) &&
+				isNativeModifierPressed("shift")
+					? NATIVE_SHIFT_ENTER_SEQUENCE
+					: data;
+			this.#stdinBuffer!.process(input);
 		};
 	}
 
