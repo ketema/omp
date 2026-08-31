@@ -26,10 +26,14 @@ const sshKeys = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] as const;
 const savedSshEnv = Object.fromEntries(sshKeys.map(key => [key, process.env[key]]));
 
 type NativeModifiers = typeof import("@oh-my-pi/pi-tui/native-modifiers");
-type ProcessTerminalConstructor = typeof import("@oh-my-pi/pi-tui/terminal")["ProcessTerminal"];
+type NativeModifiersTestHooks = typeof import("@oh-my-pi/pi-tui/native-modifiers-internal");
 
 function nativeModifiers(): Promise<NativeModifiers> {
 	return import("@oh-my-pi/pi-tui/native-modifiers");
+}
+
+function nativeModifiersTestHooks(): Promise<NativeModifiersTestHooks> {
+	return import("@oh-my-pi/pi-tui/native-modifiers-internal");
 }
 
 async function processTerminal(): Promise<ProcessTerminalConstructor> {
@@ -161,7 +165,7 @@ beforeEach(async () => {
 	setPlatform("darwin");
 	clearSshEnvironment();
 	resetFakeReader();
-	const { __setCombinedSessionFlagsReaderForTest } = await nativeModifiers();
+	const { __setCombinedSessionFlagsReaderForTest } = await nativeModifiersTestHooks();
 	__setCombinedSessionFlagsReaderForTest(() => fakeReaderState.flags);
 });
 
@@ -335,8 +339,9 @@ describe("native modifier API", () => {
 		 * Mock Contract: native-modifier-detection.contract.ts PROVIDER-1, ERRORS-1; Double type: none —
 		 * this exercises the real dlopen() call against a deliberately invalid path, not an injected outcome.
 		 */
-		const { isNativeModifierPressed, __setCombinedSessionFlagsReaderForTest, __setCoreGraphicsFrameworkPathForTest } =
-			await nativeModifiers();
+		const { isNativeModifierPressed } = await nativeModifiers();
+		const { __setCombinedSessionFlagsReaderForTest, __setCoreGraphicsFrameworkPathForTest } =
+			await nativeModifiersTestHooks();
 		__setCoreGraphicsFrameworkPathForTest("/nonexistent/CoreGraphics.framework/CoreGraphics-does-not-exist");
 		__setCombinedSessionFlagsReaderForTest(undefined);
 		let result: boolean | undefined;
@@ -381,7 +386,8 @@ describe("native modifier API", () => {
 		 * genuinely forcing a real dlopen failure would require FFI-level mocking,
 		 * which this suite intentionally does not reintroduce.
 		 */
-		const { isNativeModifierPressed, __setCombinedSessionFlagsReaderForTest } = await nativeModifiers();
+		const { isNativeModifierPressed } = await nativeModifiers();
+		const { __setCombinedSessionFlagsReaderForTest } = await nativeModifiersTestHooks();
 		__setCombinedSessionFlagsReaderForTest(undefined);
 		let result: boolean | undefined;
 		let thrown: unknown;
