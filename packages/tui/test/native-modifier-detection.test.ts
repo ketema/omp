@@ -27,6 +27,7 @@ const savedSshEnv = Object.fromEntries(sshKeys.map(key => [key, process.env[key]
 
 type NativeModifiers = typeof import("@oh-my-pi/pi-tui/native-modifiers");
 type NativeModifiersTestHooks = typeof import("@oh-my-pi/pi-tui/native-modifiers-internal");
+type ProcessTerminalConstructor = typeof import("@oh-my-pi/pi-tui/terminal")["ProcessTerminal"];
 
 function nativeModifiers(): Promise<NativeModifiers> {
 	return import("@oh-my-pi/pi-tui/native-modifiers");
