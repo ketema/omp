@@ -430,7 +430,8 @@ describe("native modifier API", () => {
 		} catch (error) {
 			thrown = error;
 		}
-		expect(thrown).toBeInstanceOf(Error);
+		expect(thrown).toBeDefined();
+		expect(String(thrown)).toContain("native-modifiers-internal");
 	});
 
 	it("identifies local and SSH-marked environments without mutating their input", async () => {
