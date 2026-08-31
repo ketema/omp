@@ -1,4 +1,4 @@
-import { dlopen, FFIType } from "bun:ffi";
+import { getCombinedSessionFlagsReader } from "./native-modifiers-internal";
 
 /** CGEventFlags bit for each modifier, per CoreGraphics/CGEventTypes.h. */
 export const MODIFIER_FLAG_MASKS = {
@@ -8,9 +8,6 @@ export const MODIFIER_FLAG_MASKS = {
 	command: 0x00100000,
 	fn: 0x00800000,
 } as const;
-
-/** CGEventSourceStateID for the combined local+remote session state. */
-const CG_EVENT_SOURCE_STATE_COMBINED_SESSION_STATE = 0;
 
 /** Kitty keyboard protocol CSI-u sequence synthesized for a recovered Shift+Enter. */
 export const NATIVE_SHIFT_ENTER_SEQUENCE = "\x1b[13;2u";
@@ -33,24 +30,6 @@ export function isLocalSessionEnv(env: Record<string, string | undefined>): bool
 	return !env.SSH_CONNECTION && !env.SSH_CLIENT && !env.SSH_TTY;
 }
 
-let coreGraphicsFrameworkPath = "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics";
-let combinedSessionFlagsReader: (() => number) | null | undefined;
-
-function getCombinedSessionFlagsReader(): (() => number) | null {
-	if (combinedSessionFlagsReader !== undefined) return combinedSessionFlagsReader;
-	try {
-		const coreGraphics = dlopen(coreGraphicsFrameworkPath, {
-			CGEventSourceFlagsState: { args: [FFIType.i32], returns: FFIType.u64 },
-		});
-		combinedSessionFlagsReader = () =>
-			Number(coreGraphics.symbols.CGEventSourceFlagsState(CG_EVENT_SOURCE_STATE_COMBINED_SESSION_STATE));
-	} catch {
-		// bun:ffi/CoreGraphics unavailable; native modifier recovery remains non-fatal.
-		combinedSessionFlagsReader = null;
-	}
-	return combinedSessionFlagsReader;
-}
-
 /** POST-2, POST-3, INV-1, ERRORS-1: Query CoreGraphics without exposing FFI failure. */
 export function isNativeModifierPressed(key: ModifierKey): boolean {
 	if (process.platform !== "darwin") return false;
@@ -60,26 +39,4 @@ export function isNativeModifierPressed(key: ModifierKey): boolean {
 	} catch {
 		return false;
 	}
-}
-
-/**
- * Test-only: force the CoreGraphics flags reader to a specific function, or to
- * `null` to simulate an unavailable framework. Pass `undefined` to reset the
- * lazy cache so the next call re-attempts the real dlopen. Not part of the
- * audited behavioral contract — pure test infrastructure.
- */
-export function __setCombinedSessionFlagsReaderForTest(reader: (() => number) | null | undefined): void {
-	combinedSessionFlagsReader = reader;
-}
-
-/**
- * Test-only: point the CoreGraphics dlopen call at an alternate path — a
- * genuinely nonexistent path forces the real dlopen() call to throw and
- * exercises the actual catch block, rather than injecting its outcome via
- * __setCombinedSessionFlagsReaderForTest. Pass `undefined` to restore the
- * real framework path. Not part of the audited behavioral contract — pure
- * test infrastructure.
- */
-export function __setCoreGraphicsFrameworkPathForTest(path: string | undefined): void {
-	coreGraphicsFrameworkPath = path ?? "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics";
 }
