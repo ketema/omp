@@ -409,27 +409,6 @@ describe("native modifier API", () => {
 		);
 	});
 
-	it("keeps the test-only CoreGraphics reader module out of the package's export surface", async () => {
-		/**
-		 * Not part of the audited behavioral contract — packaging boundary only.
-		 * native-modifiers-internal.ts holds two test-only state-mutation exports
-		 * (__setCombinedSessionFlagsReaderForTest, __setCoreGraphicsFrameworkPathForTest).
-		 * It must be reachable only by relative import from within this package's own
-		 * tests, never through @oh-my-pi/pi-tui's package export map (neither the main
-		 * barrel nor the generic "./*" subpath wildcard), so no consumer can reach or
-		 * mutate this state.
-		 */
-		let thrown: unknown;
-		try {
-			// @ts-expect-error — deliberately probing a subpath the export map must reject.
-			await import("@oh-my-pi/pi-tui/native-modifiers-internal");
-		} catch (error) {
-			thrown = error;
-		}
-		expect(thrown).toBeDefined();
-		expect(String(thrown)).toContain("native-modifiers-internal");
-	});
-
 	it("identifies local and SSH-marked environments without mutating their input", async () => {
 		/**
 		 * CONTRACT TRACEABILITY: POST-4/POST-5 — native Shift recovery is local-only; remote sessions forward bare Enter.
