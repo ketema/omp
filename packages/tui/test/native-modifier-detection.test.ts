@@ -25,19 +25,15 @@ const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 const sshKeys = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] as const;
 const savedSshEnv = Object.fromEntries(sshKeys.map(key => [key, process.env[key]]));
 
-type NativeModifiers = typeof import("@oh-my-pi/pi-tui/native-modifiers");
-type NativeModifiersTestHooks = typeof import("../src/native-modifiers-internal");
-type ProcessTerminalConstructor = typeof import("@oh-my-pi/pi-tui/terminal")["ProcessTerminal"];
-
-function nativeModifiers(): Promise<NativeModifiers> {
+function nativeModifiers() {
 	return import("@oh-my-pi/pi-tui/native-modifiers");
 }
 
-function nativeModifiersTestHooks(): Promise<NativeModifiersTestHooks> {
+function nativeModifiersTestHooks() {
 	return import("../src/native-modifiers-internal");
 }
 
-async function processTerminal(): Promise<ProcessTerminalConstructor> {
+async function processTerminal() {
 	return (await import("@oh-my-pi/pi-tui/terminal")).ProcessTerminal;
 }
 
