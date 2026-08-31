@@ -1,7 +1,112 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { $which } from "@oh-my-pi/pi-utils";
+
+export const DISABLED_ASKPASS_PATH = "/usr/bin/false" as const;
+export const YUBI_ASKPASS_PATH = "$HOME/bin/yubi-askpass" as const;
+export const SSH_ASKPASS_REQUIRE_VALUE = "force" as const;
+export const SSH_ASKPASS_DISPLAY_VALUE = "ssh-askpass" as const;
+
+export type AskpassSource = "parent" | "fallback" | "disabled";
+
+export interface AskpassCandidate {
+	readonly path: string;
+	readonly executable: boolean;
+}
+
+export interface AskpassResolutionInput {
+	readonly parent: AskpassCandidate | undefined;
+	readonly fallbacks: readonly AskpassCandidate[];
+}
+
+export interface AskpassResolution {
+	readonly path: string;
+	readonly source: AskpassSource;
+}
+
+export class InvalidAskpassCandidateError extends Error {
+	constructor(message: string) {
+		super(`PRE-AR-1 violation: ${message}`);
+		this.name = "InvalidAskpassCandidateError";
+	}
+}
+
+export const NATIVE_ASKPASS_ENVIRONMENT = (askpassPath: string) =>
+	Object.freeze({
+		SSH_ASKPASS: askpassPath,
+		SSH_ASKPASS_REQUIRE: SSH_ASKPASS_REQUIRE_VALUE,
+		DISPLAY: SSH_ASKPASS_DISPLAY_VALUE,
+	});
 
 /** Portable command that rejects credential prompts without assuming an FHS layout. */
 export const REJECT_PROMPT_COMMAND = $which("false") ?? "false";
+
+function isExecutableAskpassHelper(candidate: string | undefined): candidate is string {
+	if (typeof candidate !== "string" || candidate.trim().length === 0 || !path.isAbsolute(candidate)) return false;
+	if (candidate === REJECT_PROMPT_COMMAND || ["false", "true"].includes(path.basename(candidate))) return false;
+	try {
+		fs.accessSync(candidate, fs.constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function isUsableAskpassCandidate(
+	candidate: AskpassCandidate | undefined,
+): candidate is AskpassCandidate {
+	return (
+		candidate !== undefined &&
+		candidate.path !== DISABLED_ASKPASS_PATH &&
+		candidate.path !== "false" &&
+		candidate.path !== "true" &&
+		candidate.executable
+	);
+}
+
+function validateAskpassCandidate(candidate: AskpassCandidate, source: AskpassSource): void {
+	if (typeof candidate.path !== "string" || candidate.path.trim().length === 0 || typeof candidate.executable !== "boolean") {
+		throw new InvalidAskpassCandidateError(`${source} candidate must have a non-empty path and executable flag.`);
+	}
+}
+
+/** Resolves an executable parent helper before executable generic fallbacks. */
+export function resolveAskpass(input: AskpassResolutionInput): AskpassResolution {
+	if (input.parent !== undefined) validateAskpassCandidate(input.parent, "parent");
+	for (const fallback of input.fallbacks) validateAskpassCandidate(fallback, "fallback");
+
+	if (isUsableAskpassCandidate(input.parent)) return { path: input.parent.path, source: "parent" };
+	const fallback = input.fallbacks.find(isUsableAskpassCandidate);
+	return fallback === undefined
+		? { path: DISABLED_ASKPASS_PATH, source: "disabled" }
+		: { path: fallback.path, source: "fallback" };
+}
+
+/** Resolves the parent helper before known executable generic fallbacks. */
+export function resolveAskpassPath(baseEnv: Record<string, string | undefined> = Bun.env): string {
+	const parentAskpass = baseEnv.SSH_ASKPASS;
+	const fallback = $which("ssh-askpass", { PATH: baseEnv.PATH }) ?? undefined;
+	return resolveAskpass({
+		parent:
+			parentAskpass === undefined
+				? undefined
+				: { path: parentAskpass, executable: isExecutableAskpassHelper(parentAskpass) },
+		fallbacks:
+			fallback === undefined
+				? []
+				: [{ path: fallback, executable: isExecutableAskpassHelper(fallback) }],
+	}).path;
+}
+
+/** Resolved askpass path plus native OpenSSH values when a real helper resolves. */
+export function resolveAskpassEnvironment(
+	baseEnv: Record<string, string | undefined> = Bun.env,
+): Readonly<Record<string, string>> {
+	const askpassPath = resolveAskpassPath(baseEnv);
+	return askpassPath === DISABLED_ASKPASS_PATH
+		? Object.freeze({ SSH_ASKPASS: DISABLED_ASKPASS_PATH })
+		: NATIVE_ASKPASS_ENVIRONMENT(askpassPath);
+}
 
 export const NON_INTERACTIVE_ENV: Readonly<Record<string, string>> = {
 	// Disable pagers so commands don't block on interactive views.
@@ -116,13 +221,14 @@ export function buildNonInteractiveEnv(
 	// `PI_BASH_NO_CI` (and its legacy alias) opts out of the automatic `CI=true`
 	// injection. Mirrors the session-env gate in `procmgr.ts` so the opt-out
 	// reaches the per-command env, which otherwise overrides the session value.
+	const askpassEnv = resolveAskpassEnvironment({ ...baseEnv, ...overrides });
 	const base =
 		baseEnv.PI_BASH_NO_CI || baseEnv.CLAUDE_BASH_NO_CI ? withoutCI(NON_INTERACTIVE_ENV) : NON_INTERACTIVE_ENV;
 	if (platform !== "win32") {
-		return overrides ? { ...base, ...overrides } : base;
+		return { ...base, ...overrides, ...askpassEnv };
 	}
 
-	const env: Record<string, string> = { ...base };
+	const env: Record<string, string> = { ...base, ...overrides, ...askpassEnv };
 	for (const group of WINDOWS_UTF8_ENV_DEFAULT_GROUPS) {
 		if (hasEnvGroupValue(baseEnv, group, platform) || hasEnvGroupValue(overrides, group, platform)) {
 			continue;
@@ -131,5 +237,5 @@ export function buildNonInteractiveEnv(
 			env[key] = value;
 		}
 	}
-	return overrides ? { ...env, ...overrides } : env;
+	return env;
 }

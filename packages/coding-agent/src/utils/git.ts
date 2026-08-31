@@ -10,7 +10,7 @@ import {
 	parseNumstat,
 } from "../commit/git/diff";
 import type { FileDiff, FileHunks, NumstatEntry } from "../commit/types";
-import { REJECT_PROMPT_COMMAND } from "../exec/non-interactive-env";
+import { REJECT_PROMPT_COMMAND, resolveAskpassEnvironment } from "../exec/non-interactive-env";
 import { ToolAbortError, ToolError, throwIfAborted } from "../tools/tool-errors";
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -447,15 +447,16 @@ function buildNonInteractiveEnv(
 }
 
 function buildGitEnv(overrides?: Record<string, string | undefined>): Record<string, string | undefined> {
-	return buildNonInteractiveEnv(
-		{
-			...process.env,
-			GIT_OPTIONAL_LOCKS: "0",
-			...AMBIENT_GIT_ENV,
-			...overrides,
-		},
-		GIT_NON_INTERACTIVE_ENV,
-	);
+	const env = {
+		...process.env,
+		GIT_OPTIONAL_LOCKS: "0",
+		...AMBIENT_GIT_ENV,
+		...overrides,
+	};
+	return buildNonInteractiveEnv(env, {
+		...GIT_NON_INTERACTIVE_ENV,
+		...resolveAskpassEnvironment(env),
+	});
 }
 
 function buildGhEnv(): Record<string, string | undefined> {

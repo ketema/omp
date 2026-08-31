@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+  "feature_name": "omp-native-ssh-askpass-restoration",
+  "manifest_path": "requirements/REQ-2026-OMP-SSH-ASKPASS-RESTORATION.md",
+  "manifest_hash": "sha256:1f996f2648f1061d759d093e98d2bead34d3b457b59fcbc773d46fa3ff2fdf87",
+  "created": "2026-08-25",
+  "last_updated": "2026-08-25",
+  "status": "ACTIVE",
+  "slices": [
+    {
+      "id": "SLICE-1",
+      "clauses_in_scope": [
+        "PRE-AR-1",
+        "POST-AR-1",
+        "POST-AR-2",
+        "POST-AR-3",
+        "SEQ-AR-2",
+        "SEQ-AR-3",
+        "ERRORS-AR-2"
+      ],
+      "clauses_deferred": [
+        "POST-AR-4",
+        "SEQ-AR-1",
+        "SEQ-AR-4",
+        "ERRORS-AR-1"
+      ],
+      "negative_constraints": [
+        "FORBIDDEN-AR-1",
+        "FORBIDDEN-AR-2"
+      ],
+      "status": "CONTRACT_WRITTEN",
+      "depends_on": [],
+      "issue": "TODO",
+      "pivot_note": "The restored resolver is incomplete until the LaunchAgent supplies Yubi Askpass and a real FIDO transport validates the native notification lifecycle."
+    },
+    {
+      "id": "SLICE-2",
+      "clauses_in_scope": [
+        "POST-AR-4",
+        "SEQ-AR-1",
+        "SEQ-AR-4",
+        "ERRORS-AR-1"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [
+        "FORBIDDEN-AR-3"
+      ],
+      "status": "PENDING",
+      "depends_on": [
+        "SLICE-1"
+      ],
+      "issue": "TODO",
+      "pivot_note": "The operational environment is incomplete until the user observes the audible cue before generic visual feedback on a selected FIDO key."
+    }
+  ],
+  "pivot_guidance": [
+    "Use c430acd792 as behavioral evidence only; re-derive the source delta from the committed contract and limit it to packages/coding-agent/src/exec/non-interactive-env.ts plus packages/coding-agent/src/utils/git.ts.",
+    "RED tests in packages/coding-agent/test/non-interactive-env.test.ts and packages/coding-agent/test/utils/git-clone.test.ts must build isolated environment maps; ambient SSH_ASKPASS, DISPLAY, and SSH_ASKPASS_PROMPT are forbidden test inputs.",
+    "The shared resolution order is executable absolute parent helper, then executable generic fallback, then /usr/bin/false; Bash and internal Git must share that result.",
+    "Implement no SSH wrapper, Git hook, core.sshCommand override, key-cycling logic, custom security-key provider, or identity/key metadata logging.",
+    "Commit the genuine RED checkpoint with a body line exactly STATUS: RED COMPLETE before requesting fresh GREEN approval.",
+    "Before LaunchAgent changes, record its existing load state and exported values; rollback restores the prior LaunchAgent configuration and reloads its GUI-domain environment without touching untracked kernel-state files.",
+    "The macOS LaunchAgent is machine-specific and untracked; after OMP, OpenSSH, or Homebrew upgrades, revalidate its three exported values and repeat the manual FIDO lifecycle checklist.",
+    "Live execution requires user observation that a non-FIDO identity produces no YubiKey cue and a selected FIDO identity starts the audible cue before generic visual notification or PIN UI."
+  ],
+  "forgotten_invariants": [
+    "FORBIDDEN-AR-1",
+    "FORBIDDEN-AR-2",
+    "FORBIDDEN-AR-3",
+    "ERRORS-AR-1"
+  ]
+}
