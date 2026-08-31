@@ -56,7 +56,6 @@
       "types": "./src/index.ts",
       "import": "./src/index.ts"
     },
-    "./native-modifiers-internal": null,
     "./*": {
       "types": "./src/*.ts",
       "import": "./src/*.ts"
