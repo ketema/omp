@@ -5,9 +5,9 @@ import {
 	decodeModifierFlags as decodeContractModifierFlags,
 	isLocalSessionEnv as isContractLocalSessionEnv,
 	MODIFIER_FLAG_MASKS,
-	NATIVE_SHIFT_ENTER_SEQUENCE,
 	type ModifierFlagsState,
 	type ModifierKey,
+	NATIVE_SHIFT_ENTER_SEQUENCE,
 } from "../../../requirements/contracts/native-modifier-detection.contract";
 
 /**
@@ -26,7 +26,7 @@ const sshKeys = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] as const;
 const savedSshEnv = Object.fromEntries(sshKeys.map(key => [key, process.env[key]]));
 
 type NativeModifiers = typeof import("@oh-my-pi/pi-tui/native-modifiers");
-type ProcessTerminalConstructor = (typeof import("@oh-my-pi/pi-tui/terminal"))["ProcessTerminal"];
+type ProcessTerminalConstructor = typeof import("@oh-my-pi/pi-tui/terminal")["ProcessTerminal"];
 
 function nativeModifiers(): Promise<NativeModifiers> {
 	return import("@oh-my-pi/pi-tui/native-modifiers");
@@ -60,13 +60,7 @@ function resetFakeReader(flags = 0): void {
 	fakeReaderState.flags = flags;
 }
 
-function failure(
-	testName: string,
-	clauseId: string,
-	expected: unknown,
-	actual: unknown,
-	guidance: string,
-): string {
+function failure(testName: string, clauseId: string, expected: unknown, actual: unknown, guidance: string): string {
 	return [
 		`1. WHAT: ${testName} FAILED`,
 		`2. WHY: ${clauseId} violation - ${CONTRACT_NATIVE_MODIFIER_DETECTION[clauseId as keyof typeof CONTRACT_NATIVE_MODIFIER_DETECTION].description}`,
@@ -188,9 +182,27 @@ describe("native modifier API", () => {
 		const expected: ModifierFlagsState = { shift: false, control: false, option: false, command: false, fn: false };
 		const irrelevantBits = 0x01000081;
 
-		assertExact("decodeModifierFlags zero flags", "POST-1", decodeModifierFlags(0), expected, "Report no modifier as pressed when no defined modifier bit is present.");
-		assertExact("decodeModifierFlags irrelevant flags", "POST-1", decodeModifierFlags(irrelevantBits), expected, "Ignore raw event bits outside the five contracted modifier masks.");
-		assertExact("decodeModifierFlags contract bridge for irrelevant flags", "POST-1", decodeModifierFlags(irrelevantBits), decodeContractModifierFlags(irrelevantBits), "Match the contract authority's deterministic bitmask interpretation.");
+		assertExact(
+			"decodeModifierFlags zero flags",
+			"POST-1",
+			decodeModifierFlags(0),
+			expected,
+			"Report no modifier as pressed when no defined modifier bit is present.",
+		);
+		assertExact(
+			"decodeModifierFlags irrelevant flags",
+			"POST-1",
+			decodeModifierFlags(irrelevantBits),
+			expected,
+			"Ignore raw event bits outside the five contracted modifier masks.",
+		);
+		assertExact(
+			"decodeModifierFlags contract bridge for irrelevant flags",
+			"POST-1",
+			decodeModifierFlags(irrelevantBits),
+			decodeContractModifierFlags(irrelevantBits),
+			"Match the contract authority's deterministic bitmask interpretation.",
+		);
 	});
 
 	it("reports each modifier when its exact CGEventFlags bit is set alone", async () => {
@@ -209,8 +221,20 @@ describe("native modifier API", () => {
 				command: key === "command",
 				fn: key === "fn",
 			};
-			assertExact(`decodeModifierFlags ${key} bit`, "POST-1", decodeModifierFlags(MODIFIER_FLAG_MASKS[key]), expected, "Set only the ModifierKey whose exact CGEventFlags bit is present.");
-			assertExact(`MODIFIER_FLAG_MASKS ${key} contract bridge`, "POST-1", implementationMasks[key], MODIFIER_FLAG_MASKS[key], "Export the exact CoreGraphics mask specified by the contract.");
+			assertExact(
+				`decodeModifierFlags ${key} bit`,
+				"POST-1",
+				decodeModifierFlags(MODIFIER_FLAG_MASKS[key]),
+				expected,
+				"Set only the ModifierKey whose exact CGEventFlags bit is present.",
+			);
+			assertExact(
+				`MODIFIER_FLAG_MASKS ${key} contract bridge`,
+				"POST-1",
+				implementationMasks[key],
+				MODIFIER_FLAG_MASKS[key],
+				"Export the exact CoreGraphics mask specified by the contract.",
+			);
 		}
 	});
 
@@ -224,7 +248,13 @@ describe("native modifier API", () => {
 		const { decodeModifierFlags } = await nativeModifiers();
 		const allModifierBits = Object.values(MODIFIER_FLAG_MASKS).reduce((bits, mask) => bits | mask, 0);
 		const expected: ModifierFlagsState = { shift: true, control: true, option: true, command: true, fn: true };
-		assertExact("decodeModifierFlags all modifier bits", "POST-1", decodeModifierFlags(allModifierBits), expected, "Retain every independently set modifier in a combined CGEventFlags value.");
+		assertExact(
+			"decodeModifierFlags all modifier bits",
+			"POST-1",
+			decodeModifierFlags(allModifierBits),
+			expected,
+			"Retain every independently set modifier in a combined CGEventFlags value.",
+		);
 	});
 
 	it("reads the combined session flags and distinguishes pressed from unpressed modifiers on darwin", async () => {
@@ -237,12 +267,36 @@ describe("native modifier API", () => {
 		 */
 		fakeReaderState.flags = MODIFIER_FLAG_MASKS.shift | MODIFIER_FLAG_MASKS.command;
 		const { isNativeModifierPressed } = await nativeModifiers();
-		assertExact("isNativeModifierPressed shift", "POST-2", isNativeModifierPressed("shift"), true, "Return true exactly when the queried modifier bit is set in the current native state.");
-		assertExact("isNativeModifierPressed command", "POST-2", isNativeModifierPressed("command"), true, "Return true exactly when the queried modifier bit is set in the current native state.");
-		assertExact("isNativeModifierPressed control", "POST-2", isNativeModifierPressed("control"), false, "Return false when a different modifier bit is set.");
+		assertExact(
+			"isNativeModifierPressed shift",
+			"POST-2",
+			isNativeModifierPressed("shift"),
+			true,
+			"Return true exactly when the queried modifier bit is set in the current native state.",
+		);
+		assertExact(
+			"isNativeModifierPressed command",
+			"POST-2",
+			isNativeModifierPressed("command"),
+			true,
+			"Return true exactly when the queried modifier bit is set in the current native state.",
+		);
+		assertExact(
+			"isNativeModifierPressed control",
+			"POST-2",
+			isNativeModifierPressed("control"),
+			false,
+			"Return false when a different modifier bit is set.",
+		);
 		fakeReaderState.flags = Object.values(MODIFIER_FLAG_MASKS).reduce((bits, mask) => bits | mask, 0);
 		for (const key of Object.keys(MODIFIER_FLAG_MASKS) as ModifierKey[]) {
-			assertExact(`isNativeModifierPressed ${key} with all bits set`, "POST-2", isNativeModifierPressed(key), true, "Return true for every ModifierKey whose current native bit is set.");
+			assertExact(
+				`isNativeModifierPressed ${key} with all bits set`,
+				"POST-2",
+				isNativeModifierPressed(key),
+				true,
+				"Return true for every ModifierKey whose current native bit is set.",
+			);
 		}
 	});
 
@@ -259,7 +313,13 @@ describe("native modifier API", () => {
 			setPlatform(platform);
 			fakeReaderState.flags = Object.values(MODIFIER_FLAG_MASKS).reduce((bits, mask) => bits | mask, 0);
 			for (const key of Object.keys(MODIFIER_FLAG_MASKS) as ModifierKey[]) {
-				assertExact(`isNativeModifierPressed ${key} on ${platform}`, "POST-3", isNativeModifierPressed(key), false, "Return false without treating a CoreGraphics result as available off macOS.");
+				assertExact(
+					`isNativeModifierPressed ${key} on ${platform}`,
+					"POST-3",
+					isNativeModifierPressed(key),
+					false,
+					"Return false without treating a CoreGraphics result as available off macOS.",
+				);
 			}
 		}
 	});
@@ -275,7 +335,8 @@ describe("native modifier API", () => {
 		 * Mock Contract: native-modifier-detection.contract.ts PROVIDER-1, ERRORS-1; Double type: none —
 		 * this exercises the real dlopen() call against a deliberately invalid path, not an injected outcome.
 		 */
-		const { isNativeModifierPressed, __setCombinedSessionFlagsReaderForTest, __setCoreGraphicsFrameworkPathForTest } = await nativeModifiers();
+		const { isNativeModifierPressed, __setCombinedSessionFlagsReaderForTest, __setCoreGraphicsFrameworkPathForTest } =
+			await nativeModifiers();
 		__setCoreGraphicsFrameworkPathForTest("/nonexistent/CoreGraphics.framework/CoreGraphics-does-not-exist");
 		__setCombinedSessionFlagsReaderForTest(undefined);
 		let result: boolean | undefined;
@@ -286,8 +347,20 @@ describe("native modifier API", () => {
 			thrown = error;
 		}
 		__setCoreGraphicsFrameworkPathForTest(undefined);
-		assertExact("isNativeModifierPressed genuine dlopen failure does not throw", "INV-1", thrown, undefined, "Contain native-query failures so input dispatch continues.");
-		assertExact("isNativeModifierPressed genuine dlopen failure result", "ERRORS-1", result, false, "Degrade unavailable CoreGraphics state to an unpressed modifier.");
+		assertExact(
+			"isNativeModifierPressed genuine dlopen failure does not throw",
+			"INV-1",
+			thrown,
+			undefined,
+			"Contain native-query failures so input dispatch continues.",
+		);
+		assertExact(
+			"isNativeModifierPressed genuine dlopen failure result",
+			"ERRORS-1",
+			result,
+			false,
+			"Degrade unavailable CoreGraphics state to an unpressed modifier.",
+		);
 	});
 
 	it("exercises the real CoreGraphics dlopen path when the test seam is reset", async () => {
@@ -317,8 +390,20 @@ describe("native modifier API", () => {
 		} catch (error) {
 			thrown = error;
 		}
-		assertExact("isNativeModifierPressed real dlopen path does not throw", "INV-2", thrown, undefined, "The genuine CoreGraphics dlopen and closure-construction path must not throw on a supported platform.");
-		assertExact("isNativeModifierPressed real dlopen path returns a boolean", "INV-2", typeof result, "boolean", "The genuine CoreGraphics read must resolve to a boolean modifier state, not undefined or a thrown error.");
+		assertExact(
+			"isNativeModifierPressed real dlopen path does not throw",
+			"INV-2",
+			thrown,
+			undefined,
+			"The genuine CoreGraphics dlopen and closure-construction path must not throw on a supported platform.",
+		);
+		assertExact(
+			"isNativeModifierPressed real dlopen path returns a boolean",
+			"INV-2",
+			typeof result,
+			"boolean",
+			"The genuine CoreGraphics read must resolve to a boolean modifier state, not undefined or a thrown error.",
+		);
 	});
 
 	it("identifies local and SSH-marked environments without mutating their input", async () => {
@@ -330,11 +415,41 @@ describe("native modifier API", () => {
 		 */
 		const { isLocalSessionEnv } = await nativeModifiers();
 		const localEnvironment = { TERM: "xterm-256color" };
-		assertExact("isLocalSessionEnv local environment", "POST-4", isLocalSessionEnv(localEnvironment), true, "Treat an environment without SSH markers as local.");
-		assertExact("isLocalSessionEnv SSH_CONNECTION", "POST-5", isLocalSessionEnv({ SSH_CONNECTION: "client server" }), false, "Treat an SSH connection marker as remote.");
-		assertExact("isLocalSessionEnv SSH_CLIENT", "POST-5", isLocalSessionEnv({ SSH_CLIENT: "client" }), false, "Treat an SSH client marker as remote.");
-		assertExact("isLocalSessionEnv SSH_TTY", "POST-5", isLocalSessionEnv({ SSH_TTY: "/dev/ttys001" }), false, "Treat an SSH TTY marker as remote.");
-		assertExact("isLocalSessionEnv contract bridge", "POST-4", isLocalSessionEnv(localEnvironment), isContractLocalSessionEnv(localEnvironment), "Match the contract authority's environment predicate.");
+		assertExact(
+			"isLocalSessionEnv local environment",
+			"POST-4",
+			isLocalSessionEnv(localEnvironment),
+			true,
+			"Treat an environment without SSH markers as local.",
+		);
+		assertExact(
+			"isLocalSessionEnv SSH_CONNECTION",
+			"POST-5",
+			isLocalSessionEnv({ SSH_CONNECTION: "client server" }),
+			false,
+			"Treat an SSH connection marker as remote.",
+		);
+		assertExact(
+			"isLocalSessionEnv SSH_CLIENT",
+			"POST-5",
+			isLocalSessionEnv({ SSH_CLIENT: "client" }),
+			false,
+			"Treat an SSH client marker as remote.",
+		);
+		assertExact(
+			"isLocalSessionEnv SSH_TTY",
+			"POST-5",
+			isLocalSessionEnv({ SSH_TTY: "/dev/ttys001" }),
+			false,
+			"Treat an SSH TTY marker as remote.",
+		);
+		assertExact(
+			"isLocalSessionEnv contract bridge",
+			"POST-4",
+			isLocalSessionEnv(localEnvironment),
+			isContractLocalSessionEnv(localEnvironment),
+			"Match the contract authority's environment predicate.",
+		);
 	});
 });
 
@@ -357,10 +472,22 @@ describe("ProcessTerminal native Shift+Enter recovery", () => {
 		 */
 		fakeReaderState.flags = MODIFIER_FLAG_MASKS.shift;
 		const { NATIVE_SHIFT_ENTER_SEQUENCE: implementationShiftEnterSequence } = await nativeModifiers();
-		assertExact("NATIVE_SHIFT_ENTER_SEQUENCE contract bridge", "POST-4", implementationShiftEnterSequence, NATIVE_SHIFT_ENTER_SEQUENCE, "Export the contracted sequence used to represent recovered Shift+Enter.");
+		assertExact(
+			"NATIVE_SHIFT_ENTER_SEQUENCE contract bridge",
+			"POST-4",
+			implementationShiftEnterSequence,
+			NATIVE_SHIFT_ENTER_SEQUENCE,
+			"Export the contracted sequence used to represent recovered Shift+Enter.",
+		);
 		terminal = await startTerminalInputHarness();
 		terminal.feed("\r");
-		assertExact("ProcessTerminal recovered Shift+Enter", "POST-4", terminal.received, [NATIVE_SHIFT_ENTER_SEQUENCE], "Deliver the contracted Shift+Enter wire sequence when native Shift recovers a collapsed carriage return.");
+		assertExact(
+			"ProcessTerminal recovered Shift+Enter",
+			"POST-4",
+			terminal.received,
+			[NATIVE_SHIFT_ENTER_SEQUENCE],
+			"Deliver the contracted Shift+Enter wire sequence when native Shift recovers a collapsed carriage return.",
+		);
 	});
 
 	it("forwards bare carriage return unchanged when no recovery condition applies", async () => {
@@ -385,7 +512,13 @@ describe("ProcessTerminal native Shift+Enter recovery", () => {
 			terminal = await startTerminalInputHarness();
 			terminal.feed("\r");
 			await terminal.waitForReceived(1);
-			assertExact(`ProcessTerminal bare Enter with ${scenario.name}`, "POST-5", terminal.received, ["\r"], "Forward ordinary carriage return unchanged unless every Shift+Enter recovery condition holds.");
+			assertExact(
+				`ProcessTerminal bare Enter with ${scenario.name}`,
+				"POST-5",
+				terminal.received,
+				["\r"],
+				"Forward ordinary carriage return unchanged unless every Shift+Enter recovery condition holds.",
+			);
 			terminal.dispose();
 			terminal = undefined;
 		}
@@ -406,6 +539,12 @@ describe("ProcessTerminal native Shift+Enter recovery", () => {
 		const optionEnter = "\x1b\r";
 		terminal.feed(ctrlEnter);
 		terminal.feed(optionEnter);
-		assertExact("ProcessTerminal Ctrl+Enter and Option+Enter unchanged", "FORBIDDEN-1", terminal.received, [ctrlEnter, optionEnter], "Restrict native recovery to a bare carriage return rather than modifying existing modified-Enter sequences.");
+		assertExact(
+			"ProcessTerminal Ctrl+Enter and Option+Enter unchanged",
+			"FORBIDDEN-1",
+			terminal.received,
+			[ctrlEnter, optionEnter],
+			"Restrict native recovery to a bare carriage return rather than modifying existing modified-Enter sequences.",
+		);
 	});
 });
