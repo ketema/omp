@@ -26,7 +26,7 @@ const sshKeys = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] as const;
 const savedSshEnv = Object.fromEntries(sshKeys.map(key => [key, process.env[key]]));
 
 type NativeModifiers = typeof import("@oh-my-pi/pi-tui/native-modifiers");
-type NativeModifiersTestHooks = typeof import("@oh-my-pi/pi-tui/native-modifiers-internal");
+type NativeModifiersTestHooks = typeof import("../src/native-modifiers-internal");
 type ProcessTerminalConstructor = typeof import("@oh-my-pi/pi-tui/terminal")["ProcessTerminal"];
 
 function nativeModifiers(): Promise<NativeModifiers> {
@@ -34,7 +34,7 @@ function nativeModifiers(): Promise<NativeModifiers> {
 }
 
 function nativeModifiersTestHooks(): Promise<NativeModifiersTestHooks> {
-	return import("@oh-my-pi/pi-tui/native-modifiers-internal");
+	return import("../src/native-modifiers-internal");
 }
 
 async function processTerminal(): Promise<ProcessTerminalConstructor> {
@@ -411,6 +411,26 @@ describe("native modifier API", () => {
 			"boolean",
 			"The genuine CoreGraphics read must resolve to a boolean modifier state, not undefined or a thrown error.",
 		);
+	});
+
+	it("keeps the test-only CoreGraphics reader module out of the package's export surface", async () => {
+		/**
+		 * Not part of the audited behavioral contract — packaging boundary only.
+		 * native-modifiers-internal.ts holds two test-only state-mutation exports
+		 * (__setCombinedSessionFlagsReaderForTest, __setCoreGraphicsFrameworkPathForTest).
+		 * It must be reachable only by relative import from within this package's own
+		 * tests, never through @oh-my-pi/pi-tui's package export map (neither the main
+		 * barrel nor the generic "./*" subpath wildcard), so no consumer can reach or
+		 * mutate this state.
+		 */
+		let thrown: unknown;
+		try {
+			// @ts-expect-error — deliberately probing a subpath the export map must reject.
+			await import("@oh-my-pi/pi-tui/native-modifiers-internal");
+		} catch (error) {
+			thrown = error;
+		}
+		expect(thrown).toBeInstanceOf(Error);
 	});
 
 	it("identifies local and SSH-marked environments without mutating their input", async () => {
