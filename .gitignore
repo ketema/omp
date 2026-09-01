@@ -95,3 +95,4 @@ packages/coding-agent/bench/boot-baseline.json
 # Local agent runtime artifacts
 **/.serena/
 **/.omp/artifacts/
+**/kernel-state.*
