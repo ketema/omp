@@ -92,6 +92,7 @@ packages/coding-agent/bench/boot-baseline.json
 /bazel-oh-my-pi
 /.bazelrc.user
 
+<<<<<<< HEAD
 .parity/
 
 # serena
@@ -102,3 +103,8 @@ packages/coding-agent/bench/boot-baseline.json
 kernel-state.dill
 kernel-state.json
 **/kernel-state.*
+=======
+# Local agent runtime artifacts
+**/.serena/
+**/.omp/artifacts/
+>>>>>>> 33c620948f (chore: ignore local agent runtime artifacts)
