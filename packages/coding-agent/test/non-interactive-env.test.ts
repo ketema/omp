@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import * as fs from "node:fs/promises";
 import { accessSync, constants as fsConstants, statSync } from "node:fs";
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { buildNonInteractiveEnv, NON_INTERACTIVE_ENV } from "@oh-my-pi/pi-coding-agent/exec/non-interactive-env";
@@ -128,9 +128,7 @@ describe("buildNonInteractiveEnv askpass resolver restoration", () => {
 				if (statSync(candidate).isFile()) {
 					return candidate;
 				}
-			} catch {
-				continue;
-			}
+			} catch {}
 		}
 		return undefined;
 	}
