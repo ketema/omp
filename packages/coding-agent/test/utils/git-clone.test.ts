@@ -227,9 +227,9 @@ describe("OMP internal Git environment askpass restoration (POST-AR-3 / SEQ-AR-3
 				[
 					"#!/bin/sh",
 					"{",
-					'  printf \'SSH_ASKPASS=%s\\n\' "${SSH_ASKPASS:-__OMP_TEST_UNSET__}"',
-					'  printf \'SSH_ASKPASS_REQUIRE=%s\\n\' "${SSH_ASKPASS_REQUIRE:-__OMP_TEST_UNSET__}"',
-					'  printf \'DISPLAY=%s\\n\' "${DISPLAY:-__OMP_TEST_UNSET__}"',
+					"  printf 'SSH_ASKPASS=%s\\n' \"${SSH_ASKPASS:-__OMP_TEST_UNSET__}\"",
+					"  printf 'SSH_ASKPASS_REQUIRE=%s\\n' \"${SSH_ASKPASS_REQUIRE:-__OMP_TEST_UNSET__}\"",
+					"  printf 'DISPLAY=%s\\n' \"${DISPLAY:-__OMP_TEST_UNSET__}\"",
 					`} > ${JSON.stringify(recordFile)}`,
 					`exec ${JSON.stringify(realGitPath)} "$@"`,
 					"",
@@ -251,7 +251,7 @@ describe("OMP internal Git environment askpass restoration (POST-AR-3 / SEQ-AR-3
 					'\tprocess.stdout.write("OK\\n");',
 					"\tprocess.exit(0);",
 					"} catch (error) {",
-					'\tprocess.stdout.write(`ERR:${error && error.message ? error.message : String(error)}\\n`);',
+					"\tprocess.stdout.write(`ERR:${error && error.message ? error.message : String(error)}\\n`);",
 					"\tprocess.exit(1);",
 					"}",
 					"",
@@ -293,7 +293,7 @@ describe("OMP internal Git environment askpass restoration (POST-AR-3 / SEQ-AR-3
 				recordedRaw
 					.trim()
 					.split("\n")
-					.map((line) => {
+					.map(line => {
 						const eq = line.indexOf("=");
 						return [line.slice(0, eq), line.slice(eq + 1)];
 					}),

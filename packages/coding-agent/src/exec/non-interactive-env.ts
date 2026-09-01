@@ -52,9 +52,7 @@ function isExecutableAskpassHelper(candidate: string | undefined): candidate is 
 	}
 }
 
-function isUsableAskpassCandidate(
-	candidate: AskpassCandidate | undefined,
-): candidate is AskpassCandidate {
+function isUsableAskpassCandidate(candidate: AskpassCandidate | undefined): candidate is AskpassCandidate {
 	return (
 		candidate !== undefined &&
 		candidate.path !== DISABLED_ASKPASS_PATH &&
@@ -65,7 +63,11 @@ function isUsableAskpassCandidate(
 }
 
 function validateAskpassCandidate(candidate: AskpassCandidate, source: AskpassSource): void {
-	if (typeof candidate.path !== "string" || candidate.path.trim().length === 0 || typeof candidate.executable !== "boolean") {
+	if (
+		typeof candidate.path !== "string" ||
+		candidate.path.trim().length === 0 ||
+		typeof candidate.executable !== "boolean"
+	) {
 		throw new InvalidAskpassCandidateError(`${source} candidate must have a non-empty path and executable flag.`);
 	}
 }
@@ -91,10 +93,7 @@ export function resolveAskpassPath(baseEnv: Record<string, string | undefined> =
 			parentAskpass === undefined
 				? undefined
 				: { path: parentAskpass, executable: isExecutableAskpassHelper(parentAskpass) },
-		fallbacks:
-			fallback === undefined
-				? []
-				: [{ path: fallback, executable: isExecutableAskpassHelper(fallback) }],
+		fallbacks: fallback === undefined ? [] : [{ path: fallback, executable: isExecutableAskpassHelper(fallback) }],
 	}).path;
 }
 
