@@ -117,7 +117,7 @@ describe("buildNonInteractiveEnv askpass resolver restoration", () => {
 	}
 
 	function discoverExecutableGenericAskpassFallback(): string | undefined {
-		const pathDirs = (process.env.PATH ?? "").split(path.delimiter).filter((dir) => dir.length > 0);
+		const pathDirs = (process.env.PATH ?? "").split(path.delimiter).filter(dir => dir.length > 0);
 		for (const dir of pathDirs) {
 			const candidate = path.join(dir, "ssh-askpass");
 			if (candidate === DISABLED_ASKPASS_PATH) {
