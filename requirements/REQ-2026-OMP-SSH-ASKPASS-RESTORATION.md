@@ -1,4 +1,4 @@
-# REQ-2026-OMP-SSH-ASKPASS-RESTORATION: Restore Native FIDO Notification
+# REQ-2026-OMP-SSH-ASKPASS-RESTORATION: Restore OMP SSH Askpass Resolution
 
 **Status**: Draft
 **Scope**: Restore OMP's dropped askpass resolver and configure the macOS LaunchAgent to select the existing Yubi Askpass helper.
