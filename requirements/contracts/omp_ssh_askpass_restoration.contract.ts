@@ -115,6 +115,10 @@ export const CONTRACT_OMP_SSH_ASKPASS_RESTORATION: Readonly<Record<string, Claus
 			verification: "test",
 			text: "OMP internal Git environment retains the same resolved askpass path and native askpass environment values.",
 		},
+		"POST-AR-5": {
+			verification: "test",
+			text: "The fallback-dependent askpass regression skips only when no executable generic askpass fallback is discoverable; the valid-parent resolver regression remains runnable. Source: REQ-AR-011.",
+		},
 		"POST-AR-4": {
 			verification: "execution",
 			text: "Native OpenSSH starts Yubi Askpass with SSH_ASKPASS_PROMPT=none before a selected FIDO user-presence assertion.",

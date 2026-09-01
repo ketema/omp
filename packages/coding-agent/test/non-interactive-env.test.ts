@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
+import { accessSync, constants as fsConstants, statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { buildNonInteractiveEnv, NON_INTERACTIVE_ENV } from "@oh-my-pi/pi-coding-agent/exec/non-interactive-env";
@@ -115,10 +116,36 @@ describe("buildNonInteractiveEnv askpass resolver restoration", () => {
 		return { dir, path: fixturePath };
 	}
 
+	function discoverExecutableGenericAskpassFallback(): string | undefined {
+		const pathDirs = (process.env.PATH ?? "").split(path.delimiter).filter((dir) => dir.length > 0);
+		for (const dir of pathDirs) {
+			const candidate = path.join(dir, "ssh-askpass");
+			if (candidate === DISABLED_ASKPASS_PATH) {
+				continue;
+			}
+			try {
+				accessSync(candidate, fsConstants.X_OK);
+				if (statSync(candidate).isFile()) {
+					return candidate;
+				}
+			} catch {
+				continue;
+			}
+		}
+		return undefined;
+	}
+
+	const executableGenericAskpassFallback = discoverExecutableGenericAskpassFallback();
+	const skipFallbackDependentRegression =
+		process.platform !== "win32" && executableGenericAskpassFallback === undefined;
+	const fallbackDependentRegressionName = skipFallbackDependentRegression
+		? "rejects a non-executable parent SSH_ASKPASS and still applies the native askpass environment (POST-AR-5 skip: no executable generic askpass fallback is discoverable)"
+		: "rejects a non-executable parent SSH_ASKPASS and still applies the native askpass environment";
+
 	it("prefers a valid executable parent SSH_ASKPASS, retains its path, and applies the native askpass environment", async () => {
 		/**
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   C1 VALID: POST-AR-1, POST-AR-2, FORBIDDEN-AR-1, SEQ-AR-2
+		 *   C1 VALID: POST-AR-1, POST-AR-2, POST-AR-5, FORBIDDEN-AR-1, SEQ-AR-2
 		 *     (requirements/contracts/omp_ssh_askpass_restoration.contract.ts)
 		 *   C2 VALUABLE: a resolver that ignores the executable parent, or a
 		 *     builder that drops SSH_ASKPASS_REQUIRE/DISPLAY, fails every assertion.
@@ -129,6 +156,8 @@ describe("buildNonInteractiveEnv askpass resolver restoration", () => {
 		 * Risk tier: HIGH — FORBIDDEN-AR-1 guards the regression that silently
 		 * disabled FIDO/YubiKey git-push authentication for every non-interactive
 		 * child process. Adversarial: Implementation-blind.
+		 * POST-AR-5: this valid-parent resolver regression remains runnable
+		 * even when no executable generic askpass fallback is discoverable.
 		 */
 		if (process.platform === "win32") return;
 		const fixture = await makeAskpassFixture(0o755);
@@ -184,14 +213,14 @@ describe("buildNonInteractiveEnv askpass resolver restoration", () => {
 		}
 	});
 
-	it("rejects a non-executable parent SSH_ASKPASS and still applies the native askpass environment", async () => {
+	it.skipIf(skipFallbackDependentRegression)(fallbackDependentRegressionName, async () => {
 		/**
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   C1 VALID: PRE-AR-1, POST-AR-2, SEQ-AR-2
+		 *   C1 VALID: PRE-AR-1, POST-AR-2, POST-AR-5, SEQ-AR-2
 		 *     (requirements/contracts/omp_ssh_askpass_restoration.contract.ts)
 		 *   C2 VALUABLE: a resolver that selects the broken parent path, or a
 		 *     builder that skips SSH_ASKPASS_REQUIRE/DISPLAY once the parent is
-		 *     rejected, fails this.
+		 *     rejected, fails this when a generic fallback is discoverable.
 		 *   C3 NON-DUPLICATIVE: distinct equivalence class (invalid parent) from
 		 *     the valid-parent test above; same surface, different input partition.
 		 *   C4 NOT FUTURE-EDIT: PRE-AR-1 forbids selecting an unusable candidate
@@ -204,6 +233,10 @@ describe("buildNonInteractiveEnv askpass resolver restoration", () => {
 		 *     controllable generic-fallback candidate — asserting equality with
 		 *     the module's own default constant would pin an implementation
 		 *     value the contract does not name as "the generic fallback".
+		 * POST-AR-5: skip this fallback-dependent regression only when no
+		 * executable generic askpass fallback is discoverable; do not assert
+		 * native environment values from a disabled resolver. The valid-parent
+		 * test above is not skipped.
 		 * Risk tier: MEDIUM — exercised whenever the configured parent helper is
 		 * broken; failure degrades to a missing prompt, not data loss.
 		 * Adversarial: Implementation-blind.

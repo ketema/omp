@@ -23,6 +23,7 @@ AI MAY NOT infer success from metrics.
 | Yubi Askpass | `$HOME/bin/yubi-askpass` |
 | Git | Git SSH transport |
 | Operator | YubiKey holder |
+| CI Test Runtime | GitHub Actions test environment | Provides or lacks generic `ssh-askpass` fallback |
 
 ## 1. Intent Traceability
 
@@ -103,6 +104,7 @@ OpenSSH DEPENDS ON Yubi Askpass only after selecting a FIDO identity requiring u
 | REQ-AR-007 | Non-FIDO suppression | OpenSSH SHALL NOT invoke native notification mode for a non-FIDO identity. |
 | REQ-AR-008 | Security | Yubi Askpass SHALL NOT emit a hostname, key fingerprint, private-key material, PIN, passphrase, or secret in native notification mode. |
 | REQ-AR-009 | Architecture | OMP source SHALL NOT add an SSH wrapper, Git hook, `core.sshCommand` override, key-cycling logic, or custom security-key provider. |
+| REQ-AR-011 | Test environment | The fallback-dependent askpass regression SHALL skip only when no executable generic askpass fallback is discoverable. It SHALL NOT skip the valid-parent resolver regression. |
 
 ## 5. High-Entropy Zones (Adjudicated)
 
@@ -137,6 +139,7 @@ OpenSSH DEPENDS ON Yubi Askpass only after selecting a FIDO identity requiring u
 | REQ-AR-003 | Yubi Askpass is missing or not executable | macOS LaunchAgent SHALL exit nonzero without publishing a false helper path. | macOS LaunchAgent SHALL identify the helper path in stderr. |
 | REQ-AR-001 | Parent helper is `/usr/bin/false` or not executable | OMP resolver SHALL continue to a known executable fallback. | OMP resolver SHALL not claim Yubi Askpass selection. |
 | REQ-AR-006 | Audible cue cannot start | Yubi Askpass SHALL exit nonzero before visual UI. | Yubi Askpass SHALL emit an actionable local error without secret material. |
+| REQ-AR-011 | No executable generic askpass fallback is discoverable | The fallback-dependent regression SHALL report a skip with the missing-prerequisite reason. | Valid-parent resolver coverage continues to execute. |
 
 ## 8. Completion Promise (Ralph Loop Exit)
 
