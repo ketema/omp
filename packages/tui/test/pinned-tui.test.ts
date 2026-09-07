@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { type Component, type Focusable, TUI, type TerminalFrameProvider, type ViewportSize } from "@oh-my-pi/pi-tui";
-import { ALT_SCREEN_ENTER } from "../../../requirements/contracts/pinned-composer.contract.ts";
+import { ALT_SCREEN_ENTER } from "../../../requirements/contracts/pinned-composer.contract";
 import { VirtualTerminal } from "./virtual-terminal";
 
 class RecordingTerminal extends VirtualTerminal {

@@ -1524,6 +1524,7 @@ export async function runRootCommand(
 			showHardwareCursor: settingsInstance.get("showHardwareCursor"),
 			maxInlineImages: settingsInstance.get("tui.maxInlineImages"),
 			resizeScrollback: settingsInstance.get("tui.resizeScrollback"),
+			viewport: settingsInstance.get("tui.viewport"),
 			imeSafeCursor: settingsInstance.get("tui.imeSafeCursor"),
 			autocompleteMaxVisible: settingsInstance.get("autocompleteMaxVisible"),
 			spellingTypoDetection: settingsInstance.get("spelling.typoDetection"),

@@ -17,6 +17,17 @@ import { performance } from "node:perf_hooks";
 import { $flag, getDebugLogPath, logger } from "@oh-my-pi/pi-utils";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { isKeyRelease, matchesKey } from "./keys";
+import { getKeybindings } from "./keybindings";
+import { parseSgrMouse } from "./mouse";
+import {
+	ALT_SCREEN_ENTER,
+	ALT_SCREEN_LEAVE,
+	clippedPinnedDockHeight,
+	PINNED_MOUSE_ENTER,
+	PINNED_MOUSE_LEAVE,
+	PINNED_WHEEL_SCROLL_LINES,
+	PinnedViewport,
+} from "./pinned-viewport";
 import { LoopWatchdog } from "./loop-watchdog";
 import { setAltScreenActive, type Terminal } from "./terminal";
 import {
@@ -119,6 +130,10 @@ export interface HistoryBatch {
 export interface TerminalFramePlan {
 	readonly history?: HistoryBatch;
 	readonly viewport: readonly string[];
+	/** Transcript rows for the pinned software window (ignored in inline mode). */
+	readonly pinnedScroll?: readonly string[];
+	/** Dock rows pinned to the bottom of the alt-screen frame. */
+	readonly pinnedDock?: readonly string[];
 }
 
 /** Produces bounded terminal frames and retires acknowledged history batches. */
@@ -750,6 +765,10 @@ export class TUI extends Container {
 	// Holds an alternate-screen exit until its replacement full paint can emit it
 	// atomically. It must survive a deferred Ghostty image frame.
 	#pendingAltExit = "";
+	#pinnedActive = false;
+	#pinnedViewport: PinnedViewport | undefined;
+	#pinnedAltEntered = false;
+	#pinnedMouseActive = false;
 
 	// Overlay stack for modal components rendered on top of base content
 	overlayStack: {
@@ -810,6 +829,118 @@ export class TUI extends Container {
 	/** Set how settled resizes refresh native scrollback. */
 	setResizeScrollback(mode: ResizeScrollbackMode): void {
 		this.#resizeScrollbackMode = mode;
+	}
+
+	isPinned(): boolean {
+		return this.#pinnedActive;
+	}
+
+	/**
+	 * Paint the interactive session on the alternate screen with a bottom dock.
+	 * Idempotent: a second call does not re-enter DECSET 1049.
+	 */
+	enterPinned(): void {
+		if (this.#stopped) return;
+		this.#pinnedActive = true;
+		this.#pinnedViewport ??= new PinnedViewport();
+		this.#ensurePinnedAltScreen();
+		this.#syncPinnedMouseTracking();
+		this.requestRender(true);
+	}
+
+	/** Leave pinned mode. Leaves the alt screen only when no overlay owns it. */
+	exitPinned(): void {
+		if (!this.#pinnedActive) return;
+		this.#pinnedActive = false;
+		this.#pinnedViewport = undefined;
+		this.#syncPinnedMouseTracking();
+		this.#releasePinnedAltScreen();
+		this.requestRender(true);
+	}
+
+	scrollPinnedBy(delta: number): void {
+		this.#pinnedViewport?.scrollBy(delta);
+		this.requestRender();
+	}
+
+	#sessionOwnsAltScreen(): boolean {
+		return this.#pinnedAltEntered || this.#altActive || this.#resizeAltActive;
+	}
+
+	#ensurePinnedAltScreen(): void {
+		if (this.#pinnedAltEntered || this.#sessionOwnsAltScreen()) {
+			this.#pinnedAltEntered = true;
+			setAltScreenActive(true);
+			return;
+		}
+		this.terminal.write(`${ALT_SCREEN_ENTER}${this.#keyboardEnhancementEnter()}`);
+		setAltScreenActive(true);
+		this.terminal.hideCursor();
+		this.#forgetHardwareCursorState();
+		this.#recordHardwareCursorHidden();
+		this.#pinnedAltEntered = true;
+		this.#altPreviousLines = [];
+	}
+
+	#releasePinnedAltScreen(): void {
+		if (!this.#pinnedAltEntered) return;
+		if (this.#altActive || this.#resizeAltActive) {
+			this.#pinnedAltEntered = false;
+			return;
+		}
+		this.terminal.write(`${this.#keyboardEnhancementExit()}${ALT_SCREEN_LEAVE}`);
+		setAltScreenActive(false);
+		this.#pinnedAltEntered = false;
+		this.#altPreviousLines = [];
+	}
+
+	#syncPinnedMouseTracking(): void {
+		const overlay = this.#getTopmostVisibleOverlay();
+		const overlayWantsMouse =
+			overlay?.options?.fullscreen === true && overlay.options?.mouseTracking !== false;
+		const wantPinnedMouse = this.#pinnedActive && !overlayWantsMouse;
+		if (wantPinnedMouse === this.#pinnedMouseActive) return;
+		if (this.#pinnedMouseActive) this.terminal.write(PINNED_MOUSE_LEAVE);
+		if (wantPinnedMouse) this.terminal.write(PINNED_MOUSE_ENTER);
+		this.#pinnedMouseActive = wantPinnedMouse;
+	}
+
+	#overlayOwnsFocus(): boolean {
+		const overlay = this.#getTopmostVisibleOverlay();
+		return overlay !== undefined && overlay.component === this.#focusedComponent;
+	}
+
+	#handlePinnedInput(data: string): boolean {
+		if (!this.#pinnedActive || this.#overlayOwnsFocus()) {
+			if (this.#pinnedActive && data.startsWith("\x1b[<")) return true;
+			return false;
+		}
+		if (data.startsWith("\x1b[<")) {
+			const event = parseSgrMouse(data);
+			if (event?.wheel === -1) this.scrollPinnedBy(-PINNED_WHEEL_SCROLL_LINES);
+			else if (event?.wheel === 1) this.scrollPinnedBy(PINNED_WHEEL_SCROLL_LINES);
+			return true;
+		}
+		const keys = getKeybindings();
+		if (keys.matches(data, "tui.viewport.pageUp")) {
+			this.scrollPinnedBy(-(this.#pinnedViewport?.pageSize() ?? 1));
+			return true;
+		}
+		if (keys.matches(data, "tui.viewport.pageDown")) {
+			this.scrollPinnedBy(this.#pinnedViewport?.pageSize() ?? 1);
+			return true;
+		}
+		if (keys.matches(data, "tui.viewport.top")) {
+			this.#pinnedViewport?.scrollToTop();
+			this.requestRender();
+			return true;
+		}
+		if (keys.matches(data, "tui.viewport.follow")) {
+			this.#pinnedViewport?.scrollToBottom();
+			this.requestRender();
+			return true;
+		}
+		return false;
 	}
 
 	/** Delete every tracked Kitty image from the terminal graphics store. */
@@ -1344,6 +1475,10 @@ export class TUI extends Container {
 		this.#resizeSettleTimer?.cancel();
 		this.#resizeSettleTimer = undefined;
 		this.#cancelResizeProbe();
+		if (this.#pinnedMouseActive) {
+			this.terminal.write(PINNED_MOUSE_LEAVE);
+			this.#pinnedMouseActive = false;
+		}
 		if (this.#resizeAltActive) {
 			this.#resizeAltActive = false;
 			this.terminal.write(`${this.#keyboardEnhancementExit()}\x1b[?1049l`);
@@ -1351,14 +1486,22 @@ export class TUI extends Container {
 		}
 		if (this.#altActive || this.#pendingAltExit) {
 			const mouseExit = this.#altMouseTrackingActive ? MOUSE_TRACKING_OFF : "";
-			const exitSequence = this.#pendingAltExit || `${mouseExit}${this.#keyboardEnhancementExit()}\x1b[?1049l`;
+			const exitSequence = this.#pendingAltExit || `${mouseExit}${this.#keyboardEnhancementExit()}${ALT_SCREEN_LEAVE}`;
 			this.terminal.write(exitSequence);
 			setAltScreenActive(false);
 			this.#altActive = false;
 			this.#altMouseTrackingActive = false;
 			this.#altPreviousLines = [];
 			this.#pendingAltExit = "";
+			this.#pinnedAltEntered = false;
+		} else if (this.#pinnedAltEntered) {
+			this.terminal.write(`${this.#keyboardEnhancementExit()}${ALT_SCREEN_LEAVE}`);
+			setAltScreenActive(false);
+			this.#pinnedAltEntered = false;
+			this.#altPreviousLines = [];
 		}
+		this.#pinnedActive = false;
+		this.#pinnedViewport = undefined;
 		// Deliberately leave transmitted images in the terminal's graphics store:
 		// placeholder cells committed to native scrollback render only while their
 		// image data lives, so a delete-by-id here blanks every transcript image
@@ -1607,6 +1750,10 @@ export class TUI extends Container {
 		// Global debug key handler (Shift+Ctrl+D)
 		if (matchesKey(data, "shift+ctrl+d") && this.onDebug) {
 			this.onDebug();
+			return;
+		}
+
+		if (this.#handlePinnedInput(data)) {
 			return;
 		}
 
@@ -2177,31 +2324,42 @@ export class TUI extends Container {
 			// screen, or Esc/modified keys revert to legacy encoding inside
 			// fullscreen overlays (Ghostty/kitty/iTerm2).
 			const mouseEnter = wantMouseTracking ? MOUSE_TRACKING_ON : "";
-			this.terminal.write(`\x1b[?1049h${this.#keyboardEnhancementEnter()}${mouseEnter}`);
-			setAltScreenActive(true);
-			this.terminal.hideCursor();
-			this.#forgetHardwareCursorState();
-			this.#recordHardwareCursorHidden();
+			if (!this.#pinnedAltEntered) {
+				this.terminal.write(`${ALT_SCREEN_ENTER}${this.#keyboardEnhancementEnter()}${mouseEnter}`);
+				setAltScreenActive(true);
+				this.terminal.hideCursor();
+				this.#forgetHardwareCursorState();
+				this.#recordHardwareCursorHidden();
+			} else if (mouseEnter) {
+				this.terminal.write(mouseEnter);
+			}
 			this.#altActive = true;
 			this.#altMouseTrackingActive = wantMouseTracking;
 			this.#altPreviousLines = [];
 			this.#altEnterWidth = width;
 			this.#altEnterHeight = height;
+			this.#syncPinnedMouseTracking();
 		} else if (!wantAlt && this.#altActive) {
 			const mouseExit = this.#altMouseTrackingActive ? MOUSE_TRACKING_OFF : "";
-			const enhancementExit = this.#keyboardEnhancementExit();
-			const exitSequence = `${mouseExit}${enhancementExit}\x1b[?1049l`;
-			this.terminal.write(exitSequence);
-			setAltScreenActive(false);
-			this.#forgetHardwareCursorState();
-			this.#altActive = false;
-			this.#altMouseTrackingActive = false;
-			this.#altPreviousLines = [];
-			// The alt buffer restore put the pre-overlay normal screen back; a
-			// geometry change while covered invalidates the diff baseline and the
-			// writer's dimension check forces the full anchored rewrite.
-			if (width !== this.#altEnterWidth || height !== this.#altEnterHeight) {
+			if (this.#pinnedAltEntered) {
+				if (mouseExit) this.terminal.write(mouseExit);
+				this.#forgetHardwareCursorState();
+				this.#altActive = false;
+				this.#altMouseTrackingActive = false;
+				this.#altPreviousLines = [];
 				this.#forceViewportRepaintOnNextRender = true;
+				this.#syncPinnedMouseTracking();
+			} else {
+				const enhancementExit = this.#keyboardEnhancementExit();
+				this.terminal.write(`${mouseExit}${enhancementExit}${ALT_SCREEN_LEAVE}`);
+				setAltScreenActive(false);
+				this.#forgetHardwareCursorState();
+				this.#altActive = false;
+				this.#altMouseTrackingActive = false;
+				this.#altPreviousLines = [];
+				if (width !== this.#altEnterWidth || height !== this.#altEnterHeight) {
+					this.#forceViewportRepaintOnNextRender = true;
+				}
 			}
 		} else if (wantMouseTracking !== this.#altMouseTrackingActive) {
 			this.terminal.write(wantMouseTracking ? MOUSE_TRACKING_ON : MOUSE_TRACKING_OFF);
@@ -2209,6 +2367,11 @@ export class TUI extends Container {
 		}
 		if (this.#altActive) {
 			this.#renderAltFrame(width, height);
+			return;
+		}
+		if (this.#pinnedActive) {
+			this.#syncPinnedMouseTracking();
+			this.#renderPinnedFrame(width, height);
 			return;
 		}
 		if (this.#frameProvider !== undefined) {
@@ -2514,6 +2677,54 @@ export class TUI extends Container {
 		const exit = this.terminal.keyboardEnhancementExitSequence;
 		if (exit !== undefined) return exit ?? "";
 		return this.terminal.kittyEnableSequence ? "\x1b[<u" : "";
+	}
+
+	#renderPinnedFrame(width: number, height: number): void {
+		if (width <= 0 || height <= 0) return;
+		this.#imageBudget.beginPass();
+		const provider = this.#frameProvider;
+		let scroll: string[] = [];
+		let dock: string[] = [];
+		if (provider) {
+			const plan = provider.renderFrame({ columns: width, rows: height });
+			scroll = [...(plan.pinnedScroll ?? [])];
+			dock = [...(plan.pinnedDock ?? [])];
+			if (scroll.length === 0 && dock.length === 0) {
+				dock = [...plan.viewport];
+			}
+		} else {
+			const composed = [...this.render(width)];
+			const dockHeight = clippedPinnedDockHeight(composed.length, height);
+			dock = composed.slice(composed.length - dockHeight);
+			scroll = composed.slice(0, composed.length - dock.length);
+		}
+		this.#imageBudget.endPass();
+		this.#pinnedViewport ??= new PinnedViewport();
+		let lines = this.#pinnedViewport.composeFrame({ transcript: scroll, dock, height });
+		if (!this.#pinnedViewport.isFollowing()) {
+			const hintRow = Math.max(0, this.#pinnedViewport.windowHeight() - 1);
+			const followKey = getKeybindings().getKeys("tui.viewport.follow")[0] ?? "ctrl+shift+down";
+			lines[hintRow] = ` ${followKey} to follow `;
+		}
+		const markers = this.#extractCursorMarkers(lines);
+		lines = this.#prepareLinesArray(lines, width);
+		this.#emitAltFrame(lines, width, height);
+		const marker = markers[0];
+		if (marker !== undefined && this.#showHardwareCursor) {
+			const target = this.#targetHardwareCursorState(
+				{ row: Math.min(marker.row, height - 1), col: marker.col },
+				height,
+			);
+			if (target) {
+				this.terminal.write(
+					`\x1b[${target.row + 1};${target.col + 1}H${target.visible ? "\x1b[?25h" : "\x1b[?25l"}`,
+				);
+				this.#recordHardwareCursorState(target);
+			}
+		}
+		this.#hasEverRendered = true;
+		this.#previousWidth = width;
+		this.#previousHeight = height;
 	}
 
 	/**

@@ -4,7 +4,7 @@ import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { Composer } from "@oh-my-pi/pi-coding-agent/modes/composer";
+import { COMPOSER_DEFAULTS, Composer } from "@oh-my-pi/pi-coding-agent/modes/composer";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -47,8 +47,12 @@ describe("libkitty end-to-end", () => {
 			settings: Settings.isolated(),
 			modelRegistry,
 		});
+		session.settings.set("tui.viewport", "inline");
 		term = new VirtualTerminal(120, 32);
-		const composer = new Composer({ terminal: term });
+		const composer = new Composer({
+			terminal: term,
+			preferences: { ...COMPOSER_DEFAULTS, viewport: "inline" },
+		});
 		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
 	});
 
@@ -198,12 +202,16 @@ describe("libkitty end-to-end", () => {
 			stopReason: "stop",
 			timestamp: 1,
 		};
-
 		// A short viewport forces the oldest finalized blocks into immutable
 		// terminal history, which is where the regression hid (a plain viewport
 		// repaint leaves retired rows untouched).
+		mode.stop();
 		term = new VirtualTerminal(120, 10);
-		const composer = new Composer({ terminal: term });
+		session.settings.set("tui.viewport", "inline");
+		const composer = new Composer({
+			terminal: term,
+			preferences: { ...COMPOSER_DEFAULTS, viewport: "inline" },
+		});
 		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();

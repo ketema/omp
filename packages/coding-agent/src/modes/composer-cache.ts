@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { isViewportMode } from "@oh-my-pi/pi-tui";
 import { getAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import type { LspServerInfo, RecentSession } from "./components/welcome";
 import type { ComposerPreferences } from "./composer";
@@ -143,6 +144,7 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 	const showHardwareCursor = field(rawPreferences, "showHardwareCursor");
 	const maxInlineImages = field(rawPreferences, "maxInlineImages");
 	const resizeScrollback = field(rawPreferences, "resizeScrollback");
+	const viewport = field(rawPreferences, "viewport");
 	const imeSafeCursor = field(rawPreferences, "imeSafeCursor");
 	const autocompleteMaxVisible = field(rawPreferences, "autocompleteMaxVisible");
 	const spellingTypoDetection = field(rawPreferences, "spellingTypoDetection");
@@ -190,6 +192,7 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 				resizeScrollback === "append" || resizeScrollback === "rebuild" || resizeScrollback === "preserve"
 					? resizeScrollback
 					: "rebuild",
+			viewport: isViewportMode(viewport) ? viewport : "pinned",
 			imeSafeCursor,
 			autocompleteMaxVisible,
 			spellingTypoDetection,
