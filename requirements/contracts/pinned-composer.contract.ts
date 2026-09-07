@@ -146,8 +146,12 @@ export const CONTRACT_PINNED_COMPOSER = {
 		verification: "test",
 		text: "wheel and viewport page keys SHALL reach PinnedViewport.scrollBy before the focused editor handleInput",
 	},
+	"SEQ-3": {
+		verification: "test",
+		text: "Composer.setPreferences SHALL enter pinned mode when viewport is pinned and leave it when viewport is inline",
+	},
 	"ERRORS-1": {
 		verification: "test",
-		text: "invalid viewport mode or compose height SHALL throw PinnedComposerContractError citing the clause id",
+		text: "validateViewportMode and validateComposeHeight SHALL throw PinnedComposerContractError citing the clause id; PinnedViewport.composeFrame SHALL throw Error whose message contains PRE-1",
 	},
 } as const satisfies Record<string, Clause>;

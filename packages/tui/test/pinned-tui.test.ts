@@ -139,4 +139,64 @@ describe("TUI pinned session (POST-8/9/10, SEQ-2, FORBIDDEN-1)", () => {
 			tui.stop();
 		}
 	});
+
+	it("IP-3 / SEQ-2: pageUp scrolls transcript without mutating the editor", async () => {
+		const term = new RecordingTerminal(40, 6, 100);
+		const editor = new EditorStub();
+		const lines = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+		const provider: TerminalFrameProvider = {
+			renderFrame() {
+				return { viewport: [], pinnedScroll: lines, pinnedDock: ["PROMPT:"] };
+			},
+			acknowledgeHistory() {},
+		};
+		const tui = new TUI(term, true);
+		tui.setFrameProvider(provider);
+		tui.setFocus(editor);
+		try {
+			tui.start();
+			tui.enterPinned();
+			await term.waitForRender();
+			term.sendInput("\x1b[5~");
+			await term.waitForRender();
+			expect(editor.text).toBe("");
+			const rows = term.getViewport().map(line => line.trimEnd());
+			expect(rows[rows.length - 1]).toBe("PROMPT:");
+			expect(rows).not.toContain("9");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("IP-3: follow key resumes tail after pageUp", async () => {
+		const term = new RecordingTerminal(40, 6, 100);
+		const editor = new EditorStub();
+		const provider: TerminalFrameProvider = {
+			renderFrame() {
+				return {
+					viewport: [],
+					pinnedScroll: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+					pinnedDock: ["PROMPT:"],
+				};
+			},
+			acknowledgeHistory() {},
+		};
+		const tui = new TUI(term, true);
+		tui.setFrameProvider(provider);
+		tui.setFocus(editor);
+		try {
+			tui.start();
+			tui.enterPinned();
+			await term.waitForRender();
+			term.sendInput("\x1b[5~");
+			await term.waitForRender();
+			term.sendInput("\x1b[1;6B");
+			await term.waitForRender();
+			const rows = term.getViewport().map(line => line.trimEnd());
+			expect(rows).toContain("9");
+			expect(rows[rows.length - 1]).toBe("PROMPT:");
+		} finally {
+			tui.stop();
+		}
+	});
 });
