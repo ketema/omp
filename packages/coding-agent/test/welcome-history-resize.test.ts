@@ -91,7 +91,7 @@ function startRetiredWelcome(modelName: string): { composer: Composer; terminal:
 	const composer = new Composer({
 		terminal,
 		tuiOptions: { renderScheduler: new ResizeScheduler() },
-		preferences: { ...COMPOSER_DEFAULTS, quiet: false, resizeScrollback: "preserve" },
+		preferences: { ...COMPOSER_DEFAULTS, quiet: false, resizeScrollback: "preserve", viewport: "inline" },
 		welcome: { version: "test", modelName, providerName: "test-provider" },
 	});
 	composer.setRuntimeChildren([new TranscriptContainer(), new MutableComposerTail()]);
@@ -117,7 +117,7 @@ describe("composer welcome native-history resize", () => {
 		const composer = new Composer({
 			terminal,
 			tuiOptions: { renderScheduler: scheduler },
-			preferences: { ...COMPOSER_DEFAULTS, quiet: false, resizeScrollback: "preserve" },
+			preferences: { ...COMPOSER_DEFAULTS, quiet: false, resizeScrollback: "preserve", viewport: "inline" },
 			welcome: { version: "test", modelName: "test-model", providerName: "test-provider" },
 		});
 		const offered: number[] = [];
@@ -259,7 +259,7 @@ describe("composer welcome native-history resize", () => {
 		const composer = new Composer({
 			terminal,
 			tuiOptions: { renderScheduler: scheduler },
-			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
+			preferences: { ...COMPOSER_DEFAULTS, quiet: true, viewport: "inline" },
 		});
 		const transcript = new TranscriptContainer();
 		for (let id = 0; id < 4; id++) transcript.addChild(new WidthTranscriptBlock(id));

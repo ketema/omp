@@ -11,6 +11,7 @@ import {
 	type TerminalFrameProvider,
 	TUI,
 	type TUIOptions,
+	type ViewportMode,
 	type ViewportSize,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
@@ -28,6 +29,7 @@ export interface ComposerPreferences {
 	readonly showHardwareCursor: boolean;
 	readonly maxInlineImages: number;
 	readonly resizeScrollback: ResizeScrollbackMode;
+	readonly viewport: ViewportMode;
 	readonly imeSafeCursor: boolean;
 	readonly autocompleteMaxVisible: number;
 	readonly spellingTypoDetection: boolean;
@@ -42,6 +44,7 @@ export const COMPOSER_DEFAULTS: ComposerPreferences = {
 	showHardwareCursor: true,
 	maxInlineImages: 8,
 	resizeScrollback: "rebuild",
+	viewport: "pinned",
 	imeSafeCursor: false,
 	autocompleteMaxVisible: 10,
 	spellingTypoDetection: true,
@@ -208,15 +211,28 @@ export class Composer implements TerminalFrameProvider {
 			: [this.#header, this.#bootstrapInputGap, this.editor, this.#statusHost];
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) {
+			if (this.#preferences.viewport === "pinned") {
+				const dock = this.#renderRoots([this.editor, this.#statusHost], width);
+				const scrollRoots = roots.filter(root => root !== this.editor && root !== this.#statusHost);
+				return {
+					viewport: [],
+					pinnedScroll: this.#renderRoots(scrollRoots, width),
+					pinnedDock: dock,
+				};
+			}
 			return { viewport: this.#renderRoots(roots, width).slice(-rows) };
 		}
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
 		const preRoots = this.#renderRoots(roots.slice(0, transcriptIndex), width);
 		const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
-		// Offer history under capacity pressure only: blocks stay live (and keep
-		// reflowing to the current width) while the screen has room. A batch
-		// leaves the mutable viewport in the same frame it is appended, so its
-		// rows are never painted twice.
+		if (this.#preferences.viewport === "pinned") {
+			const headerRows = this.#headerRetired ? [] : this.#header.render(width);
+			return {
+				viewport: [],
+				pinnedScroll: [...headerRows, ...preRoots, ...transcript.render(width)],
+				pinnedDock: after,
+			};
+		}
 		const history = this.#offerHistory(transcript, width, rows, preRoots.length + after.length);
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
@@ -352,7 +368,6 @@ export class Composer implements TerminalFrameProvider {
 		return this.#editor;
 	}
 
-	/** The welcome component currently mounted in the header, if quiet mode is off. */
 	get welcome(): WelcomeComponent | undefined {
 		return this.#welcome;
 	}
@@ -367,6 +382,7 @@ export class Composer implements TerminalFrameProvider {
 		if (this.#started || this.#stopped) return;
 		this.#started = true;
 		this.ui.start({ clearScrollback: options.clearScrollback === true, deferInput: options.deferInput === true });
+		if (this.#preferences.viewport === "pinned") this.ui.enterPinned();
 		if (options.playWelcomeIntro !== false) this.playWelcomeIntro();
 	}
 	/** Take raw-input ownership after a deferred-input start. Idempotent. */
@@ -380,6 +396,8 @@ export class Composer implements TerminalFrameProvider {
 		if (this.#stopped) return;
 		const wasQuiet = this.#preferences.quiet;
 		this.#preferences = { ...this.#preferences, ...update };
+		if (this.#preferences.viewport === "pinned") this.ui.enterPinned();
+		else this.ui.exitPinned();
 		this.editor.setTheme(getEditorTheme());
 		try {
 			this.editor.setBorderStyle(this.#preferences.composerShape);

@@ -11,7 +11,7 @@ import {
 	validateComposeHeight,
 	validateViewportMode,
 	PinnedComposerContractError,
-} from "../../../requirements/contracts/pinned-composer.contract.ts";
+} from "../../../requirements/contracts/pinned-composer.contract";
 
 describe("pinned composer contract validators", () => {
 	it("PRE-MODE-1: rejects unknown viewport modes", () => {

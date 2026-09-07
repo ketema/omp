@@ -37,6 +37,8 @@ export * from "./latex-block";
 export * from "./latex-to-unicode";
 // SGR mouse report parsing
 export * from "./mouse";
+// Pinned alt-screen transcript window + dock
+export * from "./pinned-viewport";
 // Native modifier key state
 export * from "./native-modifiers";
 // Mermaid diagram support
