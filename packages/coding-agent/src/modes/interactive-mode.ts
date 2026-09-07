@@ -844,7 +844,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			showHardwareCursor: settings.get("showHardwareCursor"),
 			maxInlineImages: settings.get("tui.maxInlineImages"),
 			resizeScrollback: settings.get("tui.resizeScrollback"),
-			viewport: this.settings.get("tui.viewport"),
+			viewport: "pinned",
 			imeSafeCursor: settings.get("tui.imeSafeCursor"),
 			autocompleteMaxVisible: settings.get("autocompleteMaxVisible"),
 			spellingTypoDetection: settings.get("spelling.typoDetection"),
@@ -2052,7 +2052,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 	syncViewport(): void {
-		this.composer.setPreferences({ viewport: this.settings.get("tui.viewport") });
+		this.composer.setPreferences({ viewport: "pinned" });
 	}
 
 

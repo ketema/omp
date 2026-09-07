@@ -382,7 +382,7 @@ export class Composer implements TerminalFrameProvider {
 		if (this.#started || this.#stopped) return;
 		this.#started = true;
 		this.ui.start({ clearScrollback: options.clearScrollback === true, deferInput: options.deferInput === true });
-		if (this.#preferences.viewport === "pinned") this.ui.enterPinned();
+		this.ui.enterPinned();
 		if (options.playWelcomeIntro !== false) this.playWelcomeIntro();
 	}
 	/** Take raw-input ownership after a deferred-input start. Idempotent. */
