@@ -1,0 +1,40 @@
+schema_version: '1.0'
+feature_name: spawn-model
+manifest_path: requirements/REQ-2026-SPAWN-MODEL.md
+manifest_hash: sha256:9839c30f2ed16731ead1cab4ef75ac8b0fd0d7a5626545c80f576e51681b9346
+created: '2026-09-07'
+last_updated: '2026-09-07'
+status: ACTIVE
+slices:
+- id: SLICE-1
+  clauses_in_scope:
+  - PRE-1
+  - PRE-2
+  - POST-1
+  - POST-2
+  - POST-3
+  - POST-4
+  - INV-1
+  - FORBIDDEN-1
+  - FORBIDDEN-2
+  - SEQ-1
+  - SEQ-2
+  - SEQ-3
+  - ERRORS-1
+  - IP-1
+  - IP-2
+  - IP-3
+  clauses_deferred: []
+  negative_constraints:
+  - FORBIDDEN-1
+  - FORBIDDEN-2
+  status: PENDING
+  depends_on: []
+  issue: TODO
+  pivot_note: Task and eval spawns honor optional model; omit uses on-disk configuration.
+pivot_guidance:
+- 'After SLICE-1 AUDIT: live task and eval agent() evidence required (CL10). Do not declare GREEN from unit tests alone.'
+forgotten_invariants:
+- FORBIDDEN-1
+- FORBIDDEN-2
+- INV-1
