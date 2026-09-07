@@ -8,23 +8,33 @@ Neither crosses the boundary.
 
 **INV-3**: No discretion. No judgment. Only state.
 
+## Actors
+
+| Actor | Identifier |
+|---|---|
+| User | Interactive operator |
+| TUI | `packages/tui/src/tui.ts` |
+| PinnedViewport | `packages/tui/src/pinned-viewport.ts` |
+| Composer | `packages/coding-agent/src/modes/composer.ts` |
+
 ## 1. Intent Traceability
 
 - **Source Prose**:
   > "create a bug free implmentation of a pinned omp prompt input area similar to the one prime-agent uses. all tests must pass, ccabdd must be followed."
   >
   > Prior: "whenever I scroll up the input box goes away. if I start typing the scroll back jumps back down to the bottom. this is disruptive because when I am reading long output i often need a reference and like to type WHILE i am at the point i am reading the content."
-- **Our Understanding**: Interactive OMP SHALL keep the composer (editor + status line) on the last rows of the terminal while the user scrolls the transcript. Scroll position SHALL be application state on the alternate screen, matching Prime-agent's FullscreenViewport compose/scroll subset. Typing SHALL NOT yank the transcript window to the tail.
+- **Our Understanding**: The operator wants the composer (editor and status line) to remain on the last rows of the terminal while they scroll the transcript. Scroll position is application state on the alternate screen, matching Prime-agent's FullscreenViewport compose/scroll subset. Typing while scrolled up must not yank the transcript window to the tail.
 - **Ambiguity Score**: 1
-- **Decided By: User**: Prime-like pin; reject DECSTBM and CUP suppression; v1 SHALL NOT flush the in-memory transcript into native scrollback (Prime does not).
+- **Decided By: User**: Prime-like pin; reject DECSTBM and CUP suppression; v1 does not flush the in-memory transcript into native scrollback (Prime does not).
 
 ## 2. The Actor Matrix
 
 | Actor | Permission Level | Prohibited Actions |
 |:------|:-----------------|:-------------------|
 | User | Scroll transcript; type in dock; toggle `tui.viewport` | Cannot make the dock leave the physical screen while pinned |
-| TUI | Own alt-screen enter/leave; intercept wheel/page keys | SHALL NOT re-enter DECSET 1049 while already on alt screen |
-| Composer | Split scroll rows vs dock rows; skip HistoryBatch while pinned | SHALL NOT import the contract module |
+| TUI | Own alt-screen enter/leave; intercept wheel/page keys | TUI SHALL NOT re-enter DECSET 1049 while already on alt screen |
+| Composer | Split scroll rows vs dock rows; skip HistoryBatch while pinned | Composer SHALL NOT import the contract module |
+| PinnedViewport | Compose dock+window; own scrollTop/following | PinnedViewport SHALL NOT paint CSI |
 
 ## 3. The State Transition
 
@@ -70,11 +80,11 @@ Neither crosses the boundary.
 
 | ID | Category | Invariant |
 |----|----------|-----------|
-| INV-01 | Dock | The system shall not paint the editor above the dock region while pinned. |
-| INV-02 | Follow | The system shall not set following true because a printable key arrived. |
-| INV-03 | Alt | The system shall not write DECSET 1049h while the session is already on the alternate screen. |
-| INV-04 | History | The system shall not emit HistoryBatch CRLFs while pinned. |
-| INV-05 | Coupling | Implementation shall not import the contract file. |
+| INV-01 | Dock | TUI SHALL NOT paint the editor above the dock region while pinned. |
+| INV-02 | Follow | TUI SHALL NOT set following true because a printable key arrived. |
+| INV-03 | Alt | TUI SHALL NOT write DECSET 1049h while the session is already on the alternate screen. |
+| INV-04 | History | Composer SHALL NOT emit HistoryBatch CRLFs while pinned. |
+| INV-05 | Coupling | Composer SHALL NOT import the contract file. |
 
 ## 5. High-Entropy Zones (Adjudicated)
 
@@ -112,7 +122,7 @@ Neither crosses the boundary.
 
 ## 8. Completion Promise
 
-PinnedViewport unit tests plus TUI integration tests SHALL fail if the dock is not the last N rows, if wheel mutates editor text, if following=false stream appends change scrollTop, or if a second 1049h is written while pinned.
+PinnedViewport unit tests plus TUI integration tests fail if the dock is not the last N rows, if wheel mutates editor text, if following=false stream appends change scrollTop, or if a second 1049h is written while pinned.
 
 ## 9. Contract Authority
 
@@ -122,4 +132,5 @@ PinnedViewport unit tests plus TUI integration tests SHALL fail if the dock is n
 
 | Date | Author | Change |
 |------|--------|--------|
-| 2026-09-06 | omp/grok-4.6 | Initial manifest from prior pin dialogue |
+| 2026-09-06 | K. Harris | Initial manifest from prior pin dialogue |
+| 2026-09-06 | K. Harris | Named actors; moved normative statements out of intent prose |
