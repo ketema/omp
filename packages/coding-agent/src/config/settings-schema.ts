@@ -1165,30 +1165,6 @@ export const SETTINGS_SCHEMA = {
 			],
 		},
 	},
-	"tui.viewport": {
-		type: "enum",
-		values: ["inline", "pinned"] as const,
-		default: "pinned",
-		ui: {
-			tab: "appearance",
-			group: "Display",
-			label: "Prompt Viewport",
-			description: "Keep the prompt dock on-screen while scrolling the transcript (pinned) or use native terminal scrollback (inline)",
-			options: [
-				{
-					value: "pinned",
-					label: "Pinned",
-					description: "Prompt stays at the bottom; wheel/PageUp scroll the transcript in-app",
-				},
-				{
-					value: "inline",
-					label: "Inline",
-					description: "Transcript retires into terminal scrollback; the prompt leaves the screen when you scroll up",
-				},
-			],
-		},
-	},
-
 
 	"terminal.showProgress": {
 		type: "boolean",

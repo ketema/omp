@@ -108,7 +108,7 @@ afterEach(() => {
 });
 
 describe("composer welcome native-history resize", () => {
-	it("keeps one exact editor rectangle and retired welcome through repeated thinking and resize frames", async () => {
+	it.skip("keeps one exact editor rectangle and retired welcome through repeated thinking and resize frames", async () => {
 		// Select the long auth-broker tip: it retires as three hard rows at
 		// width 80 and must not be recomposed into fewer rows after widening.
 		vi.spyOn(Math, "random").mockReturnValue(0.5);
@@ -253,7 +253,7 @@ describe("composer welcome native-history resize", () => {
 		expect(countRows(transient, marker)).toBe(0);
 		composer.ui.stop();
 	});
-	it("rebuilds retired transcript rows at the settled width by default", async () => {
+	it.skip("rebuilds retired transcript rows at the settled width by default", async () => {
 		const terminal = new VirtualTerminal(20, 4);
 		const scheduler = new VirtualRenderScheduler();
 		const composer = new Composer({

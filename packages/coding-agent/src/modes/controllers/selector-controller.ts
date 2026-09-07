@@ -617,9 +617,6 @@ export class SelectorController {
 			case "tui.resizeScrollback":
 				this.ctx.ui.setResizeScrollback(value as ResizeScrollbackMode);
 				break;
-			case "tui.viewport":
-				this.ctx.syncViewport();
-				break;
 
 			case "tui.renderMermaid":
 				setMarkdownMermaidRendering(value as boolean);
