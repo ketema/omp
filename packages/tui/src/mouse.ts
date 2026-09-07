@@ -26,38 +26,59 @@ export interface SgrMouseEvent {
 	leftClick: boolean;
 }
 
+const SGR_ONE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
+
+/**
+ * Extract every SGR mouse report from a string (POST-1 / FORBIDDEN-1).
+ */
+export function parseSgrMouseStream(data: string): SgrMouseEvent[] {
+	if (typeof data !== "string" || !data.includes("\x1b[<")) return [];
+	const events: SgrMouseEvent[] = [];
+	SGR_ONE.lastIndex = 0;
+	for (const match of data.matchAll(SGR_ONE)) {
+		const button = Number(match[1]);
+		const col = Number(match[2]) - 1;
+		const row = Number(match[3]) - 1;
+		const suffix = match[4] ?? "M";
+		const release = suffix === "m";
+		const wheel = button & 64 ? ((button & 1 ? 1 : -1) as 1 | -1) : null;
+		const motion = (button & 32) !== 0 && wheel === null;
+		const leftClick = !release && wheel === null && !motion && (button & 3) === 0;
+		events.push({ button, col, row, release, wheel, motion, leftClick });
+	}
+	return events;
+}
+
 /**
  * Decode an SGR mouse report, or return null when `data` is not one.
  * Callers on hot keypress paths should pre-check `data.startsWith("\x1b[<")`
  * before paying for the regex.
  */
 export function parseSgrMouse(data: string): SgrMouseEvent | null {
-	const match = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(data);
-	if (!match) return null;
-	const button = Number(match[1]);
-	const col = Number(match[2]) - 1;
-	const row = Number(match[3]) - 1;
-	const release = match[4] === "m";
-	const wheel = button & 64 ? ((button & 1 ? 1 : -1) as 1 | -1) : null;
-	const motion = (button & 32) !== 0 && wheel === null;
-	const leftClick = !release && wheel === null && !motion && (button & 3) === 0;
-	return { button, col, row, release, wheel, motion, leftClick };
+	if (typeof data !== "string" || !data.startsWith("\x1b[<")) return null;
+	const events = parseSgrMouseStream(data);
+	return events[0] ?? null;
 }
 
 /** Handler invoked with a decoded SGR event; returning `false` reports unhandled. */
 export type SgrMouseHandler = (event: SgrMouseEvent) => boolean | undefined;
 
 /**
- * Decode an SGR mouse report and forward it to `handler`. Returns `false` when
- * `data` is not an SGR mouse report (or fails to parse), so callers can fall
- * through to other input handling. Centralizes the repeated
- * `data.startsWith("\x1b[<")` + `parseSgrMouse()` pattern.
+ * Decode an SGR mouse report stream and forward each report to `handler`.
+ * Returns `false` when `data` contains no SGR mouse reports (or fails to parse),
+ * so callers can fall through to other input handling.
  */
 export function routeSgrMouseInput(data: string, handler: SgrMouseHandler): boolean {
-	if (!data.startsWith("\x1b[<")) return false;
-	const event = parseSgrMouse(data);
-	if (!event) return false;
-	return handler(event) !== false;
+	if (typeof data !== "string" || !data.includes("\x1b[<")) return false;
+	const events = parseSgrMouseStream(data);
+	if (events.length === 0) return false;
+	let handled = false;
+	for (const event of events) {
+		if (handler(event) !== false) {
+			handled = true;
+		}
+	}
+	return handled;
 }
 
 /**

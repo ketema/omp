@@ -16,9 +16,10 @@ import * as fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import { $flag, getDebugLogPath, logger } from "@oh-my-pi/pi-utils";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
-import { isKeyRelease, matchesKey } from "./keys";
 import { getKeybindings } from "./keybindings";
-import { parseSgrMouse } from "./mouse";
+import { isKeyRelease, matchesKey } from "./keys";
+import { LoopWatchdog } from "./loop-watchdog";
+import { parseSgrMouseStream } from "./mouse";
 import {
 	ALT_SCREEN_ENTER,
 	ALT_SCREEN_LEAVE,
@@ -28,7 +29,6 @@ import {
 	PINNED_WHEEL_SCROLL_LINES,
 	PinnedViewport,
 } from "./pinned-viewport";
-import { LoopWatchdog } from "./loop-watchdog";
 import { setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteAllImages,
@@ -56,6 +56,7 @@ import {
 	visibleWidth,
 } from "./utils";
 
+const ANSI_REGEX = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\].*?(?:\x07|\x1b\\)/g;
 const SEGMENT_RESET = "\x1b[0m";
 /**
  * Per-line terminator written after every non-image content row. It closes both
@@ -769,6 +770,9 @@ export class TUI extends Container {
 	#pinnedViewport: PinnedViewport | undefined;
 	#pinnedAltEntered = false;
 	#pinnedMouseActive = false;
+	#lastPinnedVisibleTranscript: string[] = [];
+	#dragStart: { col: number; row: number } | undefined;
+	#dragEnd: { col: number; row: number } | undefined;
 
 	// Overlay stack for modal components rendered on top of base content
 	overlayStack: {
@@ -896,8 +900,7 @@ export class TUI extends Container {
 
 	#syncPinnedMouseTracking(): void {
 		const overlay = this.#getTopmostVisibleOverlay();
-		const overlayWantsMouse =
-			overlay?.options?.fullscreen === true && overlay.options?.mouseTracking !== false;
+		const overlayWantsMouse = overlay?.options?.fullscreen === true && overlay.options?.mouseTracking !== false;
 		const wantPinnedMouse = this.#pinnedActive && !overlayWantsMouse;
 		if (wantPinnedMouse === this.#pinnedMouseActive) return;
 		if (this.#pinnedMouseActive) this.terminal.write(PINNED_MOUSE_LEAVE);
@@ -912,14 +915,45 @@ export class TUI extends Container {
 
 	#handlePinnedInput(data: string): boolean {
 		if (!this.#pinnedActive || this.#overlayOwnsFocus()) {
-			if (this.#pinnedActive && data.startsWith("\x1b[<")) return true;
+			if (this.#pinnedActive && data.includes("\x1b[<")) return true;
 			return false;
 		}
-		if (data.startsWith("\x1b[<")) {
-			const event = parseSgrMouse(data);
-			if (event?.wheel === -1) this.scrollPinnedBy(-PINNED_WHEEL_SCROLL_LINES);
-			else if (event?.wheel === 1) this.scrollPinnedBy(PINNED_WHEEL_SCROLL_LINES);
-			return true;
+		if (data.includes("\x1b[<")) {
+			const events = parseSgrMouseStream(data);
+			if (events.length > 0) {
+				let wheelDelta = 0;
+				const windowHeight = this.#pinnedViewport?.windowHeight() ?? 0;
+				for (const event of events) {
+					if (event.wheel === -1) {
+						wheelDelta -= PINNED_WHEEL_SCROLL_LINES;
+					} else if (event.wheel === 1) {
+						wheelDelta += PINNED_WHEEL_SCROLL_LINES;
+					} else if (event.leftClick) {
+						if (event.row < windowHeight) {
+							this.#dragStart = { col: event.col, row: event.row };
+							this.#dragEnd = { col: event.col, row: event.row };
+						} else {
+							this.#dragStart = undefined;
+							this.#dragEnd = undefined;
+						}
+					} else if (event.motion && !event.release) {
+						if (this.#dragStart !== undefined) {
+							this.#dragEnd = { col: event.col, row: event.row };
+						}
+					} else if (event.release) {
+						if (this.#dragStart !== undefined) {
+							this.#dragEnd = { col: event.col, row: event.row };
+							this.#copySelectedTranscriptToClipboard();
+							this.#dragStart = undefined;
+							this.#dragEnd = undefined;
+						}
+					}
+				}
+				if (wheelDelta !== 0) {
+					this.scrollPinnedBy(wheelDelta);
+				}
+				return true;
+			}
 		}
 		const keys = getKeybindings();
 		if (keys.matches(data, "tui.viewport.pageUp")) {
@@ -941,6 +975,62 @@ export class TUI extends Container {
 			return true;
 		}
 		return false;
+	}
+
+	#copySelectedTranscriptToClipboard(): void {
+		if (!this.#dragStart || !this.#dragEnd) return;
+		const start = this.#dragStart;
+		const end = this.#dragEnd;
+		const windowHeight = this.#pinnedViewport?.windowHeight() ?? 0;
+		if (windowHeight <= 0) return;
+
+		let r0 = start.row;
+		let c0 = start.col;
+		let r1 = end.row;
+		let c1 = end.col;
+
+		if (r0 > r1 || (r0 === r1 && c0 > c1)) {
+			const tr = r0;
+			const tc = c0;
+			r0 = r1;
+			c0 = c1;
+			r1 = tr;
+			c1 = tc;
+		}
+
+		r0 = Math.max(0, Math.min(r0, windowHeight - 1));
+		r1 = Math.max(0, Math.min(r1, windowHeight - 1));
+
+		const lines = this.#lastPinnedVisibleTranscript;
+		const selectedParts: string[] = [];
+
+		if (r0 === r1) {
+			const line = lines[r0] ?? "";
+			const plain = line.replace(ANSI_REGEX, "");
+			const minC = Math.max(0, Math.min(c0, c1));
+			const maxC = Math.max(0, Math.max(c0, c1));
+			if (minC < maxC) {
+				selectedParts.push(plain.slice(minC, maxC));
+			}
+		} else {
+			for (let r = r0; r <= r1; r++) {
+				const line = lines[r] ?? "";
+				const plain = line.replace(ANSI_REGEX, "");
+				if (r === r0) {
+					selectedParts.push(plain.slice(Math.max(0, c0)));
+				} else if (r === r1) {
+					selectedParts.push(plain.slice(0, Math.max(0, c1)));
+				} else {
+					selectedParts.push(plain);
+				}
+			}
+		}
+
+		const selectedText = selectedParts.join("\n");
+		if (selectedText.length > 0) {
+			const encoded = Buffer.from(selectedText, "utf8").toString("base64");
+			this.terminal.write(`\x1b]52;c;${encoded}\x07`);
+		}
 	}
 
 	/** Delete every tracked Kitty image from the terminal graphics store. */
@@ -1486,7 +1576,8 @@ export class TUI extends Container {
 		}
 		if (this.#altActive || this.#pendingAltExit) {
 			const mouseExit = this.#altMouseTrackingActive ? MOUSE_TRACKING_OFF : "";
-			const exitSequence = this.#pendingAltExit || `${mouseExit}${this.#keyboardEnhancementExit()}${ALT_SCREEN_LEAVE}`;
+			const exitSequence =
+				this.#pendingAltExit || `${mouseExit}${this.#keyboardEnhancementExit()}${ALT_SCREEN_LEAVE}`;
 			this.terminal.write(exitSequence);
 			setAltScreenActive(false);
 			this.#altActive = false;
@@ -2701,11 +2792,7 @@ export class TUI extends Container {
 		this.#imageBudget.endPass();
 		this.#pinnedViewport ??= new PinnedViewport();
 		let lines = this.#pinnedViewport.composeFrame({ transcript: scroll, dock, height });
-		if (!this.#pinnedViewport.isFollowing()) {
-			const hintRow = Math.max(0, this.#pinnedViewport.windowHeight() - 1);
-			const followKey = getKeybindings().getKeys("tui.viewport.follow")[0] ?? "ctrl+shift+down";
-			lines[hintRow] = ` ${followKey} to follow `;
-		}
+		this.#lastPinnedVisibleTranscript = lines.slice(0, this.#pinnedViewport.windowHeight());
 		const markers = this.#extractCursorMarkers(lines);
 		lines = this.#prepareLinesArray(lines, width);
 		this.#emitAltFrame(lines, width, height);

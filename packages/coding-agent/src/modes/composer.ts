@@ -214,9 +214,10 @@ export class Composer implements TerminalFrameProvider {
 			if (this.#preferences.viewport === "pinned") {
 				const dock = this.#renderRoots([this.editor, this.#statusHost], width);
 				const scrollRoots = roots.filter(root => root !== this.editor && root !== this.#statusHost);
+				const scroll = this.#renderRoots(scrollRoots, width);
 				return {
 					viewport: [],
-					pinnedScroll: this.#renderRoots(scrollRoots, width),
+					pinnedScroll: scroll.slice(-Math.max(0, rows - dock.length)),
 					pinnedDock: dock,
 				};
 			}
@@ -227,9 +228,17 @@ export class Composer implements TerminalFrameProvider {
 		const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
 		if (this.#preferences.viewport === "pinned") {
 			const headerRows = this.#headerRetired ? [] : this.#header.render(width);
+			const before = [...headerRows, ...preRoots];
+			const now = performance.now();
+			const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
+			const transcriptRows = transcript.renderViewport(
+				width,
+				Math.max(0, rows - before.length - after.length),
+				frame,
+			);
 			return {
 				viewport: [],
-				pinnedScroll: [...headerRows, ...preRoots, ...transcript.render(width)],
+				pinnedScroll: [...before, ...transcriptRows],
 				pinnedDock: after,
 			};
 		}
