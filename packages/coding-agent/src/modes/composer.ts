@@ -215,9 +215,10 @@ export class Composer implements TerminalFrameProvider {
 				const dock = this.#renderRoots([this.editor, this.#statusHost], width);
 				const scrollRoots = roots.filter(root => root !== this.editor && root !== this.#statusHost);
 				const scroll = this.#renderRoots(scrollRoots, width);
+				const available = Math.max(0, rows - dock.length);
 				return {
 					viewport: [],
-					pinnedScroll: scroll.slice(-Math.max(0, rows - dock.length)),
+					pinnedScroll: available > 0 ? scroll.slice(-available) : [],
 					pinnedDock: dock,
 				};
 			}

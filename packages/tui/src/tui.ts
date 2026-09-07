@@ -857,6 +857,8 @@ export class TUI extends Container {
 		if (!this.#pinnedActive) return;
 		this.#pinnedActive = false;
 		this.#pinnedViewport = undefined;
+		this.#dragStart = undefined;
+		this.#dragEnd = undefined;
 		this.#syncPinnedMouseTracking();
 		this.#releasePinnedAltScreen();
 		this.requestRender(true);
@@ -915,6 +917,10 @@ export class TUI extends Container {
 
 	#handlePinnedInput(data: string): boolean {
 		if (!this.#pinnedActive || this.#overlayOwnsFocus()) {
+			if (this.#overlayOwnsFocus()) {
+				this.#dragStart = undefined;
+				this.#dragEnd = undefined;
+			}
 			if (this.#pinnedActive && data.includes("\x1b[<")) return true;
 			return false;
 		}

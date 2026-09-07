@@ -1,35 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { type TerminalFramePlan, type TerminalFrameProvider, TUI, type ViewportSize } from "@oh-my-pi/pi-tui";
+import { parseSgrMouseStream, routeSgrMouseInput, type SgrMouseEvent } from "@oh-my-pi/pi-tui/mouse";
+import { PINNED_WHEEL_SCROLL_LINES as IMPL_WHEEL_LINES, PINNED_MOUSE_ENTER } from "@oh-my-pi/pi-tui/pinned-viewport";
 import {
-	type Component,
-	type Focusable,
-	TUI,
-	type TerminalFramePlan,
-	type TerminalFrameProvider,
-	type ViewportSize,
-} from "@oh-my-pi/pi-tui";
-import {
-	parseSgrMouse,
-	routeSgrMouseInput,
-	type SgrMouseEvent,
-} from "@oh-my-pi/pi-tui/mouse";
-import {
-	PINNED_MOUSE_ENTER,
-	PINNED_WHEEL_SCROLL_LINES as IMPL_WHEEL_LINES,
-	PinnedViewport,
-} from "@oh-my-pi/pi-tui/pinned-viewport";
-import {
-	CONTRACT_PINNED_JITTER_COPY,
-	OSC52_CLIPBOARD_PREFIX,
-	PINNED_MOUSE_BUTTON_EVENT,
-	PINNED_MOUSE_SGR,
 	PINNED_WHEEL_SCROLL_LINES as CONTRACT_WHEEL_LINES,
+	OSC52_CLIPBOARD_PREFIX,
+	PINNED_MOUSE_SGR,
 	PinnedJitterCopyContractError,
-	validateFollowHintNotInTranscript,
-	validateOsc52Copy,
 	validateSgrMouseStream,
-	validateWheelDeltaLines,
 } from "../../../requirements/contracts/pinned-jitter-copy.contract";
 import { VirtualTerminal } from "./virtual-terminal";
 
@@ -105,7 +85,7 @@ describe("CONTRACT_PINNED_JITTER_COPY (TUI Implementation Tests)", () => {
 		 */
 		const concatenatedChunk = "\x1b[<64;10;5M\x1b[<65;10;5M";
 		const received: SgrMouseEvent[] = [];
-		const handled = routeSgrMouseInput(concatenatedChunk, (event) => {
+		const handled = routeSgrMouseInput(concatenatedChunk, event => {
 			received.push(event);
 			return true;
 		});
@@ -201,11 +181,7 @@ describe("CONTRACT_PINNED_JITTER_COPY (TUI Implementation Tests)", () => {
 		const term = new RecordingTerminal(40, 10, 100);
 		const tui = new TUI(term, false);
 
-		const transcript = [
-			"ALPHA_TRANSCRIPT_LINE",
-			"BETA_TRANSCRIPT_LINE",
-			"GAMMA_TRANSCRIPT_LINE",
-		];
+		const transcript = ["ALPHA_TRANSCRIPT_LINE", "BETA_TRANSCRIPT_LINE", "GAMMA_TRANSCRIPT_LINE"];
 		const dock = ["DOCK_INPUT"];
 		const provider = new StaticFrameProvider(transcript, dock);
 
@@ -236,6 +212,43 @@ describe("CONTRACT_PINNED_JITTER_COPY (TUI Implementation Tests)", () => {
 			`1. WHAT: test_highlight_copy_osc52 FAILED\n2. WHY: POST-3 violation - left button press, drag, and release on transcript did not emit OSC 52 clipboard sequence with selected text\n3. EXPECTED: terminal write containing '${OSC52_CLIPBOARD_PREFIX}' and base64 '${expectedBase64}' for '${expectedSelectedText}'\n4. ACTUAL: OSC52 prefix present: ${hasOsc52Prefix}, payload present: ${hasPayload}\n5. GUIDANCE: Track mouse drag selection over transcript rows and write OSC 52 clipboard sequence on release`,
 		);
 
+		tui.stop();
+	});
+
+	it("POST-3: exitPinned discards an in-progress drag so a later release does not copy", async () => {
+		/**
+		 * CONTRACT TRACEABILITY:
+		 * - Contract: TUI.exitPinned / drag selection
+		 * - Enforces: POST-3: copy only for an uninterrupted press-drag-release
+		 * - Category: regression
+		 * - Risk tier: Medium — stale drag after exit writes unexpected clipboard
+		 * - Adversarial: Contract-governed, implementation-aware
+		 *
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites POST-3
+		 *   [✓] C2 VALUABLE: fails if drag state survives exitPinned
+		 *   [✓] C3 NON-DUPLICATIVE: interrupted-gesture path, not the happy-path copy test
+		 *   [✓] C4 NOT FUTURE-EDIT: locks the arbitrated exitPinned/overlay clear
+		 */
+		const term = new RecordingTerminal(40, 10, 100);
+		const tui = new TUI(term, false);
+		tui.setFrameProvider(new StaticFrameProvider(["ALPHA_TRANSCRIPT_LINE"], ["DOCK_INPUT"]));
+		tui.start();
+		tui.enterPinned();
+		await term.waitForRender();
+		term.sendInput("\x1b[<0;1;1M");
+		term.sendInput("\x1b[<32;6;1M");
+		tui.exitPinned();
+		tui.enterPinned();
+		await term.waitForRender();
+		const writesBefore = term.writes.length;
+		term.sendInput("\x1b[<0;6;1m");
+		await term.waitForRender();
+		const after = term.writes.slice(writesBefore).join("");
+		expect(after.includes(OSC52_CLIPBOARD_PREFIX)).toBe(
+			false,
+			`1. WHAT: test_exitPinned_clears_drag FAILED\n2. WHY: POST-3 - release after exitPinned copied from a stale drag\n3. EXPECTED: no OSC 52 after the post-exit release\n4. ACTUAL: writes contained OSC 52\n5. GUIDANCE: Clear drag anchors when leaving pinned mode`,
+		);
 		tui.stop();
 	});
 
@@ -449,6 +462,20 @@ describe("CONTRACT_PINNED_JITTER_COPY (TUI Implementation Tests)", () => {
 		expect(emptyResult).toEqual(
 			[],
 			`1. WHAT: test_validate_sgr_empty_result FAILED\n2. WHY: ERRORS-1 violation - string with no SGR reports must return empty list\n3. EXPECTED: []\n4. ACTUAL: ${JSON.stringify(emptyResult)}\n5. GUIDANCE: Return empty array when no SGR patterns match in string`,
+		);
+
+		expect(parseSgrMouseStream("plain text with no SGR reports")).toEqual(
+			[],
+			`1. WHAT: test_parseSgrMouseStream_empty FAILED\n2. WHY: ERRORS-1 - mouse.ts stream parse must return [] when no reports exist\n3. EXPECTED: []\n4. ACTUAL: ${JSON.stringify(parseSgrMouseStream("plain text with no SGR reports"))}\n5. GUIDANCE: Production parser returns empty list, not an exception`,
+		);
+		expect(parseSgrMouseStream("\x1b[<64;10;5M\x1b[<65;10;5M").length).toBe(
+			2,
+			`1. WHAT: test_parseSgrMouseStream_concat FAILED\n2. WHY: POST-1 - mouse.ts must extract both reports\n3. EXPECTED: 2\n4. ACTUAL: ${parseSgrMouseStream("\x1b[<64;10;5M\x1b[<65;10;5M").length}\n5. GUIDANCE: Stream-parse concatenated SGR in mouse.ts`,
+		);
+		const asUnknown = parseSgrMouseStream as (data: unknown) => unknown;
+		expect(asUnknown(null)).toEqual(
+			[],
+			`1. WHAT: test_parseSgrMouseStream_non_string FAILED\n2. WHY: PRE-1 - mouse.ts must not throw on non-string\n3. EXPECTED: []\n4. ACTUAL: ${JSON.stringify(asUnknown(null))}\n5. GUIDANCE: Guard typeof data before parsing`,
 		);
 	});
 });
