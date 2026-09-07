@@ -1,11 +1,17 @@
 /**
- * Pinned composer viewport contract — specification authority.
+ * Pinned composer viewport — specification authority (WHAT, not HOW).
  *
+ * IKG: Concept "Design by Contract" (Meyer, IEEE Computer 1992; Hoare Logic).
+ * Contract is specification — NOT implementation. ArchitecturalPrinciple
+ * "Contract-Implementation Independence" GOVERNS this file.
+ *
+ * Interactive OMP is always pinned. There is no inline mode.
  * Implementation SHALL NOT import this module (CL11-F).
  * Tests import both this file and the implementation and assert alignment.
+ *
+ * TypeScript 7 / erasable: no enum keyword, no namespaces, no parameter properties.
+ * Pattern "Idiomatic Per-Ecosystem Distribution": TS as const + throw, not icontract.
  */
-
-export type ViewportMode = "inline" | "pinned";
 
 export type ClauseVerification = "test" | "execution" | "tool";
 
@@ -23,27 +29,22 @@ export class PinnedComposerContractError extends Error {
 	}
 }
 
-export const VIEWPORT_MODES = ["inline", "pinned"] as const;
-export const DEFAULT_VIEWPORT_MODE: ViewportMode = "pinned";
 export const PINNED_MIN_TRANSCRIPT_ROWS = 3;
 export const PINNED_WHEEL_SCROLL_LINES = 3;
 export const PINNED_MOUSE_ENTER = "\x1b[?1002h\x1b[?1006h";
 export const PINNED_MOUSE_LEAVE = "\x1b[?1006l\x1b[?1002l";
 export const ALT_SCREEN_ENTER = "\x1b[?1049h";
 export const ALT_SCREEN_LEAVE = "\x1b[?1049l";
+export const FOLLOW_KEYBINDING = "tui.viewport.follow";
+export const PAGE_UP_KEYBINDING = "tui.viewport.pageUp";
+export const PAGE_DOWN_KEYBINDING = "tui.viewport.pageDown";
+export const TOP_KEYBINDING = "tui.viewport.top";
+export const VIEWPORT_SETTING_PATH = "tui.viewport";
 
 export interface ComposeFrameInput {
 	readonly transcript: readonly string[];
 	readonly dock: readonly string[];
 	readonly height: number;
-}
-
-export interface ComposeFrameResult {
-	readonly frame: readonly string[];
-	readonly windowHeight: number;
-	readonly dockHeight: number;
-	readonly scrollTop: number;
-	readonly following: boolean;
 }
 
 export interface ScrollInfo {
@@ -52,17 +53,12 @@ export interface ScrollInfo {
 	readonly linesAbove: number;
 }
 
-export function validateViewportMode(value: unknown): ViewportMode {
-	if (value === "inline" || value === "pinned") return value;
-	throw new PinnedComposerContractError(
-		"PRE-MODE-1",
-		`viewport mode must be "inline" or "pinned", got ${String(value)}`,
-	);
-}
-
-export function validateComposeHeight(height: number): number {
-	if (!Number.isFinite(height) || height < 1) {
-		throw new PinnedComposerContractError("PRE-1", `height must be a finite number >= 1, got ${String(height)}`);
+export function validateComposeHeight(height: unknown): number {
+	if (typeof height !== "number" || !Number.isFinite(height) || height < 1) {
+		throw new PinnedComposerContractError(
+			"PRE-1",
+			`height must be a finite number >= 1, got ${String(height)}`,
+		);
 	}
 	return Math.trunc(height);
 }
@@ -74,10 +70,6 @@ export function clippedPinnedDockHeight(dockLength: number, height: number): num
 }
 
 export const CONTRACT_PINNED_COMPOSER = {
-	"PRE-MODE-1": {
-		verification: "test",
-		text: 'tui.viewport SHALL be the literal "inline" or "pinned"',
-	},
 	"PRE-1": {
 		verification: "test",
 		text: "composeFrame height SHALL be a finite number >= 1",
@@ -88,31 +80,31 @@ export const CONTRACT_PINNED_COMPOSER = {
 	},
 	"POST-2": {
 		verification: "test",
-		text: "composeFrame SHALL place dock rows (clipped from the top if needed) as the last dockHeight rows",
+		text: "the last dockHeight rows of the returned frame SHALL equal the dock (top-clipped when the dock is taller than the reserved dock band)",
 	},
 	"POST-3": {
 		verification: "test",
-		text: "composeFrame SHALL reserve at least PINNED_MIN_TRANSCRIPT_ROWS for the transcript window when height allows",
+		text: "when height allows, at least PINNED_MIN_TRANSCRIPT_ROWS of the frame SHALL be transcript, not dock",
 	},
 	"POST-4": {
 		verification: "test",
-		text: "when following is true, composeFrame SHALL pin scrollTop to maxScroll (transcript tail)",
+		text: "when following is true, the visible transcript SHALL be the tail",
 	},
 	"POST-5": {
 		verification: "test",
-		text: "when following is false, composeFrame SHALL keep scrollTop unchanged except to clamp into [0, maxScroll]",
+		text: "when following is false, newly appended transcript SHALL NOT change which transcript rows are visible except to clamp if the window would sit past the end",
 	},
 	"POST-6": {
 		verification: "test",
-		text: "scrollBy(delta) SHALL pause following when the result is above the tail and resume following when the result is at the tail",
+		text: "a scroll that leaves the tail SHALL pause following; a scroll that lands on the tail SHALL resume following",
 	},
 	"POST-7": {
 		verification: "test",
-		text: "printable editor input SHALL NOT set following true or change scrollTop",
+		text: "printable editor input SHALL NOT start following and SHALL NOT change which transcript rows are visible",
 	},
 	"POST-8": {
 		verification: "test",
-		text: "while pinned, Composer.renderFrame SHALL omit HistoryBatch",
+		text: "every interactive frame SHALL omit retired native-scrollback batches",
 	},
 	"POST-9": {
 		verification: "test",
@@ -124,7 +116,7 @@ export const CONTRACT_PINNED_COMPOSER = {
 	},
 	"INV-1": {
 		verification: "test",
-		text: "while pinned the editor dock SHALL occupy the last dockHeight rows of the physical frame",
+		text: "the editor dock SHALL occupy the last dockHeight rows of the physical frame",
 	},
 	"INV-2": {
 		verification: "test",
@@ -132,26 +124,38 @@ export const CONTRACT_PINNED_COMPOSER = {
 	},
 	"FORBIDDEN-1": {
 		verification: "test",
-		text: "pinned mode SHALL NOT emit HistoryBatch rows to native scrollback",
+		text: "interactive paint SHALL NOT emit retired transcript rows to native scrollback",
 	},
 	"FORBIDDEN-2": {
 		verification: "test",
-		text: "pinned mode SHALL NOT use DECSTBM (CSI r) to pin the dock",
+		text: "pinned mode SHALL NOT pin the dock by setting a terminal scrolling region",
+	},
+	"FORBIDDEN-3": {
+		verification: "test",
+		text: "SETTINGS_SCHEMA SHALL NOT contain tui.viewport; interactive sessions have no unpinned mode",
 	},
 	"SEQ-1": {
 		verification: "test",
-		text: "Composer.start SHALL call TUI.enterPinned after ui.start when viewport is pinned",
+		text: "Composer.start SHALL call TUI.enterPinned after ui.start (IP-1/SEQ-1)",
 	},
 	"SEQ-2": {
 		verification: "test",
-		text: "wheel and viewport page keys SHALL reach PinnedViewport.scrollBy before the focused editor handleInput",
+		text: "wheel and viewport page keys SHALL reach PinnedViewport.scrollBy before the focused editor handleInput (IP-2, IP-3)",
 	},
 	"SEQ-3": {
 		verification: "test",
-		text: "Composer.setPreferences SHALL enter pinned mode when viewport is pinned and leave it when viewport is inline",
+		text: "fullscreen overlay enter SHALL NOT write ALT_SCREEN_ENTER when pin already owns the alt screen",
+	},
+	"SEQ-4": {
+		verification: "test",
+		text: "TUI.stop SHALL leave the alt screen at most once",
+	},
+	"SEQ-5": {
+		verification: "test",
+		text: "Composer.renderFrame SHALL hand TUI only pinnedScroll and pinnedDock (IP-1); no retired native-scrollback batch",
 	},
 	"ERRORS-1": {
 		verification: "test",
-		text: "validateViewportMode and validateComposeHeight SHALL throw PinnedComposerContractError citing the clause id; PinnedViewport.composeFrame SHALL throw Error whose message contains PRE-1",
+		text: "validateComposeHeight SHALL throw PinnedComposerContractError citing PRE-1; PinnedViewport.composeFrame SHALL throw Error whose message contains PRE-1",
 	},
 } as const satisfies Record<string, Clause>;
