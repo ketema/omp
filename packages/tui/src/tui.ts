@@ -2798,6 +2798,9 @@ export class TUI extends Container {
 		this.#imageBudget.endPass();
 		this.#pinnedViewport ??= new PinnedViewport();
 		let lines = this.#pinnedViewport.composeFrame({ transcript: scroll, dock, height });
+		if (this.#getTopmostVisibleOverlay() !== undefined) {
+			lines = this.#compositeOverlaysIntoWindow(lines, width, height);
+		}
 		this.#lastPinnedVisibleTranscript = lines.slice(0, this.#pinnedViewport.windowHeight());
 		const markers = this.#extractCursorMarkers(lines);
 		lines = this.#prepareLinesArray(lines, width);

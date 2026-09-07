@@ -167,6 +167,76 @@ describe("TUI pinned session integration (POST-7..10, INV-1, FORBIDDEN-1..2, SEQ
 		}
 	});
 
+	it("non-fullscreen overlay composites into the pinned frame and receives keys", async () => {
+		/**
+		 * CONTRACT TRACEABILITY:
+		 * - Contract: TUI.#renderPinnedFrame()
+		 * - Enforces: INV-1 dock remains; floating overlay must still paint
+		 * - Category: integration / regression
+		 * - Risk tier: High — /switch and /model freeze the dock if the overlay never paints
+		 * - Adversarial: Contract-governed, implementation-aware
+		 *
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites INV-1 (dock still last); overlay paint is the missing integration
+		 *   [✓] C2 VALUABLE: fails if #renderPinnedFrame skips #compositeOverlaysIntoWindow
+		 *   [✓] C3 NON-DUPLICATIVE: POST-10 covers fullscreen only
+		 *   [✓] C4 NOT FUTURE-EDIT: locks current /switch freeze
+		 */
+		const term = new RecordingTerminal(40, 8, 100);
+		const editor = new EditorStub();
+		const overlay: Component & Focusable = {
+			focused: false,
+			invalidate() {},
+			render: () => ["SWITCH_OVERLAY"],
+			handleInput(data: string) {
+				this.focused = this.focused;
+				(this as { lastKey?: string }).lastKey = data;
+			},
+		};
+		const provider: TerminalFrameProvider = {
+			renderFrame() {
+				return {
+					viewport: [],
+					pinnedScroll: ["alpha", "bravo", "charlie"],
+					pinnedDock: ["PROMPT:"],
+				};
+			},
+			acknowledgeHistory() {},
+		};
+		const tui = new TUI(term, true);
+		tui.setFrameProvider(provider);
+		tui.addChild(editor);
+		tui.setFocus(editor);
+		try {
+			tui.start();
+			tui.enterPinned();
+			await term.waitForRender();
+			tui.showOverlay(overlay, { anchor: "bottom-center" });
+			await term.waitForRender();
+			const viewport = term.getViewport().join("\n");
+			expect(viewport.includes("SWITCH_OVERLAY")).toBe(
+				true,
+				`1. WHAT: pinned non-fullscreen overlay paint FAILED
+2. WHY: overlay never composited into the pinned alt frame
+3. EXPECTED: viewport contains SWITCH_OVERLAY
+4. ACTUAL: ${JSON.stringify(term.getViewport().map(l => l.trimEnd()))}
+5. GUIDANCE: Composite visible overlays into the pinned frame before emit`,
+			);
+			term.sendInput("x");
+			await term.waitForRender();
+			expect(editor.text).toBe(
+				"",
+				`1. WHAT: dock captured overlay keys FAILED
+2. WHY: overlay must own focus while visible
+3. EXPECTED: editor text empty
+4. ACTUAL: "${editor.text}"
+5. GUIDANCE: Focused overlay receives keys; dock does not`,
+			);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("SEQ-4: TUI.stop leaves the alt screen at most once", async () => {
 		/**
 		 * CONTRACT TRACEABILITY:
