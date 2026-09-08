@@ -1,12 +1,16 @@
 /**
- * CL11 Behavioral Contract for Pinned Interactive Viewport, Software Scrollback, and Overlay Compositing
+ * CL11 Canonical Contract: Pinned Viewport, Software Scrollback, and Pane-Confined Selection
+ *
+ * Single Authoritative Specification for the Pinned TUI Domain.
+ * Consolidates and supersedes:
+ *   - requirements/contracts/pinned-composer.contract.ts (DELETED)
+ *   - requirements/contracts/pinned-jitter-copy.contract.ts (DELETED)
  *
  * Source Authority: requirements/REQUIREMENT_MANIFEST_PINNED_REFACTOR.md
  * Prime Reference:  ~/projects/prime-agent/packages/tui/src/fullscreen.ts
  *
  * Implementation modules SHALL NOT import this contract file (CL11-F).
- * Tests bridge specification and implementation.
- * Language mode: TypeScript 7 erasable (no runtime enum, no namespaces, no parameter properties).
+ * Language mode: TypeScript 7 erasable.
  */
 
 // ============================================================================
@@ -20,6 +24,8 @@ export const PINNED_ALT_SCREEN_LEAVE = "\x1b[?1049l";
 export const PINNED_MOUSE_SGR_ENTER = "\x1b[?1006h";
 export const PINNED_MOUSE_BUTTON_ENTER = "\x1b[?1002h";
 export const OSC52_CLIPBOARD_PREFIX = "\x1b]52;c;";
+export const SELECTION_HIGHLIGHT_START = "\x1b[7m";
+export const SELECTION_HIGHLIGHT_END = "\x1b[27m";
 
 // ============================================================================
 // ARTIFACT 2: DOMAIN ERROR HIERARCHY
@@ -84,6 +90,13 @@ export interface ScrollInfo {
 	readonly linesAbove: number;
 }
 
+export interface SelectionSpan {
+	readonly startRow: number;
+	readonly startCol: number;
+	readonly endRow: number;
+	readonly endCol: number;
+}
+
 // ============================================================================
 // ARTIFACT 4: CALLABLE VALIDATORS (RAISE CITING CLAUSE IDS)
 // ============================================================================
@@ -121,7 +134,7 @@ export interface ContractClause {
 	readonly description: string;
 }
 
-export const CONTRACT_PINNED_DOCK: Record<string, ContractClause> = {
+export const CONTRACT_PINNED_DOCK = {
 	"PRE-PV-1": {
 		verification: "test",
 		description: "PinnedViewport.composeFrame height argument SHALL be a finite number >= 1",
@@ -152,11 +165,23 @@ export const CONTRACT_PINNED_DOCK: Record<string, ContractClause> = {
 	},
 	"POST-PV-6": {
 		verification: "test",
-		description: "Left-button drag across transcript rows SHALL capture selected plaintext and copy to clipboard via OSC 52 upon button release",
+		description: "Left-button drag across transcript rows SHALL capture selected plaintext and copy to clipboard via OSC 52 upon button release, using visual column widths",
 	},
 	"POST-PV-7": {
 		verification: "test",
-		description: "Composer pinned renderFrame SHALL NOT permanently consume available viewport rows with unretired startup headers when active session messages exist",
+		description: "Composer pinned renderFrame SHALL NOT permanently consume available viewport rows with unretired startup headers when active session messages exist; retired header sits at index 0 of history",
+	},
+	"POST-PV-8": {
+		verification: "test",
+		description: "Fullscreen overlay display SHALL NOT write PINNED_MOUSE_LEAVE (?1006l) while an overlay requests mouse tracking, keeping SGR 1006 active",
+	},
+	"POST-PV-9": {
+		verification: "test",
+		description: "PinnedViewport.composeFrame SHALL apply visual inverse video styling (\x1b[7m...\x1b[27m) to cells within an active in-app selection drag",
+	},
+	"POST-PV-10": {
+		verification: "test",
+		description: "TUI.#handlePinnedInput SHALL only commit drag selection to clipboard on release of mouse button 0 (left click)",
 	},
 	"SEQ-PV-1": {
 		verification: "test",
@@ -172,7 +197,7 @@ export const CONTRACT_PINNED_DOCK: Record<string, ContractClause> = {
 	},
 	"SEQ-PV-4": {
 		verification: "test",
-		description: "Composer.renderFrame SHALL provide the full accumulated transcript history to PinnedViewport on every interactive frame",
+		description: "Composer.renderFrame SHALL provide the full accumulated transcript history to PinnedViewport on every interactive frame, caching settled blocks",
 	},
 	"SEQ-PV-5": {
 		verification: "test",
@@ -202,6 +227,10 @@ export const CONTRACT_PINNED_DOCK: Record<string, ContractClause> = {
 		verification: "test",
 		description: "Implementation modules SHALL NOT import this contract file (CL11-F)",
 	},
+	"INV-PV-7": {
+		verification: "test",
+		description: "TUI SHALL NOT expose or honor an inline/unpinned viewport setting or code path",
+	},
 	"FORBIDDEN-PV-1": {
 		verification: "test",
 		description: "A multi-report SGR chunk SHALL NOT be dropped or return null/unhandled",
@@ -214,4 +243,4 @@ export const CONTRACT_PINNED_DOCK: Record<string, ContractClause> = {
 		verification: "test",
 		description: "validateSgrMouseReports SHALL throw InvalidMouseInputError citing PRE-PV-2 on non-string input",
 	},
-};
+} as const satisfies Record<string, ContractClause>;

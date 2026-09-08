@@ -1,17 +1,18 @@
 version: "2.0"
 feature_name: "pinned-dock-refactor"
 manifest_path: "requirements/REQUIREMENT_MANIFEST_PINNED_REFACTOR.md"
-manifest_hash: "sha256:33ad68f449cbb6558e45a55f79e468e9c1f72025f3b35957b2685ae883e42fa4"
+manifest_hash: "sha256:a2c9621623dc01d66129217ff1d35c399438d66382add32313ccd440866b3d67"
 created: "2026-09-07"
-last_updated: "2026-09-07"
+last_updated: "2026-09-08"
 status: "ACTIVE"
 
 slices:
   - id: "SLICE-1"
-    name: "Overlay Compositing & Selection Integrity"
+    name: "Overlay Compositing, SGR Lifecycle, and Pane-Confined Selection"
     scope:
       - "packages/tui/src/tui.ts"
       - "packages/tui/src/mouse.ts"
+      - "packages/tui/src/pinned-viewport.ts"
       - "packages/tui/test/pinned-tui.test.ts"
       - "packages/tui/test/pinned-dock-refactor.test.ts"
     clauses_in_scope:
@@ -20,6 +21,9 @@ slices:
       - "POST-PV-4"
       - "POST-PV-5"
       - "POST-PV-6"
+      - "POST-PV-8"
+      - "POST-PV-9"
+      - "POST-PV-10"
       - "SEQ-PV-2"
       - "SEQ-PV-3"
       - "SEQ-PV-5"
@@ -39,12 +43,11 @@ slices:
       - "FORBIDDEN-PV-1"
 
   - id: "SLICE-2"
-    name: "Full Software Scrollback & Header Retirement"
+    name: "Full Software Scrollback, Settled Cache, and Header Retirement"
     scope:
       - "packages/coding-agent/src/modes/composer.ts"
       - "packages/coding-agent/src/modes/components/transcript-container.ts"
       - "packages/tui/src/pinned-viewport.ts"
-      - "packages/coding-agent/test/pinned-jitter-copy.test.ts"
       - "packages/coding-agent/test/pinned-dock-refactor.test.ts"
       - "packages/tui/test/pinned-viewport.test.ts"
     clauses_in_scope:
@@ -55,8 +58,10 @@ slices:
       - "SEQ-PV-1"
       - "SEQ-PV-4"
       - "INV-PV-1"
+      - "INV-PV-7"
       - "ERRORS-PV-1"
     clauses_deferred: []
     negative_constraints:
       - "INV-PV-1"
       - "INV-PV-6"
+      - "INV-PV-7"
