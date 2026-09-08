@@ -72,7 +72,7 @@ describe("pinned dock refactor — SLICE-2 full scrollback, settled-block cachin
 
 			const plan = composer.renderFrame({ columns: 80, rows: 10 });
 			composer.ui.scrollPinnedBy(-transcriptRows.length);
-			await terminal.waitForRender();
+			await terminal.waitForRender(() => terminal.getViewport()[0]?.trim() === fullTranscriptRows[0]?.trim());
 			const observed = {
 				optionsTranscript: plan.pinnedScroll ?? [],
 				earliestVisibleRow: terminal.getViewport()[0]?.trim(),
