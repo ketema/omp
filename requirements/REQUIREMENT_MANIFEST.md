@@ -120,7 +120,7 @@ No contract executes unless ALL predicates evaluate to TRUE.
 | REQ-RLM-0002 | RLM plugin SHALL provide the model an additional RLM tool with schema and description per F-020/F-021/F-022. | F-237 |
 | REQ-RLM-0003 | Kernel manager SHALL implement kernel lifecycle per F-001..F-018 with the exact constants listed (5000 ms readiness/ports, 65536-char cap, 1000 ms abort grace, 5000 ms busy budget, 200 ms shutdown grace, 1024-char stderr tail). | F-223/F-224 |
 | REQ-RLM-0004 | Kernel manager SHALL enforce the msg_id execution rule (F-005) and serialized execution (F-004). | F-221 |
-| REQ-RLM-0005 | TypeScript host SHALL apply the model-facing prompt contract F-040..F-062 through the tool prompt/description surface. | F-166 |
+| REQ-RLM-0005 | TypeScript host SHALL apply the model-facing prompt contract F-040..F-062 and F-269/F-270 through the tool prompt/description surface. | F-166 |
 | REQ-RLM-0006 | Python runtime SHALL expose the rlm API per F-070..F-082 (frozen dataclasses, control-channel comm, call_soon_threadsafe futures, callable module, 19-name __all__). | F-226 |
 | REQ-RLM-0007 | Python runtime SHALL implement the harness ledger per F-090..F-108 (4 kinds, CRUD, save-on-mutate, mtime re-sync, overview truncation, corrupt-file tolerance). | F-108 |
 | REQ-RLM-0008 | TypeScript host SHALL implement rlm.run recursion per F-110..F-133 (depth gate, kwargs whitelist, name validation, exact-selector model resolution or fail-loud, sub-8hex dirs, admission handles, parent-inbox replies, terminal notices, usage attribution). | F-228/F-229 |
