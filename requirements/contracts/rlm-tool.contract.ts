@@ -7,7 +7,7 @@
  * The implementation does NOT import from this file; tests import both.
  *
  * Traceability: REQ-RLM-0002, REQ-RLM-0005, REQ-RLM-0019, REQ-N-1, REQ-N-2;
- * F-020..F-032, F-040..F-062, F-037/F-237; A-006; IP-1, IP-9; manifest SEQ-13.
+ * F-020..F-032, F-040..F-062, F-269/F-270, F-037/F-237; A-006; IP-1, IP-9; manifest SEQ-13.
  */
 
 // =============================================================================

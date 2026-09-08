@@ -290,8 +290,8 @@ Source shorthand: AS=agent-session.ts, KI=kernel/index.ts, IP=tools/ipython.ts, 
 | F-266 | Child inherits parent tools + provider retry settings | RT:166–167 |
 | F-267 | Only bounded model catalog metadata crosses into Python | RT:253 |
 | F-268 | Component ownership: ipython.ts owns bootstrap; agent-session owns policy/usage | RT:62–73 |
-| F-269 | Literal write-path rule | File-write paths (`write`, `open`, `dill.dump_session`) must be literal, statically-inspectable strings; an f-string/computed path is rejected by governance write-guards even for scratch/session files | Session 2026-09-07 incident |
-| F-270 | dill.dump_session bare-filename rule | Call `dill.dump_session("<literal path>.pkl")` with a bare filename only; never open the destination yourself first (e.g. `lzma.open(...)` as `f`) and pass the handle — the dumper serializes the whole namespace including any open file/codec object still in scope, which is unpicklable | Session 2026-09-07 incident |
+| F-269 | Literal write-path rule: file-write paths (`write`, `open`, `dill.dump_session`) must be literal, statically-inspectable strings; an f-string/computed path is rejected by governance write-guards even for scratch/session files | Session 2026-09-07 incident |
+| F-270 | dill.dump_session bare-filename rule: call `dill.dump_session("<literal path>.pkl")` with a bare filename only; never open the destination first (for example `lzma.open(...)` as `f`) and pass the handle — the dumper serializes the whole namespace including any open file/codec object still in scope, which is unpicklable | Session 2026-09-07 incident |
 
 ---
 
