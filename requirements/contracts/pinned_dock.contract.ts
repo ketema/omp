@@ -40,6 +40,12 @@ export class InvalidHeightError extends PinnedDockContractError {
 	}
 }
 
+export class InvalidMouseInputError extends PinnedDockContractError {
+	constructor(input: unknown) {
+		super("PRE-PV-2", `Input data must be a string, got ${typeof input}`);
+	}
+}
+
 export class UnparsedMouseEventError extends PinnedDockContractError {
 	constructor(rawChunk: string) {
 		super("FORBIDDEN-PV-1", `Concatenated SGR chunk dropped unparsed: ${JSON.stringify(rawChunk)}`);
@@ -90,7 +96,7 @@ export function validateComposeHeight(height: number): void {
 
 export function validateSgrMouseReports(rawChunk: string, events: readonly SgrMouseEvent[]): void {
 	if (typeof rawChunk !== "string") {
-		throw new PinnedDockContractError("PRE-PV-2", `Input data must be a string, got ${typeof rawChunk}`);
+		throw new InvalidMouseInputError(rawChunk);
 	}
 	const countExpected = (rawChunk.match(/\x1b\[<(\d+);(\d+);(\d+)[Mm]/g) ?? []).length;
 	if (countExpected > 0 && events.length === 0) {
@@ -203,5 +209,9 @@ export const CONTRACT_PINNED_DOCK: Record<string, ContractClause> = {
 	"ERRORS-PV-1": {
 		verification: "test",
 		description: "validateComposeHeight SHALL throw InvalidHeightError citing PRE-PV-1 on non-positive height",
+	},
+	"ERRORS-PV-2": {
+		verification: "test",
+		description: "validateSgrMouseReports SHALL throw InvalidMouseInputError citing PRE-PV-2 on non-string input",
 	},
 };

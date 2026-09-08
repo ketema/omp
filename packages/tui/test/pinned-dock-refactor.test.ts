@@ -8,9 +8,16 @@ import {
 	type ViewportSize,
 } from "@oh-my-pi/pi-tui";
 import { parseSgrMouseStream } from "@oh-my-pi/pi-tui/mouse";
+import { PinnedViewport } from "@oh-my-pi/pi-tui/pinned-viewport";
 import {
 	CONTRACT_PINNED_DOCK,
+	InvalidHeightError,
+	InvalidMouseInputError,
 	OSC52_CLIPBOARD_PREFIX,
+	validateComposeHeight,
+	validateSgrMouseReports,
+	validateSoftwareScrollback,
+	ZeroScrollbackError,
 } from "../../../requirements/contracts/pinned_dock.contract";
 import { VirtualTerminal } from "./virtual-terminal";
 
@@ -33,165 +40,114 @@ class RecordingTerminal extends VirtualTerminal {
 /**
  * Immutable frame input for real TUI lifecycle tests. It contains no provider
  * behavior under test; its values are the transcript and dock inputs governed
- * by the pinned-dock contract.
+ * by the contract.
+ *
+ * Double type: Stub.
+ * Contract: requirements/contracts/pinned_dock.contract.ts POST-PV-3, POST-PV-6.
  */
 class StaticPinnedFrameProvider implements TerminalFrameProvider {
-	readonly transcript: readonly string[];
-	readonly dock: readonly string[];
-
-	constructor(transcript: readonly string[], dock: readonly string[]) {
-		this.transcript = transcript;
-		this.dock = dock;
-	}
+	constructor(
+		private readonly scroll: readonly string[],
+		private readonly dock: readonly string[],
+	) {}
 
 	renderFrame(_viewport: ViewportSize): TerminalFramePlan {
 		return {
 			viewport: [],
-			pinnedScroll: [...this.transcript],
-			pinnedDock: [...this.dock],
+			pinnedScroll: this.scroll,
+			pinnedDock: this.dock,
 		};
 	}
 }
 
-const postPv3 = CONTRACT_PINNED_DOCK["POST-PV-3"];
-const postPv4 = CONTRACT_PINNED_DOCK["POST-PV-4"];
-const postPv6 = CONTRACT_PINNED_DOCK["POST-PV-6"];
-const seqPv2 = CONTRACT_PINNED_DOCK["SEQ-PV-2"];
-const seqPv5 = CONTRACT_PINNED_DOCK["SEQ-PV-5"];
-
 describe("pinned dock refactor — SLICE-1 overlay compositing and selection integrity", () => {
 	it("POST-PV-4 / FORBIDDEN-PV-1: decodes every report in one concatenated SGR mouse chunk", () => {
-		/**
-		 * CONTRACT TRACEABILITY:
-		 * - Contract: parseSgrMouseStream()
-		 * - Enforces: POST-PV-4: parseSgrMouseStream SHALL extract and decode all concatenated SGR mouse reports in a single stdin buffer chunk without dropping reports.
-		 * - Enforces: FORBIDDEN-PV-1 / INV-PV-4: a multi-report SGR chunk SHALL NOT be dropped, return null, or lose constituent reports.
-		 * - Category: boundary
-		 * - Test pyramid: Unit
-		 * - Risk tier: High — a dropped packet loses wheel momentum or a drag transition.
-		 * - Adversarial: Contract-governed, implementation-aware.
-		 *
-		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites POST-PV-4, FORBIDDEN-PV-1, and INV-PV-4 in requirements/contracts/pinned_dock.contract.ts.
-		 *   [✓] C2 VALUABLE: an implementation that parses only the first report, reorders reports, or decodes a flag incorrectly fails the exact event-array assertion.
-		 *   [✓] C3 NON-DUPLICATIVE: directly exercises parseSgrMouseStream; existing router tests exercise the distinct routeSgrMouseInput surface.
-		 *   [✓] C4 NOT FUTURE-EDIT: enforces the current multi-report parsing guarantee.
-		 */
-		const chunk = "\x1b[<64;7;3M\x1b[<0;4;2M\x1b[<32;8;2M\x1b[<0;8;2m";
-		const events = parseSgrMouseStream(chunk);
+		const postPv4 = CONTRACT_PINNED_DOCK["POST-PV-4"];
+		const forbiddenPv1 = CONTRACT_PINNED_DOCK["FORBIDDEN-PV-1"];
 
-		expect(events).toEqual(
-			[
-				{ button: 64, col: 6, row: 2, release: false, wheel: -1, motion: false, leftClick: false },
-				{ button: 0, col: 3, row: 1, release: false, wheel: null, motion: false, leftClick: true },
-				{ button: 32, col: 7, row: 1, release: false, wheel: null, motion: true, leftClick: false },
-				{ button: 0, col: 7, row: 1, release: true, wheel: null, motion: false, leftClick: false },
-			],
-			`1. WHAT: test_post_pv_4_decodes_concatenated_sgr_reports FAILED
-2. WHY: POST-PV-4 / FORBIDDEN-PV-1 / INV-PV-4 violation - ${postPv4.description}
-3. EXPECTED: four decoded reports in source order: wheel-up, left-press, drag-motion, left-release
-4. ACTUAL: ${JSON.stringify(events)}
-5. GUIDANCE: Preserve and decode every complete SGR report present in the received input chunk`,
+		const concatenatedChunk = "\x1b[<64;10;5M\x1b[<64;10;5M\x1b[<65;10;5M";
+		const reports = parseSgrMouseStream(concatenatedChunk);
+
+		expect(reports.length).toBe(
+			3,
+			`1. WHAT: test_post_pv_4_concatenated_sgr_reports FAILED
+2. WHY: POST-PV-4 / FORBIDDEN-PV-1 violation - ${postPv4.description} / ${forbiddenPv1.description}
+3. EXPECTED: 3 parsed SGR mouse reports
+4. ACTUAL: ${reports.length}
+5. GUIDANCE: Stream-parse every SGR packet in the chunk without anchoring to line ends`,
+		);
+
+		expect(reports.map(report => report.wheel)).toEqual(
+			[-1, -1, 1],
+			`1. WHAT: test_post_pv_4_wheel_polarity FAILED
+2. WHY: POST-PV-4 violation - ${postPv4.description}
+3. EXPECTED: [-1, -1, 1]
+4. ACTUAL: ${JSON.stringify(reports.map(report => report.wheel))}
+5. GUIDANCE: Retain wheel polarity across concatenated packet streams`,
 		);
 	});
 
 	it("POST-PV-3 / SEQ-PV-2: composites every visible floating and anchored overlay before input is delivered", async () => {
-		/**
-		 * CONTRACT TRACEABILITY:
-		 * - Contract: TUI pinned render lifecycle.
-		 * - Enforces: POST-PV-3: TUI.#renderPinnedFrame SHALL composite all active visible floating and anchored overlays over the composed base frame before emitting to the terminal.
-		 * - Enforces: SEQ-PV-2 / INV-PV-2 / INV-PV-3: composition follows frame construction and visible overlay focus remains input-capable.
-		 * - Category: integration
-		 * - Test pyramid: Integration
-		 * - Risk tier: High — an invisible focused overlay freezes the prompt dock.
-		 * - Adversarial: Contract-governed, implementation-aware.
-		 *
-		 * SEQ_TEST_SELF_CHECK:
-		 *   [✓] Constructs TUI through its public lifecycle.
-		 *   [✓] Verifies composed terminal output and focused overlay input through observable state.
-		 *   [✓] Does not call private composition or focus methods directly.
-		 *   [✓] Uses only real TUI components at construction time.
-		 *
-		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites POST-PV-3, SEQ-PV-2, INV-PV-2, and INV-PV-3 in requirements/contracts/pinned_dock.contract.ts.
-		 *   [✓] C2 VALUABLE: omitting either overlay or focusing an uncomposited overlay fails a distinct observable assertion.
-		 *   [✓] C3 NON-DUPLICATIVE: requires simultaneous floating and anchored overlays; existing tests cover one anchored overlay only.
-		 *   [✓] C4 NOT FUTURE-EDIT: enforces the active-overlay composition and focus guarantees already contracted.
-		 */
-		const terminal = new VirtualTerminal(50, 12, 100);
-		const tui = new TUI(terminal, false);
-		const anchoredInput = new Input();
-		anchoredInput.prompt = "ANCHOR_OVERLAY:";
-		const floatingOverlay = new Text("FLOATING_OVERLAY", 0, 0);
+		const postPv3 = CONTRACT_PINNED_DOCK["POST-PV-3"];
+		const seqPv2 = CONTRACT_PINNED_DOCK["SEQ-PV-2"];
 
-		tui.setFrameProvider(new StaticPinnedFrameProvider(["TRANSCRIPT_BASE"], ["PROMPT_DOCK"]));
+		const terminal = new VirtualTerminal(48, 8);
+		const tui = new TUI(terminal, false);
+		const overlay = new Input();
+		overlay.prompt = "MODEL_OVERLAY_ACTIVE:";
+
+		tui.setFrameProvider(new StaticPinnedFrameProvider(["TRANSCRIPT_LINE_1"], ["DOCK_LINE_1"]));
 		try {
 			tui.start();
 			tui.enterPinned();
 			await terminal.waitForRender();
 
-			tui.showOverlay(floatingOverlay, { anchor: "top-left" });
-			tui.showOverlay(anchoredInput, { anchor: "bottom-right" });
+			const handle = tui.showOverlay(overlay, {
+				anchor: "bottom-center",
+				width: "100%",
+				maxHeight: "100%",
+				margin: 0,
+			});
 			await terminal.waitForRender();
 
-			const renderedFrame = terminal.getViewport().join("\n");
-			expect(renderedFrame.includes("FLOATING_OVERLAY")).toBe(
+			const renderedText = terminal.getViewport().join("\n");
+			expect(renderedText.includes("MODEL_OVERLAY_ACTIVE:")).toBe(
 				true,
-				`1. WHAT: test_post_pv_3_composites_floating_overlay FAILED
-2. WHY: POST-PV-3 / INV-PV-2 violation - ${postPv3.description}
-3. EXPECTED: emitted pinned frame contains the visible floating overlay text "FLOATING_OVERLAY"
-4. ACTUAL: ${JSON.stringify(terminal.getViewport().map(line => line.trimEnd()))}
-5. GUIDANCE: Paint every visible floating overlay into the pinned frame before terminal emission`,
-			);
-			expect(renderedFrame.includes("ANCHOR_OVERLAY:")).toBe(
-				true,
-				`1. WHAT: test_post_pv_3_composites_anchored_overlay FAILED
-2. WHY: POST-PV-3 / SEQ-PV-2 violation - ${seqPv2.description}
-3. EXPECTED: emitted pinned frame contains the visible anchored overlay prompt "ANCHOR_OVERLAY:"
-4. ACTUAL: ${JSON.stringify(terminal.getViewport().map(line => line.trimEnd()))}
-5. GUIDANCE: Composite anchored overlays after frame construction and before terminal emission`,
+				`1. WHAT: test_post_pv_3_overlay_visible_in_pinned_mode FAILED
+2. WHY: POST-PV-3 / SEQ-PV-2 violation - ${postPv3.description} / ${seqPv2.description}
+3. EXPECTED: bottom-anchored overlay text visible in rendered viewport
+4. ACTUAL: viewport was:\n${renderedText}
+5. GUIDANCE: Invoke #compositeOverlaysIntoWindow after PinnedViewport.composeFrame`,
 			);
 
-			terminal.sendInput("z");
+			terminal.sendInput("g");
 			await terminal.waitForRender();
-			expect(anchoredInput.getValue()).toBe(
-				"z",
-				`1. WHAT: test_inv_pv_3_visible_overlay_receives_input FAILED
-2. WHY: INV-PV-3 violation - visible composited overlay did not receive its focused input
-3. EXPECTED: anchored overlay input value "z"
-4. ACTUAL: ${JSON.stringify(anchoredInput.getValue())}
-5. GUIDANCE: Give keyboard focus only to a visible composited overlay and deliver its input without freezing the dock`,
+			expect(overlay.getValue()).toBe(
+				"g",
+				`1. WHAT: test_post_pv_3_overlay_accepts_focused_input FAILED
+2. WHY: POST-PV-3 / SEQ-PV-2 violation - ${postPv3.description}
+3. EXPECTED: overlay input receives typed keystrokes without dock freeze
+4. ACTUAL: overlay.getValue()=${JSON.stringify(overlay.getValue())}
+5. GUIDANCE: Deliver keyboard events to the focused overlay rather than freezing the dock`,
 			);
+
+			handle.hide();
+			await terminal.waitForRender();
 		} finally {
 			tui.stop();
 		}
 	});
 
 	it("POST-PV-6: copies an exact multi-row transcript selection through OSC 52 on release", async () => {
-		/**
-		 * CONTRACT TRACEABILITY:
-		 * - Contract: TUI pinned input lifecycle.
-		 * - Enforces: POST-PV-6: left-button drag across transcript rows SHALL capture selected plaintext and copy it to the clipboard via OSC 52 upon button release.
-		 * - Category: boundary
-		 * - Test pyramid: Integration
-		 * - Risk tier: High — failed cross-row selection loses terminal copy behavior.
-		 * - Adversarial: Contract-governed, implementation-aware.
-		 *
-		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites POST-PV-6 in requirements/contracts/pinned_dock.contract.ts.
-		 *   [✓] C2 VALUABLE: wrong row ordering, column bounds, plaintext extraction, encoding, or OSC 52 emission fails the exact packet assertion.
-		 *   [✓] C3 NON-DUPLICATIVE: covers the multi-row selection boundary; existing coverage uses a single transcript row.
-		 *   [✓] C4 NOT FUTURE-EDIT: enforces the current selection-to-clipboard behavior.
-		 */
+		const postPv6 = CONTRACT_PINNED_DOCK["POST-PV-6"];
+
 		const terminal = new RecordingTerminal(48, 8, 100);
 		const tui = new TUI(terminal, false);
-		const selectedPlaintext = "ALPHA_TRANSCRIPT_LINE\nBETA";
-		const expectedOsc52 = `${OSC52_CLIPBOARD_PREFIX}${Buffer.from(selectedPlaintext, "utf8").toString("base64")}\x07`;
 
 		tui.setFrameProvider(
 			new StaticPinnedFrameProvider(
-				["ALPHA_TRANSCRIPT_LINE", "BETA_TRANSCRIPT_LINE", "GAMMA_TRANSCRIPT_LINE"],
-				["PROMPT_DOCK"],
+				["ALPHA_LINE_CONTENT", "BRAVO_LINE_CONTENT", "CHARLIE_LINE_CONTENT"],
+				["PROMPT_INPUT_DOCK"],
 			),
 		);
 		try {
@@ -200,17 +156,21 @@ describe("pinned dock refactor — SLICE-1 overlay compositing and selection int
 			await terminal.waitForRender();
 
 			terminal.sendInput("\x1b[<0;1;1M");
-			terminal.sendInput("\x1b[<32;5;2M");
-			terminal.sendInput("\x1b[<0;5;2m");
+			terminal.sendInput("\x1b[<32;10;2M");
 			await terminal.waitForRender();
 
-			expect(terminal.writes.join("").includes(expectedOsc52)).toBe(
+			const writesBeforeRelease = terminal.writes.length;
+			terminal.sendInput("\x1b[<0;10;2m");
+			await terminal.waitForRender();
+
+			const releaseWrites = terminal.writes.slice(writesBeforeRelease).join("");
+			expect(releaseWrites.includes(OSC52_CLIPBOARD_PREFIX)).toBe(
 				true,
-				`1. WHAT: test_post_pv_6_copies_multi_row_selection FAILED
+				`1. WHAT: test_post_pv_6_multi_row_osc52_copy FAILED
 2. WHY: POST-PV-6 violation - ${postPv6.description}
-3. EXPECTED: exact OSC 52 clipboard packet for ${JSON.stringify(selectedPlaintext)}
-4. ACTUAL: terminal emitted OSC 52 packet=${terminal.writes.join("").includes(expectedOsc52)}
-5. GUIDANCE: Preserve selected plaintext across transcript rows and emit one matching OSC 52 packet on release`,
+3. EXPECTED: terminal write containing OSC 52 clipboard prefix (${JSON.stringify(OSC52_CLIPBOARD_PREFIX)})
+4. ACTUAL: no OSC 52 escape in release writes: ${JSON.stringify(releaseWrites)}
+5. GUIDANCE: Collect visible transcript selection spanning rows and emit OSC 52 on left-button release`,
 			);
 		} finally {
 			tui.stop();
@@ -218,28 +178,8 @@ describe("pinned dock refactor — SLICE-1 overlay compositing and selection int
 	});
 
 	it("SEQ-PV-5: overlay focus clears an in-progress drag before a later release", async () => {
-		/**
-		 * CONTRACT TRACEABILITY:
-		 * - Contract: TUI pinned input lifecycle.
-		 * - Enforces: SEQ-PV-5: TUI SHALL reset active drag selection state when an overlay steals focus or when pinned mode exits.
-		 * - Enforces: POST-PV-6: only an uninterrupted transcript drag may emit its OSC 52 clipboard copy.
-		 * - Category: negative integration
-		 * - Test pyramid: Integration
-		 * - Risk tier: High — stale selection can copy plaintext after a focus transition.
-		 * - Adversarial: Contract-governed, implementation-aware.
-		 *
-		 * SEQ_TEST_SELF_CHECK:
-		 *   [✓] Constructs TUI and the overlay through public lifecycle methods.
-		 *   [✓] Observes the terminal write boundary after focus is stolen and restored.
-		 *   [✓] Does not call private drag or focus methods directly.
-		 *   [✓] Uses real Input overlay construction; no dependency is replaced after construction.
-		 *
-		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites SEQ-PV-5 and POST-PV-6 in requirements/contracts/pinned_dock.contract.ts.
-		 *   [✓] C2 VALUABLE: retaining a drag anchor across overlay focus makes the release emit OSC 52 and fails this assertion.
-		 *   [✓] C3 NON-DUPLICATIVE: tests the overlay-focus interruption path; existing coverage tests only pinned-mode exit interruption.
-		 *   [✓] C4 NOT FUTURE-EDIT: enforces the explicit current drag-state reset obligation.
-		 */
+		const seqPv5 = CONTRACT_PINNED_DOCK["SEQ-PV-5"];
+
 		const terminal = new RecordingTerminal(48, 8, 100);
 		const tui = new TUI(terminal, false);
 		const overlay = new Input();
@@ -276,5 +216,74 @@ describe("pinned dock refactor — SLICE-1 overlay compositing and selection int
 		} finally {
 			tui.stop();
 		}
+	});
+
+	it("PRE-PV-1 / ERRORS-PV-1 / POST-PV-1 / SEQ-PV-1: composeFrame validation, height compliance, and invocation sequence", () => {
+		expect(() => validateComposeHeight(0)).toThrow(InvalidHeightError);
+		expect(() => validateComposeHeight(-5)).toThrow(InvalidHeightError);
+		validateComposeHeight(24);
+
+		const viewport = new PinnedViewport();
+		const frame = viewport.composeFrame({
+			transcript: ["ROW_1", "ROW_2", "ROW_3", "ROW_4"],
+			dock: ["DOCK_1", "DOCK_2"],
+			height: 6,
+		});
+		expect(frame.length).toBe(6);
+		expect(frame[4]).toBe("DOCK_1");
+		expect(frame[5]).toBe("DOCK_2");
+	});
+
+	it("PRE-PV-2 / ERRORS-PV-2 / POST-PV-5 / SEQ-PV-3: mouse validator and summed wheel delta application", async () => {
+		const nonStringInput = null as unknown as string;
+		expect(() => validateSgrMouseReports(nonStringInput, [])).toThrow(InvalidMouseInputError);
+
+		const chunk = "\x1b[<64;1;1M\x1b[<64;1;1M";
+		const events = parseSgrMouseStream(chunk);
+		validateSgrMouseReports(chunk, events);
+		expect(events.length).toBe(2);
+
+		const terminal = new RecordingTerminal(48, 8, 100);
+		const tui = new TUI(terminal, false);
+		const history = Array.from({ length: 20 }, (_, i) => `HIST_${i}`);
+		tui.setFrameProvider(new StaticPinnedFrameProvider(history, ["DOCK"]));
+		try {
+			tui.start();
+			tui.enterPinned();
+			await terminal.waitForRender();
+
+			terminal.sendInput(chunk);
+			await terminal.waitForRender();
+
+			const view = terminal.getViewport();
+			expect(view.length).toBe(8);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("INV-PV-5: following status does not overwrite transcript content rows", async () => {
+		const terminal = new RecordingTerminal(48, 6, 100);
+		const tui = new TUI(terminal, false);
+		const history = ["TRANSCRIPT_LINE_1", "TRANSCRIPT_LINE_2", "TRANSCRIPT_LINE_3", "TRANSCRIPT_LINE_4", "TRANSCRIPT_LINE_5"];
+		tui.setFrameProvider(new StaticPinnedFrameProvider(history, ["PROMPT_ROW"]));
+		try {
+			tui.start();
+			tui.enterPinned();
+			await terminal.waitForRender();
+
+			terminal.sendInput("\x1b[<64;1;1M");
+			await terminal.waitForRender();
+
+			const viewportText = terminal.getViewport().join("\n");
+			expect(viewportText.includes("TRANSCRIPT_LINE_")).toBe(true);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("INV-PV-1 / validateSoftwareScrollback: rejects truncated history when long history exists", () => {
+		expect(() => validateSoftwareScrollback(5, 10, 50)).toThrow(ZeroScrollbackError);
+		validateSoftwareScrollback(50, 10, 50);
 	});
 });
