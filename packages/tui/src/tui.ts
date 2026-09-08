@@ -1088,6 +1088,11 @@ export class TUI extends Container {
 		}
 
 		const previousFocusedComponent = this.#focusedComponent;
+		if (this.#pinnedActive && previousFocusedComponent !== component) {
+			// SEQ-PV-5: focus transitions invalidate any transcript drag selection.
+			this.#dragStart = undefined;
+			this.#dragEnd = undefined;
+		}
 		// Clear focused flag on old component
 		if (isFocusable(previousFocusedComponent)) {
 			previousFocusedComponent.focused = false;
@@ -1597,6 +1602,9 @@ export class TUI extends Container {
 			this.#pinnedAltEntered = false;
 			this.#altPreviousLines = [];
 		}
+		// SEQ-PV-5: stopping exits pinned mode and invalidates drag selection.
+		this.#dragStart = undefined;
+		this.#dragEnd = undefined;
 		this.#pinnedActive = false;
 		this.#pinnedViewport = undefined;
 		// Deliberately leave transmitted images in the terminal's graphics store:

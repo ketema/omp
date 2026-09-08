@@ -214,11 +214,18 @@ export class Composer implements TerminalFrameProvider {
 			if (this.#preferences.viewport === "pinned") {
 				const dock = this.#renderRoots([this.editor, this.#statusHost], width);
 				const scrollRoots = roots.filter(root => root !== this.editor && root !== this.#statusHost);
-				const scroll = this.#renderRoots(scrollRoots, width);
-				const available = Math.max(0, rows - dock.length);
+				const sessionRoots = scrollRoots.filter(root => root !== this.#header);
+				const sessionScroll = this.#renderRoots(sessionRoots, width);
+				// POST-PV-7: mounted session content retires startup chrome before it
+				// can consume the fixed transcript window.
+				if (this.#runtimeMounted && sessionScroll.length > 0) this.#headerRetired = true;
+				// SEQ-PV-4 / INV-PV-1: PinnedViewport receives complete history.
+				const scroll = this.#headerRetired
+					? sessionScroll
+					: [...this.#header.render(width), ...sessionScroll];
 				return {
 					viewport: [],
-					pinnedScroll: available > 0 ? scroll.slice(-available) : [],
+					pinnedScroll: scroll,
 					pinnedDock: dock,
 				};
 			}
@@ -228,15 +235,14 @@ export class Composer implements TerminalFrameProvider {
 		const preRoots = this.#renderRoots(roots.slice(0, transcriptIndex), width);
 		const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
 		if (this.#preferences.viewport === "pinned") {
+			// POST-PV-7: a mounted session transcript retires startup chrome before
+			// header pressure can consume its available output rows.
+			if (transcript.children.length > 0) this.#headerRetired = true;
+			// SEQ-PV-4 / POST-PV-2: PinnedViewport owns windowing, so it receives
+			// the complete semantic transcript rather than a one-page projection.
+			const transcriptRows = transcript.render(width);
 			const headerRows = this.#headerRetired ? [] : this.#header.render(width);
 			const before = [...headerRows, ...preRoots];
-			const now = performance.now();
-			const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
-			const transcriptRows = transcript.renderViewport(
-				width,
-				Math.max(0, rows - before.length - after.length),
-				frame,
-			);
 			return {
 				viewport: [],
 				pinnedScroll: [...before, ...transcriptRows],
