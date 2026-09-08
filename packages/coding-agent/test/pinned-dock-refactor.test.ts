@@ -62,7 +62,7 @@ describe("pinned dock refactor — SLICE-2 full scrollback, settled-block cachin
 		const fullTranscriptRows = [...transcript.render(80)];
 		const composer = new Composer({
 			terminal,
-			preferences: { ...COMPOSER_DEFAULTS, viewport: "pinned", quiet: true },
+			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
 		});
 
 		try {
@@ -78,17 +78,14 @@ describe("pinned dock refactor — SLICE-2 full scrollback, settled-block cachin
 				earliestVisibleRow: terminal.getViewport()[0]?.trim(),
 			};
 
-			expect(observed).toEqual(
-				{
-					optionsTranscript: fullTranscriptRows,
-					earliestVisibleRow: fullTranscriptRows[0]?.trim(),
-				},
-				`1. WHAT: test_post_pv_2_preserves_full_composer_history FAILED
+			expect(observed, `1. WHAT: test_post_pv_2_preserves_full_composer_history FAILED
 2. WHY: POST-PV-2 / INV-PV-1 / SEQ-PV-4 violation - ${postPv2.description}; ${seqPv4.description}
 3. EXPECTED: optionsTranscript contains every session row and a scroll-up reaches ${JSON.stringify(transcriptRows[0])}
 4. ACTUAL: ${JSON.stringify(observed)}
-5. GUIDANCE: Supply the full accumulated transcript to the pinned viewport so previous session output remains scrollable`,
-			);
+5. GUIDANCE: Supply the full accumulated transcript to the pinned viewport so previous session output remains scrollable`).toEqual({
+					optionsTranscript: fullTranscriptRows,
+					earliestVisibleRow: fullTranscriptRows[0]?.trim(),
+				});
 		} finally {
 			composer.stop();
 		}
@@ -123,7 +120,7 @@ describe("pinned dock refactor — SLICE-2 full scrollback, settled-block cachin
 		transcript.addChild(settledBlock);
 		const composer = new Composer({
 			terminal,
-			preferences: { ...COMPOSER_DEFAULTS, viewport: "pinned", quiet: true },
+			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
 		});
 
 		try {
@@ -132,27 +129,21 @@ describe("pinned dock refactor — SLICE-2 full scrollback, settled-block cachin
 			await terminal.waitForRender();
 
 			const rendersAfterFirstFrame = settledBlock.renderCount;
-			expect(rendersAfterFirstFrame > 0).toBe(
-				true,
-				`1. WHAT: test_seq_pv_4_first_frame_renders_block FAILED (test setup sanity)
+			expect(rendersAfterFirstFrame > 0, `1. WHAT: test_seq_pv_4_first_frame_renders_block FAILED (test setup sanity)
 2. WHY: SEQ-PV-4 violation - ${seqPv4.description}
 3. EXPECTED: settled block render() called at least once by the first interactive frame
 4. ACTUAL: renderCount=${rendersAfterFirstFrame}
-5. GUIDANCE: Composer.renderFrame in pinned mode must render every mounted transcript block at least once`,
-			);
+5. GUIDANCE: Composer.renderFrame in pinned mode must render every mounted transcript block at least once`).toBe(true);
 
 			composer.renderFrame({ columns: 80, rows: 10 });
 			composer.renderFrame({ columns: 80, rows: 10 });
 			composer.renderFrame({ columns: 80, rows: 10 });
 
-			expect(settledBlock.renderCount).toBe(
-				rendersAfterFirstFrame,
-				`1. WHAT: test_seq_pv_4_caches_settled_blocks FAILED
+			expect(settledBlock.renderCount, `1. WHAT: test_seq_pv_4_caches_settled_blocks FAILED
 2. WHY: SEQ-PV-4 violation - ${seqPv4.description}
 3. EXPECTED: settled block render() call count stays at ${rendersAfterFirstFrame} across 3 additional unchanged frames (cached)
 4. ACTUAL: settled block render() call count grew to ${settledBlock.renderCount}
-5. GUIDANCE: Cache each settled block's rendered rows and reuse them on subsequent frames instead of calling render() again when its content has not changed`,
-			);
+5. GUIDANCE: Cache each settled block's rendered rows and reuse them on subsequent frames instead of calling render() again when its content has not changed`).toBe(rendersAfterFirstFrame);
 		} finally {
 			composer.stop();
 		}
@@ -186,7 +177,7 @@ describe("pinned dock refactor — SLICE-2 full scrollback, settled-block cachin
 		transcript.addChild(new Text(activeSessionRows.join("\n"), 0, 0));
 		const composer = new Composer({
 			terminal,
-			preferences: { ...COMPOSER_DEFAULTS, viewport: "pinned", quiet: false },
+			preferences: { ...COMPOSER_DEFAULTS, quiet: false },
 		});
 
 		try {
@@ -200,14 +191,11 @@ describe("pinned dock refactor — SLICE-2 full scrollback, settled-block cachin
 				.map(row => row.trimEnd())
 				.filter(row => activeSessionRows.includes(row));
 
-			expect(visibleActiveRows).toEqual(
-				activeSessionRows,
-				`1. WHAT: test_post_pv_7_retires_header_for_active_messages FAILED
+			expect(visibleActiveRows, `1. WHAT: test_post_pv_7_retires_header_for_active_messages FAILED
 2. WHY: POST-PV-7 violation - ${postPv7.description}
 3. EXPECTED: active transcript rows ${JSON.stringify(activeSessionRows)} remain available despite startup header pressure
 4. ACTUAL: active transcript rows in pinnedScroll=${JSON.stringify(visibleActiveRows)}
-5. GUIDANCE: Retire or naturally move startup header rows out of the pinned transcript window before they consume all active-message capacity`,
-			);
+5. GUIDANCE: Retire or naturally move startup header rows out of the pinned transcript window before they consume all active-message capacity`).toEqual(activeSessionRows);
 		} finally {
 			composer.stop();
 		}
@@ -249,7 +237,7 @@ describe("pinned dock refactor — SLICE-2 full scrollback, settled-block cachin
 		transcript.addChild(new Text(activeSessionRows.join("\n"), 0, 0));
 		const composer = new Composer({
 			terminal,
-			preferences: { ...COMPOSER_DEFAULTS, viewport: "pinned", quiet: true },
+			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
 		});
 
 		try {
@@ -262,84 +250,68 @@ describe("pinned dock refactor — SLICE-2 full scrollback, settled-block cachin
 			const retiredAndActiveVisible = (planAfterRetirement.pinnedScroll ?? []).some(row =>
 				row.includes("ACTIVE_SESSION_MESSAGE_ONE"),
 			);
-			expect(retiredAndActiveVisible).toBe(
-				true,
-				`1. WHAT: test_post_pv_7_header_retirement_triggered FAILED (test setup sanity)
+			expect(retiredAndActiveVisible, `1. WHAT: test_post_pv_7_header_retirement_triggered FAILED (test setup sanity)
 2. WHY: POST-PV-7 violation - ${postPv7.description}
 3. EXPECTED: header retirement has fired and active session rows are present in pinnedScroll
 4. ACTUAL: pinnedScroll=${JSON.stringify(planAfterRetirement.pinnedScroll)}
-5. GUIDANCE: Mounting session content with the header present must trigger header retirement`,
-			);
+5. GUIDANCE: Mounting session content with the header present must trigger header retirement`).toBe(true);
 
 			composer.ui.scrollPinnedBy(-(startupHeaderRows.length + activeSessionRows.length + 10));
 			await terminal.waitForRender();
 
 			const topRow = terminal.getViewport()[0]?.trim();
-			expect(topRow).toBe(
-				startupHeaderRows[0],
-				`1. WHAT: test_post_pv_7_header_retired_to_index_zero FAILED
+			expect(topRow, `1. WHAT: test_post_pv_7_header_retired_to_index_zero FAILED
 2. WHY: POST-PV-7 violation - ${postPv7.description}
 3. EXPECTED: scrolling to the top of software history reaches ${JSON.stringify(startupHeaderRows[0])} (retired header preserved at index 0)
 4. ACTUAL: top row after scrolling to the top = ${JSON.stringify(topRow)}
-5. GUIDANCE: Keep the retired header as the leading rows of pinnedScroll instead of omitting it once #headerRetired is true`,
-			);
+5. GUIDANCE: Keep the retired header as the leading rows of pinnedScroll instead of omitting it once #headerRetired is true`).toBe(startupHeaderRows[0]);
 		} finally {
 			composer.stop();
 		}
 	});
 
-	it('INV-PV-7: an "inline" viewport preference does not exit pinned mode or honor an unpinned render path', async () => {
+	it("INV-PV-7: ComposerPreferences exposes no viewport property and Composer operates pinned unconditionally", async () => {
 		/**
 		 * CONTRACT TRACEABILITY:
-		 * - Contract: Composer.setPreferences() -> TUI.exitPinned() / TUI.isPinned().
+		 * - Contract: Composer.start() / ComposerPreferences
 		 * - Enforces: INV-PV-7: TUI SHALL NOT expose or honor an inline/unpinned viewport setting or code path.
 		 * - Category: negative-space / regression
 		 * - Test pyramid: Integration
 		 * - Risk tier: High — a live, honored inline code path bypasses every pinned-mode guarantee in this
 		 *   contract for any caller that can influence composer preferences.
-		 * - Adversarial: Contract-governed, implementation-aware. Composer.setPreferences() currently branches
-		 *   `if (this.#preferences.viewport === "pinned") this.ui.enterPinned(); else this.ui.exitPinned();` —
-		 *   this test drives that exact real, live branch through the public setPreferences() API.
+		 * - Adversarial: Contract-governed, implementation-aware. Verifies that ComposerPreferences has no
+		 *   viewport property and Composer runs in pinned mode unconditionally.
 		 *
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
 		 *   [✓] C1 VALID: cites INV-PV-7 in requirements/contracts/pinned_dock.contract.ts.
-		 *   [✓] C2 VALUABLE: setPreferences({ viewport: "inline" }) currently calls this.ui.exitPinned(),
-		 *       flipping TUI.isPinned() to false, so this fails against current wiring.
-		 *   [✓] C3 NON-DUPLICATIVE: integration-level check of the live Composer/TUI wiring, distinct from the
-		 *       unit-level isViewportMode() check in packages/tui/test/pinned-dock-refactor.test.ts.
-		 *   [✓] C4 NOT FUTURE-EDIT: enforces the current, explicit INV-PV-7 guarantee against real, currently
-		 *       reachable preference-handling code, not a hypothetical future addition.
+		 *   [✓] C2 VALUABLE: verifies structural removal of viewport setting and unconditional pinned operation.
+		 *   [✓] C3 NON-DUPLICATIVE: integration-level check of the live Composer/TUI wiring.
+		 *   [✓] C4 NOT FUTURE-EDIT: enforces the current, explicit INV-PV-7 structural removal requirement.
 		 */
 		await initTheme();
+
+		// Structural check: ComposerPreferences and COMPOSER_DEFAULTS must have NO viewport property
+		const hasViewportInDefaults = "viewport" in COMPOSER_DEFAULTS;
+		expect(hasViewportInDefaults, `1. WHAT: test_inv_pv_7_no_viewport_in_composer_defaults FAILED
+2. WHY: INV-PV-7 violation - ${invPv7.description}
+3. EXPECTED: "viewport" in COMPOSER_DEFAULTS === false (no viewport setting in ComposerPreferences)
+4. ACTUAL: "viewport" in COMPOSER_DEFAULTS === ${hasViewportInDefaults}
+5. GUIDANCE: Remove the viewport property entirely from ComposerPreferences and COMPOSER_DEFAULTS`).toBe(false);
+
 		const terminal = new VirtualTerminal(80, 10, 100);
 		const composer = new Composer({
 			terminal,
-			preferences: { ...COMPOSER_DEFAULTS, viewport: "pinned", quiet: true },
+			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
 		});
 
 		try {
 			composer.start({ playWelcomeIntro: false });
 			await terminal.waitForRender();
-			expect(composer.ui.isPinned()).toBe(
-				true,
-				`1. WHAT: test_inv_pv_7_starts_pinned FAILED (test setup sanity)
+			expect(composer.ui.isPinned(), `1. WHAT: test_inv_pv_7_starts_pinned FAILED (test setup sanity)
 2. WHY: INV-PV-7 violation - ${invPv7.description}
-3. EXPECTED: composer.ui.isPinned() === true after start() with viewport: "pinned"
+3. EXPECTED: composer.ui.isPinned() === true unconditionally after start()
 4. ACTUAL: composer.ui.isPinned() === ${composer.ui.isPinned()}
-5. GUIDANCE: Composer.start() must enter pinned mode`,
-			);
-
-			composer.setPreferences({ viewport: "inline" });
-			await terminal.waitForRender();
-
-			expect(composer.ui.isPinned()).toBe(
-				true,
-				`1. WHAT: test_inv_pv_7_inline_preference_does_not_exit_pinned FAILED
-2. WHY: INV-PV-7 violation - ${invPv7.description}
-3. EXPECTED: composer.ui.isPinned() remains true; an "inline" viewport preference must not be honored as a real code path
-4. ACTUAL: composer.ui.isPinned() === false after setPreferences({ viewport: "inline" })
-5. GUIDANCE: Remove the non-pinned branch from viewport preference handling so no setting value can leave pinned mode`,
-			);
+5. GUIDANCE: Composer.start() must enter pinned mode unconditionally without checking a viewport preference`).toBe(true);
 		} finally {
 			composer.stop();
 		}

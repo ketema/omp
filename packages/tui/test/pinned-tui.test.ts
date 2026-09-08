@@ -76,27 +76,21 @@ describe("TUI pinned session integration (POST-PV-11..14, INV-PV-8..10, SEQ-PV-6
 			tui.enterPinned();
 			await term.waitForRender();
 			const firstCount = countNeedle(term.writes, ALT_SCREEN_ENTER);
-			expect(firstCount).toBe(
-				1,
-				`1. WHAT: enterPinned initial ALT_SCREEN_ENTER write FAILED
+			expect(firstCount, `1. WHAT: enterPinned initial ALT_SCREEN_ENTER write FAILED
 2. WHY: POST-PV-11 violation - enterPinned must write ALT_SCREEN_ENTER exactly once
 3. EXPECTED: 1
 4. ACTUAL: ${firstCount}
-5. GUIDANCE: Enter alternate screen on pinned session start`,
-			);
+5. GUIDANCE: Enter alternate screen on pinned session start`).toBe(1);
 
 			// Idempotent second call
 			tui.enterPinned();
 			await term.waitForRender();
 			const secondCount = countNeedle(term.writes, ALT_SCREEN_ENTER);
-			expect(secondCount).toBe(
-				1,
-				`1. WHAT: enterPinned second call ALT_SCREEN_ENTER write FAILED
+			expect(secondCount, `1. WHAT: enterPinned second call ALT_SCREEN_ENTER write FAILED
 2. WHY: POST-PV-11 violation - subsequent enterPinned calls must not re-enter alternate screen
 3. EXPECTED: 1
 4. ACTUAL: ${secondCount}
-5. GUIDANCE: Guard alternate screen entry with active state check`,
-			);
+5. GUIDANCE: Guard alternate screen entry with active state check`).toBe(1);
 		} finally {
 			tui.stop();
 		}
@@ -130,26 +124,20 @@ describe("TUI pinned session integration (POST-PV-11..14, INV-PV-8..10, SEQ-PV-6
 			tui.start();
 			tui.enterPinned();
 			await term.waitForRender();
-			expect(countNeedle(term.writes, ALT_SCREEN_ENTER)).toBe(
-				1,
-				`1. WHAT: enterPinned setup FAILED
+			expect(countNeedle(term.writes, ALT_SCREEN_ENTER), `1. WHAT: enterPinned setup FAILED
 2. WHY: POST-PV-11 violation - enterPinned must write ALT_SCREEN_ENTER once
 3. EXPECTED: 1
 4. ACTUAL: ${countNeedle(term.writes, ALT_SCREEN_ENTER)}
-5. GUIDANCE: Enter alternate screen once before overlay test`,
-			);
+5. GUIDANCE: Enter alternate screen once before overlay test`).toBe(1);
 
 			tui.showOverlay(overlay, { fullscreen: true, mouseTracking: true });
 			await term.waitForRender();
 			const afterOverlayCount = countNeedle(term.writes, ALT_SCREEN_ENTER);
-			expect(afterOverlayCount).toBe(
-				1,
-				`1. WHAT: fullscreen overlay while pinned wrote duplicate ALT_SCREEN_ENTER
+			expect(afterOverlayCount, `1. WHAT: fullscreen overlay while pinned wrote duplicate ALT_SCREEN_ENTER
 2. WHY: POST-PV-12 / SEQ-PV-6 violation - overlay must not write ALT_SCREEN_ENTER when pin already owns alt screen
 3. EXPECTED: 1
 4. ACTUAL: ${afterOverlayCount}
-5. GUIDANCE: Check alt screen ownership before emitting DECSET 1049h for fullscreen overlay`,
-			);
+5. GUIDANCE: Check alt screen ownership before emitting DECSET 1049h for fullscreen overlay`).toBe(1);
 		} finally {
 			tui.stop();
 		}
@@ -182,27 +170,21 @@ describe("TUI pinned session integration (POST-PV-11..14, INV-PV-8..10, SEQ-PV-6
 		tui.stop();
 		await term.waitForRender();
 		const stopCount = countNeedle(term.writes, ALT_SCREEN_LEAVE);
-		expect(stopCount).toBe(
-			1,
-			`1. WHAT: TUI.stop ALT_SCREEN_LEAVE count FAILED
+		expect(stopCount, `1. WHAT: TUI.stop ALT_SCREEN_LEAVE count FAILED
 2. WHY: POST-PV-13 violation - TUI.stop must leave alt screen exactly once
 3. EXPECTED: 1
 4. ACTUAL: ${stopCount}
-5. GUIDANCE: Emit DECSET 1049l on stop exactly once when alt screen was active`,
-		);
+5. GUIDANCE: Emit DECSET 1049l on stop exactly once when alt screen was active`).toBe(1);
 
 		// Second stop call is idempotent
 		tui.stop();
 		await term.waitForRender();
 		const secondStopCount = countNeedle(term.writes, ALT_SCREEN_LEAVE);
-		expect(secondStopCount).toBe(
-			1,
-			`1. WHAT: TUI.stop idempotent leave count FAILED
+		expect(secondStopCount, `1. WHAT: TUI.stop idempotent leave count FAILED
 2. WHY: POST-PV-13 violation - repeated TUI.stop must not emit additional ALT_SCREEN_LEAVE
 3. EXPECTED: 1
 4. ACTUAL: ${secondStopCount}
-5. GUIDANCE: Guard alt screen exit against repeated stop calls`,
-		);
+5. GUIDANCE: Guard alt screen exit against repeated stop calls`).toBe(1);
 	});
 
 	it("POST-PV-14: wheel and viewport page keys reach PinnedViewport.scrollBy before editor input", async () => {
@@ -243,38 +225,29 @@ describe("TUI pinned session integration (POST-PV-11..14, INV-PV-8..10, SEQ-PV-6
 			// SGR mouse wheel up: \x1b[<64;1;1M
 			term.sendInput("\x1b[<64;1;1M");
 			await term.waitForRender();
-			expect(editor.text).toBe(
-				"",
-				`1. WHAT: editor text after mouse wheel up FAILED
+			expect(editor.text, `1. WHAT: editor text after mouse wheel up FAILED
 2. WHY: POST-PV-14 violation - mouse wheel event must be intercepted for scroll and not reach editor
 3. EXPECTED: ""
 4. ACTUAL: "${editor.text}"
-5. GUIDANCE: Intercept mouse wheel events in TUI before forwarding input to focused component`,
-			);
+5. GUIDANCE: Intercept mouse wheel events in TUI before forwarding input to focused component`).toBe("");
 
 			// PageUp key: \x1b[5~
 			term.sendInput("\x1b[5~");
 			await term.waitForRender();
-			expect(editor.text).toBe(
-				"",
-				`1. WHAT: editor text after PageUp FAILED
+			expect(editor.text, `1. WHAT: editor text after PageUp FAILED
 2. WHY: POST-PV-14 violation - PageUp event must be intercepted for viewport scroll and not reach editor
 3. EXPECTED: ""
 4. ACTUAL: "${editor.text}"
-5. GUIDANCE: Intercept pageUp keybinding before forwarding to focused component`,
-			);
+5. GUIDANCE: Intercept pageUp keybinding before forwarding to focused component`).toBe("");
 
 			// Printable input 'x' must reach editor and mutate text without snapping scroll
 			term.sendInput("x");
 			await term.waitForRender();
-			expect(editor.text).toBe(
-				"x",
-				`1. WHAT: editor text after printable input FAILED
+			expect(editor.text, `1. WHAT: editor text after printable input FAILED
 2. WHY: POST-PV-14 violation - printable character must reach editor
 3. EXPECTED: "x"
 4. ACTUAL: "${editor.text}"
-5. GUIDANCE: Forward non-viewport keys to focused editor`,
-			);
+5. GUIDANCE: Forward non-viewport keys to focused editor`).toBe("x");
 		} finally {
 			tui.stop();
 		}
@@ -317,14 +290,11 @@ describe("TUI pinned session integration (POST-PV-11..14, INV-PV-8..10, SEQ-PV-6
 
 			const rows = term.getViewport().map(line => line.trimEnd());
 			const bottomRow = rows[rows.length - 1];
-			expect(bottomRow).toBe(
-				"PROMPT: input-line",
-				`1. WHAT: physical terminal bottom row FAILED
+			expect(bottomRow, `1. WHAT: physical terminal bottom row FAILED
 2. WHY: INV-PV-8 violation - bottom row of terminal grid must be the editor dock
 3. EXPECTED: "PROMPT: input-line"
 4. ACTUAL: "${bottomRow}"
-5. GUIDANCE: Render dock at the bottom rows of the alternate screen frame`,
-			);
+5. GUIDANCE: Render dock at the bottom rows of the alternate screen frame`).toBe("PROMPT: input-line");
 		} finally {
 			tui.stop();
 		}
@@ -374,14 +344,11 @@ describe("TUI pinned session integration (POST-PV-11..14, INV-PV-8..10, SEQ-PV-6
 					break;
 				}
 			}
-			expect(foundDecstbm).toBe(
-				false,
-				`1. WHAT: DECSTBM sequence detected in pinned mode terminal stream
+			expect(foundDecstbm, `1. WHAT: DECSTBM sequence detected in pinned mode terminal stream
 2. WHY: INV-PV-9 violation - pinned mode must not use DECSTBM scrolling regions
 3. EXPECTED: false (no DECSTBM escape sequences)
 4. ACTUAL: true
-5. GUIDANCE: Use software frame composition instead of terminal hardware scrolling margins`,
-			);
+5. GUIDANCE: Use software frame composition instead of terminal hardware scrolling margins`).toBe(false);
 		} finally {
 			tui.stop();
 		}
@@ -425,14 +392,11 @@ describe("TUI pinned session integration (POST-PV-11..14, INV-PV-8..10, SEQ-PV-6
 
 			// Normal buffer history must not have been appended
 			const historyAppended = term.writes.some(chunk => chunk.includes("RETIRED_ROW_1"));
-			expect(historyAppended).toBe(
-				false,
-				`1. WHAT: retired history row emitted to terminal stream in pinned mode
+			expect(historyAppended, `1. WHAT: retired history row emitted to terminal stream in pinned mode
 2. WHY: INV-PV-10 violation - interactive paint must not emit history batches to native scrollback
 3. EXPECTED: false (history batches omitted)
 4. ACTUAL: true
-5. GUIDANCE: Pinned mode does not emit HistoryBatch to terminal output`,
-			);
+5. GUIDANCE: Pinned mode does not emit HistoryBatch to terminal output`).toBe(false);
 		} finally {
 			tui.stop();
 		}

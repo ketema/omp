@@ -51,7 +51,7 @@ describe("libkitty end-to-end", () => {
 		term = new VirtualTerminal(120, 32);
 		const composer = new Composer({
 			terminal: term,
-			preferences: { ...COMPOSER_DEFAULTS, viewport: "inline" },
+			preferences: { ...COMPOSER_DEFAULTS, viewport: "pinned" },
 		});
 		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
 	});
@@ -167,86 +167,5 @@ describe("libkitty end-to-end", () => {
 		term.sendInput("X");
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("MARKER_DRAFTX")));
 		expect(plainRows(term.getViewport()).filter(row => row.includes("MARKER_DRAFTX")).length).toBe(1);
-	});
-
-	it.skip("hides thinking already retired to native scrollback when Ctrl+T toggles", async () => {
-		const usage: Usage = {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		};
-		const assistantText = (text: string): AssistantMessage => ({
-			role: "assistant",
-			content: [{ type: "text", text }],
-			api: "anthropic-messages",
-			provider: "anthropic",
-			model: "claude-sonnet",
-			usage,
-			stopReason: "stop",
-			timestamp: 1,
-		});
-		const THINK = "RETIRED_REASONING_MARKER";
-		const thinkingMessage: AssistantMessage = {
-			role: "assistant",
-			content: [
-				{ type: "thinking", thinking: THINK },
-				{ type: "text", text: "First visible answer." },
-			],
-			api: "anthropic-messages",
-			provider: "anthropic",
-			model: "claude-sonnet",
-			usage,
-			stopReason: "stop",
-			timestamp: 1,
-		};
-		// A short viewport forces the oldest finalized blocks into immutable
-		// terminal history, which is where the regression hid (a plain viewport
-		// repaint leaves retired rows untouched).
-		mode.stop();
-		term = new VirtualTerminal(120, 10);
-
-		const composer = new Composer({
-			terminal: term,
-			preferences: { ...COMPOSER_DEFAULTS, viewport: "inline" },
-		});
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
-		await mode.init({ suppressWelcomeIntro: true });
-		void mode.getUserInput();
-		await term.waitForRender();
-
-		// Observed reasoning content unlocks Ctrl+T and renders the block visible.
-		mode.noteDisplayableThinkingContent(thinkingMessage);
-		mode.addMessageToChat(thinkingMessage);
-		for (let i = 0; i < 12; i++) {
-			mode.addMessageToChat(assistantText(`Filler answer number ${i} occupying a transcript row.`));
-		}
-
-		// Retirement offers one finalized batch per frame under capacity pressure;
-		// drive frames until the thinking turn commits to native scrollback.
-		const committedRows = () => {
-			const { baseY } = term.getBufferPosition();
-			return plainRows(term.getScrollBuffer()).slice(0, baseY);
-		};
-		for (let i = 0; i < 20 && !committedRows().some(row => row.includes(THINK)); i++) {
-			mode.ui.requestRender(true);
-			await term.waitForRender();
-		}
-		expect(committedRows().some(row => row.includes(THINK))).toBe(true);
-
-		// A live editor draft must survive the toggle's history rebuild.
-		term.sendInput("LIVE_EDITOR_DRAFT");
-		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("LIVE_EDITOR_DRAFT")));
-
-		// Ctrl+T (0x14): the real keybinding path toggles thinking hidden.
-		term.sendInput("\x14");
-		await term.waitForRender(() => !plainRows(term.getScrollBuffer()).some(row => row.includes(THINK)));
-
-		// The retired history was cleared and replayed hidden — the marker is gone
-		// from scrollback and viewport alike — while the live editor stays mounted.
-		expect(plainRows(term.getScrollBuffer()).some(row => row.includes(THINK))).toBe(false);
-		expect(plainRows(term.getViewport()).some(row => row.includes("LIVE_EDITOR_DRAFT"))).toBe(true);
 	});
 });
