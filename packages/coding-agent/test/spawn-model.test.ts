@@ -1,14 +1,14 @@
 import { afterEach, describe, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
+import { CONTRACT_SPAWN_MODEL, MODEL_FIELD } from "../../../requirements/contracts/spawn-model.contract";
 import { Settings } from "../src/config/settings";
 import { runEvalAgent } from "../src/eval/agent-bridge";
 import * as taskDiscovery from "../src/task/discovery";
-import * as taskExecutor from "../src/task/executor";
-import { taskSchema } from "../src/task/types";
 import type { ExecutorOptions } from "../src/task/executor";
+import * as taskExecutor from "../src/task/executor";
 import type { AgentDefinition, SingleResult } from "../src/task/types";
+import { taskSchema } from "../src/task/types";
 import type { ToolSession } from "../src/tools";
-import { CONTRACT_SPAWN_MODEL, MODEL_FIELD } from "../../../requirements/contracts/spawn-model.contract";
 
 type ClauseId = keyof typeof CONTRACT_SPAWN_MODEL;
 
@@ -155,7 +155,9 @@ describe("optional per-invocation spawn model", () => {
 		 */
 		const testName = "forwards an eval agent model into the child request before execution";
 		vi.spyOn(taskDiscovery, "discoverAgents").mockResolvedValue({ agents: [taskAgent], projectAgentsDir: null });
-		const runSpy = vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => successfulChild(options));
+		const runSpy = vi
+			.spyOn(taskExecutor, "runSubprocess")
+			.mockImplementation(async options => successfulChild(options));
 
 		await runEvalAgent({ prompt: "inspect the model handoff", model: "xai/grok" }, { session: makeEvalSession() });
 
