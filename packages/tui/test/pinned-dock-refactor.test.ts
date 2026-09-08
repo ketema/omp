@@ -57,6 +57,8 @@ class RecordingTerminal extends VirtualTerminal {
  * Contract: requirements/contracts/pinned_dock.contract.ts POST-PV-3, POST-PV-6.
  */
 class StaticPinnedFrameProvider implements TerminalFrameProvider {
+	acknowledgeHistory(_id: number): void {}
+
 	constructor(
 		private readonly scroll: readonly string[],
 		private readonly dock: readonly string[],
