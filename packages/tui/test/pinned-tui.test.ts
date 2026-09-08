@@ -3,7 +3,6 @@ import { type Component, type Focusable, type TerminalFrameProvider, TUI, type V
 import {
 	PINNED_ALT_SCREEN_ENTER as ALT_SCREEN_ENTER,
 	PINNED_ALT_SCREEN_LEAVE as ALT_SCREEN_LEAVE,
-	CONTRACT_PINNED_DOCK,
 } from "../../../requirements/contracts/pinned_dock.contract";
 import { VirtualTerminal } from "./virtual-terminal";
 

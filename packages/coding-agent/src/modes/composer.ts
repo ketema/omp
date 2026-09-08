@@ -124,10 +124,6 @@ export class Composer implements TerminalFrameProvider {
 	#headerAfter: readonly Component[] = [];
 	#runtimeChildren: readonly Component[] = [];
 	#runtimeMounted = false;
-	// Composer-owned history id space. Transcript batch ids restart across
-	// container clears/swaps; the composer translates them into one monotonic
-	// sequence the terminal's accepted-id watermark can trust.
-	#nextHistoryId = 1;
 	#offeredHistory:
 		| {
 				id: number;
