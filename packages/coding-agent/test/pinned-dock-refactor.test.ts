@@ -109,7 +109,9 @@ describe("pinned dock refactor — SLICE-2 full scrollback and header retirement
 			await terminal.waitForRender();
 
 			const plan = composer.renderFrame({ columns: 80, rows: 10 });
-			const visibleActiveRows = (plan.pinnedScroll ?? []).filter(row => activeSessionRows.includes(row));
+			const visibleActiveRows = (plan.pinnedScroll ?? [])
+				.map(row => row.trimEnd())
+				.filter(row => activeSessionRows.includes(row));
 
 			expect(visibleActiveRows).toEqual(
 				activeSessionRows,
