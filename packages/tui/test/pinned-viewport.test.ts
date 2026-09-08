@@ -1,12 +1,9 @@
 import { describe, expect, it } from "bun:test";
+import { PINNED_MIN_TRANSCRIPT_ROWS, PinnedViewport } from "@oh-my-pi/pi-tui/pinned-viewport";
 import {
-	PINNED_MIN_TRANSCRIPT_ROWS,
-	PinnedViewport,
-} from "@oh-my-pi/pi-tui/pinned-viewport";
-import {
+	PINNED_MIN_TRANSCRIPT_ROWS as CONTRACT_MIN_ROWS,
 	CONTRACT_PINNED_DOCK,
 	InvalidHeightError,
-	PINNED_MIN_TRANSCRIPT_ROWS as CONTRACT_MIN_ROWS,
 	validateComposeHeight,
 } from "../../../requirements/contracts/pinned_dock.contract";
 
@@ -77,7 +74,6 @@ describe("pinned composer contract validators (supporting tests)", () => {
 4. ACTUAL: ${PINNED_MIN_TRANSCRIPT_ROWS}
 5. GUIDANCE: PINNED_MIN_TRANSCRIPT_ROWS must match contract constant exactly`,
 		);
-
 	});
 });
 

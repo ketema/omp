@@ -1,15 +1,9 @@
 import { describe, expect, it } from "bun:test";
+import { type Component, type Focusable, type TerminalFrameProvider, TUI, type ViewportSize } from "@oh-my-pi/pi-tui";
 import {
-	type Component,
-	type Focusable,
-	TUI,
-	type TerminalFrameProvider,
-	type ViewportSize,
-} from "@oh-my-pi/pi-tui";
-import {
-	CONTRACT_PINNED_DOCK,
 	PINNED_ALT_SCREEN_ENTER as ALT_SCREEN_ENTER,
 	PINNED_ALT_SCREEN_LEAVE as ALT_SCREEN_LEAVE,
+	CONTRACT_PINNED_DOCK,
 } from "../../../requirements/contracts/pinned_dock.contract";
 import { VirtualTerminal } from "./virtual-terminal";
 

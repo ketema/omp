@@ -2,14 +2,18 @@ import { describe, expect, it } from "bun:test";
 import {
 	type Component,
 	Input,
-	Text,
 	type TerminalFramePlan,
 	type TerminalFrameProvider,
+	Text,
 	TUI,
 	type ViewportSize,
 } from "@oh-my-pi/pi-tui";
 import { parseSgrMouseStream } from "@oh-my-pi/pi-tui/mouse";
-import { InvalidHeightError as ImplInvalidHeightError, isViewportMode, PinnedViewport } from "@oh-my-pi/pi-tui/pinned-viewport";
+import {
+	InvalidHeightError as ImplInvalidHeightError,
+	isViewportMode,
+	PinnedViewport,
+} from "@oh-my-pi/pi-tui/pinned-viewport";
 import {
 	CONTRACT_PINNED_DOCK,
 	InvalidHeightError as ContractInvalidHeightError,
@@ -1120,7 +1124,13 @@ describe("pinned dock refactor — software scrollback, content integrity, and v
 		const invPv5 = CONTRACT_PINNED_DOCK["INV-PV-5"];
 		const terminal = new RecordingTerminal(48, 6, 100);
 		const tui = new TUI(terminal, false);
-		const history = ["TRANSCRIPT_LINE_1", "TRANSCRIPT_LINE_2", "TRANSCRIPT_LINE_3", "TRANSCRIPT_LINE_4", "TRANSCRIPT_LINE_5"];
+		const history = [
+			"TRANSCRIPT_LINE_1",
+			"TRANSCRIPT_LINE_2",
+			"TRANSCRIPT_LINE_3",
+			"TRANSCRIPT_LINE_4",
+			"TRANSCRIPT_LINE_5",
+		];
 		tui.setFrameProvider(new StaticPinnedFrameProvider(history, ["DOCK_ONLY_ROW"]));
 		try {
 			tui.start();
@@ -1155,7 +1165,7 @@ describe("pinned dock refactor — software scrollback, content integrity, and v
 		}
 	});
 
-	it("INV-PV-7: isViewportMode rejects \"inline\" as a supported viewport mode", () => {
+	it('INV-PV-7: isViewportMode rejects "inline" as a supported viewport mode', () => {
 		/**
 		 * CONTRACT TRACEABILITY:
 		 * - Contract: isViewportMode() / ViewportMode

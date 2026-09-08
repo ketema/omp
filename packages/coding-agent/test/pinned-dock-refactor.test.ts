@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { COMPOSER_DEFAULTS, Composer } from "@oh-my-pi/pi-coding-agent/modes/composer";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { CONTRACT_PINNED_DOCK } from "../../../requirements/contracts/pinned_dock.contract";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
@@ -177,7 +177,10 @@ describe("pinned dock refactor — SLICE-2 full scrollback, settled-block cachin
 		 */
 		await initTheme();
 		const terminal = new VirtualTerminal(80, 10, 100);
-		const startupHeaderRows = Array.from({ length: 12 }, (_, index) => `STARTUP_HEADER_${String(index).padStart(2, "0")}`);
+		const startupHeaderRows = Array.from(
+			{ length: 12 },
+			(_, index) => `STARTUP_HEADER_${String(index).padStart(2, "0")}`,
+		);
 		const activeSessionRows = ["ACTIVE_SESSION_MESSAGE_ONE", "ACTIVE_SESSION_MESSAGE_TWO"];
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Text(activeSessionRows.join("\n"), 0, 0));
@@ -237,7 +240,10 @@ describe("pinned dock refactor — SLICE-2 full scrollback, settled-block cachin
 		 */
 		await initTheme();
 		const terminal = new VirtualTerminal(80, 10, 100);
-		const startupHeaderRows = Array.from({ length: 12 }, (_, index) => `STARTUP_HEADER_${String(index).padStart(2, "0")}`);
+		const startupHeaderRows = Array.from(
+			{ length: 12 },
+			(_, index) => `STARTUP_HEADER_${String(index).padStart(2, "0")}`,
+		);
 		const activeSessionRows = ["ACTIVE_SESSION_MESSAGE_ONE", "ACTIVE_SESSION_MESSAGE_TWO"];
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Text(activeSessionRows.join("\n"), 0, 0));
@@ -282,7 +288,7 @@ describe("pinned dock refactor — SLICE-2 full scrollback, settled-block cachin
 		}
 	});
 
-	it("INV-PV-7: an \"inline\" viewport preference does not exit pinned mode or honor an unpinned render path", async () => {
+	it('INV-PV-7: an "inline" viewport preference does not exit pinned mode or honor an unpinned render path', async () => {
 		/**
 		 * CONTRACT TRACEABILITY:
 		 * - Contract: Composer.setPreferences() -> TUI.exitPinned() / TUI.isPinned().
