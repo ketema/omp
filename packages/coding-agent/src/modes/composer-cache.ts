@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { isViewportMode } from "@oh-my-pi/pi-tui";
 import { getAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import type { LspServerInfo, RecentSession } from "./components/welcome";
 import type { ComposerPreferences } from "./composer";
@@ -191,6 +190,8 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 				resizeScrollback === "append" || resizeScrollback === "rebuild" || resizeScrollback === "preserve"
 					? resizeScrollback
 					: "rebuild",
+			// INV-PV-7: the only accepted viewport mode; cached state cannot
+			// resurrect an inline/unpinned mode.
 			viewport: "pinned",
 			imeSafeCursor,
 			autocompleteMaxVisible,

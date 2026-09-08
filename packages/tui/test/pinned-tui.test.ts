@@ -7,15 +7,10 @@ import {
 	type ViewportSize,
 } from "@oh-my-pi/pi-tui";
 import {
-	ALT_SCREEN_ENTER,
-	ALT_SCREEN_LEAVE,
-	CONTRACT_PINNED_COMPOSER,
-	FOLLOW_KEYBINDING,
-	PAGE_DOWN_KEYBINDING,
-	PAGE_UP_KEYBINDING,
-	PINNED_MOUSE_ENTER,
-	PINNED_MOUSE_LEAVE,
-} from "../../../requirements/contracts/pinned-composer.contract";
+	CONTRACT_PINNED_DOCK,
+	PINNED_ALT_SCREEN_ENTER as ALT_SCREEN_ENTER,
+	PINNED_ALT_SCREEN_LEAVE as ALT_SCREEN_LEAVE,
+} from "../../../requirements/contracts/pinned_dock.contract";
 import { VirtualTerminal } from "./virtual-terminal";
 
 /**

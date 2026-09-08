@@ -61,6 +61,14 @@ export class TranscriptContainer extends Container {
 	#offered: { batch: HistoryBatch; end: number } | undefined;
 	#toolActivityVisible = true;
 	#lastFrame: AnimationFrame = { tick: 0, now: 0 };
+	// SEQ-PV-4: settled/committed blocks are finalized (their render output is
+	// otherwise a pure function of width), so render() may reuse the last
+	// rendered rows for a given (width, revision) instead of re-rendering
+	// every entry on every frame. `revision` bumps on any display-preference
+	// change (e.g. tool-activity visibility) that can alter a cached block's
+	// output despite its own content being unchanged.
+	#renderCache = new Map<Component, { width: number; revision: number; rows: readonly string[] }>();
+	#renderRevision = 0;
 
 	override addChild(component: Component): void {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
@@ -74,6 +82,7 @@ export class TranscriptContainer extends Container {
 		super.removeChild(component);
 		this.#entries = this.#entries.filter(candidate => candidate.component !== component);
 		this.#frontier = Math.min(this.#frontier, this.#entries.length);
+		this.#renderCache.delete(component);
 	}
 
 	override clear(): void {
@@ -81,6 +90,7 @@ export class TranscriptContainer extends Container {
 		this.#entries = [];
 		this.#frontier = 0;
 		this.#offered = undefined;
+		this.#renderCache.clear();
 	}
 
 	setToolActivityVisible(visible: boolean): void {
@@ -89,6 +99,7 @@ export class TranscriptContainer extends Container {
 		for (const child of this.children) {
 			if (isToolActivityComponent(child)) child.setToolActivityVisible(visible);
 		}
+		this.#renderRevision++;
 		this.invalidate();
 	}
 
@@ -121,7 +132,12 @@ export class TranscriptContainer extends Container {
 		this.#frontier = 0;
 		this.#offered = undefined;
 		for (const entry of this.#entries) {
-			if (entry.state === "committed") entry.state = isFinalized(entry.component) ? "settled" : "active";
+			if (entry.state === "committed") {
+				entry.state = isFinalized(entry.component) ? "settled" : "active";
+				// A block reverted to active may render differently once it resumes
+				// mutating; drop any cached rows so render() recomputes it fresh.
+				if (entry.state === "active") this.#renderCache.delete(entry.component);
+			}
 		}
 	}
 
@@ -256,15 +272,36 @@ export class TranscriptContainer extends Container {
 	/** Full semantic render used by exports and non-terminal commands. */
 	override render(width: number): readonly string[] {
 		this.#syncEntries();
+		this.#settleFinalized();
 		const rows: string[] = [];
 		for (const entry of this.#entries) {
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
-			const block = trimBlankEdges(entry.component.render(width));
+			const block = this.#renderEntry(entry, width);
 			if (block.length === 0) continue;
 			if (rows.length > 0) rows.push("");
 			rows.push(...block);
 		}
 		return rows;
+	}
+
+	/**
+	 * Render one entry, reusing the SEQ-PV-4 cache for a settled or committed
+	 * block already rendered at this width — finalized blocks cannot produce
+	 * different output for the same width again. Active blocks still mutate,
+	 * so they always render fresh and are never cached.
+	 */
+	#renderEntry(entry: TranscriptEntry, width: number): readonly string[] {
+		if (entry.state !== "active") {
+			const cached = this.#renderCache.get(entry.component);
+			if (cached !== undefined && cached.width === width && cached.revision === this.#renderRevision) {
+				return cached.rows;
+			}
+		}
+		this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+		const block = trimBlankEdges(entry.component.render(width));
+		if (entry.state !== "active") {
+			this.#renderCache.set(entry.component, { width, revision: this.#renderRevision, rows: block });
+		}
+		return block;
 	}
 
 	#renderEmergency(

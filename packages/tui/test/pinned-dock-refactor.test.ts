@@ -9,10 +9,10 @@ import {
 	type ViewportSize,
 } from "@oh-my-pi/pi-tui";
 import { parseSgrMouseStream } from "@oh-my-pi/pi-tui/mouse";
-import { isViewportMode, PinnedViewport } from "@oh-my-pi/pi-tui/pinned-viewport";
+import { InvalidHeightError as ImplInvalidHeightError, isViewportMode, PinnedViewport } from "@oh-my-pi/pi-tui/pinned-viewport";
 import {
 	CONTRACT_PINNED_DOCK,
-	InvalidHeightError,
+	InvalidHeightError as ContractInvalidHeightError,
 	InvalidMouseInputError,
 	OSC52_CLIPBOARD_PREFIX,
 	SELECTION_HIGHLIGHT_END,
@@ -83,7 +83,7 @@ const FAMILY_EMOJI = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}"; /
 // ============================================================================
 
 describe("pinned dock refactor — PinnedViewport.composeFrame real-implementation contract", () => {
-	it("PRE-PV-1 / ERRORS-PV-1: composeFrame itself throws InvalidHeightError citing PRE-PV-1 on non-positive height", () => {
+	it("PRE-PV-1 / ERRORS-PV-1: composeFrame itself throws a PRE-PV-1 contract-conforming error on non-positive height", () => {
 		/**
 		 * CONTRACT TRACEABILITY:
 		 * - Contract: PinnedViewport.composeFrame()
@@ -91,19 +91,18 @@ describe("pinned dock refactor — PinnedViewport.composeFrame real-implementati
 		 * - Enforces: ERRORS-PV-1: validateComposeHeight SHALL throw InvalidHeightError citing PRE-PV-1 on non-positive height
 		 * - Category: error
 		 * - Risk tier: High — an uncaught generic Error during a render pass can crash the interactive render loop
-		 * - Adversarial: Contract-governed, implementation-aware. Targets the real class the clause names,
-		 *   not the contract's own standalone validateComposeHeight() function.
+		 * - Adversarial: Contract-governed, implementation-aware. Targets the real class the clause names
+		 *   and bridges the independent implementation and contract error declarations through their
+		 *   observable Error shape rather than shared prototype identity.
 		 *
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
 		 *   [✓] C1 VALID: cites PRE-PV-1 and ERRORS-PV-1 in requirements/contracts/pinned_dock.contract.ts.
-		 *   [✓] C2 VALUABLE: the real composeFrame currently throws a generic Error ("PRE-1 violation: ...") rather
-		 *       than InvalidHeightError, so a correct fix is required for this assertion to pass.
+		 *   [✓] C2 VALUABLE: a generic Error, wrong clause identifier, or wrong contract message fails
+		 *       the observable error-shape assertions.
 		 *   [✓] C3 NON-DUPLICATIVE: the only test invoking PinnedViewport.composeFrame's own height validation;
 		 *       the PRE-PV-2 test below covers the mouse-input validator, a disjoint surface.
-		 *   [✓] C4 NOT FUTURE-EDIT: enforces the current, explicit ERRORS-PV-1 exception-type guarantee.
+		 *   [✓] C4 NOT FUTURE-EDIT: enforces the current, explicit ERRORS-PV-1 contract error shape.
 		 */
-		const prePv1 = CONTRACT_PINNED_DOCK["PRE-PV-1"];
-		const errorsPv1 = CONTRACT_PINNED_DOCK["ERRORS-PV-1"];
 		const viewport = new PinnedViewport();
 		for (const invalidHeight of [0, -1, -100, Number.NaN, Number.NEGATIVE_INFINITY]) {
 			let caught: unknown;
@@ -112,13 +111,47 @@ describe("pinned dock refactor — PinnedViewport.composeFrame real-implementati
 			} catch (err) {
 				caught = err;
 			}
-			expect(caught instanceof InvalidHeightError).toBe(
-				true,
-				`1. WHAT: test_pre_pv_1_composeFrame_throws_invalid_height_error(${String(invalidHeight)}) FAILED
-2. WHY: PRE-PV-1 / ERRORS-PV-1 violation - ${prePv1.description}; ${errorsPv1.description}
-3. EXPECTED: PinnedViewport.composeFrame({ height: ${String(invalidHeight)} }) throws the contract's InvalidHeightError
+			const contractError = new ContractInvalidHeightError(invalidHeight);
+			expect(caught).toBeInstanceOf(
+				ImplInvalidHeightError,
+				`1. WHAT: test_pre_pv_1_composeFrame_throws_contract_conforming_error(${String(invalidHeight)}) FAILED
+2. WHY: PRE-PV-1 / ERRORS-PV-1 violation - composeFrame did not throw the implementation's InvalidHeightError
+3. EXPECTED: an implementation InvalidHeightError whose observable shape matches the contract InvalidHeightError
 4. ACTUAL: ${caught instanceof Error ? `threw ${caught.constructor.name}: ${caught.message}` : String(caught)}
-5. GUIDANCE: composeFrame must validate height and raise the contract's InvalidHeightError, not an untyped Error, before composing any frame`,
+5. GUIDANCE: non-positive terminal heights must use the implementation error that conforms to ERRORS-PV-1`,
+			);
+			if (!(caught instanceof ImplInvalidHeightError)) continue;
+			expect(caught).toBeInstanceOf(
+				Error,
+				`1. WHAT: test_pre_pv_1_composeFrame_throws_contract_conforming_error(${String(invalidHeight)}) FAILED
+2. WHY: PRE-PV-1 / ERRORS-PV-1 violation - composeFrame did not throw an Error object
+3. EXPECTED: an Error object carrying the contract-defined name, clause identifier, and message
+4. ACTUAL: ${String(caught)}
+5. GUIDANCE: non-positive terminal heights must fail with the contract-defined error shape`,
+			);
+			expect(caught.name).toBe(
+				contractError.name,
+				`1. WHAT: test_pre_pv_1_composeFrame_throws_contract_conforming_error(${String(invalidHeight)}) FAILED
+2. WHY: PRE-PV-1 / ERRORS-PV-1 violation - error name does not identify a pinned-dock contract violation
+3. EXPECTED: name ${JSON.stringify(contractError.name)}
+4. ACTUAL: ${JSON.stringify(caught.name)}
+5. GUIDANCE: non-positive terminal heights must identify the error as a pinned-dock contract violation`,
+			);
+			expect(caught.clauseId).toBe(
+				contractError.clauseId,
+				`1. WHAT: test_pre_pv_1_composeFrame_throws_contract_conforming_error(${String(invalidHeight)}) FAILED
+2. WHY: PRE-PV-1 / ERRORS-PV-1 violation - error does not cite the violated precondition
+3. EXPECTED: clauseId ${JSON.stringify(contractError.clauseId)}
+4. ACTUAL: ${JSON.stringify(caught.clauseId)}
+5. GUIDANCE: non-positive terminal heights must cite PRE-PV-1`,
+			);
+			expect(caught.message).toContain(
+				"PRE-PV-1 violation: Terminal height must be a finite number >= 1",
+				`1. WHAT: test_pre_pv_1_composeFrame_throws_contract_conforming_error(${String(invalidHeight)}) FAILED
+2. WHY: PRE-PV-1 / ERRORS-PV-1 violation - error message does not state the contract-defined height failure
+3. EXPECTED: message containing "PRE-PV-1 violation: Terminal height must be a finite number >= 1"
+4. ACTUAL: ${JSON.stringify(caught.message)}
+5. GUIDANCE: non-positive terminal heights must report the PRE-PV-1 height requirement`,
 			);
 		}
 	});

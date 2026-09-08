@@ -28,6 +28,7 @@ import {
 	PINNED_MOUSE_LEAVE,
 	PINNED_WHEEL_SCROLL_LINES,
 	PinnedViewport,
+	type SelectionSpan,
 } from "./pinned-viewport";
 import { setAltScreenActive, type Terminal } from "./terminal";
 import {
@@ -56,7 +57,6 @@ import {
 	visibleWidth,
 } from "./utils";
 
-const ANSI_REGEX = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\].*?(?:\x07|\x1b\\)/g;
 const SEGMENT_RESET = "\x1b[0m";
 /**
  * Per-line terminator written after every non-image content row. It closes both
@@ -905,7 +905,11 @@ export class TUI extends Container {
 		const overlayWantsMouse = overlay?.options?.fullscreen === true && overlay.options?.mouseTracking !== false;
 		const wantPinnedMouse = this.#pinnedActive && !overlayWantsMouse;
 		if (wantPinnedMouse === this.#pinnedMouseActive) return;
-		if (this.#pinnedMouseActive) this.terminal.write(PINNED_MOUSE_LEAVE);
+		// POST-PV-8: an overlay requesting mouse tracking owns SGR 1006 itself
+		// (see MOUSE_TRACKING_ON); leaving pinned mouse mode here must not send
+		// PINNED_MOUSE_LEAVE, which would disable the 1006 mode the overlay
+		// just enabled (or is about to).
+		if (this.#pinnedMouseActive && !overlayWantsMouse) this.terminal.write(PINNED_MOUSE_LEAVE);
 		if (wantPinnedMouse) this.terminal.write(PINNED_MOUSE_ENTER);
 		this.#pinnedMouseActive = wantPinnedMouse;
 	}
@@ -949,7 +953,10 @@ export class TUI extends Container {
 					} else if (event.release) {
 						if (this.#dragStart !== undefined) {
 							this.#dragEnd = { col: event.col, row: event.row };
-							this.#copySelectedTranscriptToClipboard();
+							// POST-PV-10: only a left-button (button 0) release commits the copy.
+							if (event.button === 0) {
+								this.#copySelectedTranscriptToClipboard();
+							}
 							this.#dragStart = undefined;
 							this.#dragEnd = undefined;
 						}
@@ -1012,22 +1019,24 @@ export class TUI extends Container {
 
 		if (r0 === r1) {
 			const line = lines[r0] ?? "";
-			const plain = line.replace(ANSI_REGEX, "");
 			const minC = Math.max(0, Math.min(c0, c1));
 			const maxC = Math.max(0, Math.max(c0, c1));
 			if (minC < maxC) {
-				selectedParts.push(plain.slice(minC, maxC));
+				// POST-PV-6: visual-column-aware slice over a closed [minC, maxC]
+				// cell interval so the release cell is included and wide glyphs
+				// (CJK, ZWJ emoji) stay intact instead of splitting mid-cluster.
+				selectedParts.push(Bun.stripANSI(sliceByColumn(line, minC, maxC - minC + 1)));
 			}
 		} else {
 			for (let r = r0; r <= r1; r++) {
 				const line = lines[r] ?? "";
-				const plain = line.replace(ANSI_REGEX, "");
 				if (r === r0) {
-					selectedParts.push(plain.slice(Math.max(0, c0)));
+					selectedParts.push(Bun.stripANSI(sliceByColumn(line, Math.max(0, c0), Number.MAX_SAFE_INTEGER)));
 				} else if (r === r1) {
-					selectedParts.push(plain.slice(0, Math.max(0, c1)));
+					// Closed interval: include the release cell at column c1.
+					selectedParts.push(Bun.stripANSI(sliceByColumn(line, 0, Math.max(0, c1) + 1)));
 				} else {
-					selectedParts.push(plain);
+					selectedParts.push(Bun.stripANSI(line));
 				}
 			}
 		}
@@ -1037,6 +1046,17 @@ export class TUI extends Container {
 			const encoded = Buffer.from(selectedText, "utf8").toString("base64");
 			this.terminal.write(`\x1b]52;c;${encoded}\x07`);
 		}
+	}
+
+	/** Raw (unordered) window-relative span of the active drag, or undefined (POST-PV-9). */
+	#activeDragSelection(): SelectionSpan | undefined {
+		if (!this.#dragStart || !this.#dragEnd) return undefined;
+		return {
+			startRow: this.#dragStart.row,
+			startCol: this.#dragStart.col,
+			endRow: this.#dragEnd.row,
+			endCol: this.#dragEnd.col,
+		};
 	}
 
 	/** Delete every tracked Kitty image from the terminal graphics store. */
@@ -2805,7 +2825,12 @@ export class TUI extends Container {
 		}
 		this.#imageBudget.endPass();
 		this.#pinnedViewport ??= new PinnedViewport();
-		let lines = this.#pinnedViewport.composeFrame({ transcript: scroll, dock, height });
+		let lines = this.#pinnedViewport.composeFrame({
+			transcript: scroll,
+			dock,
+			height,
+			selection: this.#activeDragSelection(),
+		});
 		if (this.#getTopmostVisibleOverlay() !== undefined) {
 			lines = this.#compositeOverlaysIntoWindow(lines, width, height);
 		}

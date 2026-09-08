@@ -16,7 +16,7 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { CustomEditor } from "./components/custom-editor";
-import { type AnimationFrame, TranscriptContainer } from "./components/transcript-container";
+import { TranscriptContainer } from "./components/transcript-container";
 import { type LspServerInfo, type RecentSession, WelcomeComponent } from "./components/welcome";
 import { getEditorTheme, initThemeSync, theme } from "./theme/theme";
 
@@ -29,6 +29,8 @@ export interface ComposerPreferences {
 	readonly showHardwareCursor: boolean;
 	readonly maxInlineImages: number;
 	readonly resizeScrollback: ResizeScrollbackMode;
+	// INV-PV-7: ViewportMode admits only "pinned" — there is no inline/unpinned
+	// value this field can hold.
 	readonly viewport: ViewportMode;
 	readonly imeSafeCursor: boolean;
 	readonly autocompleteMaxVisible: number;
@@ -211,59 +213,52 @@ export class Composer implements TerminalFrameProvider {
 			: [this.#header, this.#bootstrapInputGap, this.editor, this.#statusHost];
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) {
-			if (this.#preferences.viewport === "pinned") {
-				const dock = this.#renderRoots([this.editor, this.#statusHost], width);
-				const scrollRoots = roots.filter(root => root !== this.editor && root !== this.#statusHost);
-				const sessionRoots = scrollRoots.filter(root => root !== this.#header);
-				const sessionScroll = this.#renderRoots(sessionRoots, width);
-				// POST-PV-7: mounted session content retires startup chrome before it
-				// can consume the fixed transcript window.
-				if (this.#runtimeMounted && sessionScroll.length > 0) this.#headerRetired = true;
-				// SEQ-PV-4 / INV-PV-1: PinnedViewport receives complete history.
-				const scroll = this.#headerRetired
-					? sessionScroll
-					: [...this.#header.render(width), ...sessionScroll];
-				return {
-					viewport: [],
-					pinnedScroll: scroll,
-					pinnedDock: dock,
-				};
+			const dock = this.#renderRoots([this.editor, this.#statusHost], width);
+			const scrollRoots = roots.filter(root => root !== this.editor && root !== this.#statusHost);
+			const sessionRoots = scrollRoots.filter(root => root !== this.#header);
+			const sessionScroll = this.#renderRoots(sessionRoots, width);
+			// POST-PV-7: mounted session content retires startup chrome from live
+			// pressure accounting; the header stays in the history array below so
+			// scrollback always recovers it. The one-time snapshot below is what
+			// renderResizeFrame reflows while the terminal borrows its resize buffer.
+			if (this.#runtimeMounted && sessionScroll.length > 0 && !this.#headerRetired) {
+				this.#headerRetired = true;
+				this.#retiredHeaderRows = [...this.#header.render(width), ""];
 			}
-			return { viewport: this.#renderRoots(roots, width).slice(-rows) };
+			// SEQ-PV-4 / INV-PV-1 / POST-PV-7: PinnedViewport receives the complete
+			// history with the header at index 0 — never dropped — so scrollback
+			// recovers startup chrome; composeFrame's own windowing naturally
+			// excludes it from the live tail once conversation content fills the
+			// window.
+			const scroll = [...this.#header.render(width), ...sessionScroll];
+			return {
+				viewport: [],
+				pinnedScroll: scroll,
+				pinnedDock: dock,
+			};
 		}
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
 		const preRoots = this.#renderRoots(roots.slice(0, transcriptIndex), width);
 		const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
-		if (this.#preferences.viewport === "pinned") {
-			// POST-PV-7: a mounted session transcript retires startup chrome before
-			// header pressure can consume its available output rows.
-			if (transcript.children.length > 0) this.#headerRetired = true;
-			// SEQ-PV-4 / POST-PV-2: PinnedViewport owns windowing, so it receives
-			// the complete semantic transcript rather than a one-page projection.
-			const transcriptRows = transcript.render(width);
-			const headerRows = this.#headerRetired ? [] : this.#header.render(width);
-			const before = [...headerRows, ...preRoots];
-			return {
-				viewport: [],
-				pinnedScroll: [...before, ...transcriptRows],
-				pinnedDock: after,
-			};
+		// POST-PV-7: a mounted session transcript retires startup chrome from live
+		// pressure accounting; the header stays in the history array below so
+		// scrollback always recovers it. The one-time snapshot below is what
+		// renderResizeFrame reflows while the terminal borrows its resize buffer.
+		if (transcript.children.length > 0 && !this.#headerRetired) {
+			this.#headerRetired = true;
+			this.#retiredHeaderRows = [...this.#header.render(width), ""];
 		}
-		const history = this.#offerHistory(transcript, width, rows, preRoots.length + after.length);
-		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
-		const headerRows = headerVisible ? this.#header.render(width) : [];
-		const before = [...headerRows, ...preRoots];
-		const now = performance.now();
-		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
-		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - after.length), frame);
-		const composed = [...before, ...active, ...after];
-		if (history !== undefined && this.#offeredHistory?.source === "header") {
-			const visibleHeaderRows = Math.max(0, rows - composed.length);
-			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
-		}
+		// SEQ-PV-4 / POST-PV-2: PinnedViewport owns windowing, so it receives
+		// the complete semantic transcript rather than a one-page projection.
+		const transcriptRows = transcript.render(width);
+		// POST-PV-7 / INV-PV-1: keep the header at index 0 of history; composeFrame's
+		// windowing naturally excludes it from the live tail once conversation
+		// content scrolls it out of the immediately visible window.
+		const before = [...this.#header.render(width), ...preRoots];
 		return {
-			history,
-			viewport: composed.length <= rows ? composed : composed.slice(-rows),
+			viewport: [],
+			pinnedScroll: [...before, ...transcriptRows],
+			pinnedDock: after,
 		};
 	}
 
@@ -312,41 +307,6 @@ export class Composer implements TerminalFrameProvider {
 		for (const child of this.#runtimeChildren) {
 			if (child instanceof TranscriptContainer) child.resetRetirement();
 		}
-	}
-
-	/** Header retires first, then finalized transcript prefixes, one batch at a time. */
-	#offerHistory(
-		transcript: TranscriptContainer,
-		width: number,
-		rows: number,
-		chromeRows: number,
-	): { id: number; rows: readonly string[] } | undefined {
-		if (this.#offeredHistory !== undefined) {
-			return { id: this.#offeredHistory.id, rows: this.#offeredHistory.rows };
-		}
-		if (!this.#headerRetired) {
-			const welcome = this.#welcome;
-			if (welcome !== undefined && !welcome.isTranscriptBlockFinalized()) return undefined;
-			// The header stays live viewport chrome until the screen fills; then it
-			// retires first so transcript prefixes can follow in order.
-			const headerRows = this.#header.render(width).length;
-			const liveRows = transcript.liveRowCount(width);
-			if (headerRows + chromeRows + liveRows <= rows) return undefined;
-			this.#offeredHistory = {
-				id: this.#nextHistoryId++,
-				rows: [...this.#header.render(width), ""],
-				source: "header",
-			};
-			return { id: this.#offeredHistory.id, rows: this.#offeredHistory.rows };
-		}
-		const batch = transcript.peekFinalizedBatch(width, Math.max(0, rows - chromeRows));
-		if (batch === undefined) return undefined;
-		this.#offeredHistory = {
-			id: this.#nextHistoryId++,
-			rows: batch.rows,
-			source: { transcript, transcriptId: batch.id },
-		};
-		return { id: this.#offeredHistory.id, rows: this.#offeredHistory.rows };
 	}
 
 	#renderRoots(roots: readonly Component[], width: number): string[] {
@@ -412,8 +372,9 @@ export class Composer implements TerminalFrameProvider {
 		if (this.#stopped) return;
 		const wasQuiet = this.#preferences.quiet;
 		this.#preferences = { ...this.#preferences, ...update };
-		if (this.#preferences.viewport === "pinned") this.ui.enterPinned();
-		else this.ui.exitPinned();
+		// INV-PV-7: Composer exposes no inline/unpinned viewport setting; entering
+		// pinned mode here is unconditional.
+		this.ui.enterPinned();
 		this.editor.setTheme(getEditorTheme());
 		try {
 			this.editor.setBorderStyle(this.#preferences.composerShape);

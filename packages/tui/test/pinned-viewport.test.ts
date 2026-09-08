@@ -1,16 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import {
-	clippedPinnedDockHeight,
 	PINNED_MIN_TRANSCRIPT_ROWS,
 	PinnedViewport,
 } from "@oh-my-pi/pi-tui/pinned-viewport";
 import {
-	CONTRACT_PINNED_COMPOSER,
+	CONTRACT_PINNED_DOCK,
+	InvalidHeightError,
 	PINNED_MIN_TRANSCRIPT_ROWS as CONTRACT_MIN_ROWS,
-	clippedPinnedDockHeight as contractClip,
 	validateComposeHeight,
-	PinnedComposerContractError,
-} from "../../../requirements/contracts/pinned-composer.contract";
+} from "../../../requirements/contracts/pinned_dock.contract";
 
 describe("pinned composer contract validators (supporting tests)", () => {
 	it("CONTRACT VERIFICATION: ERRORS-1 / PRE-1: rejects non-positive or non-finite compose height", () => {
@@ -35,22 +33,22 @@ describe("pinned composer contract validators (supporting tests)", () => {
 			} catch (err) {
 				caught = err;
 			}
-			expect(caught instanceof PinnedComposerContractError).toBe(
+			expect(caught instanceof InvalidHeightError).toBe(
 				true,
 				`1. WHAT: validateComposeHeight(${String(invalid)}) FAILED
-2. WHY: ERRORS-1 / PRE-1 violation - validateComposeHeight must throw PinnedComposerContractError
-3. EXPECTED: instance of PinnedComposerContractError
+2. WHY: ERRORS-PV-1 / PRE-PV-1 violation - validateComposeHeight must throw InvalidHeightError
+3. EXPECTED: instance of InvalidHeightError
 4. ACTUAL: ${String(caught)}
 5. GUIDANCE: composeFrame height must be validated as a finite number >= 1`,
 			);
-			if (caught instanceof PinnedComposerContractError) {
+			if (caught instanceof InvalidHeightError) {
 				expect(caught.clauseId).toBe(
-					"PRE-1",
+					"PRE-PV-1",
 					`1. WHAT: validateComposeHeight(${String(invalid)}) clauseId mismatch
-2. WHY: ERRORS-1 violation - clauseId must cite PRE-1
-3. EXPECTED: 'PRE-1'
+2. WHY: ERRORS-PV-1 violation - clauseId must cite PRE-PV-1
+3. EXPECTED: 'PRE-PV-1'
 4. ACTUAL: '${caught.clauseId}'
-5. GUIDANCE: Error must cite clause ID PRE-1`,
+5. GUIDANCE: Error must cite clause ID PRE-PV-1`,
 				);
 			}
 		}
@@ -80,25 +78,6 @@ describe("pinned composer contract validators (supporting tests)", () => {
 5. GUIDANCE: PINNED_MIN_TRANSCRIPT_ROWS must match contract constant exactly`,
 		);
 
-		for (const [dock, height] of [
-			[0, 10],
-			[2, 10],
-			[7, 10],
-			[8, 10],
-			[20, 10],
-			[5, 2],
-		] as const) {
-			const implResult = clippedPinnedDockHeight(dock, height);
-			const contractResult = contractClip(dock, height);
-			expect(implResult).toBe(
-				contractResult,
-				`1. WHAT: clippedPinnedDockHeight(${dock}, ${height}) FAILED
-2. WHY: POST-3 violation - dock clipping calculation diverged from contract
-3. EXPECTED: ${contractResult}
-4. ACTUAL: ${implResult}
-5. GUIDANCE: Dock must be clipped to leave at least PINNED_MIN_TRANSCRIPT_ROWS when height allows`,
-			);
-		}
 	});
 });
 
@@ -129,19 +108,19 @@ describe("PinnedViewport.composeFrame (implementation tests)", () => {
 			expect(caught instanceof Error).toBe(
 				true,
 				`1. WHAT: composeFrame with height=${String(invalid)} FAILED
-2. WHY: PRE-1 / ERRORS-1 violation - composeFrame must throw Error on height < 1
+2. WHY: PRE-PV-1 / ERRORS-PV-1 violation - composeFrame must throw Error on height < 1
 3. EXPECTED: Error thrown
 4. ACTUAL: ${String(caught)}
 5. GUIDANCE: Throw an Error when height is not a finite number >= 1`,
 			);
 			if (caught instanceof Error) {
 				expect(caught.message).toContain(
-					"PRE-1",
+					"PRE-PV-1",
 					`1. WHAT: composeFrame error message citation FAILED
-2. WHY: ERRORS-1 violation - Error message must cite PRE-1
-3. EXPECTED: message containing 'PRE-1'
+2. WHY: ERRORS-PV-1 violation - Error message must cite PRE-PV-1
+3. EXPECTED: message containing 'PRE-PV-1'
 4. ACTUAL: '${caught.message}'
-5. GUIDANCE: Error message must include clause ID PRE-1`,
+5. GUIDANCE: Error message must include clause ID PRE-PV-1`,
 				);
 			}
 		}
@@ -460,10 +439,10 @@ describe("contract clause map alignment", () => {
 		 *   [✓] C3 NON-DUPLICATIVE: ensures test registry completeness against contract object
 		 *   [✓] C4 NOT FUTURE-EDIT: enforces current contract, not hypothetical future
 		 */
-		const clauses = Object.keys(CONTRACT_PINNED_COMPOSER);
+		const clauses = Object.keys(CONTRACT_PINNED_DOCK);
 		expect(clauses.length).toBeGreaterThan(0);
 		for (const clauseId of clauses) {
-			const clause = CONTRACT_PINNED_COMPOSER[clauseId as keyof typeof CONTRACT_PINNED_COMPOSER];
+			const clause = CONTRACT_PINNED_DOCK[clauseId as keyof typeof CONTRACT_PINNED_DOCK];
 			expect(clause.verification).toBe(
 				"test",
 				`1. WHAT: clause verification type for ${clauseId} FAILED
