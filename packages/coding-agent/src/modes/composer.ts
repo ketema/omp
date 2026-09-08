@@ -11,7 +11,6 @@ import {
 	type TerminalFrameProvider,
 	TUI,
 	type TUIOptions,
-	type ViewportMode,
 	type ViewportSize,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
@@ -29,9 +28,6 @@ export interface ComposerPreferences {
 	readonly showHardwareCursor: boolean;
 	readonly maxInlineImages: number;
 	readonly resizeScrollback: ResizeScrollbackMode;
-	// INV-PV-7: ViewportMode admits only "pinned" — there is no inline/unpinned
-	// value this field can hold.
-	readonly viewport: ViewportMode;
 	readonly imeSafeCursor: boolean;
 	readonly autocompleteMaxVisible: number;
 	readonly spellingTypoDetection: boolean;
@@ -46,7 +42,6 @@ export const COMPOSER_DEFAULTS: ComposerPreferences = {
 	showHardwareCursor: true,
 	maxInlineImages: 8,
 	resizeScrollback: "rebuild",
-	viewport: "pinned",
 	imeSafeCursor: false,
 	autocompleteMaxVisible: 10,
 	spellingTypoDetection: true,

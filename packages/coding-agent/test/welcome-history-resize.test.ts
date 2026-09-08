@@ -66,10 +66,6 @@ class TrackingTerminal extends VirtualTerminal {
 	}
 }
 
-function plainBuffer(terminal: VirtualTerminal): string[] {
-	return terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
-}
-
 function rowOf(rows: readonly string[], needle: string): number {
 	return rows.findIndex(row => row.includes(needle));
 }
@@ -88,7 +84,11 @@ function expectOneExactEditor(rows: readonly string[], status: string): number {
 	return top;
 }
 
-function startRetiredWelcome(modelName: string): { composer: Composer; terminal: TrackingTerminal; scheduler: ResizeScheduler } {
+function startRetiredWelcome(modelName: string): {
+	composer: Composer;
+	terminal: TrackingTerminal;
+	scheduler: ResizeScheduler;
+} {
 	const terminal = new TrackingTerminal(80, 12);
 	const scheduler = new ResizeScheduler();
 	const composer = new Composer({
@@ -174,14 +174,12 @@ describe("composer welcome native-history resize", () => {
 		expect(offered).toHaveLength(0);
 		expect(acknowledged).toHaveLength(0);
 
-		let lastTransient: string[] = [];
 		for (const [columns, rows] of [
 			[96, 28],
 			[104, 30],
 			[100, 34],
 		] as const) {
 			terminal.resize(columns, rows);
-			lastTransient = terminal.getViewport().map(row => Bun.stripANSI(row));
 		}
 		expect(resizeFrames).toBe(3);
 		scheduler.settle();
@@ -200,7 +198,6 @@ describe("composer welcome native-history resize", () => {
 			[72, 50],
 		] as const) {
 			terminal.resize(columns, rows);
-			lastTransient = terminal.getViewport().map(row => Bun.stripANSI(row));
 		}
 		expect(resizeFrames).toBe(5);
 		scheduler.settle();
@@ -221,8 +218,11 @@ describe("composer welcome native-history resize", () => {
 
 	it("preserves a wide glyph that straddles a retired-row resize boundary", () => {
 		vi.spyOn(Math, "random").mockReturnValue(0.5);
-		const { composer, terminal } = startRetiredWelcome("model-aaaa界-tail");
-		const accepted = composer.renderResizeFrame({ columns: 80, rows: 200 }).map(row => Bun.stripANSI(row)).find(row => row.includes("界"));
+		const { composer } = startRetiredWelcome("model-aaaa界-tail");
+		const accepted = composer
+			.renderResizeFrame({ columns: 80, rows: 200 })
+			.map(row => Bun.stripANSI(row))
+			.find(row => row.includes("界"));
 		expect(accepted).toBeDefined();
 		const glyphIndex = accepted!.indexOf("界");
 		const width = visibleWidth(accepted!.slice(0, glyphIndex)) + 1;
@@ -237,7 +237,10 @@ describe("composer welcome native-history resize", () => {
 		Bun.env.TMUX = "/tmp/tmux-test/default,1,0";
 		const marker = "MUX-SUFFIX";
 		const { composer, terminal, scheduler } = startRetiredWelcome(`model-aaaa${marker}`);
-		const accepted = composer.renderResizeFrame({ columns: 80, rows: 200 }).map(row => Bun.stripANSI(row)).find(row => row.includes(marker));
+		const accepted = composer
+			.renderResizeFrame({ columns: 80, rows: 200 })
+			.map(row => Bun.stripANSI(row))
+			.find(row => row.includes(marker));
 		expect(accepted).toBeDefined();
 		expect(visibleWidth(accepted!)).toBeLessThanOrEqual(80);
 		const markerIndex = accepted!.indexOf(marker);

@@ -13,15 +13,6 @@ export const PINNED_MOUSE_LEAVE = "\x1b[?1006l\x1b[?1002l";
 export const ALT_SCREEN_ENTER = "\x1b[?1049h";
 export const ALT_SCREEN_LEAVE = "\x1b[?1049l";
 
-// INV-PV-7: the only viewport mode this module honors. There is no
-// inline/unpinned member — an "inline" value is structurally unrepresentable,
-// not merely runtime-rejected.
-export type ViewportMode = "pinned";
-
-/** INV-PV-7: type guard used by callers validating an external/cached value; rejects "inline". */
-export function isViewportMode(value: unknown): value is ViewportMode {
-	return value === "pinned";
-}
 // Redeclared locally per CL11-F (this module does not import the contract
 // file); tests bridge these against the contract's own equivalents.
 const SELECTION_HIGHLIGHT_START = "\x1b[7m";

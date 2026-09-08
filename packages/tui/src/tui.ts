@@ -131,7 +131,7 @@ export interface HistoryBatch {
 export interface TerminalFramePlan {
 	readonly history?: HistoryBatch;
 	readonly viewport: readonly string[];
-	/** Transcript rows for the pinned software window (ignored in inline mode). */
+	/** Transcript rows for the pinned software window. */
 	readonly pinnedScroll?: readonly string[];
 	/** Dock rows pinned to the bottom of the alt-screen frame. */
 	readonly pinnedDock?: readonly string[];

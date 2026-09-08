@@ -1,7 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { COMPOSER_DEFAULTS, Composer } from "@oh-my-pi/pi-coding-agent/modes/composer";
@@ -51,7 +50,7 @@ describe("libkitty end-to-end", () => {
 		term = new VirtualTerminal(120, 32);
 		const composer = new Composer({
 			terminal: term,
-			preferences: { ...COMPOSER_DEFAULTS, viewport: "pinned" },
+			preferences: { ...COMPOSER_DEFAULTS },
 		});
 		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
 	});

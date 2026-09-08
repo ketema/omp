@@ -190,9 +190,6 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 				resizeScrollback === "append" || resizeScrollback === "rebuild" || resizeScrollback === "preserve"
 					? resizeScrollback
 					: "rebuild",
-			// INV-PV-7: the only accepted viewport mode; cached state cannot
-			// resurrect an inline/unpinned mode.
-			viewport: "pinned",
 			imeSafeCursor,
 			autocompleteMaxVisible,
 			spellingTypoDetection,

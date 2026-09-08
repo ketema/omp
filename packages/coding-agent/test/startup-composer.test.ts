@@ -68,7 +68,6 @@ describe("Composer prepaint", () => {
 			showHardwareCursor: settings.get("showHardwareCursor"),
 			maxInlineImages: settings.get("tui.maxInlineImages"),
 			resizeScrollback: settings.get("tui.resizeScrollback"),
-			viewport: "pinned",
 			imeSafeCursor: settings.get("tui.imeSafeCursor"),
 			autocompleteMaxVisible: settings.get("autocompleteMaxVisible"),
 			spellingTypoDetection: settings.get("spelling.typoDetection"),
@@ -348,14 +347,13 @@ describe("Composer prepaint", () => {
 		expect(terminal.stops).toBe(1);
 	});
 
-	it("first frame mirrors the canonical settings-schema defaults", () => {
+	it("first frame mirrors canonical settings-schema defaults (INV-PV-7: viewport structurally absent)", () => {
 		expect(COMPOSER_DEFAULTS).toEqual({
 			quiet: getDefault("startup.quiet"),
 			composerShape: getDefault("composer.shape") ?? "box",
 			showHardwareCursor: getDefault("showHardwareCursor"),
 			maxInlineImages: getDefault("tui.maxInlineImages"),
 			resizeScrollback: getDefault("tui.resizeScrollback"),
-			viewport: "pinned",
 			imeSafeCursor: getDefault("tui.imeSafeCursor"),
 			autocompleteMaxVisible: getDefault("autocompleteMaxVisible"),
 			spellingTypoDetection: getDefault("spelling.typoDetection"),
@@ -508,7 +506,6 @@ describe("Composer prepaint", () => {
 			showHardwareCursor: config.showHardwareCursor,
 			maxInlineImages: config.maxInlineImages,
 			resizeScrollback: config.resizeScrollback,
-			viewport: config.viewport,
 			imeSafeCursor: config.imeSafeCursor,
 			autocompleteMaxVisible: config.autocompleteMaxVisible,
 			spellingTypoDetection: settings.get("spelling.typoDetection"),
