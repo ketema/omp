@@ -2055,7 +2055,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.composer.setPreferences({ viewport: "pinned" });
 	}
 
-
 	#handleSessionAccentInputsChanged(): void {
 		this.#clearWorkingMessageAccentCache();
 		this.statusLine.invalidate();

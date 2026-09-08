@@ -29,7 +29,7 @@ export interface SgrMouseEvent {
 const SGR_ONE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
 
 /**
- * Extract every SGR mouse report from a string (POST-1 / FORBIDDEN-1).
+ * Extract every SGR mouse report from a string (POST-PV-4 / FORBIDDEN-PV-1).
  */
 export function parseSgrMouseStream(data: string): SgrMouseEvent[] {
 	if (typeof data !== "string" || !data.includes("\x1b[<")) return [];

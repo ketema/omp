@@ -183,6 +183,46 @@ export const CONTRACT_PINNED_DOCK = {
 		verification: "test",
 		description: "TUI.#handlePinnedInput SHALL only commit drag selection to clipboard on release of mouse button 0 (left click)",
 	},
+	"POST-PV-11": {
+		verification: "test",
+		description: "TUI.enterPinned SHALL write ALT_SCREEN_ENTER at most once until a matching leave",
+	},
+	"POST-PV-12": {
+		verification: "test",
+		description: "opening a fullscreen overlay while pinned SHALL NOT write a second ALT_SCREEN_ENTER when pin already owns the alt screen",
+	},
+	"POST-PV-13": {
+		verification: "test",
+		description: "TUI.stop SHALL leave the alt screen at most once",
+	},
+	"POST-PV-14": {
+		verification: "test",
+		description: "wheel and viewport page keys SHALL reach PinnedViewport.scrollBy before editor input",
+	},
+	"POST-PV-15": {
+		verification: "test",
+		description: "PinnedViewport.composeFrame SHALL clip an oversized dock from the top, keeping the editor and at least PINNED_MIN_TRANSCRIPT_ROWS",
+	},
+	"POST-PV-16": {
+		verification: "test",
+		description: "when following is false, PinnedViewport.composeFrame SHALL keep scrollTop frozen while content appends",
+	},
+	"POST-PV-17": {
+		verification: "test",
+		description: "PinnedViewport.scrollBy SHALL pause following on scroll up and resume following on landing at the transcript tail",
+	},
+	"POST-PV-18": {
+		verification: "test",
+		description: "PinnedViewport.composeFrame SHALL NOT start following solely because of dock mutation",
+	},
+	"POST-PV-19": {
+		verification: "test",
+		description: "PinnedViewport.composeFrame following=true SHALL pin the window to the transcript tail",
+	},
+	"POST-PV-20": {
+		verification: "test",
+		description: "PINNED_MIN_TRANSCRIPT_ROWS constant SHALL equal 3",
+	},
 	"SEQ-PV-1": {
 		verification: "test",
 		description: "TUI.#renderPinnedFrame SHALL invoke PinnedViewport.composeFrame before overlay compositing",
@@ -202,6 +242,10 @@ export const CONTRACT_PINNED_DOCK = {
 	"SEQ-PV-5": {
 		verification: "test",
 		description: "TUI SHALL reset active drag selection state when an overlay steals focus or when pinned mode exits",
+	},
+	"SEQ-PV-6": {
+		verification: "test",
+		description: "opening a fullscreen overlay while pinned SHALL check alt-screen ownership before emitting DECSET 1049h",
 	},
 	"INV-PV-1": {
 		verification: "test",
@@ -224,12 +268,24 @@ export const CONTRACT_PINNED_DOCK = {
 		description: "TUI SHALL NOT overwrite transcript content rows with navigation or follow hints",
 	},
 	"INV-PV-6": {
-		verification: "test",
+		verification: "tool",
 		description: "Implementation modules SHALL NOT import this contract file (CL11-F)",
 	},
 	"INV-PV-7": {
 		verification: "test",
 		description: "TUI SHALL NOT expose or honor an inline/unpinned viewport setting or code path",
+	},
+	"INV-PV-8": {
+		verification: "test",
+		description: "PinnedViewport dock SHALL occupy the last dockHeight rows of the physical frame",
+	},
+	"INV-PV-9": {
+		verification: "test",
+		description: "pinned mode SHALL NOT pin the dock by setting a terminal scrolling region (DECSTBM)",
+	},
+	"INV-PV-10": {
+		verification: "test",
+		description: "interactive paint SHALL NOT emit retired transcript rows to native scrollback",
 	},
 	"FORBIDDEN-PV-1": {
 		verification: "test",
