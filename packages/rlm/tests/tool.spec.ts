@@ -224,6 +224,30 @@ describe("tool descriptor surface", () => {
     // F-049 a child's reply is never the rlm() return value
     expect(d.toLowerCase()).toContain("reply")
   })
+
+  // TEMPORARY — TODO(ketema): this test exists only to satisfy the CCABDD
+  // state-machine write-guard's RED-before-GREEN gate for a pure prose/docs
+  // change to a static, non-branching description constant. Prior-art
+  // review found no other test in this repo asserts exact keyword coverage
+  // for a purely static tool-description string outside this same
+  // POST-TOOL-5-style pattern (settings-schema.ts field descriptions are the
+  // closest analog). Remove this test in agility mode once the Touch ID
+  // gate is available again; it is documentation-content coverage, not a
+  // behavioral contract, and does not need to survive as permanent CI gate.
+  test("F-269/F-270: description carries the literal write-path and dill.dump_session guidance", () => {
+    // Risk tier: LOW — pure documentation content, added after a live
+    // session incident where a computed (f-string) write path was rejected
+    // by a governance write-guard, and a separate dill.dump_session call
+    // failed because an open lzma compressor handle was still in scope.
+    const { descriptor } = makeTool()
+    const d = descriptor.description
+    // F-269 literal write-path rule
+    expect(d.toLowerCase()).toContain("literal")
+    expect(d).toContain("f-string")
+    // F-270 dill.dump_session bare-filename rule
+    expect(d).toContain("dill.dump_session")
+    expect(d.toLowerCase()).toContain("compressor")
+  })
 })
 
 // ---------------------------------------------------------------------------
