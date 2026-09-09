@@ -102,7 +102,7 @@ const ipythonSchema = type({
 });
 
 // =============================================================================
-// Tool description (POST-TOOL-5: F-040..F-062 prompt contract)
+// Tool description (POST-TOOL-5: F-040..F-062 + F-269/F-270 prompt contract)
 // =============================================================================
 
 const TOOL_DESCRIPTION = [
@@ -118,6 +118,8 @@ const TOOL_DESCRIPTION = [
 	"- Do not install packages into the kernel for a project; use project commands or `uv run`.",
 	"- Always assign read/search results to named variables.",
 	"- `%%bash` state (cd/export/source/vars) does NOT carry across cells; use `%cd`, `os.environ[...]`, or `%env`.",
+	"- File-write paths (`write`, `open`, `dill.dump_session`) must be a literal, statically-inspectable string; an f-string or other computed path is rejected by governance write-guards even for scratch/session files.",
+	'- Call `dill.dump_session("<literal path>.pkl")` with a bare filename only; never open the destination yourself first (e.g. as a compressor handle) and pass that handle in — the dumper serializes the whole namespace, including any open file/compressor object still in scope.',
 	"",
 	"Harness ledger API: use the harness to create/update/delete memory, skill, subagent, and prompt entries.",
 	"The harness is the persisted prompt/memory/skill/subagent layer; the kernel is the runtime/call interface.",

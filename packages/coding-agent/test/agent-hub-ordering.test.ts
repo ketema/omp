@@ -939,10 +939,38 @@ describe("Agent hub row ordering", () => {
 		geometry = stubStdoutGeometry(120);
 		geometry.setRows(32);
 		const agents = new AgentRegistry();
-		agents.register({ id: "Parent", displayName: "Parent", kind: "sub", parentId: "Main", session: null });
-		agents.register({ id: "First", displayName: "First", kind: "sub", parentId: "Parent", session: null });
-		agents.register({ id: "Grandchild", displayName: "Grandchild", kind: "sub", parentId: "First", session: null });
-		agents.register({ id: "Last", displayName: "Last", kind: "sub", parentId: "Parent", session: null });
+		agents.register({
+			id: "Parent",
+			displayName: "Parent",
+			kind: "sub",
+			parentId: "Main",
+			session: null,
+			lastActivity: 1_000,
+		});
+		agents.register({
+			id: "First",
+			displayName: "First",
+			kind: "sub",
+			parentId: "Parent",
+			session: null,
+			lastActivity: 4_000,
+		});
+		agents.register({
+			id: "Grandchild",
+			displayName: "Grandchild",
+			kind: "sub",
+			parentId: "First",
+			session: null,
+			lastActivity: 3_000,
+		});
+		agents.register({
+			id: "Last",
+			displayName: "Last",
+			kind: "sub",
+			parentId: "Parent",
+			session: null,
+			lastActivity: 2_000,
+		});
 		const hub = makeHub(agents);
 
 		try {
