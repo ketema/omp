@@ -23,7 +23,6 @@ import {
   AgentMessageEngine,
   AgentObserveEngine,
   BR_ERR_UNAVAILABLE,
-  BR_HEARTBEAT_STATUSES,
   BR_MESSAGE_ROLES,
   BR_REFINE_NOTE,
   HeartbeatEngine,
