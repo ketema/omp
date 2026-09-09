@@ -1,7 +1,6 @@
 import {
 	type Component,
 	Container,
-	type EditorTopBorder,
 	isInsideTerminalMultiplexer,
 	ProcessTerminal,
 	type ResizeScrollbackMode,
@@ -10,14 +9,13 @@ import {
 	type Terminal,
 	type TerminalFramePlan,
 	type TerminalFrameProvider,
-	truncateToWidth,
 	TUI,
 	type TUIOptions,
 	type ViewportSize,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { CustomEditor } from "./components/custom-editor";
-import { type AnimationFrame, TranscriptContainer } from "./components/transcript-container";
+import { TranscriptContainer } from "./components/transcript-container";
 import { type LspServerInfo, type RecentSession, WelcomeComponent } from "./components/welcome";
 import { getEditorTheme, initThemeSync, theme } from "./theme/theme";
 
@@ -40,7 +38,7 @@ export interface ComposerPreferences {
 /** Settings-schema-compatible defaults used when constructing a dependency-free composer. */
 export const COMPOSER_DEFAULTS: ComposerPreferences = {
 	quiet: false,
-	composerShape: "band",
+	composerShape: "box",
 	showHardwareCursor: true,
 	maxInlineImages: 8,
 	resizeScrollback: "rebuild",
@@ -60,27 +58,6 @@ export interface ComposerWelcomeUpdate {
 	readonly lspServers?: readonly LspServerInfo[];
 }
 
-/**
- * Placeholder-only status chrome replayed on the next first frame so the
- * status band/border exists before the session-aware status line attaches.
- * Bound to the composer shape it was rendered for; a different shape drops it.
- */
-export interface ComposerStatusSnapshot {
-	readonly shape: string;
-	/** ANSI wrapper of the editor border at snapshot time (session accent or thinking color). */
-	readonly borderColor?: {
-		readonly prefix: string;
-		readonly suffix: string;
-	};
-	/** Status content embedded in the editor's top chrome (`top-border`, `top-band`, `top-rule-chip`). */
-	readonly topBorder?: {
-		readonly content: string;
-		readonly width: number;
-	};
-	/** Standalone bottom-bar rows (`pi`/`claude` shapes), gap row included. */
-	readonly bottomLines: readonly string[];
-}
-
 /** Optional dependencies and initial state for a standalone composer. */
 export interface ComposerOptions {
 	readonly terminal?: Terminal;
@@ -88,7 +65,6 @@ export interface ComposerOptions {
 	readonly tuiOptions?: TUIOptions;
 	readonly preferences?: Partial<ComposerPreferences>;
 	readonly welcome?: ComposerWelcomeUpdate;
-	readonly status?: ComposerStatusSnapshot;
 	readonly exit?: (code: number) => void;
 	readonly now?: () => number;
 }
@@ -106,30 +82,16 @@ export interface ComposerStartOptions {
 	readonly deferInput?: boolean;
 }
 
-/**
- * Mount slot for the session-aware status component below the editor. Shows
- * placeholder rows during startup until the real component mounts.
- */
+/** Mount slot for the session-aware status component below the editor. */
 class StatusHost implements Component {
-	#lines: readonly string[] = [];
 	#component: Component | undefined;
-
-	get mounted(): boolean {
-		return this.#component !== undefined;
-	}
-
-	setLines(lines: readonly string[]): void {
-		this.#lines = lines;
-	}
 
 	setComponent(component: Component): void {
 		this.#component = component;
-		this.#lines = [];
 	}
 
 	render(width: number): readonly string[] {
-		if (this.#component) return this.#component.render(width);
-		return this.#lines.map(line => truncateToWidth(line, width));
+		return this.#component?.render(width) ?? [];
 	}
 }
 /**
@@ -156,38 +118,20 @@ export class Composer implements TerminalFrameProvider {
 	#headerBefore: readonly Component[] = [];
 	#headerAfter: readonly Component[] = [];
 	#runtimeChildren: readonly Component[] = [];
-	#statusSnapshot: ComposerStatusSnapshot | undefined;
 	#runtimeMounted = false;
-	// Composer-owned history id space. Transcript batch ids restart across
-	// container clears/swaps; the composer translates them into one monotonic
-	// sequence the terminal's accepted-id watermark can trust.
-	#nextHistoryId = 1;
 	#offeredHistory:
 		| {
 				id: number;
 				rows: readonly string[];
-				kind: "append" | "replay";
-				source:
-					| "header"
-					| {
-							transcript: TranscriptContainer;
-							transcriptId?: number;
-							header: "none" | "replay";
-							/** Recomposed header rows to accept as the new retired-header bytes. */
-							headerRows?: readonly string[];
-					  };
+				source: "header" | { transcript: TranscriptContainer; transcriptId: number };
 		  }
 		| undefined;
-	#historyReplayRequested = false;
-	#headerReplayPending = false;
-	#historyFlush = false;
 	// The welcome header retires to terminal history exactly once, after the
 	// intro settles; until then it renders as mutable viewport chrome.
 	#headerRetired = false;
-	// Exact hard rows accepted into native history. Transient resize-alt
-	// paints reflow these rows to match the terminal's own rewrap of history
-	// it still holds; a settled replay owns every byte it emits, so it
-	// recomposes the header at the replay width and refreshes these rows.
+	// Exact hard rows accepted into native history. Resize-alt paints reflow
+	// these rows rather than recomposing the header, because a wider terminal
+	// never joins hard tip wraps that were committed at the original width.
 	#retiredHeaderRows: readonly string[] | undefined;
 	// Hard-row prefix currently above the native viewport. The first resize
 	// frame may pull part of it down before the normal buffer is borrowed.
@@ -204,7 +148,6 @@ export class Composer implements TerminalFrameProvider {
 		this.#exit = options.exit ?? (code => process.exit(code));
 		this.#now = options.now ?? Date.now;
 		this.#preferences = { ...COMPOSER_DEFAULTS, ...options.preferences };
-		this.#statusSnapshot = options.status;
 		this.#applyWelcomeUpdate(options.welcome ?? {});
 
 		this.ui = new TUI(
@@ -231,7 +174,6 @@ export class Composer implements TerminalFrameProvider {
 		} catch {
 			// Extension-defined styles arrive with the session; InteractiveMode reapplies them.
 		}
-		this.#applyStatusSnapshot();
 		// Emergency controls stay active until InteractiveMode installs configured bindings.
 		this.editor.setActionKeys("app.clear", ["ctrl+c"]);
 		this.editor.setActionKeys("app.exit", ["ctrl+d"]);
@@ -262,34 +204,56 @@ export class Composer implements TerminalFrameProvider {
 			: [this.#header, this.#bootstrapInputGap, this.editor, this.#statusHost];
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) {
-			return { viewport: this.#renderRoots(roots, width).slice(-rows) };
+			const dock = this.#renderRoots([this.editor, this.#statusHost], width);
+			const scrollRoots = roots.filter(root => root !== this.editor && root !== this.#statusHost);
+			const sessionRoots = scrollRoots.filter(root => root !== this.#header);
+			const sessionScroll = this.#renderRoots(sessionRoots, width);
+			// POST-PV-7: mounted session content retires startup chrome from live
+			// pressure accounting; the header stays in the history array below so
+			// scrollback always recovers it. The one-time snapshot below is what
+			// renderResizeFrame reflows while the terminal borrows its resize buffer.
+			if (this.#runtimeMounted && sessionScroll.length > 0 && !this.#headerRetired) {
+				this.#headerRetired = true;
+				this.#retiredHeaderRows = [...this.#header.render(width), ""];
+			}
+			// SEQ-PV-4 / INV-PV-1 / POST-PV-7: PinnedViewport receives the complete
+			// history with the header at index 0 — never dropped — so scrollback
+			// recovers startup chrome; composeFrame's own windowing naturally
+			// excludes it from the live tail once conversation content fills the
+			// window.
+			const scroll = [...this.#header.render(width), ...sessionScroll];
+			return {
+				viewport: [],
+				pinnedScroll: scroll,
+				pinnedDock: dock,
+			};
 		}
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
 		const preRoots = this.#renderRoots(roots.slice(0, transcriptIndex), width);
 		const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
-		// Offer history under capacity pressure only: blocks stay live (and keep
-		// reflowing to the current width) while the screen has room. A batch
-		// leaves the mutable viewport in the same frame it is appended, so its
-		// rows are never painted twice.
-		const history = this.#offerHistory(transcript, width, rows, preRoots.length + after.length);
-		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
-		const headerRows = headerVisible ? this.#header.render(width) : [];
-		const before = [...headerRows, ...preRoots];
-		const now = performance.now();
-		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
-		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - after.length), frame);
-		const composed = [...before, ...active, ...after];
-		if (history !== undefined && this.#offeredHistory?.source === "header") {
-			const visibleHeaderRows = Math.max(0, rows - composed.length);
-			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
+		// POST-PV-7: a mounted session transcript retires startup chrome from live
+		// pressure accounting; the header stays in the history array below so
+		// scrollback always recovers it. The one-time snapshot below is what
+		// renderResizeFrame reflows while the terminal borrows its resize buffer.
+		if (transcript.children.length > 0 && !this.#headerRetired) {
+			this.#headerRetired = true;
+			this.#retiredHeaderRows = [...this.#header.render(width), ""];
 		}
+		// SEQ-PV-4 / POST-PV-2: PinnedViewport owns windowing, so it receives
+		// the complete semantic transcript rather than a one-page projection.
+		const transcriptRows = transcript.render(width);
+		// POST-PV-7 / INV-PV-1: keep the header at index 0 of history; composeFrame's
+		// windowing naturally excludes it from the live tail once conversation
+		// content scrolls it out of the immediately visible window.
+		const before = [...this.#header.render(width), ...preRoots];
 		return {
-			history,
-			viewport: composed.length <= rows ? composed : composed.slice(-rows),
+			viewport: [],
+			pinnedScroll: [...before, ...transcriptRows],
+			pinnedDock: after,
 		};
 	}
 
-	/** Acknowledges one accepted header, replay, or transcript batch. */
+	/** Retire an accepted terminal history batch (header, then transcript prefixes). */
 	acknowledgeHistory(id: number): void {
 		const offered = this.#offeredHistory;
 		if (offered === undefined || offered.id !== id) return;
@@ -297,16 +261,9 @@ export class Composer implements TerminalFrameProvider {
 			this.#headerRetired = true;
 			this.#retiredHeaderRows = offered.rows;
 		} else {
-			if (offered.source.transcriptId !== undefined) {
-				offered.source.transcript.acknowledgeFinalizedBatch(offered.source.transcriptId);
-			}
-			if (offered.source.header === "replay") {
-				this.#headerReplayPending = false;
-				if (offered.source.headerRows !== undefined) this.#retiredHeaderRows = offered.source.headerRows;
-			}
+			offered.source.transcript.acknowledgeFinalizedBatch(offered.source.transcriptId);
 		}
 		this.#offeredHistory = undefined;
-		if (this.#historyReplayRequested) this.#startHistoryReplay();
 	}
 
 	/** Render the semantic transcript tail while the terminal borrows its resize buffer. */
@@ -315,7 +272,7 @@ export class Composer implements TerminalFrameProvider {
 		const width = Math.max(1, viewport.columns);
 		const rows = Math.max(0, viewport.rows);
 		const tail = this.#runtimeMounted
-			? this.#renderResizeTail(width, rows)
+			? this.#renderRoots([...this.#runtimeChildren, this.#statusHost], width)
 			: this.#renderRoots([this.#bootstrapInputGap, this.editor, this.#statusHost], width);
 		let header: readonly string[];
 		if (this.#headerRetired) {
@@ -331,158 +288,22 @@ export class Composer implements TerminalFrameProvider {
 		return rendered.length <= rows ? rendered : rendered.slice(rendered.length - rows);
 	}
 
-	/** Replays committed presentation without changing logical retirement state. */
-	beginHistoryReplay(): void {
-		if (this.#offeredHistory !== undefined) {
-			this.#historyReplayRequested = true;
-			return;
-		}
-		this.#startHistoryReplay();
-	}
-
-	/** Forces every currently eligible finalized prefix to retire before stop. */
-	beginHistoryFlush(): void {
-		this.#historyFlush = true;
-		// A pending replay would re-render and re-stream the entire committed
-		// ledger during shutdown; the terminal already holds that history, so
-		// flush emits only genuinely un-retired rows. An already offered batch
-		// stays valid and is accepted by the flush loop.
-		this.#historyReplayRequested = false;
-		this.#headerReplayPending = false;
+	/** Re-offer the complete finalized prefix after a display reset or resize replay. */
+	resetHistory(): void {
+		this.#offeredHistory = undefined;
+		this.#headerRetired = false;
+		this.#retiredHeaderRows = undefined;
+		this.#retiredHeaderStart = 0;
+		this.#resizeRetiredHeaderStart = undefined;
 		for (const child of this.#runtimeChildren) {
-			if (child instanceof TranscriptContainer) child.cancelReplay();
+			if (child instanceof TranscriptContainer) child.resetRetirement();
 		}
-	}
-
-	#startHistoryReplay(): void {
-		this.#headerReplayPending = this.#headerRetired && (this.#retiredHeaderRows?.length ?? 0) > 0;
-		this.#historyReplayRequested = false;
-		for (const child of this.#runtimeChildren) {
-			if (child instanceof TranscriptContainer) child.beginReplay();
-		}
-	}
-
-	/** Header retires first; replay coalesces it with the complete transcript ledger. */
-	#offerHistory(
-		transcript: TranscriptContainer,
-		width: number,
-		rows: number,
-		chromeRows: number,
-	): { id: number; rows: readonly string[]; kind: "append" | "replay" } | undefined {
-		if (this.#offeredHistory !== undefined) {
-			this.#rerenderOfferedHistory(width);
-			return {
-				id: this.#offeredHistory.id,
-				rows: this.#offeredHistory.rows,
-				kind: this.#offeredHistory.kind,
-			};
-		}
-		if (this.#headerReplayPending) {
-			const transcriptReplay = transcript.peekReplayBatch(width);
-			// A replay follows a scrollback clear, so the header recomposes at
-			// the new width exactly like transcript entries do. An empty
-			// recompose (welcome unmounted after retirement) falls back to the
-			// committed rows, hard-wrapped the way the terminal would.
-			const recomposed = this.#header.render(width);
-			const headerRows = recomposed.length > 0 ? [...recomposed, ""] : this.#reflowRetiredHeader(width, 0);
-			this.#offeredHistory = {
-				id: this.#nextHistoryId++,
-				rows: [...headerRows, ...(transcriptReplay?.rows ?? [])],
-				kind: "replay",
-				source: {
-					transcript,
-					transcriptId: transcriptReplay?.id,
-					header: "replay",
-					headerRows,
-				},
-			};
-			return {
-				id: this.#offeredHistory.id,
-				rows: this.#offeredHistory.rows,
-				kind: this.#offeredHistory.kind,
-			};
-		}
-		if (!this.#headerRetired) {
-			const welcome = this.#welcome;
-			if (welcome !== undefined && !welcome.isTranscriptBlockFinalized()) return undefined;
-			// The header stays live viewport chrome until the screen fills; then it
-			// retires first so transcript prefixes can follow in order.
-			const renderedHeader = this.#header.render(width);
-			if (renderedHeader.length > 0) {
-				const liveRows = transcript.liveRowCount(width);
-				if (!this.#historyFlush && renderedHeader.length + chromeRows + liveRows <= rows) return undefined;
-				this.#offeredHistory = {
-					id: this.#nextHistoryId++,
-					rows: [...renderedHeader, ""],
-					kind: "append",
-					source: "header",
-				};
-				return {
-					id: this.#offeredHistory.id,
-					rows: this.#offeredHistory.rows,
-					kind: this.#offeredHistory.kind,
-				};
-			}
-			this.#headerRetired = true;
-			this.#retiredHeaderRows = [];
-		}
-		const batch = this.#historyFlush
-			? transcript.peekFlushBatch(width)
-			: transcript.peekFinalizedBatch(width, Math.max(0, rows - chromeRows));
-		if (batch === undefined) return undefined;
-		this.#offeredHistory = {
-			id: this.#nextHistoryId++,
-			rows: batch.rows,
-			kind: batch.kind ?? "append",
-			source: { transcript, transcriptId: batch.id, header: "none" },
-		};
-		return {
-			id: this.#offeredHistory.id,
-			rows: this.#offeredHistory.rows,
-			kind: this.#offeredHistory.kind,
-		};
-	}
-
-	#rerenderOfferedHistory(width: number): void {
-		const offered = this.#offeredHistory;
-		if (offered === undefined) return;
-		if (offered.source === "header") {
-			const rows = this.#header.render(width);
-			offered.rows = rows.length > 0 ? [...rows, ""] : [];
-			return;
-		}
-		const transcript = offered.source.transcript.rerenderOfferedBatch(width);
-		if (offered.source.header === "none") {
-			if (transcript !== undefined) offered.rows = transcript.rows;
-			return;
-		}
-		const recomposed = this.#header.render(width);
-		const headerRows = recomposed.length > 0 ? [...recomposed, ""] : this.#reflowRetiredHeader(width, 0);
-		offered.source.headerRows = headerRows;
-		offered.rows = [...headerRows, ...(transcript?.rows ?? [])];
 	}
 
 	#renderRoots(roots: readonly Component[], width: number): string[] {
 		const rows: string[] = [];
 		for (const root of roots) rows.push(...root.render(width));
 		return rows;
-	}
-	/**
-	 * Mounted-runtime rows for the transient resize buffer. Only the trailing
-	 * viewport can survive the caller's bottom slice, so the transcript renders
-	 * a bounded tail instead of the full committed ledger, and the chrome above
-	 * it renders only when that tail underfills the screen.
-	 */
-	#renderResizeTail(width: number, rows: number): string[] {
-		const roots = [...this.#runtimeChildren, this.#statusHost];
-		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
-		if (transcriptIndex < 0) return this.#renderRoots(roots, width);
-		const transcript = roots[transcriptIndex] as TranscriptContainer;
-		const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
-		const transcriptRows = transcript.renderTail(width, Math.max(0, rows - after.length));
-		const pre =
-			transcriptRows.length + after.length >= rows ? [] : this.#renderRoots(roots.slice(0, transcriptIndex), width);
-		return [...pre, ...transcriptRows, ...after];
 	}
 
 	/** Reflow accepted hard rows exactly as the restored terminal buffer will. */
@@ -499,7 +320,7 @@ export class Composer implements TerminalFrameProvider {
 				reflowed.push("");
 				continue;
 			}
-			for (let column = 0; column < lineWidth;) {
+			for (let column = 0; column < lineWidth; ) {
 				let slice = sliceWithWidth(line, column, columns, true);
 				if (slice.width === 0) slice = sliceWithWidth(line, column, columns);
 				reflowed.push(slice.text);
@@ -514,7 +335,6 @@ export class Composer implements TerminalFrameProvider {
 		return this.#editor;
 	}
 
-	/** The welcome component currently mounted in the header, if quiet mode is off. */
 	get welcome(): WelcomeComponent | undefined {
 		return this.#welcome;
 	}
@@ -529,6 +349,7 @@ export class Composer implements TerminalFrameProvider {
 		if (this.#started || this.#stopped) return;
 		this.#started = true;
 		this.ui.start({ clearScrollback: options.clearScrollback === true, deferInput: options.deferInput === true });
+		this.ui.enterPinned();
 		if (options.playWelcomeIntro !== false) this.playWelcomeIntro();
 	}
 	/** Take raw-input ownership after a deferred-input start. Idempotent. */
@@ -542,6 +363,9 @@ export class Composer implements TerminalFrameProvider {
 		if (this.#stopped) return;
 		const wasQuiet = this.#preferences.quiet;
 		this.#preferences = { ...this.#preferences, ...update };
+		// INV-PV-7: Composer exposes no inline/unpinned viewport setting; entering
+		// pinned mode here is unconditional.
+		this.ui.enterPinned();
 		this.editor.setTheme(getEditorTheme());
 		try {
 			this.editor.setBorderStyle(this.#preferences.composerShape);
@@ -559,7 +383,6 @@ export class Composer implements TerminalFrameProvider {
 			autocomplete: this.#preferences.spellingAutocomplete,
 			autocorrect: this.#preferences.spellingAutocorrect,
 		});
-		this.#applyStatusSnapshot();
 		if (this.#preferences.quiet) {
 			this.#welcome?.stopIntro();
 			this.#welcome = undefined;
@@ -603,43 +426,9 @@ export class Composer implements TerminalFrameProvider {
 		this.#editor = editor;
 	}
 
-	/**
-	 * Mount the session-aware status component into the slot below the editor.
-	 * Drops the speculative snapshot; the caller installs the real top-border
-	 * provider through its composer-shape sync.
-	 */
+	/** Mount the session-aware status component into the slot below the editor. */
 	setStatusComponent(component: Component): void {
 		this.#statusHost.setComponent(component);
-		this.#statusSnapshot = undefined;
-		this.editor.setTopBorderProvider(undefined);
-	}
-
-	/** Cached placeholder top-border content fitted to the current editor width. */
-	#speculativeTopBorder(availableWidth: number): EditorTopBorder | undefined {
-		const border = this.#statusSnapshot?.topBorder;
-		if (!border) return undefined;
-		if (border.width <= availableWidth) return { content: border.content, width: border.width };
-		const content = truncateToWidth(border.content, availableWidth);
-		return { content, width: visibleWidth(content) };
-	}
-
-	/** Install the cached chrome for the current shape; a shape mismatch clears it. */
-	#applyStatusSnapshot(): void {
-		if (this.#statusHost.mounted) return;
-		const snapshot = this.#statusSnapshot;
-		if (!snapshot || snapshot.shape !== this.#preferences.composerShape) {
-			this.editor.setTopBorderProvider(undefined);
-			this.#statusHost.setLines([]);
-			return;
-		}
-		if (snapshot.borderColor) {
-			const { prefix, suffix } = snapshot.borderColor;
-			this.editor.borderColor = text => `${prefix}${text}${suffix}`;
-		}
-		this.editor.setTopBorderProvider(
-			snapshot.topBorder ? availableWidth => this.#speculativeTopBorder(availableWidth) : undefined,
-		);
-		this.#statusHost.setLines(snapshot.bottomLines);
 	}
 
 	/** Mount or replace session-aware root children while preserving the header and status hosts. */
@@ -675,9 +464,9 @@ export class Composer implements TerminalFrameProvider {
 	/** Stop a composer that has not transferred terminal ownership. */
 	stop(): void {
 		if (!this.#started || this.#stopped || this.#transferred) return;
+		this.#stopped = true;
 		this.#welcome?.stopIntro();
 		this.ui.stop();
-		this.#stopped = true;
 	}
 
 	#applyWelcomeUpdate(update: ComposerWelcomeUpdate): void {
@@ -722,9 +511,9 @@ export class Composer implements TerminalFrameProvider {
 	#requestExit(code: number): void {
 		// Remains live after transfer until InteractiveMode installs its configured handlers.
 		if (this.#stopped) return;
+		this.#stopped = true;
 		this.#welcome?.stopIntro();
 		if (this.#started) this.ui.stop();
-		this.#stopped = true;
 		this.#exit(code);
 	}
 }

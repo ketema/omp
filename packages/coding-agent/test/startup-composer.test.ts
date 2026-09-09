@@ -128,7 +128,6 @@ describe("Composer prepaint", () => {
 
 		try {
 			await initTheme(false, "ascii");
-			settings.set("composer.shape", "box");
 			vi.spyOn(KeybindingsManager, "create").mockReturnValue(KeybindingsManager.inMemory({ "app.clear": "ctrl+x" }));
 			mode = new InteractiveMode(
 				testSession.session,
@@ -160,8 +159,9 @@ describe("Composer prepaint", () => {
 			expect(mode.editor.getExpandedText()).toBe(expectedDraft);
 			terminal.sendInput("\x18");
 			expect(mode.editor.getExpandedText()).toBe("");
-			expect(mode.editor.disableSubmit).toBe(false);
+			expect(mode.editor.disableSubmit).toBe(true);
 			terminal.sendInput("ready");
+			terminal.sendInput("\r");
 			expect(mode.editor.getExpandedText()).toBe("ready");
 
 			const submitted = mode.getUserInput();
@@ -178,7 +178,7 @@ describe("Composer prepaint", () => {
 		}
 	});
 
-	it("keeps submit gated during initialization, then dispatches with steer", async () => {
+	it("keeps submit gated while initialization and loop readiness are pending", async () => {
 		const terminal = new CountingTerminal();
 		const composer = new Composer({ preferences: config, terminal });
 		composer.start();
@@ -202,8 +202,7 @@ describe("Composer prepaint", () => {
 			await releaseInit.promise;
 		});
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
-		vi.spyOn(testSession.session, "maybeStartTitleGeneration").mockImplementation(() => {});
-		const prompt = vi.spyOn(testSession.session, "prompt").mockResolvedValue(true);
+		const prompt = vi.spyOn(testSession.session, "prompt");
 
 		try {
 			const initializing = mode.init({ suppressWelcomeIntro: true });
@@ -217,63 +216,16 @@ describe("Composer prepaint", () => {
 
 			releaseInit.resolve();
 			await initializing;
-			// Init wired the submit pipeline and lifted the gate: an Enter before
-			// the input loop's first getUserInput dispatches directly with steer
-			// instead of being silently dropped.
-			expect(mode.editor.disableSubmit).toBe(false);
 			terminal.sendInput("\r");
-			for (let i = 0; i < 50 && prompt.mock.calls.length === 0; i++) await Promise.resolve();
-			expect(prompt).toHaveBeenCalledWith("alpha", expect.objectContaining({ streamingBehavior: "steer" }));
-			expect(mode.editor.getExpandedText()).toBe("");
+			expect(prompt).not.toHaveBeenCalled();
+			expect(mode.editor.getExpandedText()).toBe("alpha");
+
+			const submitted = mode.getUserInput();
+			terminal.sendInput("\r");
+			expect(await submitted).toEqual(expect.objectContaining({ text: "alpha" }));
+			expect(prompt).not.toHaveBeenCalled();
 		} finally {
 			releaseInit.resolve();
-			mode.stop();
-			lease.dispose();
-			await testSession.cleanup();
-			vi.restoreAllMocks();
-		}
-	});
-
-	it("accepts input while the initial CLI prompt's first turn is still running", async () => {
-		const terminal = new CountingTerminal();
-		const composer = new Composer({ preferences: config, terminal });
-		composer.start();
-		const lease = new ComposerLease(composer);
-		const testSession = await createTestSession({ inMemory: true });
-		const mode = new InteractiveMode(
-			testSession.session,
-			"test",
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			lease.composer,
-		);
-		lease.adopt();
-		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
-		vi.spyOn(testSession.session, "maybeStartTitleGeneration").mockImplementation(() => {});
-		const turn = Promise.withResolvers<boolean>();
-		const prompt = vi.spyOn(testSession.session, "prompt").mockResolvedValue(true);
-
-		try {
-			await mode.init({ suppressWelcomeIntro: true });
-
-			// The `omp "prompt"` launch shape: the CLI message is dispatched after
-			// init and its first turn is still in flight when the user types. The
-			// input loop has not reached getUserInput yet.
-			prompt.mockReturnValueOnce(turn.promise);
-			const initialTurn = testSession.session.prompt("count to 25", { streamingBehavior: "steer" });
-
-			terminal.sendInput("also add tests");
-			terminal.sendInput("\r");
-			for (let i = 0; i < 50 && prompt.mock.calls.length < 2; i++) await Promise.resolve();
-			expect(prompt).toHaveBeenCalledWith("also add tests", expect.objectContaining({ streamingBehavior: "steer" }));
-			expect(mode.editor.getExpandedText()).toBe("");
-
-			turn.resolve(true);
-			await initialTurn;
-		} finally {
 			mode.stop();
 			lease.dispose();
 			await testSession.cleanup();
@@ -395,7 +347,7 @@ describe("Composer prepaint", () => {
 		expect(terminal.stops).toBe(1);
 	});
 
-	it("first frame mirrors the canonical settings-schema defaults", () => {
+	it("first frame mirrors canonical settings-schema defaults (INV-PV-7: viewport structurally absent)", () => {
 		expect(COMPOSER_DEFAULTS).toEqual({
 			quiet: getDefault("startup.quiet"),
 			composerShape: getDefault("composer.shape") ?? "box",

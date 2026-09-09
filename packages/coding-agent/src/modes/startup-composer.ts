@@ -82,7 +82,6 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 				welcome: undefined,
 				recentSessions: [],
 				lspServers: [],
-				status: undefined,
 			};
 	const theme = { ...cached.theme, ...options.theme };
 	initThemeSync(theme.symbolPreset, theme.colorBlindMode, theme.darkTheme, theme.lightTheme);
@@ -100,7 +99,6 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 		now: options.now,
 		preferences,
 		welcome,
-		status: cached.status,
 	});
 	try {
 		composer.start({ clearScrollback: true, deferInput: true });
