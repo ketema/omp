@@ -31,7 +31,7 @@
  * - manager.compactionNotice(): string | null
  */
 
-import { describe, expect, test } from "bun:test"
+import { expect, test } from "bun:test"
 
 /** Bun's runtime accepts test(name, fn, timeoutMs) but its current type
  * definitions omit the overload; this wrapper restores the typed form. */

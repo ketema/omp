@@ -24,7 +24,6 @@ const agentArgsSchema = type({
 	prompt: "string>0",
 	"agent?": "string>0",
 	"label?": "string",
-	"model?": "string>0 | string>0[]",
 	"schema?": "unknown",
 	"schemaMode?": "'permissive' | 'strict'",
 	"isolated?": "boolean",
@@ -38,7 +37,6 @@ interface EvalAgentArgs {
 	prompt: string;
 	agent?: string;
 	label?: string;
-	model?: string | string[];
 	schema?: unknown;
 	schemaMode?: StructuredSubagentSchemaMode;
 	isolated?: boolean;
@@ -152,7 +150,6 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 					...(Object.hasOwn(parsed, "schema") ? { outputSchema: parsed.schema } : {}),
 					...(parsed.schemaMode !== undefined ? { schemaMode: parsed.schemaMode } : {}),
 					...(parsed.label !== undefined ? { identity: { label: parsed.label } } : {}),
-					...(parsed.model !== undefined ? { model: parsed.model } : {}),
 					...(isolation ? { isolation } : {}),
 					...(parsed.handle ? { retainArtifacts: true } : {}),
 					keepAlive: false,
