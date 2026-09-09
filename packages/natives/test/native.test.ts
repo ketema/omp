@@ -1000,8 +1000,14 @@ console.log("ok");
 		}, 30_000);
 	});
 
+	// Guards on darwin, matching the "macOS spelling" convention above:
+	// MacOSPowerAssertion is a macOS-only native binding and is undefined on
+	// other platforms. Was unconditional, crashing the whole file on Linux CI
+	// (PR #35 and #36, both off main HEAD 576fed41a8):
+	//   TypeError: undefined is not an object (evaluating 'MacOSPowerAssertion.start')
 	describe("MacOSPowerAssertion", () => {
 		it("should create a stoppable power assertion handle", () => {
+			if (process.platform !== "darwin") return;
 			const assertion = MacOSPowerAssertion.start({ reason: "pi-natives test" });
 			assertion.stop();
 			assertion.stop();
