@@ -1,5 +1,6 @@
 /**
- * Bounded runtime-availability probe shared by the Python eval backend.
+ * Bounded runtime-availability probe shared by the Python/Ruby/Julia eval
+ * backends.
  *
  * Each per-language `checkXKernelAvailability` helper runs a tiny "does this
  * interpreter start" command (`python -c "import sys;sys.exit(0)"` and friends)
@@ -19,7 +20,7 @@
  */
 
 /** Wall-clock ceiling for a runtime-availability probe when no smaller bound is supplied. */
-export const DEFAULT_PROBE_TIMEOUT_MS = 10_000;
+export const DEFAULT_PROBE_TIMEOUT_MS = 25_000;
 
 /**
  * Cancellation controls threaded from the eval tool through
@@ -47,15 +48,6 @@ export interface BoundedProbeResult {
 export interface BoundedProbeSpawnOptions extends BackendProbeOptions {
 	cwd: string;
 	env: Record<string, string | undefined>;
-	/**
-	 * Raises the clamp ceiling above {@link DEFAULT_PROBE_TIMEOUT_MS}. The
-	 * default ceiling is the issue #9466 anti-wedge bound, so production
-	 * probes must not pass this; it exists for test infrastructure that
-	 * deliberately pays a longer one-off cost (e.g. a cold-interpreter
-	 * prewarm) while reusing this helper's stdio detachment and
-	 * process-tree kill.
-	 */
-	timeoutCeilingMs?: number;
 }
 
 /**
@@ -69,13 +61,12 @@ export interface BoundedProbeSpawnOptions extends BackendProbeOptions {
  */
 export async function runBoundedProbe(
 	command: string[],
-	{ cwd, env, signal, timeoutMs, timeoutCeilingMs }: BoundedProbeSpawnOptions,
+	{ cwd, env, signal, timeoutMs }: BoundedProbeSpawnOptions,
 ): Promise<BoundedProbeResult> {
 	if (signal?.aborted) {
 		return { exitCode: null, timedOut: false, aborted: true };
 	}
-	const ceiling = Math.max(timeoutCeilingMs ?? 0, DEFAULT_PROBE_TIMEOUT_MS);
-	const bound = Math.min(timeoutMs && timeoutMs > 0 ? timeoutMs : ceiling, ceiling);
+	const bound = Math.min(timeoutMs && timeoutMs > 0 ? timeoutMs : DEFAULT_PROBE_TIMEOUT_MS, DEFAULT_PROBE_TIMEOUT_MS);
 	const detached = process.platform !== "win32";
 	const proc = Bun.spawn(command, {
 		cwd,

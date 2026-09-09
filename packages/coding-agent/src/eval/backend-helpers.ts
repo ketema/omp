@@ -1,5 +1,5 @@
 /**
- * Helpers shared by the per-language eval backend definitions (js/py
+ * Helpers shared by the per-language eval backend definitions (jl/js/py/rb
  * index modules): session-id namespacing, settings access, and projection of
  * executor results into the ExecutorBackend result shape.
  */
