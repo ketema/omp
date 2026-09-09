@@ -31,23 +31,23 @@ describe("pinned composer contract validators (supporting tests)", () => {
 			} catch (err) {
 				caught = err;
 			}
-			expect(caught instanceof PinnedComposerContractError).toBe(
-				true,
+			expect(
+				caught instanceof PinnedComposerContractError,
 				`1. WHAT: validateComposeHeight(${String(invalid)}) FAILED
 2. WHY: ERRORS-1 / PRE-1 violation - validateComposeHeight must throw PinnedComposerContractError
 3. EXPECTED: instance of PinnedComposerContractError
 4. ACTUAL: ${String(caught)}
 5. GUIDANCE: composeFrame height must be validated as a finite number >= 1`,
-			);
+			).toBe(true);
 			if (caught instanceof PinnedComposerContractError) {
-				expect(caught.clauseId).toBe(
-					"PRE-1",
+				expect(
+					caught.clauseId,
 					`1. WHAT: validateComposeHeight(${String(invalid)}) clauseId mismatch
 2. WHY: ERRORS-1 violation - clauseId must cite PRE-1
 3. EXPECTED: 'PRE-1'
 4. ACTUAL: '${caught.clauseId}'
 5. GUIDANCE: Error must cite clause ID PRE-1`,
-				);
+				).toBe("PRE-1");
 			}
 		}
 	});
@@ -67,14 +67,14 @@ describe("pinned composer contract validators (supporting tests)", () => {
 		 *   [✓] C3 NON-DUPLICATIVE: contract-to-implementation constant alignment
 		 *   [✓] C4 NOT FUTURE-EDIT: enforces current contract, not hypothetical future
 		 */
-		expect(PINNED_MIN_TRANSCRIPT_ROWS).toBe(
-			CONTRACT_MIN_ROWS,
+		expect(
+			PINNED_MIN_TRANSCRIPT_ROWS,
 			`1. WHAT: PINNED_MIN_TRANSCRIPT_ROWS constant alignment FAILED
 2. WHY: POST-3 violation - implementation minimum transcript rows does not match contract
 3. EXPECTED: ${CONTRACT_MIN_ROWS}
 4. ACTUAL: ${PINNED_MIN_TRANSCRIPT_ROWS}
 5. GUIDANCE: PINNED_MIN_TRANSCRIPT_ROWS must match contract constant exactly`,
-		);
+		).toBe(CONTRACT_MIN_ROWS);
 
 		for (const [dock, height] of [
 			[0, 10],
@@ -86,14 +86,14 @@ describe("pinned composer contract validators (supporting tests)", () => {
 		] as const) {
 			const implResult = clippedPinnedDockHeight(dock, height);
 			const contractResult = contractClip(dock, height);
-			expect(implResult).toBe(
-				contractResult,
+			expect(
+				implResult,
 				`1. WHAT: clippedPinnedDockHeight(${dock}, ${height}) FAILED
 2. WHY: POST-3 violation - dock clipping calculation diverged from contract
 3. EXPECTED: ${contractResult}
 4. ACTUAL: ${implResult}
 5. GUIDANCE: Dock must be clipped to leave at least PINNED_MIN_TRANSCRIPT_ROWS when height allows`,
-			);
+			).toBe(contractResult);
 		}
 	});
 });
@@ -122,23 +122,23 @@ describe("PinnedViewport.composeFrame (implementation tests)", () => {
 			} catch (err) {
 				caught = err;
 			}
-			expect(caught instanceof Error).toBe(
-				true,
+			expect(
+				caught instanceof Error,
 				`1. WHAT: composeFrame with height=${String(invalid)} FAILED
 2. WHY: PRE-1 / ERRORS-1 violation - composeFrame must throw Error on height < 1
 3. EXPECTED: Error thrown
 4. ACTUAL: ${String(caught)}
 5. GUIDANCE: Throw an Error when height is not a finite number >= 1`,
-			);
+			).toBe(true);
 			if (caught instanceof Error) {
-				expect(caught.message).toContain(
-					"PRE-1",
+				expect(
+					caught.message,
 					`1. WHAT: composeFrame error message citation FAILED
 2. WHY: ERRORS-1 violation - Error message must cite PRE-1
 3. EXPECTED: message containing 'PRE-1'
 4. ACTUAL: '${caught.message}'
 5. GUIDANCE: Error message must include clause ID PRE-1`,
-				);
+				).toContain("PRE-1");
 			}
 		}
 	});
@@ -165,14 +165,14 @@ describe("PinnedViewport.composeFrame (implementation tests)", () => {
 				dock: ["dock 1", "dock 2"],
 				height,
 			});
-			expect(frame.length).toBe(
-				height,
+			expect(
+				frame.length,
 				`1. WHAT: composeFrame frame length FAILED
 2. WHY: POST-1 violation - returned frame length must equal height
 3. EXPECTED: ${height}
 4. ACTUAL: ${frame.length}
 5. GUIDANCE: Return an array with length equal to requested height`,
-			);
+			).toBe(height);
 		}
 	});
 
@@ -198,23 +198,23 @@ describe("PinnedViewport.composeFrame (implementation tests)", () => {
 			dock,
 			height: 6,
 		});
-		expect(frame.length).toBe(
-			6,
+		expect(
+			frame.length,
 			`1. WHAT: composeFrame height FAILED
 2. WHY: POST-1 violation - frame length must equal height
 3. EXPECTED: 6
 4. ACTUAL: ${frame.length}
 5. GUIDANCE: Ensure frame length matches height`,
-		);
+		).toBe(6);
 		const lastRows = frame.slice(frame.length - dock.length);
-		expect(lastRows).toEqual(
-			dock,
+		expect(
+			lastRows,
 			`1. WHAT: composeFrame dock rows FAILED
 2. WHY: POST-2 / INV-1 violation - last dockHeight rows must match dock exactly
 3. EXPECTED: ${JSON.stringify(dock)}
 4. ACTUAL: ${JSON.stringify(lastRows)}
 5. GUIDANCE: Dock must occupy the bottom rows of the composed frame`,
-		);
+		).toEqual(dock);
 	});
 
 	it("POST-2 / POST-3: clips an oversized dock from the top, keeping the editor and min transcript rows", () => {
@@ -238,14 +238,14 @@ describe("PinnedViewport.composeFrame (implementation tests)", () => {
 		const height = 8;
 		// maxDock = 8 - 3 = 5 rows. Kept dock lines: D4, D5, D6, D7, D8. Transcript rows: 3 (T2, T3, T4).
 		const frame = viewport.composeFrame({ transcript, dock, height });
-		expect(frame).toEqual(
-			["T2", "T3", "T4", "D4", "D5", "D6", "D7", "D8"],
+		expect(
+			frame,
 			`1. WHAT: composeFrame oversized dock clipping FAILED
 2. WHY: POST-2 / POST-3 violation - oversized dock must be top-clipped preserving minimum transcript rows
 3. EXPECTED: ["T2", "T3", "T4", "D4", "D5", "D6", "D7", "D8"]
 4. ACTUAL: ${JSON.stringify(frame)}
 5. GUIDANCE: Clip dock from top to reserve at least PINNED_MIN_TRANSCRIPT_ROWS for transcript`,
-		);
+		).toEqual(["T2", "T3", "T4", "D4", "D5", "D6", "D7", "D8"]);
 	});
 
 	it("POST-4: following pins the window to the transcript tail", () => {
@@ -268,14 +268,14 @@ describe("PinnedViewport.composeFrame (implementation tests)", () => {
 		const dock = ["PROMPT:"];
 		const frame = viewport.composeFrame({ transcript, dock, height: 5 });
 		// height 5, dock 1 -> 4 lines of transcript tail: line-16, line-17, line-18, line-19
-		expect(frame).toEqual(
-			["line-16", "line-17", "line-18", "line-19", "PROMPT:"],
+		expect(
+			frame,
 			`1. WHAT: composeFrame following tail FAILED
 2. WHY: POST-4 violation - when following is true, visible transcript must be the tail
 3. EXPECTED: ["line-16", "line-17", "line-18", "line-19", "PROMPT:"]
 4. ACTUAL: ${JSON.stringify(frame)}
 5. GUIDANCE: In following mode, display the last N rows of transcript where N is windowHeight`,
-		);
+		).toEqual(["line-16", "line-17", "line-18", "line-19", "PROMPT:"]);
 	});
 
 	it("POST-5: following=false keeps scrollTop while content appends", () => {
@@ -301,26 +301,26 @@ describe("PinnedViewport.composeFrame (implementation tests)", () => {
 		viewport.scrollBy(-3); // moves scrollTop from 6 to 3, following becomes false
 
 		const frameWhilePaused = viewport.composeFrame({ transcript, dock, height });
-		expect(frameWhilePaused).toEqual(
-			["line-3", "line-4", "line-5", "line-6", "PROMPT:"],
+		expect(
+			frameWhilePaused,
 			`1. WHAT: composeFrame paused scroll position FAILED
 2. WHY: POST-5 violation - scrolled frame must show rows at frozen scrollTop
 3. EXPECTED: ["line-3", "line-4", "line-5", "line-6", "PROMPT:"]
 4. ACTUAL: ${JSON.stringify(frameWhilePaused)}
 5. GUIDANCE: Paused viewport must maintain scrollTop`,
-		);
+		).toEqual(["line-3", "line-4", "line-5", "line-6", "PROMPT:"]);
 
 		// Append 10 more lines to transcript
 		const expanded = [...transcript, ...Array.from({ length: 10 }, (_, i) => `line-${i + 10}`)];
 		const frameAfterAppend = viewport.composeFrame({ transcript: expanded, dock, height });
-		expect(frameAfterAppend).toEqual(
-			["line-3", "line-4", "line-5", "line-6", "PROMPT:"],
+		expect(
+			frameAfterAppend,
 			`1. WHAT: composeFrame frozen view during append FAILED
 2. WHY: POST-5 violation - newly appended transcript rows must not alter frozen visible rows
 3. EXPECTED: ["line-3", "line-4", "line-5", "line-6", "PROMPT:"]
 4. ACTUAL: ${JSON.stringify(frameAfterAppend)}
 5. GUIDANCE: Do not change visible transcript window when following is false and content is appended`,
-		);
+		).toEqual(["line-3", "line-4", "line-5", "line-6", "PROMPT:"]);
 	});
 
 	it("POST-6: scrollBy pauses following on scroll up and resumes following on landing at tail", () => {
@@ -341,54 +341,54 @@ describe("PinnedViewport.composeFrame (implementation tests)", () => {
 		const viewport = new PinnedViewport();
 		const transcript = Array.from({ length: 10 }, (_, i) => `line-${i}`);
 		viewport.composeFrame({ transcript, dock: ["PROMPT:"], height: 5 }); // maxScroll = 6
-		expect(viewport.isFollowing()).toBe(
-			true,
+		expect(
+			viewport.isFollowing(),
 			`1. WHAT: viewport initial following state FAILED
 2. WHY: POST-4 violation - initial viewport must follow transcript tail
 3. EXPECTED: true
 4. ACTUAL: false
 5. GUIDANCE: Viewport must start in following mode`,
-		);
+		).toBe(true);
 
 		viewport.scrollBy(-2);
-		expect(viewport.isFollowing()).toBe(
-			false,
+		expect(
+			viewport.isFollowing(),
 			`1. WHAT: viewport scroll up following state FAILED
 2. WHY: POST-6 violation - scrolling away from tail must pause following
 3. EXPECTED: false
 4. ACTUAL: true
 5. GUIDANCE: Pausing following on scroll up is required`,
-		);
+		).toBe(false);
 
 		viewport.scrollBy(2);
-		expect(viewport.isFollowing()).toBe(
-			true,
+		expect(
+			viewport.isFollowing(),
 			`1. WHAT: viewport scroll down to tail following state FAILED
 2. WHY: POST-6 violation - scrolling to tail must resume following
 3. EXPECTED: true
 4. ACTUAL: false
 5. GUIDANCE: Resuming following when landing on max scroll is required`,
-		);
+		).toBe(true);
 
 		viewport.scrollToTop();
-		expect(viewport.isFollowing()).toBe(
-			false,
+		expect(
+			viewport.isFollowing(),
 			`1. WHAT: viewport scrollToTop following state FAILED
 2. WHY: POST-6 violation - scrolling to top must pause following when maxScroll > 0
 3. EXPECTED: false
 4. ACTUAL: true
 5. GUIDANCE: scrollToTop must pause following`,
-		);
+		).toBe(false);
 
 		viewport.scrollToBottom();
-		expect(viewport.isFollowing()).toBe(
-			true,
+		expect(
+			viewport.isFollowing(),
 			`1. WHAT: viewport scrollToBottom following state FAILED
 2. WHY: POST-6 violation - scrollToBottom must resume following
 3. EXPECTED: true
 4. ACTUAL: false
 5. GUIDANCE: scrollToBottom must resume following`,
-		);
+		).toBe(true);
 	});
 
 	it("POST-7: composeFrame does not start following on dock mutation", () => {
@@ -410,33 +410,33 @@ describe("PinnedViewport.composeFrame (implementation tests)", () => {
 		const transcript = Array.from({ length: 12 }, (_, i) => `line-${i}`);
 		viewport.composeFrame({ transcript, dock: ["PROMPT:"], height: 5 });
 		viewport.scrollBy(-3);
-		expect(viewport.isFollowing()).toBe(
-			false,
+		expect(
+			viewport.isFollowing(),
 			`1. WHAT: viewport paused following setup FAILED
 2. WHY: POST-6 violation - scroll up must pause following
 3. EXPECTED: false
 4. ACTUAL: true
 5. GUIDANCE: Viewport must be paused`,
-		);
+		).toBe(false);
 
 		// Mutate dock text (simulating typing in editor while paused)
 		const frame = viewport.composeFrame({ transcript, dock: ["PROMPT: typing something"], height: 5 });
-		expect(viewport.isFollowing()).toBe(
-			false,
+		expect(
+			viewport.isFollowing(),
 			`1. WHAT: viewport following state after dock mutation FAILED
 2. WHY: POST-7 violation - dock mutation must not resume following
 3. EXPECTED: false
 4. ACTUAL: true
 5. GUIDANCE: Typing into dock must not restart following`,
-		);
-		expect(frame[frame.length - 1]).toBe(
-			"PROMPT: typing something",
+		).toBe(false);
+		expect(
+			frame[frame.length - 1],
 			`1. WHAT: dock row content after mutation FAILED
 2. WHY: POST-2 violation - dock row must reflect updated content
 3. EXPECTED: "PROMPT: typing something"
 4. ACTUAL: ${String(frame[frame.length - 1])}
 5. GUIDANCE: Dock must render current text`,
-		);
+		).toBe("PROMPT: typing something");
 	});
 });
 
@@ -460,14 +460,14 @@ describe("contract clause map alignment", () => {
 		expect(clauses.length).toBeGreaterThan(0);
 		for (const clauseId of clauses) {
 			const clause = CONTRACT_PINNED_COMPOSER[clauseId as keyof typeof CONTRACT_PINNED_COMPOSER];
-			expect(clause.verification).toBe(
-				"test",
+			expect(
+				clause.verification,
 				`1. WHAT: clause verification type for ${clauseId} FAILED
 2. WHY: Contract completeness violation - clause must specify verification: 'test'
 3. EXPECTED: 'test'
 4. ACTUAL: '${clause.verification}'
 5. GUIDANCE: All pinned-composer clauses must be verifiable by tests`,
-			);
+			).toBe("test");
 		}
 	});
 });

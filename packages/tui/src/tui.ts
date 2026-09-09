@@ -16,8 +16,9 @@ import * as fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import { $flag, getDebugLogPath, logger } from "@oh-my-pi/pi-utils";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
-import { isKeyRelease, matchesKey } from "./keys";
 import { getKeybindings } from "./keybindings";
+import { isKeyRelease, matchesKey } from "./keys";
+import { LoopWatchdog } from "./loop-watchdog";
 import { parseSgrMouse } from "./mouse";
 import {
 	ALT_SCREEN_ENTER,
@@ -28,7 +29,6 @@ import {
 	PINNED_WHEEL_SCROLL_LINES,
 	PinnedViewport,
 } from "./pinned-viewport";
-import { LoopWatchdog } from "./loop-watchdog";
 import { setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteAllImages,
@@ -896,8 +896,7 @@ export class TUI extends Container {
 
 	#syncPinnedMouseTracking(): void {
 		const overlay = this.#getTopmostVisibleOverlay();
-		const overlayWantsMouse =
-			overlay?.options?.fullscreen === true && overlay.options?.mouseTracking !== false;
+		const overlayWantsMouse = overlay?.options?.fullscreen === true && overlay.options?.mouseTracking !== false;
 		const wantPinnedMouse = this.#pinnedActive && !overlayWantsMouse;
 		if (wantPinnedMouse === this.#pinnedMouseActive) return;
 		if (this.#pinnedMouseActive) this.terminal.write(PINNED_MOUSE_LEAVE);
@@ -1486,7 +1485,8 @@ export class TUI extends Container {
 		}
 		if (this.#altActive || this.#pendingAltExit) {
 			const mouseExit = this.#altMouseTrackingActive ? MOUSE_TRACKING_OFF : "";
-			const exitSequence = this.#pendingAltExit || `${mouseExit}${this.#keyboardEnhancementExit()}${ALT_SCREEN_LEAVE}`;
+			const exitSequence =
+				this.#pendingAltExit || `${mouseExit}${this.#keyboardEnhancementExit()}${ALT_SCREEN_LEAVE}`;
 			this.terminal.write(exitSequence);
 			setAltScreenActive(false);
 			this.#altActive = false;

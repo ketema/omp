@@ -32,14 +32,14 @@ describe("Composer pinned viewport wiring (SEQ-1, SEQ-5, POST-8, FORBIDDEN-3, IN
 		try {
 			composer.start({ playWelcomeIntro: false });
 			await term.waitForRender();
-			expect(composer.ui.isPinned()).toBe(
-				true,
+			expect(
+				composer.ui.isPinned(),
 				`1. WHAT: Composer.start did not enter pinned mode
 2. WHY: SEQ-1 violation - Composer.start must enter pinned mode unconditionally
 3. EXPECTED: composer.ui.isPinned() === true
 4. ACTUAL: composer.ui.isPinned() === false
 5. GUIDANCE: Call TUI.enterPinned after ui.start during Composer interactive startup`,
-			);
+			).toBe(true);
 		} finally {
 			composer.stop();
 		}
@@ -70,37 +70,38 @@ describe("Composer pinned viewport wiring (SEQ-1, SEQ-5, POST-8, FORBIDDEN-3, IN
 			composer.start({ playWelcomeIntro: false });
 			await term.waitForRender();
 			const plan = composer.renderFrame({ columns: 80, rows: 16 });
-			expect(plan.history).toBeUndefined(
+			expect(
+				plan.history,
 				`1. WHAT: Composer.renderFrame emitted HistoryBatch in pinned mode
 2. WHY: SEQ-5 / POST-8 violation - interactive pinned frames must not produce HistoryBatch
 3. EXPECTED: plan.history === undefined
 4. ACTUAL: ${JSON.stringify(plan.history)}
 5. GUIDANCE: Do not include history batches in interactive pinned frame plans`,
-			);
-			expect(plan.viewport).toEqual(
-				[],
+			).toBeUndefined();
+			expect(
+				plan.viewport,
 				`1. WHAT: Composer.renderFrame populated normal viewport in pinned mode
 2. WHY: SEQ-5 violation - pinned mode must use pinnedScroll and pinnedDock instead of normal viewport
 3. EXPECTED: []
 4. ACTUAL: ${JSON.stringify(plan.viewport)}
 5. GUIDANCE: Pinned frame plans must route content to pinnedScroll and pinnedDock`,
-			);
-			expect(plan.pinnedDock !== undefined).toBe(
-				true,
+			).toEqual([]);
+			expect(
+				plan.pinnedDock !== undefined,
 				`1. WHAT: Composer.renderFrame omitted pinnedDock
 2. WHY: SEQ-5 violation - pinned frame plan must include pinnedDock
 3. EXPECTED: plan.pinnedDock !== undefined
 4. ACTUAL: undefined
 5. GUIDANCE: Supply pinnedDock rows in TerminalFramePlan`,
-			);
-			expect(plan.pinnedScroll !== undefined).toBe(
-				true,
+			).toBe(true);
+			expect(
+				plan.pinnedScroll !== undefined,
 				`1. WHAT: Composer.renderFrame omitted pinnedScroll
 2. WHY: SEQ-5 violation - pinned frame plan must include pinnedScroll
 3. EXPECTED: plan.pinnedScroll !== undefined
 4. ACTUAL: undefined
 5. GUIDANCE: Supply pinnedScroll rows in TerminalFramePlan`,
-			);
+			).toBe(true);
 		} finally {
 			composer.stop();
 		}
@@ -123,14 +124,14 @@ describe("Composer pinned viewport wiring (SEQ-1, SEQ-5, POST-8, FORBIDDEN-3, IN
 		 */
 		const schemaRecord = SETTINGS_SCHEMA as Record<string, unknown>;
 		const hasViewportSetting = VIEWPORT_SETTING_PATH in schemaRecord;
-		expect(hasViewportSetting).toBe(
-			false,
+		expect(
+			hasViewportSetting,
 			`1. WHAT: SETTINGS_SCHEMA contains forbidden setting '${VIEWPORT_SETTING_PATH}'
-2. WHY: FORBIDDEN-3 violation - SETTINGS_SCHEMA SHALL NOT contain tui.viewport; interactive sessions have no unpinned mode
+2. WHY: FORBIDDEN-3 violation - no viewport preference setting may remain
 3. EXPECTED: '${VIEWPORT_SETTING_PATH}' is absent from SETTINGS_SCHEMA
 4. ACTUAL: '${VIEWPORT_SETTING_PATH}' exists in SETTINGS_SCHEMA: ${JSON.stringify(schemaRecord[VIEWPORT_SETTING_PATH])}
 5. GUIDANCE: Remove '${VIEWPORT_SETTING_PATH}' configuration definition from SETTINGS_SCHEMA`,
-		);
+		).toBe(false);
 	});
 
 	it("INV-2: implementation files SHALL NOT import the contract module", () => {
@@ -162,14 +163,14 @@ describe("Composer pinned viewport wiring (SEQ-1, SEQ-5, POST-8, FORBIDDEN-3, IN
 				content.includes("pinned-composer.contract") ||
 				content.includes("requirements/contracts") ||
 				/from\s+["'].*pinned-composer\.contract.*["']/.test(content);
-			expect(importsContract).toBe(
-				false,
+			expect(
+				importsContract,
 				`1. WHAT: Implementation file ${path.relative(worktreeRoot, filePath)} imports contract module
 2. WHY: INV-2 violation - implementation SHALL NOT import this contract module
 3. EXPECTED: No contract imports in production implementation files
 4. ACTUAL: Found contract reference in ${path.relative(worktreeRoot, filePath)}
 5. GUIDANCE: Remove contract imports from implementation; tests must serve as the bridge`,
-			);
+			).toBe(false);
 		}
 	});
 });

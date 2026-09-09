@@ -174,7 +174,7 @@ import { StatusLineComponent } from "./components/status-line";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
 import type { LspServerInfo as WelcomeLspServerInfo } from "./components/welcome";
-import { Composer } from "./composer";
+import { Composer, type ComposerPreferences } from "./composer";
 import { writeComposerWelcomeCache } from "./composer-cache";
 import { BtwController } from "./controllers/btw-controller";
 import { CleanseCommandController } from "./controllers/cleanse-command-controller";
@@ -838,7 +838,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.session = session;
 		this.sessionManager = session.sessionManager;
 		this.settings = session.settings;
-		const preferences = {
+		const preferences: Partial<ComposerPreferences> = {
 			quiet: settings.get("startup.quiet"),
 			composerShape: settings.get("composer.shape") ?? "box",
 			showHardwareCursor: settings.get("showHardwareCursor"),
@@ -2054,7 +2054,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	syncViewport(): void {
 		this.composer.setPreferences({ viewport: "pinned" });
 	}
-
 
 	#handleSessionAccentInputsChanged(): void {
 		this.#clearWorkingMessageAccentCache();
