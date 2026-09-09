@@ -53,6 +53,14 @@ export function trimBlankEdges(rows: readonly string[]): readonly string[] {
 	return start === 0 && end === rows.length ? rows : rows.slice(start, end);
 }
 
+export function isRowPrefix(prefix: readonly string[], rows: readonly string[]): boolean {
+	if (prefix.length > rows.length) return false;
+	for (let index = 0; index < prefix.length; index++) {
+		if (prefix[index] !== rows[index]) return false;
+	}
+	return true;
+}
+
 /** Owns transcript order, live capacity, and ordered immutable retirement. */
 export class TranscriptContainer extends Container {
 	#entries: TranscriptEntry[] = [];
