@@ -1,15 +1,11 @@
 import { describe, expect, it } from "bun:test";
+import { clippedPinnedDockHeight, PINNED_MIN_TRANSCRIPT_ROWS, PinnedViewport } from "@oh-my-pi/pi-tui/pinned-viewport";
 import {
-	clippedPinnedDockHeight,
-	PINNED_MIN_TRANSCRIPT_ROWS,
-	PinnedViewport,
-} from "@oh-my-pi/pi-tui/pinned-viewport";
-import {
-	CONTRACT_PINNED_COMPOSER,
 	PINNED_MIN_TRANSCRIPT_ROWS as CONTRACT_MIN_ROWS,
+	CONTRACT_PINNED_COMPOSER,
 	clippedPinnedDockHeight as contractClip,
-	validateComposeHeight,
 	PinnedComposerContractError,
+	validateComposeHeight,
 } from "../../../requirements/contracts/pinned-composer.contract";
 
 describe("pinned composer contract validators (supporting tests)", () => {

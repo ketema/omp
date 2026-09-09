@@ -1,14 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { COMPOSER_DEFAULTS, Composer } from "@oh-my-pi/pi-coding-agent/modes/composer";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { SETTINGS_SCHEMA } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
-import {
-	CONTRACT_PINNED_COMPOSER,
-	VIEWPORT_SETTING_PATH,
-} from "../../../requirements/contracts/pinned-composer.contract";
-import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { SETTINGS_SCHEMA } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
+import { COMPOSER_DEFAULTS, Composer } from "@oh-my-pi/pi-coding-agent/modes/composer";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { VIEWPORT_SETTING_PATH } from "../../../requirements/contracts/pinned-composer.contract";
+import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
 describe("Composer pinned viewport wiring (SEQ-1, SEQ-5, POST-8, FORBIDDEN-3, INV-2)", () => {
 	it("SEQ-1: Composer.start unconditionally enters TUI pinned mode", async () => {

@@ -1,21 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import {
-	type Component,
-	type Focusable,
-	TUI,
-	type TerminalFrameProvider,
-	type ViewportSize,
-} from "@oh-my-pi/pi-tui";
-import {
-	ALT_SCREEN_ENTER,
-	ALT_SCREEN_LEAVE,
-	CONTRACT_PINNED_COMPOSER,
-	FOLLOW_KEYBINDING,
-	PAGE_DOWN_KEYBINDING,
-	PAGE_UP_KEYBINDING,
-	PINNED_MOUSE_ENTER,
-	PINNED_MOUSE_LEAVE,
-} from "../../../requirements/contracts/pinned-composer.contract";
+import { type Component, type Focusable, type TerminalFrameProvider, TUI, type ViewportSize } from "@oh-my-pi/pi-tui";
+import { ALT_SCREEN_ENTER, ALT_SCREEN_LEAVE } from "../../../requirements/contracts/pinned-composer.contract";
 import { VirtualTerminal } from "./virtual-terminal";
 
 /**
