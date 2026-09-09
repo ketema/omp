@@ -18,6 +18,7 @@ import {
 } from "./glyph-protocol";
 import { setKittyProtocolActive } from "./keys";
 import { encodeTspHelloQuery, parseTspMessage, TSP_PREFIX, type TspHello } from "./native/encode";
+import { isLocalSessionEnv, isNativeModifierPressed, NATIVE_SHIFT_ENTER_SEQUENCE } from "./native-modifiers";
 import { StdinBuffer } from "./stdin-buffer";
 import {
 	isInsideTerminalMultiplexer,
@@ -181,14 +182,13 @@ export function chunkForConPTY(data: string, maxChunkBytes: number = MAX_CONPTY_
 }
 
 /**
- * Backlog ceiling that arms the stall watchdog. A live terminal keeps this
- * near zero; crossing it means either a genuinely wedged PTY reader (#6854) or
- * a single legitimately-huge frame — a `--resume` transcript repaint of many
- * inline images is one multi-tens-of-MiB write (#10430). The two are told
- * apart by {@link StdoutStallWatchdog} (drain progress), not by this number
- * alone: inter-frame production is already gated at 256 KiB
- * (`TUI.#deferRenderForOutputBacklog`), so the only way to reach this cap is a
- * lone oversized frame or a reader that has stopped consuming entirely.
+ * Hard cap on bytes queued to a stalled stdout before its consumer is declared
+ * gone. A live terminal drains within milliseconds, so a backlog this large —
+ * far above any legitimate paint (a full session resume is a few MiB) — means
+ * the PTY reader has stopped consuming entirely. Without the cap, `#safeWrite`
+ * keeps handing cosmetic frames (the `hub wait` spinner, 500 ms progress
+ * snapshots) to a writable buffer that never drains, growing RSS without bound
+ * until the host runs out of memory. See #6854.
  */
 const MAX_STDOUT_BACKLOG_BYTES = 64 * 1024 * 1024;
 
@@ -222,72 +222,47 @@ const STDOUT_STALL_POLL_MS = 250;
  * actively-draining frame.
  *
  * `process.stdout.write()` returns `false` once its buffer exceeds the stream
- * high-water mark, and the off-thread pump's `pending()` climbs the same way;
- * a stalled-but-alive PTY reader never throws, so the byte count is the only
- * signal that output is going nowhere. Tripping on the instantaneous count
- * alone is wrong: a legitimate oversized frame (a resume repaint of dozens of
- * inline screenshots, #10430) briefly exceeds the cap and then drains.
- *
- * An episode starts when the backlog first exceeds `armBytes` and lasts until
- * it drains back to `clearBytes` (healthy). The backlog can fall below
- * `armBytes` while still unhealthy, so the episode must outlive that dip
- * (#10434): during it the watchdog declares the terminal disconnected only when
- * the backlog makes no drain progress (no new low-water mark) for `stallMs` —
- * a draining terminal keeps lowering the mark and never trips, while a wedged
- * one (#6854) still tears down within the window.
+ * high-water mark; the bytes stay queued and are only freed when the consumer
+ * drains (the `drain` event). While the consumer keeps up, writes are accepted
+ * and nothing accumulates. When it stalls, every subsequent write piles onto
+ * the buffer — a stalled-but-alive PTY reader never throws, so the write path
+ * has no other signal that output is going nowhere. This guard sums the bytes
+ * queued since backpressure began and reports when that backlog crosses the
+ * cap, at which point the caller treats the terminal as disconnected.
  *
  * Exported for unit testing; `ProcessTerminal` is the sole production user.
  */
-export class StdoutStallWatchdog {
-	#lowWater = Number.POSITIVE_INFINITY;
-	#stalledSinceMs = 0;
-	#armed = false;
+export class OutputBacklogGuard {
+	#bytes = 0;
+	#tracking = false;
 
-	constructor(
-		private readonly armBytes: number = MAX_STDOUT_BACKLOG_BYTES,
-		private readonly clearBytes: number = STDOUT_BACKLOG_CLEAR_BYTES,
-		private readonly stallMs: number = STDOUT_STALL_TIMEOUT_MS,
-	) {}
+	constructor(private readonly capBytes: number = MAX_STDOUT_BACKLOG_BYTES) {}
 
-	/** True while an episode is active and the backlog must be polled to completion. */
-	get armed(): boolean {
-		return this.#armed;
+	/** True once a refused write started a backlog that has not yet drained. */
+	get tracking(): boolean {
+		return this.#tracking;
 	}
 
 	/**
-	 * Feed the current pending-byte count and clock reading. Returns true once an
-	 * armed episode has gone `stallMs` with no drain progress, at which point the
-	 * caller treats the terminal as disconnected.
+	 * Record one `stdout.write()`: `accepted` is that call's return value and
+	 * `bytes` its encoded size. Returns true when the pending backlog now
+	 * exceeds the cap and the terminal should be treated as disconnected.
 	 */
-	sample(pending: number, nowMs: number): boolean {
-		if (!this.#armed) {
-			// Idle: only an oversized backlog starts an episode.
-			if (pending <= this.armBytes) return false;
-			this.#armed = true;
-			this.#lowWater = pending;
-			this.#stalledSinceMs = nowMs;
-			return false;
+	record(accepted: boolean, bytes: number): boolean {
+		if (!this.#tracking) {
+			// Consumer is keeping up; nothing is queued.
+			if (accepted) return false;
+			// First refused write: backpressure has begun.
+			this.#tracking = true;
 		}
-		if (pending <= this.clearBytes) {
-			// Drained back to a healthy level: the episode is over.
-			this.reset();
-			return false;
-		}
-		if (pending < this.#lowWater) {
-			// Drain progress: a new low-water mark restarts the stall clock.
-			this.#lowWater = pending;
-			this.#stalledSinceMs = nowMs;
-			return false;
-		}
-		// Still unhealthy with no new low-water mark since the clock started.
-		return nowMs - this.#stalledSinceMs >= this.stallMs;
+		this.#bytes += bytes;
+		return this.#bytes > this.capBytes;
 	}
 
-	/** Episode ended (drained) or terminal torn down: stop watching. */
+	/** Called on the stdout `drain` event: the buffer emptied, backlog cleared. */
 	reset(): void {
-		this.#armed = false;
-		this.#lowWater = Number.POSITIVE_INFINITY;
-		this.#stalledSinceMs = 0;
+		this.#bytes = 0;
+		this.#tracking = false;
 	}
 }
 
@@ -657,7 +632,6 @@ export interface Terminal {
 	 * status resolves. `confirmed` is false when the terminal answered the DA1
 	 * sentinel without answering DECRQM, which proves only that querying support
 	 * is unavailable — not that the private mode itself is unsupported.
-	 * `status` is the DECRPM value when the terminal answered DECRQM.
 	 */
 	onPrivateModeReport?(callback: PrivateModeReportHandler): void;
 	/**
@@ -702,9 +676,9 @@ export interface Terminal {
  * single predicate.
  */
 export function isConPTYHosted(): boolean {
-	// win32 always hosts through ConPTY; under WSL stdout still crosses into
-	// ConPTY at the `wslhost` boundary.
-	return process.platform === "win32" || isWsl(process.platform, $env);
+	if (process.platform === "win32") return true;
+	// WSL: stdout still crosses into ConPTY at the `wslhost` boundary.
+	return process.platform === "linux" && (!!$env.WSL_DISTRO_NAME || !!$env.WSL_INTEROP);
 }
 
 /** Discriminated owner of an outstanding DA1 sentinel in the unified probe FIFO. */
@@ -770,7 +744,6 @@ export interface ProcessTerminalOptions {
 	 */
 	nativeWindowsConsole?: boolean;
 }
-
 /**
  * Real terminal using process.stdin/stdout
  */
@@ -830,13 +803,11 @@ export class ProcessTerminal implements Terminal {
 	#stdoutErrorHandler = (err: Error) => {
 		this.#markTerminalDisconnected("stdout failed", err);
 	};
-	// Bounds the stdout backlog against a stalled PTY consumer without killing a
-	// single large-but-draining frame: a stalled-but-alive reader never throws,
-	// so the pending byte count is the only stall signal, and a legitimate
-	// oversized frame (a resume repaint of many inline images) must be allowed
-	// to drain. See StdoutStallWatchdog, #6854, and #10430.
-	#stdoutStall = new StdoutStallWatchdog();
-	#stdoutStallTimer?: Timer;
+	// Bounds the stdout writable buffer against a stalled PTY consumer: a
+	// stalled-but-alive reader never throws, so #safeWrite has no error to catch
+	// and the writable buffer grows without bound as cosmetic frames pile up.
+	// See OutputBacklogGuard and #6854.
+	#stdoutBacklog = new OutputBacklogGuard();
 	// Off-thread output pump (unix TTYs): Bun's `process.stdout.write` blocks
 	// the event loop until the terminal drains, so a slow/occluded emulator
 	// froze the whole TUI for the duration of a multi-MB repaint. The pump
@@ -913,7 +884,6 @@ export class ProcessTerminal implements Terminal {
 		this.#conpty = options?.conpty ?? isConPTYHosted();
 		this.#nativeWindowsConsole = options?.nativeWindowsConsole ?? process.platform === "win32";
 	}
-
 	get kittyProtocolActive(): boolean {
 		return this.#kittyProtocolActive;
 	}
@@ -994,7 +964,7 @@ export class ProcessTerminal implements Terminal {
 		return token;
 	}
 
-	onPrivateModeReport(callback: PrivateModeReportHandler): void {
+	onPrivateModeReport(callback: (mode: number, supported: boolean, confirmed?: boolean) => void): void {
 		this.#privateModeCallbacks.push(callback);
 	}
 
@@ -1332,6 +1302,11 @@ export class ProcessTerminal implements Terminal {
 				this.#tspReplyBuffer.length === 0
 			) {
 				if (this.#inputHandler) {
+					// POST-4/POST-5: native Shift+Enter recovery now happens in
+					// #stdinDataHandler, before raw stdin data reaches
+					// StdinBuffer.process() (see #setupStdinBuffer). By the time a
+					// sequence reaches this handler, the substitution is already
+					// applied — forward it unchanged.
 					this.#inputHandler(sequence);
 				}
 				return;
@@ -1541,7 +1516,7 @@ export class ProcessTerminal implements Terminal {
 				const reportedFlags = parseInt(match[1]!, 10);
 				this.#kittyProtocolActive = true;
 				setKittyProtocolActive(true);
-				if (this.#conpty) {
+				if (isConPTYHosted()) {
 					// ConPTY (native Windows and WSL) drops Shift+letter keypresses
 					// entirely when flag 4 (report alternate keys) is set. Use flag 1
 					// (disambiguate only), preserving flag 2 if already active.
@@ -1684,8 +1659,22 @@ export class ProcessTerminal implements Terminal {
 		this.#stdinDataHandler = (data: string) => {
 			// Recover modes reset by the host before the user's next paste.
 			if (data && this.#active && this.#rearmBracketedPaste) this.#safeWrite("\x1b[?2004h");
-			if (this.#win32PasteNormalizer) this.#win32PasteNormalizer.process(data);
-			else this.#stdinBuffer!.process(data);
+			if (this.#win32PasteNormalizer) {
+				this.#win32PasteNormalizer.process(data);
+			} else {
+				// POST-4: substitute NATIVE_SHIFT_ENTER_SEQUENCE for a bare `\r`
+				// fast-path chunk before it reaches StdinBuffer.process(), so the
+				// raw-paste classification window never delays native Shift+Enter.
+				// POST-5/FORBIDDEN-1: all other chunks flow unchanged.
+				const input =
+					data === "\r" &&
+					process.platform === "darwin" &&
+					isLocalSessionEnv(Bun.env) &&
+					isNativeModifierPressed("shift")
+						? NATIVE_SHIFT_ENTER_SEQUENCE
+						: data;
+				this.#stdinBuffer!.process(input);
+			}
 		};
 	}
 
@@ -1955,7 +1944,6 @@ export class ProcessTerminal implements Terminal {
 		const mode: TerminalAppearance = luminance < 0.5 ? "dark" : "light";
 		const changed = mode !== this.#appearance;
 		this.#appearance = mode;
-		// oxlint-disable-next-line unicorn/no-useless-spread -- callbacks may unsubscribe while reporting
 		for (const cb of [...this.#appearanceReportCallbacks]) {
 			try {
 				cb(mode, requestToken);
@@ -2053,7 +2041,7 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	#handlePrivateModeReport(mode: number, status: string): void {
-		this.#resolvePrivateMode(mode, isPrivateModeSupported(status), true, Number.parseInt(status, 10));
+		this.#resolvePrivateMode(mode, isPrivateModeSupported(status), true);
 		if (isXtermScrollToBottomMode(mode) && isPrivateModeSet(status)) {
 			this.#disableXtermScrollToBottomMode(mode);
 		}
@@ -2065,12 +2053,12 @@ export class ProcessTerminal implements Terminal {
 	 * unsupported response from an absent response followed by the DA1 sentinel.
 	 * Enables DEC 2048 in-band resize only after positive confirmation.
 	 */
-	#resolvePrivateMode(mode: number, supported: boolean, confirmed: boolean, status?: number): void {
+	#resolvePrivateMode(mode: number, supported: boolean, confirmed: boolean): void {
 		if (this.#privateModeSupport.has(mode)) return;
 		this.#privateModeSupport.set(mode, supported);
 		for (const cb of this.#privateModeCallbacks) {
 			try {
-				cb(mode, supported, confirmed, status);
+				cb(mode, supported, confirmed);
 			} catch {
 				// Ignore subscriber errors — capability reporting must not crash input.
 			}
@@ -2355,7 +2343,11 @@ export class ProcessTerminal implements Terminal {
 			process.stdout.removeListener("resize", this.#stdoutResizeListener);
 			this.#stdoutResizeListener = undefined;
 		}
-		this.#disarmStdoutStallWatchdog();
+		if (this.#stdoutDrainArmed) {
+			process.stdout.removeListener("drain", this.#stdoutDrainHandler);
+			this.#stdoutDrainArmed = false;
+		}
+		this.#stdoutBacklog.reset();
 		this.#resizeHandler = undefined;
 		// Flush the restore sequences enqueued above (bounded — a stalled PTY
 		// must not wedge exit), then retire the pump. Later writes (emergency
@@ -2394,7 +2386,6 @@ export class ProcessTerminal implements Terminal {
 	#markTerminalDisconnected(reason: string, err?: unknown): void {
 		if (this.#dead) return;
 		this.#dead = true;
-		this.#disarmStdoutStallWatchdog();
 		logger.warn("terminal disconnected; stopping interactive rendering", { reason, err });
 
 		const disconnectHandler = this.#disconnectHandler;
@@ -2495,19 +2486,26 @@ export class ProcessTerminal implements Terminal {
 			// and a code-unit cap would let CJK transcript rows expand past the
 			// threshold. See #2034 and #2095.
 			const bytes = Buffer.byteLength(data, "utf8");
-			if (this.#conpty && bytes > MAX_CONPTY_WRITE_CHUNK_BYTES) {
+			let accepted: boolean;
+			if (isConPTYHosted() && bytes > MAX_CONPTY_WRITE_CHUNK_BYTES) {
+				accepted = true;
 				for (const chunk of chunkForConPTY(data, MAX_CONPTY_WRITE_CHUNK_BYTES)) {
 					if (this.#dead) break;
-					process.stdout.write(chunk);
+					accepted = process.stdout.write(chunk);
 				}
 			} else {
-				process.stdout.write(data);
+				accepted = process.stdout.write(data);
 			}
-			// A stalled-but-alive PTY consumer never throws: write() just queues the
-			// bytes and writableLength grows. Feed that backlog to the stall watchdog
-			// so a genuinely wedged reader is bounded (#6854) without killing a lone
-			// oversized frame that is still draining (#10430).
-			this.#trackStdoutBacklog(process.stdout.writableLength ?? 0);
+			// A stalled-but-alive PTY consumer never throws: write() just returns
+			// false and queues the bytes. Bound that never-draining backlog by
+			// declaring the terminal disconnected once it crosses the cap — the
+			// same clean-exit path a dead terminal takes (#6854).
+			if (this.#stdoutBacklog.record(accepted, bytes)) {
+				this.#markTerminalDisconnected("stdout backlog exceeded cap; PTY consumer stalled");
+			} else if (this.#stdoutBacklog.tracking && !this.#stdoutDrainArmed) {
+				this.#stdoutDrainArmed = true;
+				process.stdout.once("drain", this.#stdoutDrainHandler);
+			}
 		} catch (err) {
 			this.#markTerminalDisconnected("stdout failed", err);
 		} finally {
@@ -2584,7 +2582,6 @@ export class ProcessTerminal implements Terminal {
 			this.#stdoutStallTimer = undefined;
 		}
 	}
-
 	get rows(): number {
 		if (this.#inBandResizeActive && this.#reportedRows) return this.#reportedRows;
 		return process.stdout.rows || Number(Bun.env.LINES) || 24;
