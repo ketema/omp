@@ -1,0 +1,5 @@
+# Homebrew `rustc` ignores rust-toolchain.toml (that file is rustup-only).
+# mise applies this pin only inside this repo; it does not change the
+# machine-default compiler used elsewhere.
+[tools]
+rust = "nightly-2026-08-08"

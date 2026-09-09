@@ -7,7 +7,7 @@
  * The implementation does NOT import from this file; tests import both.
  *
  * Traceability: REQ-RLM-0002, REQ-RLM-0005, REQ-RLM-0019, REQ-N-1, REQ-N-2;
- * F-020..F-032, F-040..F-062, F-269/F-270, F-037/F-237; A-006; IP-1, IP-9; manifest SEQ-13.
+ * F-020..F-032, F-040..F-062, F-037/F-237; A-006; IP-1, IP-9; manifest SEQ-13.
  */
 
 // =============================================================================
@@ -140,7 +140,7 @@ export const RLM_TOOL_CONTRACT = {
   'POST-TOOL-2': 'isError is true iff status is error or aborted (F-032, TOOL-V2).',
   'POST-TOOL-3': 'A restart notice appears only after interrupt→kill→restart, wrapped in exact tags (F-029, TOOL-V3).',
   'POST-TOOL-4': 'Working messages appear at kernel start, state restore, and runtime prep, and clear on completion (F-030).',
-  'POST-TOOL-5': 'The prompt contracts F-040..F-062 and F-269/F-270 are delivered through the tool description and system-prompt additions (REQ-RLM-0005).',
+  'POST-TOOL-5': 'The prompt contract F-040..F-062 is delivered through the tool description and system-prompt additions (REQ-RLM-0005).',
   'INV-TOOL-1': 'The tool declares executionMode "sequential"; cells never overlap (F-021, INV-KM-1).',
   'INV-TOOL-LIFETIME-1': 'From first invocation, a busy kernel offers exactly the two choices of TOOL_BUSY_CHOICES in interactive UIs, or auto-cancels in non-UI contexts (F-028).',
   'ERRORS-TOOL-1': 'RlmRuntimeMissingError names the interpreter override and rebuild path when the runtime fails to import (F-237).',
