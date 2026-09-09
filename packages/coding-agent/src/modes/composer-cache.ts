@@ -190,6 +190,7 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 				resizeScrollback === "append" || resizeScrollback === "rebuild" || resizeScrollback === "preserve"
 					? resizeScrollback
 					: "rebuild",
+			viewport: "pinned",
 			imeSafeCursor,
 			autocompleteMaxVisible,
 			spellingTypoDetection,

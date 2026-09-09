@@ -174,7 +174,7 @@ import { StatusLineComponent } from "./components/status-line";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
 import type { LspServerInfo as WelcomeLspServerInfo } from "./components/welcome";
-import { Composer } from "./composer";
+import { Composer, type ComposerPreferences } from "./composer";
 import { writeComposerWelcomeCache } from "./composer-cache";
 import { BtwController } from "./controllers/btw-controller";
 import { CleanseCommandController } from "./controllers/cleanse-command-controller";
@@ -838,12 +838,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.session = session;
 		this.sessionManager = session.sessionManager;
 		this.settings = session.settings;
-		const preferences = {
+		const preferences: Partial<ComposerPreferences> = {
 			quiet: settings.get("startup.quiet"),
 			composerShape: settings.get("composer.shape") ?? "box",
 			showHardwareCursor: settings.get("showHardwareCursor"),
 			maxInlineImages: settings.get("tui.maxInlineImages"),
 			resizeScrollback: settings.get("tui.resizeScrollback"),
+			viewport: "pinned",
 			imeSafeCursor: settings.get("tui.imeSafeCursor"),
 			autocompleteMaxVisible: settings.get("autocompleteMaxVisible"),
 			spellingTypoDetection: settings.get("spelling.typoDetection"),
@@ -2049,6 +2050,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.statusLine.setComposerStyle(style);
 		this.updateEditorBorderColor();
 		this.ui.requestRender();
+	}
+	syncViewport(): void {
+		this.composer.setPreferences({ viewport: "pinned" });
 	}
 
 	#handleSessionAccentInputsChanged(): void {

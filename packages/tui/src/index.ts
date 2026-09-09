@@ -39,6 +39,8 @@ export * from "./latex-to-unicode";
 export * from "./mouse";
 // Native modifier key state
 export * from "./native-modifiers";
+// Pinned alt-screen transcript window + dock
+export * from "./pinned-viewport";
 // Mermaid diagram support
 // Input buffering for batch splitting
 export * from "./stdin-buffer";
