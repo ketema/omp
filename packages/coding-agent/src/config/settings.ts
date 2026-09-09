@@ -176,7 +176,8 @@ export interface SettingsOptions {
 /**
  * Get a nested value from an object by path segments.
  */
-function getByPath(obj: RawSettings, segments: readonly string[]): unknown {
+function getByPath(obj: RawSettings, segments: readonly string[] | undefined): unknown {
+	if (!segments) return undefined;
 	let current: unknown = obj;
 	for (const segment of segments) {
 		if (current === null || current === undefined || typeof current !== "object") {
