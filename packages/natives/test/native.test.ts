@@ -1000,6 +1000,12 @@ console.log("ok");
 		}, 30_000);
 	});
 
+	// RED (2026-09-09): unconditionally calls a macOS-only native binding.
+	// Live CI evidence (PR #35 and #36, both off main HEAD 576fed41a8):
+	//   TypeError: undefined is not an object (evaluating 'MacOSPowerAssertion.start')
+	//     at native.test.ts:1005:22
+	// Crashes the whole file on non-darwin runners instead of skipping, unlike
+	// the "macOS spelling" guard above. Fixed in the following commit.
 	describe("MacOSPowerAssertion", () => {
 		it("should create a stoppable power assertion handle", () => {
 			const assertion = MacOSPowerAssertion.start({ reason: "pi-natives test" });
