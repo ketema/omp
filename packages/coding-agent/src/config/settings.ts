@@ -162,7 +162,8 @@ export interface SettingsOptions {
 /**
  * Get a nested value from an object by path segments.
  */
-function getByPath(obj: RawSettings, segments: readonly string[]): unknown {
+function getByPath(obj: RawSettings, segments: readonly string[] | undefined): unknown {
+	if (!segments) return undefined;
 	let current: unknown = obj;
 	for (const segment of segments) {
 		if (current === null || current === undefined || typeof current !== "object") {
@@ -639,7 +640,8 @@ export class Settings {
 			return this.#resolvedCache.get(path) as SettingValue<P>;
 		}
 
-		const value = getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]);
+		const segments = SETTING_PATH_SEGMENTS[path] ?? (typeof path === "string" ? path.split(".") : undefined);
+		const value = segments ? getByPath(this.#merged, segments) : undefined;
 		const resolved =
 			value !== undefined ? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value) : getDefault(path);
 		this.#resolvedCache.set(path, resolved);
@@ -651,7 +653,8 @@ export class Settings {
 	 * config, or runtime override) rather than falling back to the schema default.
 	 */
 	isConfigured(path: SettingPath): boolean {
-		return getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]) !== undefined;
+		const segments = SETTING_PATH_SEGMENTS[path] ?? (typeof path === "string" ? path.split(".") : undefined);
+		return (segments ? getByPath(this.#merged, segments) : undefined) !== undefined;
 	}
 
 	/**
