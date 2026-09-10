@@ -19,17 +19,7 @@ import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { getKeybindings } from "./keybindings";
 import { isKeyRelease, matchesKey } from "./keys";
 import { LoopWatchdog } from "./loop-watchdog";
-import { parseSgrMouseStream } from "./mouse";
-import {
-	ALT_SCREEN_ENTER,
-	ALT_SCREEN_LEAVE,
-	clippedPinnedDockHeight,
-	PINNED_MOUSE_ENTER,
-	PINNED_MOUSE_LEAVE,
-	PINNED_WHEEL_SCROLL_LINES,
-	PinnedViewport,
-	type SelectionSpan,
-} from "./pinned-viewport";
+import { ALT_SCREEN_ENTER, ALT_SCREEN_LEAVE, clippedPinnedDockHeight, PinnedViewport } from "./pinned-viewport";
 import { setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteAllImages,
@@ -769,11 +759,6 @@ export class TUI extends Container {
 	#pinnedActive = false;
 	#pinnedViewport: PinnedViewport | undefined;
 	#pinnedAltEntered = false;
-	#pinnedMouseActive = false;
-	#lastPinnedVisibleTranscript: string[] = [];
-	#dragStart: { col: number; row: number } | undefined;
-	#dragEnd: { col: number; row: number } | undefined;
-	#copyEligible = false;
 
 	// Overlay stack for modal components rendered on top of base content
 	overlayStack: {
@@ -849,7 +834,8 @@ export class TUI extends Container {
 		this.#pinnedActive = true;
 		this.#pinnedViewport ??= new PinnedViewport();
 		this.#ensurePinnedAltScreen();
-		this.#syncPinnedMouseTracking();
+		// SEQ-PV-10 / POST-PV-25 / INV-PV-15: pinned state before first frame;
+		// ordinary pointer selection stays unclaimed (no PINNED_MOUSE_ENTER).
 		this.requestRender(true);
 	}
 
@@ -858,10 +844,6 @@ export class TUI extends Container {
 		if (!this.#pinnedActive) return;
 		this.#pinnedActive = false;
 		this.#pinnedViewport = undefined;
-		this.#dragStart = undefined;
-		this.#dragEnd = undefined;
-		this.#copyEligible = false; // INV-PV-14
-		this.#syncPinnedMouseTracking();
 		this.#releasePinnedAltScreen();
 		this.requestRender(true);
 	}
@@ -902,87 +884,19 @@ export class TUI extends Container {
 		this.#altPreviousLines = [];
 	}
 
-	#syncPinnedMouseTracking(): void {
-		const overlay = this.#getTopmostVisibleOverlay();
-		const overlayWantsMouse = overlay?.options?.fullscreen === true && overlay.options?.mouseTracking !== false;
-		const wantPinnedMouse = this.#pinnedActive && !overlayWantsMouse;
-		if (wantPinnedMouse === this.#pinnedMouseActive) return;
-		// POST-PV-8: an overlay requesting mouse tracking owns SGR 1006 itself
-		// (see MOUSE_TRACKING_ON); leaving pinned mouse mode here must not send
-		// PINNED_MOUSE_LEAVE, which would disable the 1006 mode the overlay
-		// just enabled (or is about to).
-		if (this.#pinnedMouseActive && !overlayWantsMouse) this.terminal.write(PINNED_MOUSE_LEAVE);
-		if (wantPinnedMouse) this.terminal.write(PINNED_MOUSE_ENTER);
-		this.#pinnedMouseActive = wantPinnedMouse;
-	}
-
 	#overlayOwnsFocus(): boolean {
 		const overlay = this.#getTopmostVisibleOverlay();
 		return overlay !== undefined && overlay.component === this.#focusedComponent;
 	}
 
 	#handlePinnedInput(data: string): boolean {
+		// FORBIDDEN-PV-8 / SEQ-PV-3 / INV-PV-4: ordinary pinned SGR is unclaimed
+		// here; overlay-owned pointer input falls through to the focused overlay.
 		if (!this.#pinnedActive || this.#overlayOwnsFocus()) {
-			if (this.#overlayOwnsFocus()) {
-				this.#dragStart = undefined;
-				this.#dragEnd = undefined;
-				this.#copyEligible = false; // INV-PV-14
-			}
-			if (this.#pinnedActive && data.includes("\x1b[<")) return true;
 			return false;
 		}
-		if (data.includes("\x1b[<")) {
-			const events = parseSgrMouseStream(data);
-			if (events.length > 0) {
-				let wheelDelta = 0;
-				const windowHeight = this.#pinnedViewport?.windowHeight() ?? 0;
-				for (const event of events) {
-					if (event.wheel === -1) {
-						wheelDelta -= PINNED_WHEEL_SCROLL_LINES;
-					} else if (event.wheel === 1) {
-						wheelDelta += PINNED_WHEEL_SCROLL_LINES;
-					} else if (event.leftClick) {
-						if (event.row < windowHeight) {
-							this.#dragStart = { col: event.col, row: event.row };
-							this.#dragEnd = { col: event.col, row: event.row };
-							this.#copyEligible = false; // INV-PV-14
-						} else {
-							this.#dragStart = undefined;
-							this.#dragEnd = undefined;
-							this.#copyEligible = false; // INV-PV-14
-						}
-					} else if (event.motion && !event.release) {
-						if (this.#dragStart !== undefined) {
-							this.#dragEnd = { col: event.col, row: event.row };
-							this.#copyEligible = true; // SEQ-PV-9 / POST-PV-6c
-						}
-					} else if (event.release) {
-						if (this.#dragStart !== undefined) {
-							this.#dragEnd = { col: event.col, row: event.row };
-							// SEQ-PV-9: evaluate eligibility before clipboard delivery.
-							// POST-PV-6: a press/release whose end cell differs from the
-							// start is a drag span and remains copyable.
-							// POST-PV-6c: motion then return to the start cell is copyable.
-							// FORBIDDEN-PV-4 / ERRORS-PV-5: no-motion same-cell is a no-op.
-							const spanMoved =
-								this.#dragStart.col !== this.#dragEnd.col ||
-								this.#dragStart.row !== this.#dragEnd.row;
-							if (event.button === 0 && (this.#copyEligible || spanMoved)) {
-								this.#copySelectedTranscriptToClipboard();
-							}
-							this.#dragStart = undefined;
-							this.#dragEnd = undefined;
-							this.#copyEligible = false; // INV-PV-14
-						}
-					}
-				}
-				if (wheelDelta !== 0) {
-					this.scrollPinnedBy(wheelDelta);
-				}
-				return true;
-			}
-		}
 		const keys = getKeybindings();
+		// POST-PV-14: page-navigation keys reach PinnedViewport.scrollBy before editor input.
 		if (keys.matches(data, "tui.viewport.pageUp")) {
 			this.scrollPinnedBy(-(this.#pinnedViewport?.pageSize() ?? 1));
 			return true;
@@ -1002,75 +916,6 @@ export class TUI extends Container {
 			return true;
 		}
 		return false;
-	}
-
-	#copySelectedTranscriptToClipboard(): void {
-		if (!this.#dragStart || !this.#dragEnd) return;
-		const start = this.#dragStart;
-		const end = this.#dragEnd;
-		const windowHeight = this.#pinnedViewport?.windowHeight() ?? 0;
-		if (windowHeight <= 0) return;
-
-		let r0 = start.row;
-		let c0 = start.col;
-		let r1 = end.row;
-		let c1 = end.col;
-
-		if (r0 > r1 || (r0 === r1 && c0 > c1)) {
-			const tr = r0;
-			const tc = c0;
-			r0 = r1;
-			c0 = c1;
-			r1 = tr;
-			c1 = tc;
-		}
-
-		r0 = Math.max(0, Math.min(r0, windowHeight - 1));
-		r1 = Math.max(0, Math.min(r1, windowHeight - 1));
-
-		const lines = this.#lastPinnedVisibleTranscript;
-		const selectedParts: string[] = [];
-
-		if (r0 === r1) {
-			const line = lines[r0] ?? "";
-			const minC = Math.max(0, Math.min(c0, c1));
-			const maxC = Math.max(0, Math.max(c0, c1));
-			if (minC <= maxC) {
-				// POST-PV-6: visual-column-aware slice over a closed [minC, maxC]
-				// cell interval so the release cell is included and wide glyphs
-				// (CJK, ZWJ emoji) stay intact instead of splitting mid-cluster.
-				selectedParts.push(Bun.stripANSI(sliceByColumn(line, minC, maxC - minC + 1)));
-			}
-		} else {
-			for (let r = r0; r <= r1; r++) {
-				const line = lines[r] ?? "";
-				if (r === r0) {
-					selectedParts.push(Bun.stripANSI(sliceByColumn(line, Math.max(0, c0), Number.MAX_SAFE_INTEGER)));
-				} else if (r === r1) {
-					// Closed interval: include the release cell at column c1.
-					selectedParts.push(Bun.stripANSI(sliceByColumn(line, 0, Math.max(0, c1) + 1)));
-				} else {
-					selectedParts.push(Bun.stripANSI(line));
-				}
-			}
-		}
-
-		const selectedText = selectedParts.join("\n");
-		if (selectedText.length > 0) {
-			const encoded = Buffer.from(selectedText, "utf8").toString("base64");
-			this.terminal.write(`\x1b]52;c;${encoded}\x07`);
-		}
-	}
-
-	/** Raw (unordered) window-relative span of the active drag, or undefined (POST-PV-9). */
-	#activeDragSelection(): SelectionSpan | undefined {
-		if (!this.#dragStart || !this.#dragEnd) return undefined;
-		return {
-			startRow: this.#dragStart.row,
-			startCol: this.#dragStart.col,
-			endRow: this.#dragEnd.row,
-			endCol: this.#dragEnd.col,
-		};
 	}
 
 	/** Delete every tracked Kitty image from the terminal graphics store. */
@@ -1122,12 +967,6 @@ export class TUI extends Container {
 		}
 
 		const previousFocusedComponent = this.#focusedComponent;
-		if (this.#pinnedActive && previousFocusedComponent !== component) {
-			// SEQ-PV-5: focus transitions invalidate any transcript drag selection.
-			this.#dragStart = undefined;
-			this.#dragEnd = undefined;
-			this.#copyEligible = false; // INV-PV-14
-		}
 		// Clear focused flag on old component
 		if (isFocusable(previousFocusedComponent)) {
 			previousFocusedComponent.focused = false;
@@ -1611,10 +1450,6 @@ export class TUI extends Container {
 		this.#resizeSettleTimer?.cancel();
 		this.#resizeSettleTimer = undefined;
 		this.#cancelResizeProbe();
-		if (this.#pinnedMouseActive) {
-			this.terminal.write(PINNED_MOUSE_LEAVE);
-			this.#pinnedMouseActive = false;
-		}
 		if (this.#resizeAltActive) {
 			this.#resizeAltActive = false;
 			this.terminal.write(`${this.#keyboardEnhancementExit()}\x1b[?1049l`);
@@ -1637,10 +1472,6 @@ export class TUI extends Container {
 			this.#pinnedAltEntered = false;
 			this.#altPreviousLines = [];
 		}
-		// SEQ-PV-5: stopping exits pinned mode and invalidates drag selection.
-		this.#dragStart = undefined;
-		this.#dragEnd = undefined;
-		this.#copyEligible = false; // INV-PV-14
 		this.#pinnedActive = false;
 		this.#pinnedViewport = undefined;
 		// Deliberately leave transmitted images in the terminal's graphics store:
@@ -2479,7 +2310,6 @@ export class TUI extends Container {
 			this.#altPreviousLines = [];
 			this.#altEnterWidth = width;
 			this.#altEnterHeight = height;
-			this.#syncPinnedMouseTracking();
 		} else if (!wantAlt && this.#altActive) {
 			const mouseExit = this.#altMouseTrackingActive ? MOUSE_TRACKING_OFF : "";
 			if (this.#pinnedAltEntered) {
@@ -2489,7 +2319,6 @@ export class TUI extends Container {
 				this.#altMouseTrackingActive = false;
 				this.#altPreviousLines = [];
 				this.#forceViewportRepaintOnNextRender = true;
-				this.#syncPinnedMouseTracking();
 			} else {
 				const enhancementExit = this.#keyboardEnhancementExit();
 				this.terminal.write(`${mouseExit}${enhancementExit}${ALT_SCREEN_LEAVE}`);
@@ -2511,7 +2340,6 @@ export class TUI extends Container {
 			return;
 		}
 		if (this.#pinnedActive) {
-			this.#syncPinnedMouseTracking();
 			this.#renderPinnedFrame(width, height);
 			return;
 		}
@@ -2570,7 +2398,7 @@ export class TUI extends Container {
 
 		let output = "";
 		let cells = 0;
-		for (let i = 0; i < raw.length && cells < safeWidth; ) {
+		for (let i = 0; i < raw.length && cells < safeWidth;) {
 			if (raw.charCodeAt(i) === 0x1b) {
 				const end = this.#ansiSequenceEnd(raw, i);
 				if (end < 0) break;
@@ -2666,7 +2494,7 @@ export class TUI extends Container {
 
 	#ansiAsciiLineWidth(line: string, maxWidth: number): number | undefined {
 		let col = 0;
-		for (let i = 0; i < line.length; ) {
+		for (let i = 0; i < line.length;) {
 			const code = line.charCodeAt(i);
 			if (code === 0x1b) {
 				const next = line.charCodeAt(i + 1);
@@ -2845,12 +2673,10 @@ export class TUI extends Container {
 			transcript: scroll,
 			dock,
 			height,
-			selection: this.#activeDragSelection(),
 		});
 		if (this.#getTopmostVisibleOverlay() !== undefined) {
 			lines = this.#compositeOverlaysIntoWindow(lines, width, height);
 		}
-		this.#lastPinnedVisibleTranscript = lines.slice(0, this.#pinnedViewport.windowHeight());
 		const markers = this.#extractCursorMarkers(lines);
 		lines = this.#prepareLinesArray(lines, width);
 		this.#emitAltFrame(lines, width, height);
