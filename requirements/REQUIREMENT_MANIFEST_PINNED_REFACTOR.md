@@ -128,13 +128,13 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | INV-PV-8 | Dock Placement | PinnedViewport SHALL place the dock in the final dock-height rows of the physical frame. |
 | INV-PV-9 | Terminal Discipline | TUI SHALL NOT use DECSTBM to pin the dock. |
 | INV-PV-10 | Native Scrollback | TUI SHALL NOT emit retired interactive transcript rows to native terminal scrollback. |
-| INV-PV-11 | MCP Information Lifecycle | MCPCommandController SHALL NOT route `/mcp list` through showCommandMessage or presentCommandOutput. |
-| INV-PV-14 | Native Selection Ownership | TUI SHALL NOT emit an application-owned OSC 52 payload for an ordinary pinned pointer gesture. |
+| FORBIDDEN-MCP-1 | MCP Information Lifecycle | MCPCommandController SHALL NOT route `/mcp list` through showCommandMessage or presentCommandOutput. |
+| FORBIDDEN-PV-5 | Native Selection Ownership | TUI SHALL NOT emit an application-owned OSC 52 payload for an ordinary pinned pointer gesture. |
 | INV-PV-15 | Mouse Mode Ownership | TUI SHALL NOT write `?1002h` or `?1006h` solely because pinned mode is active. |
 | FORBIDDEN-PV-7 | Wheel Ownership | TUI SHALL NOT apply an ordinary pinned SGR wheel report to PinnedViewport.scrollBy. |
 | FORBIDDEN-PV-8 | Pointer Input Ownership | TUI SHALL NOT parse or consume an ordinary pinned SGR pointer report unless an explicitly pointer-interactive fullscreen overlay owns input. |
 | INV-PV-16 | Overlay Mouse Opt-In | TUI SHALL gate fullscreen-overlay mouse-reporting enablement on a `mouseTracking` option equal to `true`. |
-| LIFETIME-PV-1 | Mode Lifecycle | Across pinned entry, explicit overlay ownership transfer, pinned exit, and stop, TUI SHALL enable and release only terminal modes it owns. |
+| LIFETIME_INV-PV-1 | Mode Lifecycle | Across pinned entry, explicit overlay ownership transfer, pinned exit, and stop, TUI SHALL enable and release only terminal modes it owns. |
 
 ## 5. High-Entropy Zones
 

@@ -364,8 +364,8 @@ export interface OverlayOptions {
 	 */
 	fullscreen?: boolean;
 	/**
-	 * Enable terminal mouse reporting while fullscreen. Defaults on; disable it
-	 * when native terminal text selection takes precedence over pointer events.
+	 * Enable terminal mouse reporting while fullscreen. Default-off / explicit
+	 * opt-in: reporting is enabled only when mouseTracking === true.
 	 */
 	mouseTracking?: boolean;
 }
@@ -2289,7 +2289,8 @@ export class TUI extends Container {
 		// modal there; the normal screen and all accounting stay untouched.
 		const topOverlay = this.#getTopmostVisibleOverlay();
 		const wantAlt = topOverlay?.options?.fullscreen === true;
-		const wantMouseTracking = wantAlt && topOverlay.options?.mouseTracking !== false;
+		// POST-PV-27 / SEQ-PV-3 / INV-PV-16: enable reporting only on exact true.
+		const wantMouseTracking = wantAlt && topOverlay.options?.mouseTracking === true;
 		if (wantAlt && !this.#altActive) {
 			// Enhanced keyboard modes can be buffer-local: re-push the active
 			// modified-key reporting sequence on the freshly entered alternate

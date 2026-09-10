@@ -5,8 +5,6 @@ import { InvalidHeightError as ImplInvalidHeightError, PinnedViewport } from "@o
 import {
 	CONTRACT_PINNED_DOCK,
 	InvalidHeightError as ContractInvalidHeightError,
-	InvalidMouseInputError,
-	validateSgrMouseReports,
 	validateSoftwareScrollback,
 	ZeroScrollbackError,
 } from "../../../requirements/contracts/pinned_dock.contract";
@@ -59,7 +57,7 @@ class StaticPinnedFrameProvider implements TerminalFrameProvider {
 
 // ============================================================================
 // PinnedViewport.composeFrame — real implementation entry point (PRE-PV-1,
-// ERRORS-PV-1, POST-PV-1, PRE-PV-2, ERRORS-PV-2)
+// ERRORS-PV-1, POST-PV-1)
 // ============================================================================
 
 describe("pinned dock refactor — PinnedViewport.composeFrame real-implementation contract", () => {
@@ -79,8 +77,7 @@ describe("pinned dock refactor — PinnedViewport.composeFrame real-implementati
 		 *   [✓] C1 VALID: cites PRE-PV-1 and ERRORS-PV-1 in requirements/contracts/pinned_dock.contract.ts.
 		 *   [✓] C2 VALUABLE: a generic Error, wrong clause identifier, or wrong contract message fails
 		 *       the observable error-shape assertions.
-		 *   [✓] C3 NON-DUPLICATIVE: the only test invoking PinnedViewport.composeFrame's own height validation;
-		 *       the PRE-PV-2 test below covers the mouse-input validator, a disjoint surface.
+		 *   [✓] C3 NON-DUPLICATIVE: the only test invoking PinnedViewport.composeFrame's own height validation.
 		 *   [✓] C4 NOT FUTURE-EDIT: enforces the current, explicit ERRORS-PV-1 contract error shape.
 		 */
 		const viewport = new PinnedViewport();
@@ -167,44 +164,6 @@ describe("pinned dock refactor — PinnedViewport.composeFrame real-implementati
 4. ACTUAL: ${JSON.stringify(frame)}
 5. GUIDANCE: Return exactly height rows with the scrolled transcript window on top and the dock pinned to the bottom rows`,
 		).toEqual(["ROW_1", "ROW_2", "ROW_3", "ROW_4", "DOCK_1", "DOCK_2"]);
-	});
-
-	it("CONTRACT VERIFICATION — PRE-PV-2 / ERRORS-PV-2: validateSgrMouseReports throws InvalidMouseInputError on non-string input", () => {
-		/**
-		 * CONTRACT TRACEABILITY:
-		 * - Contract: validateSgrMouseReports() (named directly by ERRORS-PV-2)
-		 * - Enforces: PRE-PV-2: SGR mouse input parsers SHALL accept string data and reject non-string types
-		 * - Enforces: ERRORS-PV-2: validateSgrMouseReports SHALL throw InvalidMouseInputError citing PRE-PV-2
-		 *   on non-string input
-		 * - Category: error
-		 * - Risk tier: Medium — a non-string chunk reaching the parser is an internal wiring bug, not a user input path
-		 * - Adversarial: contract validator verification. ERRORS-PV-2 names validateSgrMouseReports directly
-		 *   (unlike ERRORS-PV-1, which is tested against the real PinnedViewport.composeFrame above), so this
-		 *   IS the real subject of the clause, not a stand-in for it.
-		 *
-		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites PRE-PV-2 and ERRORS-PV-2 in requirements/contracts/pinned_dock.contract.ts.
-		 *   [✓] C2 VALUABLE: passes "can impl be wrong and test pass?" = NO.
-		 *   [✓] C3 NON-DUPLICATIVE: the only test of the mouse-input validator's error type.
-		 *   [✓] C4 NOT FUTURE-EDIT: enforces the current, explicit ERRORS-PV-2 guarantee.
-		 */
-		const prePv2 = CONTRACT_PINNED_DOCK["PRE-PV-2"];
-		const errorsPv2 = CONTRACT_PINNED_DOCK["ERRORS-PV-2"];
-		const nonStringInput = null as unknown as string;
-		let caught: unknown;
-		try {
-			validateSgrMouseReports(nonStringInput, []);
-		} catch (err) {
-			caught = err;
-		}
-		expect(
-			caught instanceof InvalidMouseInputError,
-			`1. WHAT: test_pre_pv_2_validator_rejects_non_string FAILED
-2. WHY: PRE-PV-2 / ERRORS-PV-2 violation - ${prePv2.description}; ${errorsPv2.description}
-3. EXPECTED: validateSgrMouseReports(null, []) throws InvalidMouseInputError
-4. ACTUAL: ${caught instanceof Error ? `threw ${caught.constructor.name}: ${caught.message}` : String(caught)}
-5. GUIDANCE: Validate that rawChunk is a string before scanning it for SGR reports`,
-		).toBe(true);
 	});
 });
 

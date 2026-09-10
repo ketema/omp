@@ -1,7 +1,7 @@
 version: "3.1"
 feature_name: "pinned-terminal-native-selection-restoration"
 manifest_path: "requirements/REQUIREMENT_MANIFEST_PINNED_REFACTOR.md"
-manifest_hash: "sha256:8200c1dca09aed9a31cbb7d37e40bd443f46ecba6279b7b1c2833d59a834d518"
+manifest_hash: "sha256:61c01bceba06b2a69ceda229464b5296a784df0cba954b7af84cac57231b7d54"
 disconnect_matrix_path: "requirements/DISCONNECT_MATRIX_PINNED_JITTER.md"
 created: "2026-09-07"
 last_updated: "2026-09-10"
@@ -35,6 +35,14 @@ user_decisions:
     decision: "Defer the pre-existing POST-PV-14 page-navigation keybinding defect to a dedicated slice. Preserve its authoritative contract clause and keep the active Decision 7A GREEN boundary at explicit fullscreen-overlay pointer opt-in."
     decided_by: "User"
     source: "2. defer it"
+  - id: "8A"
+    decision: "Non-behavioral audit findings are approved for remediation; POST-PV-26 remains the final human-owned confirmation."
+    decided_by: "User"
+    source: "fix all non behaviorial findings yourself. #5 is the last thing that will be confirmed. that is my responsibility."
+  - id: "8B"
+    decision: "Behavioral audit findings SHALL follow constitutional-refactor and constitutional-fix; task dispatch SHALL select an explicit model and rebalance with a different provider/model when needed."
+    decided_by: "User"
+    source: "the lineage problem should be over rideable now. task dispatch should have a specific model parameter. so if you notice an imbalance re-dispatch a different provider/model use constitutional-refactor and constitutional-fix to resolve the behaviorial issues."
 
 scope_boundary:
   included_domains:
@@ -45,7 +53,7 @@ scope_boundary:
   excluded_domains:
     - "New future application-owned wheel features; removal of the existing ordinary pinned SGR wheel branch is included"
     - "Any replacement clipboard provider, clipboard readback, or application-owned pointer-selection fallback"
-    - "Inherited pinned-frame render integrity, generic inline-mode, DECSTBM, and native-scrollback test debt assigned to deferred SLICE-5; their clauses remain authoritative"
+    - "Inherited pinned-frame render integrity, DECSTBM, and native-scrollback test debt assigned to deferred SLICE-5; generic inline-mode test debt remains assigned to deferred SLICE-2; their clauses remain authoritative"
     - "The pre-existing POST-PV-14 keyboard page-navigation binding repair assigned to deferred SLICE-6; its clause remains authoritative"
     - "Unrelated MCP subcommands, generic command output, and deferred SLICE-2 / SLICE-4 behavior"
     - "Core harness source outside the listed package paths"
@@ -138,7 +146,7 @@ slices:
 
 
   - id: "SLICE-5"
-    name: "Deferred inherited pinned-frame integrity and inline-mode test debt"
+    name: "Deferred inherited pinned-frame integrity test debt"
     disconnect_rows: ["DM-3", "DM-12", "DM-13"]
     scope:
       - "packages/tui/src/tui.ts"
