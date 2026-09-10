@@ -1021,7 +1021,7 @@ export class TUI extends Container {
 			const line = lines[r0] ?? "";
 			const minC = Math.max(0, Math.min(c0, c1));
 			const maxC = Math.max(0, Math.max(c0, c1));
-			if (minC < maxC) {
+			if (minC <= maxC) {
 				// POST-PV-6: visual-column-aware slice over a closed [minC, maxC]
 				// cell interval so the release cell is included and wide glyphs
 				// (CJK, ZWJ emoji) stay intact instead of splitting mid-cluster.
