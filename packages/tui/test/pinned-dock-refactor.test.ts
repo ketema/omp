@@ -1,16 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import {
-	Input,
-	type TerminalFramePlan,
-	type TerminalFrameProvider,
-	TUI,
-	type ViewportSize,
-} from "@oh-my-pi/pi-tui";
+import { Input, type TerminalFramePlan, type TerminalFrameProvider, TUI, type ViewportSize } from "@oh-my-pi/pi-tui";
 import { parseSgrMouseStream } from "@oh-my-pi/pi-tui/mouse";
-import {
-	InvalidHeightError as ImplInvalidHeightError,
-	PinnedViewport,
-} from "@oh-my-pi/pi-tui/pinned-viewport";
+import { InvalidHeightError as ImplInvalidHeightError, PinnedViewport } from "@oh-my-pi/pi-tui/pinned-viewport";
 import {
 	CONTRACT_PINNED_DOCK,
 	InvalidHeightError as ContractInvalidHeightError,
@@ -66,7 +57,6 @@ class StaticPinnedFrameProvider implements TerminalFrameProvider {
 	}
 }
 
-
 // ============================================================================
 // PinnedViewport.composeFrame — real implementation entry point (PRE-PV-1,
 // ERRORS-PV-1, POST-PV-1, PRE-PV-2, ERRORS-PV-2)
@@ -102,32 +92,47 @@ describe("pinned dock refactor — PinnedViewport.composeFrame real-implementati
 				caught = err;
 			}
 			const contractError = new ContractInvalidHeightError(invalidHeight);
-			expect(caught, `1. WHAT: test_pre_pv_1_composeFrame_throws_contract_conforming_error(${String(invalidHeight)}) FAILED
+			expect(
+				caught,
+				`1. WHAT: test_pre_pv_1_composeFrame_throws_contract_conforming_error(${String(invalidHeight)}) FAILED
 2. WHY: PRE-PV-1 / ERRORS-PV-1 violation - composeFrame did not throw the implementation's InvalidHeightError
 3. EXPECTED: an implementation InvalidHeightError whose observable shape matches the contract InvalidHeightError
 4. ACTUAL: ${caught instanceof Error ? `threw ${caught.constructor.name}: ${caught.message}` : String(caught)}
-5. GUIDANCE: non-positive terminal heights must use the implementation error that conforms to ERRORS-PV-1`).toBeInstanceOf(ImplInvalidHeightError);
+5. GUIDANCE: non-positive terminal heights must use the implementation error that conforms to ERRORS-PV-1`,
+			).toBeInstanceOf(ImplInvalidHeightError);
 			if (!(caught instanceof ImplInvalidHeightError)) continue;
-			expect(caught, `1. WHAT: test_pre_pv_1_composeFrame_throws_contract_conforming_error(${String(invalidHeight)}) FAILED
+			expect(
+				caught,
+				`1. WHAT: test_pre_pv_1_composeFrame_throws_contract_conforming_error(${String(invalidHeight)}) FAILED
 2. WHY: PRE-PV-1 / ERRORS-PV-1 violation - composeFrame did not throw an Error object
 3. EXPECTED: an Error object carrying the contract-defined name, clause identifier, and message
 4. ACTUAL: ${String(caught)}
-5. GUIDANCE: non-positive terminal heights must fail with the contract-defined error shape`).toBeInstanceOf(Error);
-			expect(caught.name, `1. WHAT: test_pre_pv_1_composeFrame_throws_contract_conforming_error(${String(invalidHeight)}) FAILED
+5. GUIDANCE: non-positive terminal heights must fail with the contract-defined error shape`,
+			).toBeInstanceOf(Error);
+			expect(
+				caught.name,
+				`1. WHAT: test_pre_pv_1_composeFrame_throws_contract_conforming_error(${String(invalidHeight)}) FAILED
 2. WHY: PRE-PV-1 / ERRORS-PV-1 violation - error name does not identify a pinned-dock contract violation
 3. EXPECTED: name ${JSON.stringify(contractError.name)}
 4. ACTUAL: ${JSON.stringify(caught.name)}
-5. GUIDANCE: non-positive terminal heights must identify the error as a pinned-dock contract violation`).toBe(contractError.name);
-			expect(caught.clauseId, `1. WHAT: test_pre_pv_1_composeFrame_throws_contract_conforming_error(${String(invalidHeight)}) FAILED
+5. GUIDANCE: non-positive terminal heights must identify the error as a pinned-dock contract violation`,
+			).toBe(contractError.name);
+			expect(
+				caught.clauseId,
+				`1. WHAT: test_pre_pv_1_composeFrame_throws_contract_conforming_error(${String(invalidHeight)}) FAILED
 2. WHY: PRE-PV-1 / ERRORS-PV-1 violation - error does not cite the violated precondition
 3. EXPECTED: clauseId ${JSON.stringify(contractError.clauseId)}
 4. ACTUAL: ${JSON.stringify(caught.clauseId)}
-5. GUIDANCE: non-positive terminal heights must cite PRE-PV-1`).toBe(contractError.clauseId);
-			expect(caught.message, `1. WHAT: test_pre_pv_1_composeFrame_throws_contract_conforming_error(${String(invalidHeight)}) FAILED
+5. GUIDANCE: non-positive terminal heights must cite PRE-PV-1`,
+			).toBe(contractError.clauseId);
+			expect(
+				caught.message,
+				`1. WHAT: test_pre_pv_1_composeFrame_throws_contract_conforming_error(${String(invalidHeight)}) FAILED
 2. WHY: PRE-PV-1 / ERRORS-PV-1 violation - error message does not state the contract-defined height failure
 3. EXPECTED: message containing "PRE-PV-1 violation: Terminal height must be a finite number >= 1"
 4. ACTUAL: ${JSON.stringify(caught.message)}
-5. GUIDANCE: non-positive terminal heights must report the PRE-PV-1 height requirement`).toContain("PRE-PV-1 violation: Terminal height must be a finite number >= 1");
+5. GUIDANCE: non-positive terminal heights must report the PRE-PV-1 height requirement`,
+			).toContain("PRE-PV-1 violation: Terminal height must be a finite number >= 1");
 		}
 	});
 
@@ -154,11 +159,14 @@ describe("pinned dock refactor — PinnedViewport.composeFrame real-implementati
 			dock: ["DOCK_1", "DOCK_2"],
 			height: 6,
 		});
-		expect(frame, `1. WHAT: test_post_pv_1_frame_shape FAILED
+		expect(
+			frame,
+			`1. WHAT: test_post_pv_1_frame_shape FAILED
 2. WHY: POST-PV-1 violation - ${postPv1.description}
 3. EXPECTED: ["ROW_1", "ROW_2", "ROW_3", "ROW_4", "DOCK_1", "DOCK_2"] (height 6, dock pinned to the bottom 2 rows)
 4. ACTUAL: ${JSON.stringify(frame)}
-5. GUIDANCE: Return exactly height rows with the scrolled transcript window on top and the dock pinned to the bottom rows`).toEqual(["ROW_1", "ROW_2", "ROW_3", "ROW_4", "DOCK_1", "DOCK_2"]);
+5. GUIDANCE: Return exactly height rows with the scrolled transcript window on top and the dock pinned to the bottom rows`,
+		).toEqual(["ROW_1", "ROW_2", "ROW_3", "ROW_4", "DOCK_1", "DOCK_2"]);
 	});
 
 	it("CONTRACT VERIFICATION — PRE-PV-2 / ERRORS-PV-2: validateSgrMouseReports throws InvalidMouseInputError on non-string input", () => {
@@ -189,11 +197,14 @@ describe("pinned dock refactor — PinnedViewport.composeFrame real-implementati
 		} catch (err) {
 			caught = err;
 		}
-		expect(caught instanceof InvalidMouseInputError, `1. WHAT: test_pre_pv_2_validator_rejects_non_string FAILED
+		expect(
+			caught instanceof InvalidMouseInputError,
+			`1. WHAT: test_pre_pv_2_validator_rejects_non_string FAILED
 2. WHY: PRE-PV-2 / ERRORS-PV-2 violation - ${prePv2.description}; ${errorsPv2.description}
 3. EXPECTED: validateSgrMouseReports(null, []) throws InvalidMouseInputError
 4. ACTUAL: ${caught instanceof Error ? `threw ${caught.constructor.name}: ${caught.message}` : String(caught)}
-5. GUIDANCE: Validate that rawChunk is a string before scanning it for SGR reports`).toBe(true);
+5. GUIDANCE: Validate that rawChunk is a string before scanning it for SGR reports`,
+		).toBe(true);
 	});
 });
 
@@ -255,19 +266,25 @@ describe("pinned dock refactor — overlay compositing and focus integrity", () 
 			await terminal.waitForRender();
 
 			const renderedText = terminal.getViewport().join("\n");
-			expect(renderedText.includes("MODEL_OVERLAY_ACTIVE:"), `1. WHAT: test_post_pv_3_overlay_visible_in_pinned_mode FAILED
+			expect(
+				renderedText.includes("MODEL_OVERLAY_ACTIVE:"),
+				`1. WHAT: test_post_pv_3_overlay_visible_in_pinned_mode FAILED
 2. WHY: POST-PV-3 / SEQ-PV-1 / SEQ-PV-2 / INV-PV-2 violation - ${postPv3.description} / ${seqPv1.description} / ${seqPv2.description} / ${invPv2.description}
 3. EXPECTED: bottom-anchored overlay text visible in rendered viewport
 4. ACTUAL: viewport was:\n${renderedText}
-5. GUIDANCE: Invoke #compositeOverlaysIntoWindow after PinnedViewport.composeFrame and before emitting the frame`).toBe(true);
+5. GUIDANCE: Invoke #compositeOverlaysIntoWindow after PinnedViewport.composeFrame and before emitting the frame`,
+			).toBe(true);
 
 			terminal.sendInput("g");
 			await terminal.waitForRender();
-			expect(overlay.getValue(), `1. WHAT: test_post_pv_3_overlay_accepts_focused_input FAILED
+			expect(
+				overlay.getValue(),
+				`1. WHAT: test_post_pv_3_overlay_accepts_focused_input FAILED
 2. WHY: POST-PV-3 / INV-PV-2 violation - ${postPv3.description} / ${invPv2.description}
 3. EXPECTED: overlay input receives typed keystrokes without dock freeze
 4. ACTUAL: overlay.getValue()=${JSON.stringify(overlay.getValue())}
-5. GUIDANCE: Deliver keyboard events to the focused overlay rather than freezing the dock`).toBe("g");
+5. GUIDANCE: Deliver keyboard events to the focused overlay rather than freezing the dock`,
+			).toBe("g");
 
 			handle.hide();
 			await terminal.waitForRender();
@@ -313,26 +330,31 @@ describe("pinned dock refactor — overlay compositing and focus integrity", () 
 
 			terminal.sendInput("x");
 			await terminal.waitForRender();
-			expect(overlay.getValue(), `1. WHAT: test_inv_pv_3_overlay_focused_while_visible FAILED (test setup sanity)
+			expect(
+				overlay.getValue(),
+				`1. WHAT: test_inv_pv_3_overlay_focused_while_visible FAILED (test setup sanity)
 2. WHY: INV-PV-3 violation - ${invPv3.description}
 3. EXPECTED: overlay.getValue() === "x" while the overlay is visible and focused
 4. ACTUAL: overlay.getValue()=${JSON.stringify(overlay.getValue())}
-5. GUIDANCE: showOverlay must focus a visible overlay so it receives keyboard input`).toBe("x");
+5. GUIDANCE: showOverlay must focus a visible overlay so it receives keyboard input`,
+			).toBe("x");
 
 			overlayVisible = false;
 			terminal.sendInput("y");
 			await terminal.waitForRender();
 
-			expect(overlay.getValue(), `1. WHAT: test_inv_pv_3_invisible_overlay_does_not_receive_input FAILED
+			expect(
+				overlay.getValue(),
+				`1. WHAT: test_inv_pv_3_invisible_overlay_does_not_receive_input FAILED
 2. WHY: INV-PV-3 violation - ${invPv3.description}
 3. EXPECTED: overlay.getValue() stays "x" — the "y" keystroke must not reach a component whose visible() now returns false
 4. ACTUAL: overlay.getValue()=${JSON.stringify(overlay.getValue())}
-5. GUIDANCE: Recheck focused-overlay visibility before delivering input and redirect focus when it is no longer visible`).toBe("x");
+5. GUIDANCE: Recheck focused-overlay visibility before delivering input and redirect focus when it is no longer visible`,
+			).toBe("x");
 		} finally {
 			tui.stop();
 		}
 	});
-
 });
 
 // ============================================================================
@@ -359,20 +381,24 @@ describe("pinned dock refactor — SGR mouse stream integrity", () => {
 		const postPv4 = CONTRACT_PINNED_DOCK["POST-PV-4"];
 		const concatenatedChunk = "\x1b[<64;10;5M\x1b[<64;10;5M\x1b[<65;10;5M";
 		const reports = parseSgrMouseStream(concatenatedChunk);
-		expect(reports.length, `1. WHAT: test_post_pv_4_concatenated_sgr_reports FAILED
+		expect(
+			reports.length,
+			`1. WHAT: test_post_pv_4_concatenated_sgr_reports FAILED
 2. WHY: POST-PV-4 violation - ${postPv4.description}
 3. EXPECTED: 3 parsed SGR mouse reports
 4. ACTUAL: ${reports.length}
-5. GUIDANCE: Stream-parse every SGR packet in the chunk without dropping reports`).toBe(3);
-		expect(reports.map(report => report.wheel), `1. WHAT: test_post_pv_4_wheel_polarity FAILED
+5. GUIDANCE: Stream-parse every SGR packet in the chunk without dropping reports`,
+		).toBe(3);
+		expect(
+			reports.map(report => report.wheel),
+			`1. WHAT: test_post_pv_4_wheel_polarity FAILED
 2. WHY: POST-PV-4 violation - ${postPv4.description}
 3. EXPECTED: [-1, -1, 1]
 4. ACTUAL: ${JSON.stringify(reports.map(report => report.wheel))}
-5. GUIDANCE: Retain wheel polarity across concatenated packet streams`).toEqual([-1, -1, 1]);
+5. GUIDANCE: Retain wheel polarity across concatenated packet streams`,
+		).toEqual([-1, -1, 1]);
 	});
-
 });
-
 
 // ============================================================================
 // Software scrollback and content-integrity supporting checks (INV-PV-1,
@@ -403,16 +429,22 @@ describe("pinned dock refactor — software scrollback, content integrity, and v
 		} catch (err) {
 			caught = err;
 		}
-		expect(caught instanceof ZeroScrollbackError, `1. WHAT: test_inv_pv_1_validator_rejects_truncated_history FAILED
+		expect(
+			caught instanceof ZeroScrollbackError,
+			`1. WHAT: test_inv_pv_1_validator_rejects_truncated_history FAILED
 2. WHY: INV-PV-1 violation - ${invPv1.description}
 3. EXPECTED: validateSoftwareScrollback(5, 10, 50) throws ZeroScrollbackError
 4. ACTUAL: ${caught instanceof Error ? `threw ${caught.constructor.name}: ${caught.message}` : String(caught)}
-5. GUIDANCE: Reject a transcriptLength <= windowHeight once more than 5 history blocks exist`).toBe(true);
-		expect(() => validateSoftwareScrollback(50, 10, 50), `1. WHAT: test_inv_pv_1_validator_accepts_sufficient_history FAILED
+5. GUIDANCE: Reject a transcriptLength <= windowHeight once more than 5 history blocks exist`,
+		).toBe(true);
+		expect(
+			() => validateSoftwareScrollback(50, 10, 50),
+			`1. WHAT: test_inv_pv_1_validator_accepts_sufficient_history FAILED
 2. WHY: INV-PV-1 violation - ${invPv1.description}
 3. EXPECTED: validateSoftwareScrollback(50, 10, 50) does not throw (history exceeds window height)
 4. ACTUAL: threw
-5. GUIDANCE: Only reject when transcriptLength <= windowHeight while more than 5 history blocks exist`).not.toThrow();
+5. GUIDANCE: Only reject when transcriptLength <= windowHeight while more than 5 history blocks exist`,
+		).not.toThrow();
 	});
 
 	it("INV-PV-5: a wheel scroll never overwrites transcript content rows with dock content", async () => {
@@ -457,16 +489,22 @@ describe("pinned dock refactor — software scrollback, content integrity, and v
 			const viewport = terminal.getViewport();
 			const transcriptRows = viewport.slice(0, 5);
 			const dockRow = viewport[5]?.trim();
-			expect(transcriptRows.some(row => row.includes("DOCK_ONLY_ROW")), `1. WHAT: test_inv_pv_5_dock_does_not_leak_into_transcript FAILED
+			expect(
+				transcriptRows.some(row => row.includes("DOCK_ONLY_ROW")),
+				`1. WHAT: test_inv_pv_5_dock_does_not_leak_into_transcript FAILED
 2. WHY: INV-PV-5 violation - ${invPv5.description}
 3. EXPECTED: none of the ${transcriptRows.length} transcript-window rows contain "DOCK_ONLY_ROW"
 4. ACTUAL: ${JSON.stringify(transcriptRows)}
-5. GUIDANCE: Keep dock rows confined to the bottom dockHeight rows; never write dock or hint content into transcript rows`).toBe(false);
-			expect(dockRow, `1. WHAT: test_inv_pv_5_dock_row_intact FAILED (test setup sanity)
+5. GUIDANCE: Keep dock rows confined to the bottom dockHeight rows; never write dock or hint content into transcript rows`,
+			).toBe(false);
+			expect(
+				dockRow,
+				`1. WHAT: test_inv_pv_5_dock_row_intact FAILED (test setup sanity)
 2. WHY: INV-PV-5 violation - ${invPv5.description}
 3. EXPECTED: the bottom row is exactly "DOCK_ONLY_ROW"
 4. ACTUAL: ${JSON.stringify(dockRow)}
-5. GUIDANCE: The dock must occupy the bottom dockHeight rows of the composed frame`).toBe("DOCK_ONLY_ROW");
+5. GUIDANCE: The dock must occupy the bottom dockHeight rows of the composed frame`,
+			).toBe("DOCK_ONLY_ROW");
 		} finally {
 			tui.stop();
 		}
@@ -498,11 +536,14 @@ describe("pinned dock refactor — software scrollback, content integrity, and v
 			tui.start();
 			tui.enterPinned();
 			await terminal.waitForRender();
-			expect(tui.isPinned(), `1. WHAT: test_inv_pv_7_tui_is_pinned FAILED
+			expect(
+				tui.isPinned(),
+				`1. WHAT: test_inv_pv_7_tui_is_pinned FAILED
 2. WHY: INV-PV-7 violation - ${invPv7.description}
 3. EXPECTED: tui.isPinned() === true
 4. ACTUAL: tui.isPinned() === ${tui.isPinned()}
-5. GUIDANCE: TUI must run in pinned mode unconditionally without viewport mode options`).toBe(true);
+5. GUIDANCE: TUI must run in pinned mode unconditionally without viewport mode options`,
+			).toBe(true);
 		} finally {
 			tui.stop();
 		}

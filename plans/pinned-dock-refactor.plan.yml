@@ -1,7 +1,7 @@
 version: "3.1"
 feature_name: "pinned-terminal-native-selection-restoration"
 manifest_path: "requirements/REQUIREMENT_MANIFEST_PINNED_REFACTOR.md"
-manifest_hash: "sha256:124bd30e7aa59277068e563d411bd359389c6520f6e13b05a0af6b4bb89e550e"
+manifest_hash: "sha256:8200c1dca09aed9a31cbb7d37e40bd443f46ecba6279b7b1c2833d59a834d518"
 disconnect_matrix_path: "requirements/DISCONNECT_MATRIX_PINNED_JITTER.md"
 created: "2026-09-07"
 last_updated: "2026-09-10"
@@ -27,80 +27,87 @@ user_decisions:
     decided_by: "User"
     source: "NATIVE APPROVED"
     supersedes_for_ordinary_pinned_pointer_selection: ["1A", "3A", "4A", "5A"]
+  - id: "7A"
+    decision: "Fullscreen-overlay mouse reporting is explicit opt-in: only mouseTracking === true owns it. Inherited pinned-frame integrity and inline-mode test debt is deferred without relaxing its contract authority."
+    decided_by: "User"
+    source: "1 is approved"
+  - id: "7B"
+    decision: "Defer the pre-existing POST-PV-14 page-navigation keybinding defect to a dedicated slice. Preserve its authoritative contract clause and keep the active Decision 7A GREEN boundary at explicit fullscreen-overlay pointer opt-in."
+    decided_by: "User"
+    source: "2. defer it"
 
 scope_boundary:
   included_domains:
-    - "Terminal-native ordinary pinned selection and the dock, alternate-screen, overlay, and keyboard-navigation behavior that must remain intact"
+    - "Terminal-native ordinary pinned selection and the dock, alternate-screen, and explicit fullscreen-overlay pointer tracking behavior that must remain intact"
     - "Removal of root-commit `3254d854` pinned mouse-reporting, application selection, OSC 52, clipboard-delivery, and application wheel handling at the smallest seam"
-    - "Focused native-selection regression tests and real Ghostty/Herdr execution verification in DM-4 through DM-9, DM-12, DM-13, DM-15, and DM-16"
+    - "Fullscreen-overlay pointer tracking restricted to the explicit `mouseTracking === true` opt-in"
+    - "Focused native-selection regression tests and real Ghostty/Herdr execution verification in DM-4 through DM-9, DM-15 through DM-17"
   excluded_domains:
     - "New future application-owned wheel features; removal of the existing ordinary pinned SGR wheel branch is included"
     - "Any replacement clipboard provider, clipboard readback, or application-owned pointer-selection fallback"
+    - "Inherited pinned-frame render integrity, generic inline-mode, DECSTBM, and native-scrollback test debt assigned to deferred SLICE-5; their clauses remain authoritative"
+    - "The pre-existing POST-PV-14 keyboard page-navigation binding repair assigned to deferred SLICE-6; its clause remains authoritative"
     - "Unrelated MCP subcommands, generic command output, and deferred SLICE-2 / SLICE-4 behavior"
     - "Core harness source outside the listed package paths"
   enforcement:
     - "Production code does not import either contract file."
     - "No contract clause may be relaxed to satisfy a failing implementation test."
     - "The first round uses an isolated RED test writer followed by an isolated GREEN coder."
-    - "Fullscreen overlays retain their independently requested mouse tracking; ordinary pinned mode does not claim pointer selection."
+    - "Fullscreen overlays retain terminal mouse tracking only after an explicit `mouseTracking === true` request; ordinary pinned mode does not claim pointer selection."
 
 execution_schedule:
   mode: "serial"
   active_sequence: ["SLICE-1"]
-  deferred_slices: ["SLICE-2", "SLICE-4"]
+  deferred_slices: ["SLICE-2", "SLICE-4", "SLICE-5", "SLICE-6"]
   retired_slices: ["SLICE-3"]
-  rationale: "Decision 6A narrows the active work to native-selection restoration. Existing non-selection slices remain deferred and SLICE-3's app-owned clipboard delivery is retired."
+  rationale: "Decision 7A keeps active work at the explicit-overlay opt-in and terminal-native selection seam. Decision 7B defers the pre-existing keyboard binding defect to SLICE-6. No contract clause is retired or relaxed by either disposition."
 
 historical_evidence:
   root_commit: "3254d85409c168ad270fb47c028ee5c6099a66fc"
   parent_commit: "0b85b120efa412fedc9134f9a6bc7aca11d97bab"
-  minimal_seam: "Do not invoke PINNED_MOUSE_ENTER at pinned activation; remove ordinary pinned pointer parsing, selection reconstruction, OSC 52, clipboard dispatch, and wheel handling while retaining overlay-owned tracking."
+  minimal_seam: "Do not invoke PINNED_MOUSE_ENTER at pinned activation; remove ordinary pinned pointer parsing, selection reconstruction, OSC 52, clipboard dispatch, and wheel handling while permitting fullscreen tracking only after mouseTracking === true."
 
 slices:
   - id: "SLICE-1"
-    name: "Terminal-native pinned selection restoration"
-    disconnect_rows: ["DM-4", "DM-5", "DM-6", "DM-7", "DM-8", "DM-9", "DM-12", "DM-13", "DM-15", "DM-16"]
+    name: "Terminal-native pinned selection and explicit overlay pointer opt-in"
+    disconnect_rows: ["DM-4", "DM-5", "DM-6", "DM-7", "DM-8", "DM-9", "DM-15", "DM-16", "DM-17"]
     scope:
       - "packages/tui/src/tui.ts"
-      - "packages/tui/src/pinned-viewport.ts"
       - "packages/tui/test/pinned-tui.test.ts"
-      - "packages/tui/test/pinned-dock-refactor.test.ts"
     clauses_in_scope:
-      - "POST-PV-3"
+      - "PRE-PV-2"
       - "POST-PV-4"
       - "POST-PV-11"
       - "POST-PV-12"
       - "POST-PV-13"
-      - "POST-PV-14"
       - "POST-PV-25"
       - "POST-PV-26"
-      - "SEQ-PV-1"
-      - "SEQ-PV-2"
+      - "POST-PV-27"
       - "SEQ-PV-3"
       - "SEQ-PV-6"
       - "SEQ-PV-10"
-      - "INV-PV-2"
-      - "INV-PV-3"
       - "INV-PV-4"
-      - "INV-PV-5"
-      - "INV-PV-8"
-      - "INV-PV-9"
-      - "INV-PV-10"
+      - "INV-PV-6"
       - "INV-PV-15"
+      - "INV-PV-16"
+      - "LIFETIME_INV-PV-1"
       - "FORBIDDEN-PV-1"
       - "FORBIDDEN-PV-5"
       - "FORBIDDEN-PV-7"
       - "FORBIDDEN-PV-8"
+      - "FORBIDDEN-PV-9"
       - "ERRORS-PV-2"
       - "ERRORS-PV-6"
-      - "INV-PV-6"
-    negative_constraints: ["INV-PV-2", "INV-PV-3", "INV-PV-4", "INV-PV-5", "INV-PV-8", "INV-PV-9", "INV-PV-10", "INV-PV-15", "FORBIDDEN-PV-1", "FORBIDDEN-PV-5", "FORBIDDEN-PV-7", "FORBIDDEN-PV-8"]
-    red_gate: "Tests must use the real TUI pinned-entry lifecycle to prove that alternate-screen ownership remains correct while no `?1002h` or `?1006h` is written. A simulated ordinary pointer input must prove it is unparsed and unconsumed by the pinned path, with no application OSC 52, copy result, or wheel scrolling. The current root-derived source must fail at least the entry-mode assertion."
-    green_boundary: "Remove only ordinary pinned mouse-reporting, application pointer parsing/copy handling, and the existing ordinary SGR wheel-to-scroll branch. Preserve dock rendering, software transcript window, alternate-screen lifecycle, fullscreen overlay-owned tracking, and keyboard page navigation. Add no dependency and no replacement clipboard path."
+    negative_constraints: ["INV-PV-4", "INV-PV-15", "INV-PV-16", "LIFETIME_INV-PV-1", "FORBIDDEN-PV-1", "FORBIDDEN-PV-5", "FORBIDDEN-PV-7", "FORBIDDEN-PV-8", "FORBIDDEN-PV-9"]
+    red_gate: "Tests must use the real TUI pinned-entry and fullscreen-overlay lifecycle. They must prove no ?1002h/?1006h write at pinned entry, no fullscreen tracking when mouseTracking is omitted or false, a tracking write and raw-SGR route when true, and no app-owned OSC 52, copy, pointer consumption, or wheel scrolling. Omitted and false are terminal-mode assertions only: this slice does not introduce an input filter for manually injected overlay bytes. A lifecycle test must observe ownership transfer through pinned entry, overlay close, exit, and stop. The current default-on source must fail at least the omitted-overlay assertion."
+    green_boundary: "Change only the fullscreen-overlay tracking predicate to exact true and its user-facing option documentation. Preserve dock rendering, software transcript window, alternate-screen lifecycle, and explicit overlay routing. Add no dependency, replacement clipboard path, input filter, keyboard-binding repair, or test change outside packages/tui/test/pinned-tui.test.ts."
     test_migration:
-      - "Replace custom-drag, one-cell, OSC 52, and native-provider pinned-selection cases with clause-cited no-ownership tests."
+      - "Add active clause-cited opt-in tests only in packages/tui/test/pinned-tui.test.ts; do not modify deferred packages/tui/test/pinned-dock-refactor.test.ts in this slice."
+      - "Remove the newly authored POST-PV-14 RED test from this active suite without changing its authoritative contract; SLICE-6 owns its future test repair."
+      - "Add one direct contract-validator boundary test for PRE-PV-2 / ERRORS-PV-2 that asserts InvalidMouseInputError and clauseId PRE-PV-2 on non-string input. It verifies the named contract artifact, not a production-contract import."
+      - "Do not edit or delete existing packages/tui/test/pinned-tui.test.ts cases for deferred INV-PV-8, INV-PV-9, or INV-PV-10."
       - "Do not mock host native selection or clipboard: POST-PV-26 is an execution-only real terminal exercise."
-      - "Keep concatenated SGR parser tests only where an explicitly pointer-interactive fullscreen overlay owns tracking."
+      - "Keep concatenated SGR parser tests only where a fullscreen overlay explicitly owns tracking."
   - id: "SLICE-2"
     name: "Software scrollback, header retirement, dock clipping, and follow behavior"
     disconnect_rows: ["DM-1", "DM-2", "DM-10", "DM-11"]
@@ -129,6 +136,40 @@ slices:
     red_gate: "Tests must exercise history beyond the visible window and a real composer-to-viewport frame path; static line-count assertions are forbidden."
     green_boundary: "Preserve the full semantic transcript and avoid reintroducing an inline/unpinned mode."
 
+
+  - id: "SLICE-5"
+    name: "Deferred inherited pinned-frame integrity and inline-mode test debt"
+    disconnect_rows: ["DM-3", "DM-12", "DM-13"]
+    scope:
+      - "packages/tui/src/tui.ts"
+      - "packages/tui/src/pinned-viewport.ts"
+      - "packages/tui/test/pinned-dock-refactor.test.ts"
+    clauses_in_scope:
+      - "POST-PV-3"
+      - "SEQ-PV-1"
+      - "SEQ-PV-2"
+      - "INV-PV-2"
+      - "INV-PV-3"
+      - "INV-PV-5"
+      - "INV-PV-8"
+      - "INV-PV-9"
+      - "INV-PV-10"
+    negative_constraints: ["INV-PV-2", "INV-PV-3", "INV-PV-5", "INV-PV-8", "INV-PV-9", "INV-PV-10"]
+    red_gate: "Deferred. Before activation, replace inherited theater-prone render-integrity checks with real lifecycle assertions for the named clauses; do not rely on private state or implementation-shaped static assertions."
+    green_boundary: "Deferred. This slice makes no current mutation. Its contract clauses remain authoritative and are neither retired nor relaxed by Decision 7A."
+
+  - id: "SLICE-6"
+    name: "Deferred keyboard page-navigation binding repair"
+    disconnect_rows: ["DM-9"]
+    scope:
+      - "packages/tui/src/tui.ts"
+      - "packages/tui/src/keybindings.ts"
+      - "packages/tui/test/pinned-tui.test.ts"
+    clauses_in_scope:
+      - "POST-PV-14"
+    negative_constraints: []
+    red_gate: "Deferred. Before activation, prove through the real TUI input lifecycle that the configured PageUp and PageDown bindings move PinnedViewport before editor input."
+    green_boundary: "Deferred. This slice makes no current mutation. It may repair the unregistered action IDs only after separate user approval, and it must retain the contract's observable keyboard-navigation guarantee."
 
   - id: "SLICE-4"
     name: "Focused `/mcp list` inventory overlay without transcript persistence"
@@ -166,12 +207,12 @@ slices:
 
 verification_plan:
   contract_gate:
-    - "Import the TypeScript contract and assert all clause verification methods are valid, all Decision-6A clause IDs exist, and retired app-selection clause IDs do not exist."
+    - "Import the TypeScript contract and assert every clause verification method is valid, every active and deferred pinned clause appears in exactly one slice, and every Decision-7A / Decision-7B clause ID exists."
     - "Manually audit all five runtime-enforceable artifact classes and verification fields because the authoritative Python checker does not parse TypeScript."
-    - "Use a production-source import scan to discharge INV-PV-6."
+    - "Use bounded production-source scans to discharge INV-PV-6 and FORBIDDEN-PV-9."
   test_gate:
     - "Each RED test includes a clause ID in its assertion failure text and passes the theater question: can production be wrong while this test passes?"
-    - "The entry test observes a real lifecycle terminal write rather than a private mode flag; the pointer and wheel tests observe external effects rather than private selection state."
+    - "The entry, omitted, false, and true overlay tests observe actual terminal mode writes; only the explicit true overlay case observes raw-SGR input routing."
     - "No mock, fake, or module replacement may stand in for terminal-native host selection."
     - "Run focused package tests after GREEN; offload commands exceeding ten seconds or one kilobyte of output to TMUX-OFFLOAD."
   integration_gate:
@@ -181,6 +222,6 @@ verification_plan:
     - "Run the native constitutional audit after GREEN and remediate all clause-cited findings before final validation."
 
 approval:
-  plan_review: "FOCUSED_REVIEW_xai-oauth_grok-4.6_FINDINGS_RESOLVED"
-  human_plan_approval: "NATIVE APPROVED — User Decision 6A"
-  green_approval: "NATIVE APPROVED is the immediately preceding user turn for this bounded slice; verify again immediately before GREEN transition."
+  plan_review: "PENDING_FOCUSED_REVIEW_DECISIONS_7A_7B"
+  human_plan_approval: "User Decision 7A — `1 is approved`; User Decision 7B — `2. defer it`; Decided By: User."
+  green_approval: "A new explicit immediate-preceding GREEN approval is required after Decision 7B; the active source change remains limited to the fullscreen-overlay opt-in predicate and option documentation."

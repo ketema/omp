@@ -201,6 +201,10 @@ export const CONTRACT_PINNED_DOCK = {
 		verification: "execution",
 		description: "In the real Ghostty and Herdr/tmux environment, ordinary pinned transcript drag selection and host copy SHALL remain terminal-native and pane-confined",
 	},
+	"POST-PV-27": {
+		verification: "test",
+		description: "TUI SHALL enable fullscreen-overlay mouse reporting only when the top visible fullscreen overlay has mouseTracking === true; omitted and false SHALL leave terminal pointer behavior unclaimed",
+	},
 	"SEQ-PV-1": {
 		verification: "test",
 		description: "TUI.#renderPinnedFrame SHALL invoke PinnedViewport.composeFrame before overlay compositing",
@@ -211,7 +215,7 @@ export const CONTRACT_PINNED_DOCK = {
 	},
 	"SEQ-PV-3": {
 		verification: "test",
-		description: "Fullscreen overlay input handling SHALL parse SGR mouse reports only while that overlay explicitly requests pointer interaction",
+		description: "TUI.#doRender SHALL enable terminal mouse reporting after the top visible fullscreen overlay explicitly requests pointer interaction with mouseTracking === true, and SHALL disable reporting when that ownership ends",
 	},
 	"SEQ-PV-4": {
 		verification: "test",
@@ -223,7 +227,7 @@ export const CONTRACT_PINNED_DOCK = {
 	},
 	"SEQ-PV-10": {
 		verification: "test",
-		description: "TUI.enterPinned SHALL establish pinned state before its first frame and SHALL leave ordinary pointer selection unclaimed by not invoking a PINNED_MOUSE_ENTER terminal write. Source: REQ-2026-PINNED-001, IP-PV-1",
+		description: "TUI.enterPinned SHALL establish pinned state and alternate-screen ownership before its first frame while leaving ordinary pointer selection unclaimed by writing neither ?1002h nor ?1006h. Source: REQ-2026-PINNED-001, IP-PV-1",
 	},
 	"INV-PV-1": {
 		verification: "test",
@@ -269,6 +273,14 @@ export const CONTRACT_PINNED_DOCK = {
 		verification: "test",
 		description: "TUI SHALL NOT write ?1002h or ?1006h solely because pinned mode is active",
 	},
+	"INV-PV-16": {
+		verification: "test",
+		description: "A fullscreen overlay with mouseTracking omitted or false SHALL NOT enable terminal mouse reporting",
+	},
+	"LIFETIME_INV-PV-1": {
+		verification: "test",
+		description: "From pinned entry through explicit fullscreen-overlay ownership transfer, pinned exit, and stop, TUI SHALL enable and release only terminal modes it owns; ordinary pinned mode SHALL never acquire ?1002h or ?1006h ownership",
+	},
 	"FORBIDDEN-PV-1": {
 		verification: "test",
 		description: "While an explicitly pointer-interactive fullscreen overlay owns mouse tracking, a multi-report SGR chunk SHALL NOT be dropped or return null/unhandled",
@@ -283,7 +295,11 @@ export const CONTRACT_PINNED_DOCK = {
 	},
 	"FORBIDDEN-PV-8": {
 		verification: "test",
-		description: "TUI.#handlePinnedInput SHALL NOT parse or consume an ordinary pinned SGR pointer report unless an explicitly pointer-interactive fullscreen overlay owns the input",
+		description: "TUI.#handlePinnedInput SHALL NOT consume an ordinary pinned SGR pointer report unless an explicitly pointer-interactive fullscreen overlay owns the input",
+	},
+	"FORBIDDEN-PV-9": {
+		verification: "tool",
+		description: "The pinned input implementation SHALL not import or invoke an SGR parser for ordinary pinned input; a bounded production-source policy scan discharges this internal non-observable prohibition",
 	},
 	"ERRORS-PV-1": {
 		verification: "test",

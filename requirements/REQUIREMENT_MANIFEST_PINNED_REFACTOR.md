@@ -4,7 +4,7 @@
 
 **Status:** Requirements complete and ready for CL11 contract generation.
 
-**Scope:** Pinned interactive viewport reconciliation, terminal-native ordinary selection preservation, and a focused `/mcp list` information overlay.
+**Scope:** Pinned interactive viewport reconciliation, terminal-native ordinary selection preservation, explicitly requested fullscreen-overlay pointer input, and a focused `/mcp list` information overlay.
 
 ## CCABDD Governance
 
@@ -44,6 +44,8 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 > "The pinned-dock commit deliberately replaced host-native selection ownership" this was Probably a BAD decision. you should have stayed within the proven repo conventions not roll your own overly complex solution that has now created a cascade of problems. I strongly advise going back to the root and analyzing this decision. ponytail rules: amallest change possible to achieve the objective.
 >
 > "NATIVE APPROVED"
+> "1 is approved"
+> "2. defer it"
 
 **Confirmed understanding:**
 
@@ -52,10 +54,9 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 3. The pinned dock, software transcript window, alternate-screen behavior, overlays, and keyboard viewport navigation remain available without taking pointer-selection ownership.
 4. The user rejected cross-pane copied bytes, persistent `/mcp list` output, pinned-local error banners, status-text-only copy errors, and the app-owned selection subsystem that created the pointer-copy path.
 5. Pinned mode does not enter `?1002h` or `?1006h` merely to support ordinary selection; host-native selection is the authoritative path. This slice removes the existing ordinary pinned SGR wheel-to-scroll path; any future app-owned wheel feature is deliberately out of scope.
-
-**Disconnect Matrix:** `requirements/DISCONNECT_MATRIX_PINNED_JITTER.md` is the observed-versus-expected ledger. It includes the legacy pinned regressions plus the native-selection ownership reversal and MCP output deltas.
-
-**Ambiguity Score:** 0. User decision 6A selects terminal-native ordinary selection and accepts the bounded consequence that this slice removes rather than retains application-owned mouse-wheel input.
+6. A fullscreen overlay owns terminal mouse reporting only when its `mouseTracking` option is explicitly `true`; omitted or `false` leaves native terminal pointer behavior unclaimed.
+7. Inherited pinned-render integrity, inline-mode, and provider-fixture remediation are deferred as recorded plan debt; this decision does not weaken their authoritative contract clauses.
+8. The newly observed pre-existing keyboard page-navigation binding defect moves to a deferred plan slice; `POST-PV-14` remains an authoritative contract obligation and does not block the explicit-overlay opt-in correction.
 
 ## 2. Actor Matrix
 
@@ -94,7 +95,7 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | SEQ-PV-2 | TUI.#renderPinnedFrame | TUI.#compositeOverlaysIntoWindow | After composeFrame and before alternate-frame emission | Floating overlays become invisible while retaining focus. |
 | SEQ-PV-3 | Fullscreen overlay lifecycle | Terminal mouse reporting | Only while a fullscreen overlay explicitly requests pointer interaction | Overlay pointer controls cannot receive their declared input. |
 | SEQ-MCP-1 | MCPCommandController.#list | InteractiveMode.showSessionInfo | After inventory formatting and before command return | MCP inventory persists in transcript history. |
-| SEQ-PV-10 | TUI.enterPinned | TUI.#syncPinnedMouseTracking | After pinned activation and before first pinned frame, without a `PINNED_MOUSE_ENTER` write | Ordinary native selection is intercepted by application mouse reporting. |
+| SEQ-PV-10 | TUI.enterPinned | Terminal native selection | Establish pinned state and alternate-screen ownership before the first frame while leaving `?1002h/?1006h` unwritten | Ordinary native selection is intercepted by application mouse reporting. |
 
 ### Integration Points Checklist
 
@@ -103,6 +104,7 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | IP-PV-1 | TUI.enterPinned | Terminal native selection | Absence of `?1002h/?1006h` pinned-mode entry | Before the user begins an ordinary transcript drag | `pinned_dock.contract.ts::POST-PV-25, SEQ-PV-10, INV-PV-15, FORBIDDEN-PV-5` |
 | IP-MCP-1 | MCPCommandController.#handleList | InteractiveMode.showSessionInfo | Fully formatted configured-server inventory | `mcp_list_overlay.contract.ts::POST-MCP-2, SEQ-MCP-1` |
 | IP-PV-4 | TUI.#handlePinnedInput | Terminal native selection | Ordinary SGR pointer reports remain unparsed and unclaimed by the pinned selection path; the existing pinned SGR wheel-to-scroll branch is removed | During a pinned pointer gesture | `pinned_dock.contract.ts::FORBIDDEN-PV-7, FORBIDDEN-PV-8, ERRORS-PV-6` |
+| IP-PV-5 | TUI.#doRender | Terminal mouse reporting | `?1006h` is enabled only while the top visible fullscreen overlay has `mouseTracking === true` | On fullscreen-overlay entry, option changes, and dismissal | `pinned_dock.contract.ts::POST-PV-27, SEQ-PV-3, LIFETIME_INV-PV-1` |
 
 ### Lifecycle Paths
 
@@ -131,6 +133,8 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | INV-PV-15 | Mouse Mode Ownership | TUI SHALL NOT write `?1002h` or `?1006h` solely because pinned mode is active. |
 | FORBIDDEN-PV-7 | Wheel Ownership | TUI SHALL NOT apply an ordinary pinned SGR wheel report to PinnedViewport.scrollBy. |
 | FORBIDDEN-PV-8 | Pointer Input Ownership | TUI SHALL NOT parse or consume an ordinary pinned SGR pointer report unless an explicitly pointer-interactive fullscreen overlay owns input. |
+| INV-PV-16 | Overlay Mouse Opt-In | TUI SHALL gate fullscreen-overlay mouse-reporting enablement on a `mouseTracking` option equal to `true`. |
+| LIFETIME-PV-1 | Mode Lifecycle | Across pinned entry, explicit overlay ownership transfer, pinned exit, and stop, TUI SHALL enable and release only terminal modes it owns. |
 
 ## 5. High-Entropy Zones
 
@@ -141,6 +145,8 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | Copy-failure surface | Where does a total copy failure appear for separately specified non-pointer delivery? | Use the established styled showError surface in transcript history. | User (3A) |
 | Selection ownership | Does TUI own ordinary pointer selection while pinned? | No. Preserve terminal-native selection by not enabling pinned `?1002h/?1006h` reporting; retain keyboard navigation, remove the existing ordinary pinned SGR wheel branch, and defer any future app-owned wheel feature. | User (6A; Decided By: User) |
 | Gesture qualification | Does a same-cell press/release with no motion count as a copyable one-cell selection? | Not applicable to ordinary pinned pointer selection after decision 6A; it remains historical only if a separately approved app-owned selection path is introduced. | User (5A; Decided By: User) |
+| Overlay pointer ownership | Does a fullscreen overlay with omitted `mouseTracking` receive terminal mouse reporting? | No. Only `mouseTracking === true` is an explicit pointer-interaction request; omitted and `false` retain native terminal pointer behavior. | User (7A; Decided By: User) |
+| Keyboard page-navigation repair | Does this increment repair the pre-existing `tui.viewport.pageUp` / `pageDown` keybinding defect exposed by POST-PV-14 RED evidence? | No. Defer it to a dedicated slice; retain POST-PV-14 as an authoritative obligation. | User (7B; Decided By: User) |
 ## 5.5 Rejected Alternatives
 
 | Decision | Alternative Considered | Why Rejected | Decided By |
@@ -149,6 +155,8 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | Copy-failure surface | Pinned-local error banner | It introduces a separate visual lifecycle instead of the established error surface. | User (3A) |
 | Copy-failure surface | Status text | It lacks the established error severity and durable actionable context. | User (3A) |
 | Selection ownership | App-owned SGR drag parsing, visual selection reconstruction, and OSC 52 delivery | It replaces the proven terminal-native path and created the current gesture/copy complexity. | User (6A) |
+| Overlay pointer ownership | Default-on fullscreen overlay mouse reporting | It grants application pointer ownership without an explicit request and conflicts with terminal-native ordinary selection. | User (7A; Decided By: User) |
+| Keyboard page-navigation repair | Repair the unregistered page-navigation bindings in the Decision 7A active slice | It expands the approved explicit-overlay opt-in correction beyond the user-selected scope. | User (7B; Decided By: User) |
 
 ## 6. Tool/API Interface Summary
 
@@ -172,12 +180,13 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 |---|---|---|---|
 | Ordinary pinned native selection | Terminal host cannot produce the user-selected text in the required real Herdr/tmux exercise. | TUI SHALL NOT synthesize OSC 52 or native-pasteboard fallback; record the execution failure for human review. | Human observes the failed real-terminal exercise. |
 | Pinned mouse-mode ownership | A pinned entry would write `?1002h` or `?1006h`. | Reject the behavior by contract test before release. | Test failure cites the violated native-selection clause. |
+| Fullscreen overlay pointer tracking | `mouseTracking` is omitted or `false`. | TUI SHALL NOT enable terminal mouse reporting; contract tests reject a mode write. | Test failure cites the explicit-overlay clause. |
 | `/mcp list` | No configured servers exist. | Present the existing no-server guidance in the focused overlay. | Overlay remains scrollable and Escape-dismissible. |
 | `/mcp list` | Overlay closes through Escape or cancel. | Hide overlay and restore focus to the active editor area. | MCPCommandController leaves transcript output unchanged. |
 
 ## 8. Completion Promise
 
-> Completion requires one canonical contract per domain, a genuine failing RED test that pinned entry does not emit `?1002h/?1006h`, minimal GREEN removal of the pinned pointer-selection path, live focused execution evidence, a real Ghostty and Herdr pane-confinement exercise using terminal-native drag/copy, and human acceptance of observed behavior.
+> Completion of the active Decision 7A slice requires one canonical contract per domain, genuine RED discriminators for pinned mode emission and fullscreen-overlay `mouseTracking` omitted/false/true behavior, minimal GREEN opt-in correction, live focused execution evidence, a real Ghostty and Herdr pane-confinement exercise using terminal-native drag/copy, and human acceptance of observed behavior. The pre-existing POST-PV-14 keyboard page-navigation defect remains a separately deferred contract obligation.
 
 ## 9. Contract Authority
 
@@ -194,3 +203,5 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | 2026-09-09 | User and coordinator | Recorded decision 4A: native pasteboard resolution is authoritative, OSC 52 is compatibility-only, and clipboard readback is forbidden. |
 | 2026-09-10 | User and coordinator | Recorded decision 5A: only a gesture containing at least one motion event may copy a one-cell selection; a no-motion click is an intentional no-op. |
 | 2026-09-10 | User and coordinator | Recorded decision 6A: ordinary pinned pointer selection remains terminal-native; pinned entry does not enable `?1002h/?1006h`, app-owned pointer copy and the existing ordinary SGR wheel branch are removed, keyboard navigation remains, and any future app-owned wheel feature is deferred. |
+| 2026-09-10 | User and coordinator | Recorded decision 7A: fullscreen overlay mouse reporting is explicit opt-in (`mouseTracking === true`); inherited non-native legacy debt is deferred without relaxing its authoritative clauses. |
+| 2026-09-10 | User and coordinator | Recorded decision 7B: defer the pre-existing POST-PV-14 keyboard page-navigation binding defect to a dedicated plan slice; preserve the clause authority and do not expand Decision 7A GREEN scope. |
