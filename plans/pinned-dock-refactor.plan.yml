@@ -1,14 +1,49 @@
-version: "2.0"
-feature_name: "pinned-dock-refactor"
+version: "3.0"
+feature_name: "pinned-clipboard-mcp-overlay-constitutional-refactor"
 manifest_path: "requirements/REQUIREMENT_MANIFEST_PINNED_REFACTOR.md"
-manifest_hash: "sha256:6a74fca784feb267dfeaf3bd2f7048de2e0830aae466f71bbbd8a43b71031d97"
+manifest_hash: "sha256:99409ee4e1ec9bd9fc20a5b69e93d745f1c4816aaa7aae16fe29bb2b7e668f01"
+disconnect_matrix_path: "requirements/DISCONNECT_MATRIX_PINNED_JITTER.md"
 created: "2026-09-07"
-last_updated: "2026-09-08"
+last_updated: "2026-09-10"
 status: "ACTIVE"
+
+contract_authorities:
+  pinned_viewport_and_clipboard: "requirements/contracts/pinned_dock.contract.ts"
+  mcp_inventory_overlay: "requirements/contracts/mcp_list_overlay.contract.ts"
+
+user_decisions:
+  - id: "1A"
+    decision: "Pinned selection keeps OSC 52 compatibility emission and uses the native macOS pasteboard provider."
+  - id: "2A"
+    decision: "`/mcp list` is a focused, scrollable, Escape-dismissible overlay with no persistent transcript mount."
+  - id: "3A"
+    decision: "Pinned clipboard delivery failure uses the existing styled `InteractiveMode.showError` transcript surface."
+  - id: "4A"
+    decision: "Native provider resolution is the authoritative local-success predicate; OSC 52 is compatibility-only; clipboard readback is forbidden."
+
+scope_boundary:
+  included_domains:
+    - "Pinned viewport, selection, and terminal lifecycle regressions recorded in DM-1 through DM-13"
+    - "Pinned selection clipboard delivery and styled failure reporting in DM-5 and DM-6"
+    - "Focused MCP inventory overlay behavior in DM-14"
+  excluded_domains:
+    - "Unrelated MCP subcommands and generic command-output behavior"
+    - "Clipboard readback, host-selection behavior, and alternate product surfaces"
+    - "Core harness source outside the listed package paths"
+  enforcement:
+    - "Production code does not import either contract file."
+    - "No contract clause may be relaxed to satisfy a failing implementation test."
+    - "Each first-round feature slice uses an isolated RED test-writer followed by an isolated GREEN coder."
+
+execution_schedule:
+  mode: "serial"
+  sequence: ["SLICE-1", "SLICE-2", "SLICE-3", "SLICE-4"]
+  rationale: "Each slice completes RED, GREEN, and focused audit before the next begins. SLICE-4 is behaviorally independent of clipboard delivery but executes after SLICE-3 because both modify InteractiveMode."
 
 slices:
   - id: "SLICE-1"
-    name: "Overlay Compositing, SGR Lifecycle, and Pane-Confined Selection"
+    name: "Pinned rendering, overlay, input, and terminal lifecycle reconciliation"
+    disconnect_rows: ["DM-3", "DM-4", "DM-5", "DM-7", "DM-8", "DM-9", "DM-12", "DM-13"]
     scope:
       - "packages/tui/src/tui.ts"
       - "packages/tui/src/mouse.ts"
@@ -21,6 +56,7 @@ slices:
       - "POST-PV-4"
       - "POST-PV-5"
       - "POST-PV-6"
+      - "POST-PV-6b"
       - "POST-PV-8"
       - "POST-PV-9"
       - "POST-PV-10"
@@ -28,6 +64,7 @@ slices:
       - "POST-PV-12"
       - "POST-PV-13"
       - "POST-PV-14"
+      - "SEQ-PV-1"
       - "SEQ-PV-2"
       - "SEQ-PV-3"
       - "SEQ-PV-5"
@@ -41,20 +78,17 @@ slices:
       - "INV-PV-10"
       - "FORBIDDEN-PV-1"
       - "ERRORS-PV-2"
-    clauses_deferred: []
-    negative_constraints:
-      - "INV-PV-2"
-      - "INV-PV-3"
-      - "INV-PV-4"
-      - "INV-PV-5"
       - "INV-PV-6"
-      - "INV-PV-8"
-      - "INV-PV-9"
-      - "INV-PV-10"
-      - "FORBIDDEN-PV-1"
+    negative_constraints: ["INV-PV-2", "INV-PV-3", "INV-PV-4", "INV-PV-5", "INV-PV-8", "INV-PV-9", "INV-PV-10", "FORBIDDEN-PV-1"]
+    red_gate: "Tests must prove visible overlay compositing, all concatenated SGR reports, pane-local visual selection, OSC 52 compatibility payload emission without treating it as success, and non-duplicated terminal mode writes through actual input/render paths."
+    green_boundary: "Minimal production changes only after failing clause-cited tests exist."
+    test_migration:
+      - "Rewrite existing pinned-dock POST-PV-6 cases so OSC 52 asserts only the pane-local compatibility payload; neither emitted OSC 52 nor its payload may stand in for native local-copy success."
+      - "Keep native provider success and failure assertions exclusively in SLICE-3 under POST-PV-21 through POST-PV-24."
 
   - id: "SLICE-2"
-    name: "Full Software Scrollback, Settled Cache, and Header Retirement"
+    name: "Software scrollback, header retirement, dock clipping, and follow behavior"
+    disconnect_rows: ["DM-1", "DM-2", "DM-10", "DM-11"]
     scope:
       - "packages/coding-agent/src/modes/composer.ts"
       - "packages/coding-agent/src/modes/components/transcript-container.ts"
@@ -72,13 +106,101 @@ slices:
       - "POST-PV-18"
       - "POST-PV-19"
       - "POST-PV-20"
-      - "SEQ-PV-1"
       - "SEQ-PV-4"
       - "INV-PV-1"
       - "INV-PV-7"
       - "ERRORS-PV-1"
-    clauses_deferred: []
-    negative_constraints:
-      - "INV-PV-1"
-      - "INV-PV-6"
-      - "INV-PV-7"
+    negative_constraints: ["INV-PV-1", "INV-PV-7"]
+    red_gate: "Tests must exercise history beyond the visible window and a real composer-to-viewport frame path; static line-count assertions are forbidden."
+    green_boundary: "Preserve the full semantic transcript and avoid reintroducing an inline/unpinned mode."
+
+  - id: "SLICE-3"
+    name: "Pinned clipboard native delivery and styled failure feedback"
+    depends_on: ["SLICE-1"]
+    disconnect_rows: ["DM-5", "DM-6"]
+    scope:
+      - "packages/tui/src/tui.ts"
+      - "packages/coding-agent/src/modes/interactive-mode.ts"
+      - "packages/tui/test/pinned-dock-refactor.test.ts"
+      - "packages/coding-agent/test/pinned-clipboard-feedback.test.ts"
+    new_test_files:
+      - "packages/coding-agent/test/pinned-clipboard-feedback.test.ts"
+    clauses_in_scope:
+      - "PRE-PV-3"
+      - "POST-PV-21"
+      - "POST-PV-22"
+      - "POST-PV-23"
+      - "POST-PV-24"
+      - "SEQ-PV-7"
+      - "SEQ-PV-8"
+      - "INV-PV-11"
+      - "FORBIDDEN-PV-2"
+      - "FORBIDDEN-PV-3"
+      - "ERRORS-PV-3"
+      - "ERRORS-PV-4"
+    negative_constraints: ["INV-PV-11", "FORBIDDEN-PV-2", "FORBIDDEN-PV-3"]
+    implementation_direction:
+      - "Use the existing `@oh-my-pi/pi-natives/clipboard.copyToClipboard` provider from the TUI package; do not route pinned delivery through the coding-agent utility that intentionally swallows errors."
+      - "Represent native resolution or failure at a TUI-local ClipboardTransport boundary; the native result, not OSC 52, determines local success."
+      - "Use a standard observer callback from TUI to InteractiveMode for failure presentation so the TUI package does not depend on coding-agent internals."
+      - "Attach the callback only after InteractiveMode owns the composer UI; route native failure to `showError`, never to `showPinnedError`."
+    test_double_contract:
+      - "Any injected native-provider test double must honor the real provider's synchronous `void` success / thrown-value failure boundary documented by `packages/natives/native/clipboard.d.ts`."
+      - "The test double must be contract-verified before use; tests must not read the clipboard or infer success from OSC 52 output."
+      - "No async mockResolvedValue or Promise-based fake is permitted for the synchronous native provider boundary."
+    red_gate: "A native throw despite emitted OSC 52 must fail unless the provider received the ANSI-stripped pane-local payload and InteractiveMode.showError is called exactly once; tests must also fail if showPinnedError or showStatus handles that failure, or if native success produces styled error output."
+    green_boundary: "No clipboard readback, no silent native-error absorption, and no production import of the contract."
+
+  - id: "SLICE-4"
+    name: "Focused `/mcp list` inventory overlay without transcript persistence"
+    # Independent of SLICE-3: `/mcp list` overlay behavior does not require clipboard delivery.
+    disconnect_rows: ["DM-14"]
+    scope:
+      - "packages/coding-agent/src/modes/controllers/mcp-command-controller.ts"
+      - "packages/coding-agent/src/modes/interactive-mode.ts"
+      - "packages/coding-agent/src/modes/components/session-info-overlay.ts"
+      - "packages/coding-agent/test/mcp-list-overlay.test.ts"
+      - "packages/coding-agent/test/modes/components/session-info-overlay.test.ts"
+    new_test_files:
+      - "packages/coding-agent/test/mcp-list-overlay.test.ts"
+    clauses_in_scope:
+      - "PRE-MCP-1"
+      - "POST-MCP-1"
+      - "POST-MCP-2"
+      - "POST-MCP-3"
+      - "POST-MCP-4"
+      - "POST-MCP-5"
+      - "SEQ-MCP-1"
+      - "SEQ-MCP-2"
+      - "INV-MCP-1"
+      - "INV-MCP-2"
+      - "INV-MCP-3"
+      - "FORBIDDEN-MCP-1"
+      - "ERRORS-MCP-1"
+      - "ERRORS-MCP-2"
+    negative_constraints: ["INV-MCP-1", "INV-MCP-2", "FORBIDDEN-MCP-1"]
+    implementation_direction:
+      - "Change only the `/mcp list` branches to call `InteractiveMode.showSessionInfo` after formatting; retain `#showMessage` and `showCommandMessage` for every other MCP command."
+      - "Reuse the existing scrollable SessionInfoOverlay and its Escape/cancel close path unless a clause-cited RED test demonstrates a missing behavior."
+    red_gate: "Tests must prove both configured-server inventory and no-server guidance avoid transcript mounting, receive focus, scroll, and restore active editor focus after dismissal."
+    green_boundary: "Do not create a second overlay implementation or alter generic command-output persistence."
+
+verification_plan:
+  contract_gate:
+    - "Import each TypeScript contract and execute both success and rejection validators."
+    - "Manually audit all five runtime-enforceable artifact classes and verification fields because the authoritative Python checker does not parse TypeScript."
+    - "Use a production-source import scan to discharge INV-PV-6 and INV-MCP-3."
+  test_gate:
+    - "Each RED test includes a clause ID in its assertion failure text and passes the theater question: can production be wrong while this test passes?"
+    - "Every fake, stub, or module replacement has a verified behavioral contract before use."
+    - "Run focused package tests after each GREEN slice; offload commands exceeding ten seconds or one kilobyte of output to TMUX-OFFLOAD."
+  integration_gate:
+    - "Exercise actual TUI drag input/repaint and the real overlay focus/close lifecycle rather than direct private-state mutation."
+    - "Before M5, observe a real Ghostty and Herdr pane-confinement selection scenario; tests and metrics do not establish human acceptance."
+  audit_gate:
+    - "Run the native constitutional audit after GREEN and remediate all clause-cited findings before final validation."
+
+approval:
+  plan_review: "READY_GROK_XAI_OAUTH_4_6_2026-09-09"
+  human_plan_approval: "REQUIRED_BEFORE_RED"
+  green_approval: "REQUIRED_IN_IMMEDIATELY_PRECEDING_USER_TURN_PER_SLICE"

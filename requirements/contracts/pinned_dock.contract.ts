@@ -26,6 +26,7 @@ export const PINNED_MOUSE_BUTTON_ENTER = "\x1b[?1002h";
 export const OSC52_CLIPBOARD_PREFIX = "\x1b]52;c;";
 export const SELECTION_HIGHLIGHT_START = "\x1b[7m";
 export const SELECTION_HIGHLIGHT_END = "\x1b[27m";
+export const PINNED_CLIPBOARD_FAILURE_PREFIX = "Pinned selection copy failed:";
 
 // ============================================================================
 // ARTIFACT 2: DOMAIN ERROR HIERARCHY
@@ -64,6 +65,18 @@ export class ZeroScrollbackError extends PinnedDockContractError {
 	}
 }
 
+export class InvalidPinnedSelectionError extends PinnedDockContractError {
+	constructor(selection: unknown) {
+		super("PRE-PV-3", `Pinned clipboard selection must be a non-empty string, got ${String(selection)}`);
+	}
+}
+
+export class InvalidPinnedClipboardDeliveryResultError extends PinnedDockContractError {
+	constructor(message: string) {
+		super("INV-PV-11", message);
+	}
+}
+
 // ============================================================================
 // ARTIFACT 3: FROZEN DATACLASSES / TYPED VALUE OBJECTS
 // ============================================================================
@@ -97,6 +110,16 @@ export interface SelectionSpan {
 	readonly endCol: number;
 }
 
+export type NativeClipboardCopyStatus = "resolved" | "failed";
+
+export interface PinnedClipboardDeliveryResult {
+	readonly osc52Attempted: boolean;
+	readonly nativeCopy: NativeClipboardCopyStatus;
+	readonly nativeFailure?: Error;
+}
+
+export type PinnedClipboardFailureHandler = (failure: Error) => void;
+
 // ============================================================================
 // ARTIFACT 4: CALLABLE VALIDATORS (RAISE CITING CLAUSE IDS)
 // ============================================================================
@@ -123,6 +146,39 @@ export function validateSoftwareScrollback(transcriptLength: number, windowHeigh
 	}
 }
 
+export function validatePinnedClipboardSelection(selection: unknown): asserts selection is string {
+	if (typeof selection !== "string" || selection.length === 0) {
+		throw new InvalidPinnedSelectionError(selection);
+	}
+}
+
+export function validatePinnedClipboardDeliveryResult(
+	result: unknown,
+): asserts result is PinnedClipboardDeliveryResult {
+	if (typeof result !== "object" || result === null) {
+		throw new InvalidPinnedClipboardDeliveryResultError("clipboard delivery result must be an object");
+	}
+	const candidate = result as Partial<PinnedClipboardDeliveryResult>;
+	if (candidate.osc52Attempted !== true) {
+		throw new InvalidPinnedClipboardDeliveryResultError(
+			"OSC 52 compatibility emission must be attempted before evaluating native delivery",
+		);
+	}
+	if (candidate.nativeCopy !== "resolved" && candidate.nativeCopy !== "failed") {
+		throw new InvalidPinnedClipboardDeliveryResultError("nativeCopy must be either resolved or failed");
+	}
+	if (candidate.nativeCopy === "resolved" && candidate.nativeFailure !== undefined) {
+		throw new InvalidPinnedClipboardDeliveryResultError(
+			"resolved native delivery must not retain a native failure",
+		);
+	}
+	if (candidate.nativeCopy === "failed" && !(candidate.nativeFailure instanceof Error)) {
+		throw new InvalidPinnedClipboardDeliveryResultError(
+			"failed native delivery must retain its normalized Error",
+		);
+	}
+}
+
 // ============================================================================
 // ARTIFACT 5: TRACEABILITY MATRIX (CONTRACT_* CLAUSE DEFINITIONS)
 // ============================================================================
@@ -142,6 +198,10 @@ export const CONTRACT_PINNED_DOCK = {
 	"PRE-PV-2": {
 		verification: "test",
 		description: "SGR mouse input parsers SHALL accept string data and reject non-string types",
+	},
+	"PRE-PV-3": {
+		verification: "test",
+		description: "Pinned ClipboardTransport SHALL receive a non-empty ANSI-stripped selection string after visual-cell extraction",
 	},
 	"POST-PV-1": {
 		verification: "test",
@@ -165,7 +225,11 @@ export const CONTRACT_PINNED_DOCK = {
 	},
 	"POST-PV-6": {
 		verification: "test",
-		description: "Left-button drag across transcript rows SHALL capture selected plaintext and copy to clipboard via OSC 52 upon button release, using visual column widths",
+		description: "Left-button drag across transcript rows SHALL capture exact ANSI-stripped plaintext from pane-local visual cells using visual column widths",
+	},
+	"POST-PV-6b": {
+		verification: "test",
+		description: "For each non-empty pane-local selection, TUI SHALL attempt OSC 52 compatibility emission containing that same plaintext; OSC 52 emission or lack of acknowledgment SHALL NOT establish local copy success",
 	},
 	"POST-PV-7": {
 		verification: "test",
@@ -223,6 +287,22 @@ export const CONTRACT_PINNED_DOCK = {
 		verification: "test",
 		description: "PINNED_MIN_TRANSCRIPT_ROWS constant SHALL equal 3",
 	},
+	"POST-PV-21": {
+		verification: "test",
+		description: "For every non-empty pinned selection, ClipboardTransport SHALL invoke the existing native macOS clipboard provider with the captured plaintext; native provider resolution SHALL be the sole local-success predicate",
+	},
+	"POST-PV-22": {
+		verification: "test",
+		description: "When the native provider resolves, TUI SHALL not invoke the pinned clipboard failure handler solely because OSC 52 has no acknowledgment or compatibility delivery is unavailable",
+	},
+	"POST-PV-23": {
+		verification: "test",
+		description: "When the native provider rejects or throws, TUI SHALL invoke its registered pinned clipboard failure handler exactly once with the normalized Error",
+	},
+	"POST-PV-24": {
+		verification: "test",
+		description: "InteractiveMode SHALL register the pinned clipboard failure handler so a native delivery failure invokes InteractiveMode.showError and not a pinned-local banner or status-only surface",
+	},
 	"SEQ-PV-1": {
 		verification: "test",
 		description: "TUI.#renderPinnedFrame SHALL invoke PinnedViewport.composeFrame before overlay compositing",
@@ -246,6 +326,14 @@ export const CONTRACT_PINNED_DOCK = {
 	"SEQ-PV-6": {
 		verification: "test",
 		description: "opening a fullscreen overlay while pinned SHALL check alt-screen ownership before emitting DECSET 1049h",
+	},
+	"SEQ-PV-7": {
+		verification: "test",
+		description: "TUI.#copySelectedTranscriptToClipboard SHALL invoke ClipboardTransport after visual-cell extraction; ClipboardTransport SHALL attempt OSC 52 before native delivery; TUI SHALL invoke its failure handler after a failed native result. Source: REQ-2026-PINNED-001, SEQ-PV-4, SEQ-PV-5, IP-PV-1, IP-PV-2",
+	},
+	"SEQ-PV-8": {
+		verification: "test",
+		description: "InteractiveMode SHALL register its TUI pinned clipboard failure handler after UiHelpers creation and before user input can complete a pinned selection; the handler SHALL invoke showError after a failed native result. Source: REQ-2026-PINNED-001, SEQ-PV-5, IP-PV-2",
 	},
 	"INV-PV-1": {
 		verification: "test",
@@ -287,9 +375,21 @@ export const CONTRACT_PINNED_DOCK = {
 		verification: "test",
 		description: "interactive paint SHALL NOT emit retired transcript rows to native scrollback",
 	},
+	"INV-PV-11": {
+		verification: "test",
+		description: "Pinned ClipboardTransport SHALL preserve a native provider rejection or throw as nativeCopy=failed with a normalized Error; OSC 52 emission SHALL NOT convert that result to success",
+	},
 	"FORBIDDEN-PV-1": {
 		verification: "test",
 		description: "A multi-report SGR chunk SHALL NOT be dropped or return null/unhandled",
+	},
+	"FORBIDDEN-PV-2": {
+		verification: "test",
+		description: "Pinned clipboard delivery SHALL NOT read back from the native clipboard to infer, replace, or validate the selected payload",
+	},
+	"FORBIDDEN-PV-3": {
+		verification: "test",
+		description: "A native pinned clipboard failure SHALL NOT invoke InteractiveMode.showPinnedError or InteractiveMode.showStatus in place of showError",
 	},
 	"ERRORS-PV-1": {
 		verification: "test",
@@ -298,5 +398,13 @@ export const CONTRACT_PINNED_DOCK = {
 	"ERRORS-PV-2": {
 		verification: "test",
 		description: "validateSgrMouseReports SHALL throw InvalidMouseInputError citing PRE-PV-2 on non-string input",
+	},
+	"ERRORS-PV-3": {
+		verification: "test",
+		description: "validatePinnedClipboardSelection SHALL throw InvalidPinnedSelectionError citing PRE-PV-3 for an empty or non-string delivery input; no clipboard delivery is permitted",
+	},
+	"ERRORS-PV-4": {
+		verification: "test",
+		description: "ClipboardTransport SHALL catch a native provider rejection or thrown value, normalize it to Error in a nativeCopy=failed result, and not propagate the native exception; InteractiveMode SHALL present that result through showError exactly once",
 	},
 } as const satisfies Record<string, ContractClause>;

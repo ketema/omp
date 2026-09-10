@@ -36,7 +36,7 @@ import { VirtualTerminal } from "./virtual-terminal";
  * markers) that VirtualTerminal's grid readback cannot expose directly.
  *
  * Double type: Spy.
- * Contract: requirements/contracts/pinned_dock.contract.ts POST-PV-6, POST-PV-8, POST-PV-9, POST-PV-10, SEQ-PV-5.
+ * Contract: requirements/contracts/pinned_dock.contract.ts POST-PV-6, POST-PV-6b, POST-PV-8, POST-PV-9, POST-PV-10, SEQ-PV-5.
  */
 class RecordingTerminal extends VirtualTerminal {
 	readonly writes: string[] = [];
@@ -53,7 +53,7 @@ class RecordingTerminal extends VirtualTerminal {
  * by the contract.
  *
  * Double type: Stub.
- * Contract: requirements/contracts/pinned_dock.contract.ts POST-PV-3, POST-PV-6.
+ * Contract: requirements/contracts/pinned_dock.contract.ts POST-PV-3, POST-PV-6, POST-PV-6b.
  */
 class StaticPinnedFrameProvider implements TerminalFrameProvider {
 	acknowledgeHistory(_id: number): void {}
@@ -504,8 +504,8 @@ describe("pinned dock refactor — SGR mouse stream integrity", () => {
 });
 
 // ============================================================================
-// Pane-confined drag selection and clipboard copy (POST-PV-6, POST-PV-9,
-// POST-PV-10, SEQ-PV-5)
+// Pane-confined drag selection and clipboard copy (POST-PV-6, POST-PV-6b,
+// POST-PV-9, POST-PV-10, SEQ-PV-5)
 // ============================================================================
 
 describe("pinned dock refactor — pane-confined drag selection and clipboard copy", () => {
@@ -513,22 +513,27 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		/**
 		 * CONTRACT TRACEABILITY:
 		 * - Contract: TUI.#copySelectedTranscriptToClipboard()
-		 * - Enforces: POST-PV-6: left-button drag across transcript rows SHALL capture selected plaintext and
-		 *   copy to clipboard via OSC 52 upon release, including the release cell
+		 * - Enforces: POST-PV-6: left-button drag across transcript rows SHALL capture exact ANSI-stripped
+		 *   plaintext from pane-local visual cells using visual column widths, including the release cell
+		 * - Enforces: POST-PV-6b: for this non-empty pane-local selection, TUI SHALL attempt OSC 52
+		 *   compatibility emission containing that same plaintext. The decoded OSC 52 payload below is the
+		 *   observable channel for the captured plaintext ONLY — it does not assert or imply native local-copy
+		 *   success; POST-PV-21 through POST-PV-24 govern native success/failure and belong to SLICE-3.
 		 * - Category: positive
 		 * - Test pyramid: Integration
-		 * - Risk tier: High — silent data loss on copy corrupts the clipboard payload the user pastes
+		 * - Risk tier: High — silent data loss on copy corrupts the compatibility payload the user pastes
 		 * - Adversarial: Contract-governed, implementation-aware. Decodes the exact OSC 52 payload rather than
 		 *   checking only for the escape prefix's presence.
 		 *
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites POST-PV-6 in requirements/contracts/pinned_dock.contract.ts.
+		 *   [✓] C1 VALID: cites POST-PV-6 and POST-PV-6b in requirements/contracts/pinned_dock.contract.ts.
 		 *   [✓] C2 VALUABLE: exact-string assertion; the current release-exclusive slice drops the release
 		 *       row's final character ("BRAVO_LIN" instead of "BRAVO_LINE"), so this fails against it.
 		 *   [✓] C3 NON-DUPLICATIVE: the only multi-row drag-copy test; single-row equivalence classes are covered separately below.
 		 *   [✓] C4 NOT FUTURE-EDIT: enforces the current, explicit release-inclusive guarantee.
 		 */
 		const postPv6 = CONTRACT_PINNED_DOCK["POST-PV-6"];
+		const postPv6b = CONTRACT_PINNED_DOCK["POST-PV-6b"];
 		const terminal = new RecordingTerminal(48, 8, 100);
 		const tui = new TUI(terminal, false);
 		tui.setFrameProvider(
@@ -553,7 +558,7 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 			const releaseWrites = terminal.writes.slice(writesBeforeRelease).join("");
 			const copied = decodeOsc52Payload(releaseWrites);
 			expect(copied, `1. WHAT: test_post_pv_6_multi_row_exact_copy FAILED
-2. WHY: POST-PV-6 violation - ${postPv6.description}
+2. WHY: POST-PV-6 / POST-PV-6b violation - ${postPv6.description}; ${postPv6b.description}
 3. EXPECTED: OSC 52 payload decodes to "ALPHA_LINE_CONTENT\\nBRAVO_LINE" (row0 from the press column to end; row1 from
    the start through the release column, inclusive)
 4. ACTUAL: ${JSON.stringify(copied)}
@@ -568,6 +573,10 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		 * CONTRACT TRACEABILITY:
 		 * - Contract: TUI.#copySelectedTranscriptToClipboard()
 		 * - Enforces: POST-PV-6: single-line drag selection SHALL include the release cell
+		 * - Enforces: POST-PV-6b: for this non-empty pane-local selection, TUI SHALL attempt OSC 52
+		 *   compatibility emission containing that same plaintext. The decoded OSC 52 payload below is the
+		 *   observable channel for the captured plaintext ONLY — it does not assert or imply native local-copy
+		 *   success; POST-PV-21 through POST-PV-24 govern native success/failure and belong to SLICE-3.
 		 * - Category: boundary
 		 * - Test pyramid: Integration
 		 * - Risk tier: High — silent data loss on copy
@@ -575,7 +584,7 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		 *   from any character-width concern using a plain-ASCII, single-row fixture.
 		 *
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites POST-PV-6 in the contract.
+		 *   [✓] C1 VALID: cites POST-PV-6 and POST-PV-6b in the contract.
 		 *   [✓] C2 VALUABLE: expected "CDEF" (4 chars); current implementation's exclusive slice(2,5) yields
 		 *       "CDE" (3 chars, drops the release cell 'F').
 		 *   [✓] C3 NON-DUPLICATIVE: exercises TUI.#copySelectedTranscriptToClipboard's single-row branch
@@ -583,6 +592,7 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		 *   [✓] C4 NOT FUTURE-EDIT: enforces the current, explicit release-inclusive guarantee.
 		 */
 		const postPv6 = CONTRACT_PINNED_DOCK["POST-PV-6"];
+		const postPv6b = CONTRACT_PINNED_DOCK["POST-PV-6b"];
 		const terminal = new RecordingTerminal(48, 8, 100);
 		const tui = new TUI(terminal, false);
 		tui.setFrameProvider(new StaticPinnedFrameProvider(["ABCDEFGH"], ["DOCK"]));
@@ -601,7 +611,7 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 			const releaseWrites = terminal.writes.slice(writesBeforeRelease).join("");
 			const copied = decodeOsc52Payload(releaseWrites);
 			expect(copied, `1. WHAT: test_post_pv_6_single_row_release_inclusive FAILED
-2. WHY: POST-PV-6 violation - ${postPv6.description}
+2. WHY: POST-PV-6 / POST-PV-6b violation - ${postPv6.description}; ${postPv6b.description}
 3. EXPECTED: OSC 52 payload decodes to "CDEF" (columns 2-5 inclusive of "ABCDEFGH")
 4. ACTUAL: ${JSON.stringify(copied)}
 5. GUIDANCE: The single-row slice must include the character at the release column, not stop one short of it`).toBe("CDEF");
@@ -615,6 +625,10 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		 * CONTRACT TRACEABILITY:
 		 * - Contract: TUI.#copySelectedTranscriptToClipboard()
 		 * - Enforces: POST-PV-6: drag selection SHALL use visual column widths, not raw string indices
+		 * - Enforces: POST-PV-6b: for this non-empty pane-local selection, TUI SHALL attempt OSC 52
+		 *   compatibility emission containing that same plaintext. The decoded OSC 52 payload below is the
+		 *   observable channel for the captured plaintext ONLY — it does not assert or imply native local-copy
+		 *   success; POST-PV-21 through POST-PV-24 govern native success/failure and belong to SLICE-3.
 		 * - Category: boundary / equivalence-class
 		 * - Test pyramid: Integration
 		 * - Risk tier: High — silent Unicode corruption on copy (manifest DM-5)
@@ -624,7 +638,7 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		 *   sliceWithWidth() utility before authoring this fixture.
 		 *
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites POST-PV-6 in the contract.
+		 *   [✓] C1 VALID: cites POST-PV-6 and POST-PV-6b in the contract.
 		 *   [✓] C2 VALUABLE: expected "日本" (cols 2-5 inclusive); current naive slice(2,5) yields "日本C"
 		 *       (an extra trailing character from index/column mismatch).
 		 *   [✓] C3 NON-DUPLICATIVE: distinct equivalence class (double-width characters) from the ASCII
@@ -632,6 +646,7 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		 *   [✓] C4 NOT FUTURE-EDIT: enforces the current, explicit visual-column-width guarantee.
 		 */
 		const postPv6 = CONTRACT_PINNED_DOCK["POST-PV-6"];
+		const postPv6b = CONTRACT_PINNED_DOCK["POST-PV-6b"];
 		const terminal = new RecordingTerminal(48, 8, 100);
 		const tui = new TUI(terminal, false);
 		tui.setFrameProvider(new StaticPinnedFrameProvider(["AB\u65e5\u672cCD"], ["DOCK"])); // "AB日本CD"
@@ -650,7 +665,7 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 			const releaseWrites = terminal.writes.slice(writesBeforeRelease).join("");
 			const copied = decodeOsc52Payload(releaseWrites);
 			expect(copied, `1. WHAT: test_post_pv_6_cjk_visual_column_width FAILED
-2. WHY: POST-PV-6 violation - ${postPv6.description}
+2. WHY: POST-PV-6 / POST-PV-6b violation - ${postPv6.description}; ${postPv6b.description}
 3. EXPECTED: OSC 52 payload decodes to "\u65e5\u672c" (visual columns 2-5 inclusive: 日 spans cols 2-3, 本 spans cols 4-5)
 4. ACTUAL: ${JSON.stringify(copied)}
 5. GUIDANCE: Slice the selected row by visual column width (accounting for double-width characters), not by raw string index`).toBe("\u65e5\u672c");
@@ -664,6 +679,10 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		 * CONTRACT TRACEABILITY:
 		 * - Contract: TUI.#copySelectedTranscriptToClipboard()
 		 * - Enforces: POST-PV-6: drag selection SHALL use visual column widths, not raw string indices
+		 * - Enforces: POST-PV-6b: for this non-empty pane-local selection, TUI SHALL attempt OSC 52
+		 *   compatibility emission containing that same plaintext. The decoded OSC 52 payload below is the
+		 *   observable channel for the captured plaintext ONLY — it does not assert or imply native local-copy
+		 *   success; POST-PV-21 through POST-PV-24 govern native success/failure and belong to SLICE-3.
 		 * - Category: boundary / equivalence-class
 		 * - Test pyramid: Integration
 		 * - Risk tier: High — silent Unicode corruption on copy (manifest DM-5: "corrupting Unicode and
@@ -673,7 +692,7 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		 *   VirtualTerminal/visibleWidth()), so a naive index-based slice lands mid-cluster.
 		 *
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites POST-PV-6 in the contract.
+		 *   [✓] C1 VALID: cites POST-PV-6 and POST-PV-6b in the contract.
 		 *   [✓] C2 VALUABLE: expected the family emoji + "C"; current naive slice(2,4) yields only the bare
 		 *       "man" emoji (the first 2 UTF-16 units of the cluster) — the family joiners and the "C" are lost.
 		 *   [✓] C3 NON-DUPLICATIVE: distinct equivalence class (ZWJ multi-codepoint grapheme) from CJK and
@@ -681,6 +700,7 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		 *   [✓] C4 NOT FUTURE-EDIT: enforces the current, explicit visual-column-width guarantee.
 		 */
 		const postPv6 = CONTRACT_PINNED_DOCK["POST-PV-6"];
+		const postPv6b = CONTRACT_PINNED_DOCK["POST-PV-6b"];
 		const terminal = new RecordingTerminal(48, 8, 100);
 		const tui = new TUI(terminal, false);
 		tui.setFrameProvider(new StaticPinnedFrameProvider([`AB${FAMILY_EMOJI}CD`], ["DOCK"]));
@@ -699,7 +719,7 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 			const releaseWrites = terminal.writes.slice(writesBeforeRelease).join("");
 			const copied = decodeOsc52Payload(releaseWrites);
 			expect(copied, `1. WHAT: test_post_pv_6_zwj_emoji_visual_column_width FAILED
-2. WHY: POST-PV-6 violation - ${postPv6.description}
+2. WHY: POST-PV-6 / POST-PV-6b violation - ${postPv6.description}; ${postPv6b.description}
 3. EXPECTED: OSC 52 payload decodes to the family emoji followed by "C" (visual columns 2-4 inclusive)
 4. ACTUAL: ${JSON.stringify(copied)} (a corrupted or truncated grapheme indicates raw-index slicing mid-cluster)
 5. GUIDANCE: Slice the selected row by visual column width so multi-codepoint grapheme clusters are copied whole`).toBe(`${FAMILY_EMOJI}C`);
@@ -713,6 +733,10 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		 * CONTRACT TRACEABILITY:
 		 * - Contract: TUI.#copySelectedTranscriptToClipboard()
 		 * - Enforces: POST-PV-6: drag selection SHALL use visual column widths, not raw string indices
+		 * - Enforces: POST-PV-6b: for this non-empty pane-local selection, TUI SHALL attempt OSC 52
+		 *   compatibility emission containing that same plaintext. The decoded OSC 52 payload below is the
+		 *   observable channel for the captured plaintext ONLY — it does not assert or imply native local-copy
+		 *   success; POST-PV-21 through POST-PV-24 govern native success/failure and belong to SLICE-3.
 		 * - Category: boundary / equivalence-class
 		 * - Test pyramid: Integration
 		 * - Risk tier: Medium — realistic tool-status transcript lines commonly mix Nerd Font iconography
@@ -722,7 +746,7 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		 *   adjacent CJK text — a realistic composite line, not an isolated icon-only case.
 		 *
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites POST-PV-6 in the contract.
+		 *   [✓] C1 VALID: cites POST-PV-6 and POST-PV-6b in the contract.
 		 *   [✓] C2 VALUABLE: expected icon+space+"日本"+space+"C"; current naive slice(0,8) yields an extra
 		 *       trailing "D" from index/column mismatch on the CJK run.
 		 *   [✓] C3 NON-DUPLICATIVE: distinct equivalence class (Nerd Font PUA glyph in a realistic mixed line)
@@ -730,6 +754,7 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		 *   [✓] C4 NOT FUTURE-EDIT: enforces the current, explicit visual-column-width guarantee.
 		 */
 		const postPv6 = CONTRACT_PINNED_DOCK["POST-PV-6"];
+		const postPv6b = CONTRACT_PINNED_DOCK["POST-PV-6b"];
 		const terminal = new RecordingTerminal(48, 8, 100);
 		const tui = new TUI(terminal, false);
 		tui.setFrameProvider(new StaticPinnedFrameProvider(["\uF015 \u65e5\u672c CD"], ["DOCK"])); // "<home-icon> 日本 CD"
@@ -748,10 +773,91 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 			const releaseWrites = terminal.writes.slice(writesBeforeRelease).join("");
 			const copied = decodeOsc52Payload(releaseWrites);
 			expect(copied, `1. WHAT: test_post_pv_6_nerd_font_mixed_line_visual_column_width FAILED
-2. WHY: POST-PV-6 violation - ${postPv6.description}
+2. WHY: POST-PV-6 / POST-PV-6b violation - ${postPv6.description}; ${postPv6b.description}
 3. EXPECTED: OSC 52 payload decodes to the icon, space, "\u65e5\u672c", space, "C" (visual columns 0-7 inclusive)
 4. ACTUAL: ${JSON.stringify(copied)}
 5. GUIDANCE: Slice the selected row by visual column width so icon-and-CJK transcript lines copy exactly what was selected`).toBe("\uF015 \u65e5\u672c C");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("POST-PV-6b: a real drag that returns to its starting column must still attempt OSC 52 for the highlighted cell", async () => {
+		/**
+		 * CONTRACT TRACEABILITY:
+		 * - Contract: TUI selection-to-clipboard pipeline (PinnedViewport highlighting and OSC 52 emission)
+		 * - Enforces: POST-PV-6b: for each non-empty pane-local selection, TUI SHALL attempt OSC 52
+		 *   compatibility emission containing that same plaintext
+		 * - Enforces: POST-PV-6: left-button drag across transcript rows SHALL capture exact ANSI-stripped
+		 *   plaintext from pane-local visual cells using visual column widths
+		 * - Category: boundary / regression
+		 * - Test pyramid: Integration
+		 * - Risk tier: High — a user who drags out and back before releasing loses the copy silently, with
+		 *   no error and no clipboard content (manifest DM-5/DM-6 family: silent copy data loss)
+		 * - Adversarial: Contract-governed, implementation-aware. Sends TWO distinct SGR motion reports
+		 *   (press col2 -> motion col5 -> motion back to col2 -> release col2) so the gesture is unambiguously
+		 *   a real left-button drag, not a plain click. Before releasing, forces a repaint and asserts that
+		 *   the terminal renders a single, one-cell in-app highlight over the same column the drag returned
+		 *   to and released on, confirming a non-empty selection exists distinct from "no selection at all."
+		 *
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites POST-PV-6b and POST-PV-6 in requirements/contracts/pinned_dock.contract.ts.
+		 *   [✓] C2 VALUABLE: exact-value assertions (highlighted substring, then decoded OSC 52 payload
+		 *       "C"); a wrong implementation of this exact gap cannot pass both — it either emits the
+		 *       one-character payload the highlight proves is selected, or it silently emits nothing, and
+		 *       this test only accepts the former.
+		 *   [✓] C3 NON-DUPLICATIVE: every POST-PV-6 case above presses and releases at DIFFERENT columns;
+		 *       POST-PV-9's own test forces a mid-drag repaint but never releases, so it never reaches the
+		 *       release-time copy behavior. This is the only test whose final (post-motion) selection is a
+		 *       single visual column after genuine multi-point motion.
+		 *   [✓] C4 NOT FUTURE-EDIT: exercises the existing drag/highlight/copy behavior exactly as currently
+		 *       reachable through real SGR input; asserts no new capability, only that a selection the
+		 *       renderer already treats as highlighted and non-empty is also copied on release, matching
+		 *       the same non-empty-selection outcome already observable in the highlight.
+		 */
+		const postPv6 = CONTRACT_PINNED_DOCK["POST-PV-6"];
+		const postPv6b = CONTRACT_PINNED_DOCK["POST-PV-6b"];
+		const terminal = new RecordingTerminal(48, 8, 100);
+		const tui = new TUI(terminal, false);
+		tui.setFrameProvider(new StaticPinnedFrameProvider(["ABCDEFGH"], ["DOCK"]));
+		try {
+			tui.start();
+			tui.enterPinned();
+			await terminal.waitForRender();
+
+			terminal.sendInput("\x1b[<0;3;1M"); // press visual col2 ('C')
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[<32;6;1M"); // drag motion out to visual col5 ('F'), still held
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[<32;3;1M"); // drag motion back to visual col2 ('C'), still held
+			await terminal.waitForRender();
+
+			const writesBeforeForcedRepaint = terminal.writes.length;
+			tui.requestRender(true);
+			await terminal.waitForRender();
+			const repaintWrites = terminal.writes.slice(writesBeforeForcedRepaint).join("");
+			const highlightedOneCell = `${SELECTION_HIGHLIGHT_START}C${SELECTION_HIGHLIGHT_END}`;
+			expect(repaintWrites.includes(highlightedOneCell), `1. WHAT: test_post_pv_6b_setup_highlight_confirms_nonempty_span FAILED (test setup sanity)
+2. WHY: POST-PV-9 violation - PinnedViewport.composeFrame must render a visible one-cell in-app highlight
+   over the column the drag returned to and released on, before this test's real assertion below can
+   distinguish "no selection exists" from "a non-empty selection exists but its copy was dropped"
+3. EXPECTED: repainted frame contains ${JSON.stringify(highlightedOneCell)} (one highlighted cell, column 2 'C')
+4. ACTUAL: repaint writes did not contain the highlighted span. Full writes: ${JSON.stringify(repaintWrites)}
+5. GUIDANCE: the repainted frame must wrap the single highlighted cell in SELECTION_HIGHLIGHT_START/END`).toBe(true);
+
+			const writesBeforeRelease = terminal.writes.length;
+			terminal.sendInput("\x1b[<0;3;1m"); // release at visual col2 ('C') -- same column the motion last reported
+			await terminal.waitForRender();
+			const releaseWrites = terminal.writes.slice(writesBeforeRelease).join("");
+			const copied = decodeOsc52Payload(releaseWrites);
+			expect(copied, `1. WHAT: test_post_pv_6b_zero_width_drag_after_motion_still_attempts_osc52 FAILED
+2. WHY: POST-PV-6b / POST-PV-6 violation - ${postPv6b.description}; ${postPv6.description}
+3. EXPECTED: OSC 52 payload decodes to "C" (the single pane-local cell the drag highlighted immediately
+   before release, per the setup assertion above)
+4. ACTUAL: ${JSON.stringify(copied)} (no OSC 52 write means the non-empty, highlighted selection was silently
+   dropped instead of attempting compatibility emission)
+5. GUIDANCE: a selection the renderer already treats as highlighted and non-empty must also be attempted
+   for OSC 52 compatibility emission on release, not silently dropped`).toBe("C");
 		} finally {
 			tui.stop();
 		}
