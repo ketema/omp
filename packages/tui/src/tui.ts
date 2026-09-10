@@ -773,6 +773,7 @@ export class TUI extends Container {
 	#lastPinnedVisibleTranscript: string[] = [];
 	#dragStart: { col: number; row: number } | undefined;
 	#dragEnd: { col: number; row: number } | undefined;
+	#copyEligible = false;
 
 	// Overlay stack for modal components rendered on top of base content
 	overlayStack: {
@@ -859,6 +860,7 @@ export class TUI extends Container {
 		this.#pinnedViewport = undefined;
 		this.#dragStart = undefined;
 		this.#dragEnd = undefined;
+		this.#copyEligible = false; // INV-PV-14
 		this.#syncPinnedMouseTracking();
 		this.#releasePinnedAltScreen();
 		this.requestRender(true);
@@ -924,6 +926,7 @@ export class TUI extends Container {
 			if (this.#overlayOwnsFocus()) {
 				this.#dragStart = undefined;
 				this.#dragEnd = undefined;
+				this.#copyEligible = false; // INV-PV-14
 			}
 			if (this.#pinnedActive && data.includes("\x1b[<")) return true;
 			return false;
@@ -942,23 +945,34 @@ export class TUI extends Container {
 						if (event.row < windowHeight) {
 							this.#dragStart = { col: event.col, row: event.row };
 							this.#dragEnd = { col: event.col, row: event.row };
+							this.#copyEligible = false; // INV-PV-14
 						} else {
 							this.#dragStart = undefined;
 							this.#dragEnd = undefined;
+							this.#copyEligible = false; // INV-PV-14
 						}
 					} else if (event.motion && !event.release) {
 						if (this.#dragStart !== undefined) {
 							this.#dragEnd = { col: event.col, row: event.row };
+							this.#copyEligible = true; // SEQ-PV-9 / POST-PV-6c
 						}
 					} else if (event.release) {
 						if (this.#dragStart !== undefined) {
 							this.#dragEnd = { col: event.col, row: event.row };
-							// POST-PV-10: only a left-button (button 0) release commits the copy.
-							if (event.button === 0) {
+							// SEQ-PV-9: evaluate eligibility before clipboard delivery.
+							// POST-PV-6: a press/release whose end cell differs from the
+							// start is a drag span and remains copyable.
+							// POST-PV-6c: motion then return to the start cell is copyable.
+							// FORBIDDEN-PV-4 / ERRORS-PV-5: no-motion same-cell is a no-op.
+							const spanMoved =
+								this.#dragStart.col !== this.#dragEnd.col ||
+								this.#dragStart.row !== this.#dragEnd.row;
+							if (event.button === 0 && (this.#copyEligible || spanMoved)) {
 								this.#copySelectedTranscriptToClipboard();
 							}
 							this.#dragStart = undefined;
 							this.#dragEnd = undefined;
+							this.#copyEligible = false; // INV-PV-14
 						}
 					}
 				}
@@ -1112,6 +1126,7 @@ export class TUI extends Container {
 			// SEQ-PV-5: focus transitions invalidate any transcript drag selection.
 			this.#dragStart = undefined;
 			this.#dragEnd = undefined;
+			this.#copyEligible = false; // INV-PV-14
 		}
 		// Clear focused flag on old component
 		if (isFocusable(previousFocusedComponent)) {
@@ -1625,6 +1640,7 @@ export class TUI extends Container {
 		// SEQ-PV-5: stopping exits pinned mode and invalidates drag selection.
 		this.#dragStart = undefined;
 		this.#dragEnd = undefined;
+		this.#copyEligible = false; // INV-PV-14
 		this.#pinnedActive = false;
 		this.#pinnedViewport = undefined;
 		// Deliberately leave transmitted images in the terminal's graphics store:
