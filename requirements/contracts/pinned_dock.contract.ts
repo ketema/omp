@@ -201,7 +201,7 @@ export const CONTRACT_PINNED_DOCK = {
 	},
 	"PRE-PV-3": {
 		verification: "test",
-		description: "Pinned ClipboardTransport SHALL receive a non-empty ANSI-stripped selection string after visual-cell extraction",
+		description: "Pinned ClipboardTransport SHALL receive a non-empty ANSI-stripped selection string only after a motion-qualified left-button gesture completes visual-cell extraction",
 	},
 	"POST-PV-1": {
 		verification: "test",
@@ -229,7 +229,11 @@ export const CONTRACT_PINNED_DOCK = {
 	},
 	"POST-PV-6b": {
 		verification: "test",
-		description: "For each non-empty pane-local selection, TUI SHALL attempt OSC 52 compatibility emission containing that same plaintext; OSC 52 emission or lack of acknowledgment SHALL NOT establish local copy success",
+		description: "For each non-empty motion-qualified pane-local selection, TUI SHALL attempt OSC 52 compatibility emission containing that same plaintext; OSC 52 emission or lack of acknowledgment SHALL NOT establish local copy success",
+	},
+	"POST-PV-6c": {
+		verification: "test",
+		description: "After at least one parsed motion event, a left-button gesture that returns to and releases on its starting pane-local cell SHALL emit the one-cell OSC 52 compatibility payload for that cell",
 	},
 	"POST-PV-7": {
 		verification: "test",
@@ -289,7 +293,7 @@ export const CONTRACT_PINNED_DOCK = {
 	},
 	"POST-PV-21": {
 		verification: "test",
-		description: "For every non-empty pinned selection, ClipboardTransport SHALL invoke the existing native macOS clipboard provider with the captured plaintext; native provider resolution SHALL be the sole local-success predicate",
+		description: "For every non-empty motion-qualified pinned selection, ClipboardTransport SHALL invoke the existing native macOS clipboard provider with the captured plaintext; native provider resolution SHALL be the sole local-success predicate",
 	},
 	"POST-PV-22": {
 		verification: "test",
@@ -321,7 +325,7 @@ export const CONTRACT_PINNED_DOCK = {
 	},
 	"SEQ-PV-5": {
 		verification: "test",
-		description: "TUI SHALL reset active drag selection state when an overlay steals focus or when pinned mode exits",
+		description: "TUI SHALL reset active drag selection state and its motion qualification when an overlay steals focus or when pinned mode exits",
 	},
 	"SEQ-PV-6": {
 		verification: "test",
@@ -334,6 +338,10 @@ export const CONTRACT_PINNED_DOCK = {
 	"SEQ-PV-8": {
 		verification: "test",
 		description: "InteractiveMode SHALL register its TUI pinned clipboard failure handler after UiHelpers creation and before user input can complete a pinned selection; the handler SHALL invoke showError after a failed native result. Source: REQ-2026-PINNED-001, SEQ-PV-5, IP-PV-2",
+	},
+	"SEQ-PV-9": {
+		verification: "test",
+		description: "TUI.#handlePinnedInput SHALL mark a left-button gesture copy-eligible only after a parsed motion event follows its press, and SHALL evaluate that eligibility before invoking TUI.#copySelectedTranscriptToClipboard on left-button release. Source: REQ-2026-PINNED-001, IP-PV-3",
 	},
 	"INV-PV-1": {
 		verification: "test",
@@ -379,6 +387,10 @@ export const CONTRACT_PINNED_DOCK = {
 		verification: "test",
 		description: "Pinned ClipboardTransport SHALL preserve a native provider rejection or throw as nativeCopy=failed with a normalized Error; OSC 52 emission SHALL NOT convert that result to success",
 	},
+	"INV-PV-14": {
+		verification: "test",
+		description: "TUI copy eligibility SHALL remain false from a left-button press until a parsed motion event occurs and SHALL clear after release, overlay-focus handoff, or pinned-mode exit",
+	},
 	"FORBIDDEN-PV-1": {
 		verification: "test",
 		description: "A multi-report SGR chunk SHALL NOT be dropped or return null/unhandled",
@@ -390,6 +402,10 @@ export const CONTRACT_PINNED_DOCK = {
 	"FORBIDDEN-PV-3": {
 		verification: "test",
 		description: "A native pinned clipboard failure SHALL NOT invoke InteractiveMode.showPinnedError or InteractiveMode.showStatus in place of showError",
+	},
+	"FORBIDDEN-PV-4": {
+		verification: "test",
+		description: "TUI SHALL NOT invoke clipboard delivery or emit OSC 52 for a left-button press/release sequence containing no motion event",
 	},
 	"ERRORS-PV-1": {
 		verification: "test",
@@ -406,5 +422,9 @@ export const CONTRACT_PINNED_DOCK = {
 	"ERRORS-PV-4": {
 		verification: "test",
 		description: "ClipboardTransport SHALL catch a native provider rejection or thrown value, normalize it to Error in a nativeCopy=failed result, and not propagate the native exception; InteractiveMode SHALL present that result through showError exactly once",
+	},
+	"ERRORS-PV-5": {
+		verification: "test",
+		description: "For a no-motion left-button press/release, TUI SHALL intentionally perform no copy, throw no exception, and invoke no clipboard failure handler because a click is not a copy request",
 	},
 } as const satisfies Record<string, ContractClause>;

@@ -786,6 +786,9 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		/**
 		 * CONTRACT TRACEABILITY:
 		 * - Contract: TUI selection-to-clipboard pipeline (PinnedViewport highlighting and OSC 52 emission)
+		 * - Enforces: POST-PV-6c: after at least one parsed motion event, a left-button gesture that
+		 *   returns to and releases on its starting pane-local cell SHALL emit the one-cell OSC 52
+		 *   compatibility payload for that cell
 		 * - Enforces: POST-PV-6b: for each non-empty pane-local selection, TUI SHALL attempt OSC 52
 		 *   compatibility emission containing that same plaintext
 		 * - Enforces: POST-PV-6: left-button drag across transcript rows SHALL capture exact ANSI-stripped
@@ -801,7 +804,7 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		 *   to and released on, confirming a non-empty selection exists distinct from "no selection at all."
 		 *
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites POST-PV-6b and POST-PV-6 in requirements/contracts/pinned_dock.contract.ts.
+		 *   [✓] C1 VALID: cites POST-PV-6c, POST-PV-6b, and POST-PV-6 in requirements/contracts/pinned_dock.contract.ts.
 		 *   [✓] C2 VALUABLE: exact-value assertions (highlighted substring, then decoded OSC 52 payload
 		 *       "C"); a wrong implementation of this exact gap cannot pass both — it either emits the
 		 *       one-character payload the highlight proves is selected, or it silently emits nothing, and
@@ -815,6 +818,7 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		 *       renderer already treats as highlighted and non-empty is also copied on release, matching
 		 *       the same non-empty-selection outcome already observable in the highlight.
 		 */
+		const postPv6c = CONTRACT_PINNED_DOCK["POST-PV-6c"];
 		const postPv6 = CONTRACT_PINNED_DOCK["POST-PV-6"];
 		const postPv6b = CONTRACT_PINNED_DOCK["POST-PV-6b"];
 		const terminal = new RecordingTerminal(48, 8, 100);
@@ -851,7 +855,7 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 			const releaseWrites = terminal.writes.slice(writesBeforeRelease).join("");
 			const copied = decodeOsc52Payload(releaseWrites);
 			expect(copied, `1. WHAT: test_post_pv_6b_zero_width_drag_after_motion_still_attempts_osc52 FAILED
-2. WHY: POST-PV-6b / POST-PV-6 violation - ${postPv6b.description}; ${postPv6.description}
+2. WHY: POST-PV-6c / POST-PV-6b / POST-PV-6 violation - ${postPv6c.description}; ${postPv6b.description}; ${postPv6.description}
 3. EXPECTED: OSC 52 payload decodes to "C" (the single pane-local cell the drag highlighted immediately
    before release, per the setup assertion above)
 4. ACTUAL: ${JSON.stringify(copied)} (no OSC 52 write means the non-empty, highlighted selection was silently
@@ -861,6 +865,108 @@ describe("pinned dock refactor — pane-confined drag selection and clipboard co
 		} finally {
 			tui.stop();
 		}
+	});
+
+	it("FORBIDDEN-PV-4 / ERRORS-PV-5: a left-button press/release at the same cell with no intervening motion performs no copy and throws no exception", async () => {
+		/**
+		 * CONTRACT TRACEABILITY:
+		 * - Contract: TUI.#handlePinnedInput() / TUI.#copySelectedTranscriptToClipboard()
+		 * - Enforces: FORBIDDEN-PV-4: TUI SHALL NOT invoke clipboard delivery or emit OSC 52 for a
+		 *   left-button press/release sequence containing no motion event
+		 * - Enforces: SEQ-PV-9: TUI.#handlePinnedInput SHALL mark a left-button gesture copy-eligible
+		 *   only after a parsed motion event follows its press, and SHALL evaluate that eligibility
+		 *   before invoking TUI.#copySelectedTranscriptToClipboard on left-button release
+		 * - Enforces: INV-PV-14: TUI copy eligibility SHALL remain false from a left-button press until
+		 *   a parsed motion event occurs
+		 * - Enforces: ERRORS-PV-5: for a no-motion left-button press/release, TUI SHALL intentionally
+		 *   perform no copy, throw no exception, and invoke no clipboard failure handler because a click
+		 *   is not a copy request
+		 * - Category: negative / boundary — equivalence-class complement of the POST-PV-6c test above:
+		 *   identical fixture and identical press/release cell (visual col2, 'C'), differing only in the
+		 *   single variable SEQ-PV-9/INV-PV-14 make load-bearing — whether a motion event occurred
+		 *   between press and release
+		 * - Test pyramid: Integration
+		 * - Risk tier: High — an ungated click-to-copy emits an OSC 52 compatibility payload (which
+		 *   OSC-52-aware terminals apply directly to the system clipboard) on every plain click received
+		 *   while pinned mouse tracking is active, silently overwriting prior clipboard content with no
+		 *   error, no prompt, and no way to detect or undo it
+		 * - Adversarial: Contract-governed, implementation-aware. Sends exactly ONE press report and ONE
+		 *   release report at the identical cell with ZERO SGR motion reports between them: the minimal
+		 *   input FORBIDDEN-PV-4 requires be indistinguishable from "no selection", even though the
+		 *   current implementation emits an OSC 52 compatibility payload for exactly this press/release
+		 *   pair today, regardless of whether any motion occurred in between.
+		 * - Double verification: reuses RecordingTerminal (Spy; verified at this file's lines 41-48,
+		 *   contract POST-PV-6/POST-PV-6b/POST-PV-8/POST-PV-9/POST-PV-10/SEQ-PV-5) to isolate release-only
+		 *   writes, and StaticPinnedFrameProvider (Stub; verified at this file's lines 58-73, contract
+		 *   POST-PV-3/POST-PV-6/POST-PV-6b) for deterministic frame content. No new double introduced.
+		 *
+		 * SEQ_TEST_SELF_CHECK:
+		 *   [✓] Constructs the real TUI via `new TUI(...)` and drives it through tui.start()/enterPinned(),
+		 *       never calling #handlePinnedInput or #copySelectedTranscriptToClipboard directly.
+		 *   [✓] Verifies SEQ-PV-9/INV-PV-14 eligibility gating through the observable absence of an OSC 52
+		 *       write on release — the only externally visible effect of the private eligibility state.
+		 *   [✓] No mock/spy replaces any dependency after construction; RecordingTerminal is injected at
+		 *       TUI construction and StaticPinnedFrameProvider via the public setFrameProvider() call.
+		 *
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites FORBIDDEN-PV-4, SEQ-PV-9, INV-PV-14, and ERRORS-PV-5, all present in
+		 *       requirements/contracts/pinned_dock.contract.ts.
+		 *   [✓] C2 VALUABLE: exact-value assertions (decoded OSC 52 payload undefined; thrown value
+		 *       undefined). The current implementation copies the pressed/released cell unconditionally on
+		 *       any left-button release with an active drag, so the OSC 52 assertion fails deterministically
+		 *       against it; a correct implementation must satisfy both assertions simultaneously, so neither
+		 *       a naive "always copy" nor a naive "throw when ineligible" wrong fix can pass both.
+		 *   [✓] C3 NON-DUPLICATIVE: no other test in this file sends a press/release pair with zero
+		 *       intervening motion reports. POST-PV-10 below interrupts the release button, not the motion
+		 *       precondition; the SEQ-PV-5 tests below interrupt via overlay focus / pinned-mode exit after
+		 *       real motion already occurred, not a bare click. This is the only test isolating "click, not
+		 *       drag" as the triggering condition.
+		 *   [✓] C4 NOT FUTURE-EDIT: FORBIDDEN-PV-4 and ERRORS-PV-5 are existing, explicit clauses in the
+		 *       current contract; the click-handling code path this test drives already exists and already
+		 *       runs on every release today — only its unconditional copy is wrong, not an absent capability.
+		 */
+		const forbiddenPv4 = CONTRACT_PINNED_DOCK["FORBIDDEN-PV-4"];
+		const seqPv9 = CONTRACT_PINNED_DOCK["SEQ-PV-9"];
+		const invPv14 = CONTRACT_PINNED_DOCK["INV-PV-14"];
+		const errorsPv5 = CONTRACT_PINNED_DOCK["ERRORS-PV-5"];
+		const terminal = new RecordingTerminal(48, 8, 100);
+		const tui = new TUI(terminal, false);
+		tui.setFrameProvider(new StaticPinnedFrameProvider(["ABCDEFGH"], ["DOCK"]));
+		let thrown: unknown;
+		let releaseWrites = "";
+		try {
+			tui.start();
+			tui.enterPinned();
+			await terminal.waitForRender();
+
+			terminal.sendInput("\x1b[<0;3;1M"); // press visual col2 ('C')
+			await terminal.waitForRender();
+
+			const writesBeforeRelease = terminal.writes.length;
+			terminal.sendInput("\x1b[<0;3;1m"); // release visual col2 ('C') -- SAME cell, ZERO motion reports in between
+			await terminal.waitForRender();
+
+			releaseWrites = terminal.writes.slice(writesBeforeRelease).join("");
+		} catch (err) {
+			thrown = err;
+		} finally {
+			tui.stop();
+		}
+
+		expect(thrown, `1. WHAT: test_errors_pv_5_no_motion_click_throws_no_exception FAILED
+2. WHY: ERRORS-PV-5 violation - ${errorsPv5.description}
+3. EXPECTED: press/release input sequence completes without throwing
+4. ACTUAL: ${thrown instanceof Error ? `threw ${thrown.constructor.name}: ${thrown.message}` : String(thrown)}
+5. GUIDANCE: a no-motion click is an intentional no-op, not an error condition -- return silently, never throw`).toBeUndefined();
+
+		const copied = decodeOsc52Payload(releaseWrites);
+		expect(copied, `1. WHAT: test_forbidden_pv_4_no_motion_click_emits_no_osc52 FAILED
+2. WHY: FORBIDDEN-PV-4 / SEQ-PV-9 / INV-PV-14 violation - ${forbiddenPv4.description}; ${seqPv9.description}; ${invPv14.description}
+3. EXPECTED: no decoded OSC 52 payload (undefined) -- a press/release pair with zero intervening motion
+   reports must never reach clipboard delivery
+4. ACTUAL: ${JSON.stringify(copied)}
+5. GUIDANCE: a no-motion press/release is an intentional no-op; only a gesture containing motion
+   may produce clipboard output`).toBeUndefined();
 	});
 
 	it("POST-PV-9: applies inverse video styling to cells within an active in-app selection drag", async () => {

@@ -38,6 +38,8 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 > "3A"
 >
 > "4A"
+>
+> "A"
 
 **Confirmed understanding:**
 
@@ -45,10 +47,11 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 2. `/mcp list` presents focused, scrollable, Escape-dismissible information instead of persistent transcript output.
 3. A total pinned-selection copy failure uses the existing styled `showError` surface and remains in transcript history.
 4. The user rejected cross-pane copied bytes, persistent `/mcp list` output, pinned-local error banners, and status-text-only copy errors.
+5. A one-cell pinned selection is copyable only after the left-button gesture contains at least one motion event; a no-motion press/release is not a copy action.
 
 **Disconnect Matrix:** `requirements/DISCONNECT_MATRIX_PINNED_JITTER.md` is the observed-versus-expected ledger. It includes the legacy pinned regressions plus clipboard transport and MCP output deltas.
 
-**Ambiguity Score:** 0. User decision 4A defines native provider resolution as the total-copy-success predicate and forbids clipboard readback.
+**Ambiguity Score:** 0. User decisions 4A and 5A define the local-success predicate, forbid clipboard readback, and distinguish a drag from a no-motion click.
 
 ## 2. Actor Matrix
 
@@ -65,9 +68,9 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 
 ## 3. State Transition
 
-- **Initial State:** Pinned selection emits only OSC 52; `/mcp list` mounts formatted output in transcript history.
-- **Transformation:** Preserve in-app selection extraction while adding native pasteboard delivery and a result boundary; route `/mcp list` formatted inventory to an existing scrollable overlay path.
-- **Terminal State:** TUI emits OSC 52 for compatibility, derives local copy success from native pasteboard resolution, and directs native failure to styled error presentation; MCPCommandController presents `/mcp list` as focused overlay information without a persistent transcript mount.
+- **Initial State:** Pinned selection emits only OSC 52; `/mcp list` mounts formatted output in transcript history; no-motion click qualification is not explicit.
+- **Transformation:** Preserve motion-qualified in-app selection extraction while adding native pasteboard delivery and a result boundary; route `/mcp list` formatted inventory to an existing scrollable overlay path.
+- **Terminal State:** TUI emits OSC 52 only for non-empty selections committed by a motion-qualified left drag, derives local copy success from native pasteboard resolution, and directs native failure to styled error presentation; MCPCommandController presents `/mcp list` as focused overlay information without a persistent transcript mount.
 
 ## 3.5 Integration Specification
 
@@ -89,6 +92,7 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | SEQ-PV-4 | TUI.#copySelectedTranscriptToClipboard | ClipboardTransport delivery boundary | After visual-cell extraction and before copy outcome presentation | Native delivery and user-visible failure cannot be traced. |
 | SEQ-PV-5 | ClipboardTransport | InteractiveMode.showError | After native provider rejection or throw | A native local-copy failure remains silent. |
 | SEQ-PV-6 | MCPCommandController.#list | InteractiveMode.showSessionInfo | After inventory formatting and before command return | MCP inventory persists in transcript history. |
+| SEQ-PV-9 | TUI.#handlePinnedInput | motion-qualified selection state | After left-button press, when a motion event arrives, and before copy on left-button release | A no-motion click emits clipboard data as if it were a drag. |
 
 ### Integration Points Checklist
 
@@ -97,12 +101,13 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | IP-PV-1 | TUI.#copySelectedTranscriptToClipboard | ClipboardTransport | ANSI-stripped selected text, OSC 52 compatibility emission attempt, and native-provider result | `pinned_dock.contract.ts::POST-PV-6b, POST-PV-21, SEQ-PV-7` |
 | IP-PV-2 | ClipboardTransport | InteractiveMode.showError | Native-provider rejection or thrown failure | `pinned_dock.contract.ts::POST-PV-23, POST-PV-24, SEQ-PV-8, ERRORS-PV-4` |
 | IP-MCP-1 | MCPCommandController.#handleList | InteractiveMode.showSessionInfo | Fully formatted configured-server inventory | `mcp_list_overlay.contract.ts::POST-MCP-2, SEQ-MCP-1` |
+| IP-PV-3 | TUI.#handlePinnedInput | TUI.#copySelectedTranscriptToClipboard | Motion-qualified pane-local SelectionSpan | After at least one motion event and before left-button-release delivery | `pinned_dock.contract.ts::POST-PV-6c, SEQ-PV-9, INV-PV-14, FORBIDDEN-PV-4, ERRORS-PV-5` |
 
 ### Lifecycle Paths
 
 | Component | INIT (created/started by) | CLEANUP (stopped/released by) |
 |---|---|---|
-| TUI | Interactive runtime enters pinned mode and starts input handling. | TUI exit clears active selection and releases terminal modes. |
+| TUI | Interactive runtime enters pinned mode and starts input handling. | TUI exit clears active selection, motion-qualification state, and terminal modes. |
 | ClipboardTransport | TUI invokes delivery after a completed left-drag selection. | Delivery result resolves before the copy interaction completes. |
 | InteractiveMode overlay | MCPCommandController requests inventory presentation. | Escape invokes overlay close and restores the active editor area. |
 
@@ -123,6 +128,7 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | INV-PV-11 | MCP Information Lifecycle | MCPCommandController SHALL NOT route `/mcp list` through showCommandMessage or presentCommandOutput. |
 | INV-PV-12 | Clipboard Truthfulness | ClipboardTransport SHALL NOT report native macOS pasteboard success after the native provider rejects or throws. |
 | INV-PV-13 | Copy Failure Visibility | InteractiveMode SHALL present styled showError output after ClipboardTransport receives a native-provider rejection or throw. |
+| INV-PV-14 | Gesture Qualification | TUI SHALL NOT emit an OSC 52 payload for a no-motion left-button press/release. |
 
 ## 5. High-Entropy Zones
 
@@ -132,7 +138,7 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | MCP inventory lifecycle | Does `/mcp list` persist as transcript output or appear as focused information? | Use a scrollable, Escape-dismissible overlay with no persistent transcript mount. | User (2A) |
 | Copy-failure surface | Where does a total copy failure appear? | Use the established styled showError surface in transcript history. | User (3A) |
 | OSC 52 completion | What observable event counts as local copy success when OSC 52 has no protocol acknowledgment? | Native provider resolution is authoritative; OSC 52 remains compatibility emission; clipboard readback is forbidden. | User (4A) |
-
+| Gesture qualification | Does a same-cell press/release with no motion count as a copyable one-cell selection? | No. Only a left-button gesture containing at least one motion event may copy a one-cell selection; a no-motion click is not a copy action. | User (5A; Decided By: User) |
 ## 5.5 Rejected Alternatives
 
 | Decision | Alternative Considered | Why Rejected | Decided By |
@@ -140,12 +146,13 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | MCP inventory overlay | Persistent command-output transcript block | It leaves `/mcp list` information in history instead of a focused dismissible view. | User (2A) |
 | Copy-failure surface | Pinned-local error banner | It introduces a separate visual lifecycle instead of the established error surface. | User (3A) |
 | Copy-failure surface | Status text | It lacks the established error severity and durable actionable context. | User (3A) |
+| Gesture qualification | Treat every same-cell press/release as a copyable selection | It broadens a drag-only interaction into a silent clipboard action without a motion event. | User (5A) |
 
 ## 6. Tool/API Interface Summary
 
 | Interface | Purpose | Mutates State? | Called By | Triggered When |
 |---|---|---|---|---|
-| TUI.#copySelectedTranscriptToClipboard | Extracts the in-app visual selection for delivery. | No | TUI.#handlePinnedInput | Valid left-drag release |
+| TUI.#copySelectedTranscriptToClipboard | Extracts the in-app visual selection for delivery. | No | TUI.#handlePinnedInput | Motion-qualified left-drag release |
 | ClipboardTransport | Attempts OSC 52 and native macOS pasteboard delivery and returns transport results. | Yes | TUI.#copySelectedTranscriptToClipboard | Non-empty selected text |
 | InteractiveMode.showError | Presents styled actionable failure in transcript history. | Yes | ClipboardTransport | Total-copy-failure predicate |
 | MCPCommandController.#list | Formats configured MCP server inventory. | No | Slash-command dispatch | `/mcp list` |
@@ -162,12 +169,13 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | Requirement | Failure Condition | Behavior | Notification |
 |---|---|---|---|
 | Pinned selection copy | Native provider rejects or throws. | Emit OSC 52 for compatibility, preserve native failure, and direct the failure to InteractiveMode.showError. | Present styled showError without clipboard readback. |
+| Pinned selection copy | Left-button press/release has no motion event. | Perform an intentional no-op; do not extract text or emit OSC 52. | TUI SHALL produce no notification; the gesture did not qualify as a copy action. |
 | `/mcp list` | No configured servers exist. | Present the existing no-server guidance in the focused overlay. | Overlay remains scrollable and Escape-dismissible. |
 | `/mcp list` | Overlay closes through Escape or cancel. | Hide overlay and restore focus to the active editor area. | MCPCommandController leaves transcript output unchanged. |
 
 ## 8. Completion Promise
 
-> Completion requires one canonical contract per domain, genuine failing RED tests, minimal GREEN implementation, live focused execution evidence, a real Ghostty and Herdr pane-confinement exercise, and human acceptance of the observed behavior.
+> Completion requires one canonical contract per domain, genuine failing RED tests for both a motion-qualified one-cell drag and a no-motion click, minimal GREEN implementation, live focused execution evidence, a real Ghostty and Herdr pane-confinement exercise, and human acceptance of the observed behavior.
 
 ## 9. Contract Authority
 
@@ -182,3 +190,4 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | 2026-09-08 | Prior work | Established pinned viewport reconciliation requirements. |
 | 2026-09-09 | User and coordinator | Recorded decisions 1A, 2A, and 3A; added clipboard and MCP inventory requirements; identified the unresolved OSC 52 completion boundary. |
 | 2026-09-09 | User and coordinator | Recorded decision 4A: native pasteboard resolution is authoritative, OSC 52 is compatibility-only, and clipboard readback is forbidden. |
+| 2026-09-10 | User and coordinator | Recorded decision 5A: only a gesture containing at least one motion event may copy a one-cell selection; a no-motion click is an intentional no-op. |
