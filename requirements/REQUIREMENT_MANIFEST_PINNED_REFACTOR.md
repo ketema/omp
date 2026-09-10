@@ -4,7 +4,7 @@
 
 **Status:** Requirements complete and ready for CL11 contract generation.
 
-**Scope:** Pinned interactive viewport reconciliation, native macOS delivery for pinned-selection copies, and a focused `/mcp list` information overlay.
+**Scope:** Pinned interactive viewport reconciliation, terminal-native ordinary selection preservation, and a focused `/mcp list` information overlay.
 
 ## CCABDD Governance
 
@@ -40,47 +40,51 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 > "4A"
 >
 > "A"
+>
+> "The pinned-dock commit deliberately replaced host-native selection ownership" this was Probably a BAD decision. you should have stayed within the proven repo conventions not roll your own overly complex solution that has now created a cascade of problems. I strongly advise going back to the root and analyzing this decision. ponytail rules: amallest change possible to achieve the objective.
+>
+> "NATIVE APPROVED"
 
 **Confirmed understanding:**
 
-1. Pinned selection emits OSC 52 for compatibility and uses native macOS pasteboard provider resolution as the authoritative local-success signal.
+1. Ordinary pinned-transcript drag selection remains terminal-native: TUI does not synthesize selected bytes, OSC 52, or native-pasteboard delivery from a pointer gesture.
 2. `/mcp list` presents focused, scrollable, Escape-dismissible information instead of persistent transcript output.
-3. A total pinned-selection copy failure uses the existing styled `showError` surface and remains in transcript history.
-4. The user rejected cross-pane copied bytes, persistent `/mcp list` output, pinned-local error banners, and status-text-only copy errors.
-5. A one-cell pinned selection is copyable only after the left-button gesture contains at least one motion event; a no-motion press/release is not a copy action.
+3. The pinned dock, software transcript window, alternate-screen behavior, overlays, and keyboard viewport navigation remain available without taking pointer-selection ownership.
+4. The user rejected cross-pane copied bytes, persistent `/mcp list` output, pinned-local error banners, status-text-only copy errors, and the app-owned selection subsystem that created the pointer-copy path.
+5. Pinned mode does not enter `?1002h` or `?1006h` merely to support ordinary selection; host-native selection is the authoritative path. This slice removes the existing ordinary pinned SGR wheel-to-scroll path; any future app-owned wheel feature is deliberately out of scope.
 
-**Disconnect Matrix:** `requirements/DISCONNECT_MATRIX_PINNED_JITTER.md` is the observed-versus-expected ledger. It includes the legacy pinned regressions plus clipboard transport and MCP output deltas.
+**Disconnect Matrix:** `requirements/DISCONNECT_MATRIX_PINNED_JITTER.md` is the observed-versus-expected ledger. It includes the legacy pinned regressions plus the native-selection ownership reversal and MCP output deltas.
 
-**Ambiguity Score:** 0. User decisions 4A and 5A define the local-success predicate, forbid clipboard readback, and distinguish a drag from a no-motion click.
+**Ambiguity Score:** 0. User decision 6A selects terminal-native ordinary selection and accepts the bounded consequence that this slice removes rather than retains application-owned mouse-wheel input.
 
 ## 2. Actor Matrix
 
 | Actor | Permission Level | Prohibited Actions |
 |---|---|---|
 | User | Selects intended visible behavior and accepts real-world execution. | Cannot bypass machine-gated state transitions. |
-| TUI | Extracts in-app visual selection, renders pinned frames, and emits terminal control sequences. | Cannot rely on host selection to define pane-local copied bytes. |
-| PinnedViewport | Owns transcript windowing, scroll position, and visual selection boundaries. | Cannot truncate semantic history to the visible frame. |
+| TUI | Renders pinned frames and keyboard viewport navigation without taking ordinary pointer-selection ownership. | Cannot enter pinned mouse reporting or synthesize pointer-selected clipboard bytes solely because pinned mode is active. |
+| PinnedViewport | Owns transcript windowing and scroll position. | Cannot truncate semantic history to the visible frame or define ordinary pointer-selection boundaries. |
 | Composer | Supplies pinned transcript lines. | Cannot reintroduce inline viewport behavior. |
 | MCPCommandController | Builds MCP server inventory text. | Cannot persist `/mcp list` through generic command-output presentation. |
-| InteractiveMode | Presents overlays and styled errors. | Cannot leave a focused overlay without Escape dismissal and editor-focus restoration. |
-| ClipboardTransport | Attempts terminal and native clipboard delivery and preserves result status. | Cannot swallow a native clipboard failure that determines required user feedback. |
+| InteractiveMode | Presents focused MCP overlays and styled errors outside ordinary native selection. | Cannot leave a focused overlay without Escape dismissal and editor-focus restoration. |
+| ClipboardTransport | Remains available only to separately specified non-pointer delivery paths. | Cannot become a fallback for ordinary native pinned selection. |
 | ImplementationModule | Implements production behavior. | Cannot import a contract specification file. |
 
 ## 3. State Transition
 
-- **Initial State:** Pinned selection emits only OSC 52; `/mcp list` mounts formatted output in transcript history; no-motion click qualification is not explicit.
-- **Transformation:** Preserve motion-qualified in-app selection extraction while adding native pasteboard delivery and a result boundary; route `/mcp list` formatted inventory to an existing scrollable overlay path.
-- **Terminal State:** TUI emits OSC 52 only for non-empty selections committed by a motion-qualified left drag, derives local copy success from native pasteboard resolution, and directs native failure to styled error presentation; MCPCommandController presents `/mcp list` as focused overlay information without a persistent transcript mount.
+- **Initial State:** Pinned mode enters `?1002h/?1006h`, consumes pointer drag reports, synthesizes visual selections, and emits an application-owned OSC 52 copy payload.
+- **Transformation:** Preserve the dock, software transcript window, alternate-screen rendering, overlays, and keyboard navigation while returning ordinary pointer selection to the terminal; remove pinned-mode mouse-report ownership and pointer-copy delivery.
+- **Terminal State:** TUI renders the pinned dock without enabling `?1002h/?1006h` for ordinary pinned use, leaves pointer selection and copy to the terminal, and retains keyboard viewport navigation; MCPCommandController presents `/mcp list` as focused overlay information without persistent transcript mount.
 
 ## 3.5 Integration Specification
 
 ### Dependency Graph
 
-1. TUI depends on PinnedViewport for visible transcript selection, scrolling, and frame composition.
+1. TUI depends on PinnedViewport for visible transcript scrolling and frame composition.
 2. Composer depends on TranscriptContainer for full transcript-line generation.
-3. TUI depends on ClipboardTransport for native pasteboard delivery and transport-result reporting.
-4. ClipboardTransport depends on InteractiveMode for styled total-failure presentation.
-5. MCPCommandController depends on InteractiveMode for focused MCP inventory presentation.
+3. TUI depends on Terminal native selection by leaving ordinary pinned pointer gestures unclaimed.
+4. MCPCommandController depends on InteractiveMode for focused MCP inventory presentation.
+5. ClipboardTransport has no dependency edge from ordinary pinned pointer selection in this slice.
 
 ### Control Flow Requirements
 
@@ -88,27 +92,24 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 |---|---|---|---|---|
 | SEQ-PV-1 | TUI.#renderPinnedFrame | PinnedViewport.composeFrame | Before overlay compositing | Pinned frame lacks its base transcript window. |
 | SEQ-PV-2 | TUI.#renderPinnedFrame | TUI.#compositeOverlaysIntoWindow | After composeFrame and before alternate-frame emission | Floating overlays become invisible while retaining focus. |
-| SEQ-PV-3 | TUI.#handlePinnedInput | parseSgrMouseStream | Before wheel-delta application | Concatenated trackpad reports are dropped. |
-| SEQ-PV-4 | TUI.#copySelectedTranscriptToClipboard | ClipboardTransport delivery boundary | After visual-cell extraction and before copy outcome presentation | Native delivery and user-visible failure cannot be traced. |
-| SEQ-PV-5 | ClipboardTransport | InteractiveMode.showError | After native provider rejection or throw | A native local-copy failure remains silent. |
-| SEQ-PV-6 | MCPCommandController.#list | InteractiveMode.showSessionInfo | After inventory formatting and before command return | MCP inventory persists in transcript history. |
-| SEQ-PV-9 | TUI.#handlePinnedInput | motion-qualified selection state | After left-button press, when a motion event arrives, and before copy on left-button release | A no-motion click emits clipboard data as if it were a drag. |
+| SEQ-PV-3 | Fullscreen overlay lifecycle | Terminal mouse reporting | Only while a fullscreen overlay explicitly requests pointer interaction | Overlay pointer controls cannot receive their declared input. |
+| SEQ-MCP-1 | MCPCommandController.#list | InteractiveMode.showSessionInfo | After inventory formatting and before command return | MCP inventory persists in transcript history. |
+| SEQ-PV-10 | TUI.enterPinned | TUI.#syncPinnedMouseTracking | After pinned activation and before first pinned frame, without a `PINNED_MOUSE_ENTER` write | Ordinary native selection is intercepted by application mouse reporting. |
 
 ### Integration Points Checklist
 
 | ID | Source | Target | Handoff Data | Contract Clause |
 |---|---|---|---|---|
-| IP-PV-1 | TUI.#copySelectedTranscriptToClipboard | ClipboardTransport | ANSI-stripped selected text, OSC 52 compatibility emission attempt, and native-provider result | `pinned_dock.contract.ts::POST-PV-6b, POST-PV-21, SEQ-PV-7` |
-| IP-PV-2 | ClipboardTransport | InteractiveMode.showError | Native-provider rejection or thrown failure | `pinned_dock.contract.ts::POST-PV-23, POST-PV-24, SEQ-PV-8, ERRORS-PV-4` |
+| IP-PV-1 | TUI.enterPinned | Terminal native selection | Absence of `?1002h/?1006h` pinned-mode entry | Before the user begins an ordinary transcript drag | `pinned_dock.contract.ts::POST-PV-25, SEQ-PV-10, INV-PV-15, FORBIDDEN-PV-5` |
 | IP-MCP-1 | MCPCommandController.#handleList | InteractiveMode.showSessionInfo | Fully formatted configured-server inventory | `mcp_list_overlay.contract.ts::POST-MCP-2, SEQ-MCP-1` |
-| IP-PV-3 | TUI.#handlePinnedInput | TUI.#copySelectedTranscriptToClipboard | Motion-qualified pane-local SelectionSpan | After at least one motion event and before left-button-release delivery | `pinned_dock.contract.ts::POST-PV-6c, SEQ-PV-9, INV-PV-14, FORBIDDEN-PV-4, ERRORS-PV-5` |
+| IP-PV-4 | TUI.#handlePinnedInput | Terminal native selection | Ordinary SGR pointer reports remain unparsed and unclaimed by the pinned selection path; the existing pinned SGR wheel-to-scroll branch is removed | During a pinned pointer gesture | `pinned_dock.contract.ts::FORBIDDEN-PV-7, FORBIDDEN-PV-8, ERRORS-PV-6` |
 
 ### Lifecycle Paths
 
 | Component | INIT (created/started by) | CLEANUP (stopped/released by) |
 |---|---|---|
-| TUI | Interactive runtime enters pinned mode and starts input handling. | TUI exit clears active selection, motion-qualification state, and terminal modes. |
-| ClipboardTransport | TUI invokes delivery after a completed left-drag selection. | Delivery result resolves before the copy interaction completes. |
+| TUI | Interactive runtime enters pinned mode and starts keyboard input handling without claiming ordinary pointer selection. | TUI exit releases only modes it owns; native terminal selection remains terminal-owned throughout pinned mode. |
+| ClipboardTransport | Starts only from a separately specified non-pointer delivery boundary. | No ordinary pinned pointer gesture reaches this component. |
 | InteractiveMode overlay | MCPCommandController requests inventory presentation. | Escape invokes overlay close and restores the active editor area. |
 
 ## 4. Hard Invariants
@@ -118,7 +119,7 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | INV-PV-1 | Scrollback | PinnedViewport SHALL NOT truncate scroll history to visible-window height while semantic history exists. |
 | INV-PV-2 | Visibility | TUI SHALL NOT omit a visible floating overlay from the pinned terminal frame. |
 | INV-PV-3 | Focus | TUI SHALL NOT assign input focus to an invisible or uncomposited component. |
-| INV-PV-4 | Packet Loss | TUI SHALL NOT drop concatenated SGR mouse reports from one stdin buffer chunk. |
+| INV-PV-4 | Packet Loss | While an explicitly pointer-interactive fullscreen overlay owns tracking, TUI SHALL NOT drop concatenated SGR mouse reports from one stdin buffer chunk; ordinary pinned mode leaves those reports unclaimed. |
 | INV-PV-5 | Content Integrity | TUI SHALL NOT overwrite transcript content lines with navigation or follow hints. |
 | INV-PV-6 | Contract Coupling | ImplementationModule SHALL NOT import a contract specification file. |
 | INV-PV-7 | Mode Purity | TUI SHALL NOT expose an inline or unpinned viewport mode; Composer SHALL NOT expose one. |
@@ -126,19 +127,20 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | INV-PV-9 | Terminal Discipline | TUI SHALL NOT use DECSTBM to pin the dock. |
 | INV-PV-10 | Native Scrollback | TUI SHALL NOT emit retired interactive transcript rows to native terminal scrollback. |
 | INV-PV-11 | MCP Information Lifecycle | MCPCommandController SHALL NOT route `/mcp list` through showCommandMessage or presentCommandOutput. |
-| INV-PV-12 | Clipboard Truthfulness | ClipboardTransport SHALL NOT report native macOS pasteboard success after the native provider rejects or throws. |
-| INV-PV-13 | Copy Failure Visibility | InteractiveMode SHALL present styled showError output after ClipboardTransport receives a native-provider rejection or throw. |
-| INV-PV-14 | Gesture Qualification | TUI SHALL NOT emit an OSC 52 payload for a no-motion left-button press/release. |
+| INV-PV-14 | Native Selection Ownership | TUI SHALL NOT emit an application-owned OSC 52 payload for an ordinary pinned pointer gesture. |
+| INV-PV-15 | Mouse Mode Ownership | TUI SHALL NOT write `?1002h` or `?1006h` solely because pinned mode is active. |
+| FORBIDDEN-PV-7 | Wheel Ownership | TUI SHALL NOT apply an ordinary pinned SGR wheel report to PinnedViewport.scrollBy. |
+| FORBIDDEN-PV-8 | Pointer Input Ownership | TUI SHALL NOT parse or consume an ordinary pinned SGR pointer report unless an explicitly pointer-interactive fullscreen overlay owns input. |
 
 ## 5. High-Entropy Zones
 
 | Zone | Question | Resolution | Decided By |
 |---|---|---|---|
-| Native delivery | Does pinned selection retain OSC 52 while adding local pasteboard delivery? | Emit OSC 52 and invoke the existing native macOS provider. | User (1A) |
+| Native delivery | Does ordinary pinned pointer selection retain OSC 52 and native pasteboard delivery? | No. Decision 6A supersedes 1A/3A/4A for ordinary pinned pointer selection; the terminal owns that interaction. | User (6A; Decided By: User) |
 | MCP inventory lifecycle | Does `/mcp list` persist as transcript output or appear as focused information? | Use a scrollable, Escape-dismissible overlay with no persistent transcript mount. | User (2A) |
-| Copy-failure surface | Where does a total copy failure appear? | Use the established styled showError surface in transcript history. | User (3A) |
-| OSC 52 completion | What observable event counts as local copy success when OSC 52 has no protocol acknowledgment? | Native provider resolution is authoritative; OSC 52 remains compatibility emission; clipboard readback is forbidden. | User (4A) |
-| Gesture qualification | Does a same-cell press/release with no motion count as a copyable one-cell selection? | No. Only a left-button gesture containing at least one motion event may copy a one-cell selection; a no-motion click is not a copy action. | User (5A; Decided By: User) |
+| Copy-failure surface | Where does a total copy failure appear for separately specified non-pointer delivery? | Use the established styled showError surface in transcript history. | User (3A) |
+| Selection ownership | Does TUI own ordinary pointer selection while pinned? | No. Preserve terminal-native selection by not enabling pinned `?1002h/?1006h` reporting; retain keyboard navigation, remove the existing ordinary pinned SGR wheel branch, and defer any future app-owned wheel feature. | User (6A; Decided By: User) |
+| Gesture qualification | Does a same-cell press/release with no motion count as a copyable one-cell selection? | Not applicable to ordinary pinned pointer selection after decision 6A; it remains historical only if a separately approved app-owned selection path is introduced. | User (5A; Decided By: User) |
 ## 5.5 Rejected Alternatives
 
 | Decision | Alternative Considered | Why Rejected | Decided By |
@@ -146,15 +148,15 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | MCP inventory overlay | Persistent command-output transcript block | It leaves `/mcp list` information in history instead of a focused dismissible view. | User (2A) |
 | Copy-failure surface | Pinned-local error banner | It introduces a separate visual lifecycle instead of the established error surface. | User (3A) |
 | Copy-failure surface | Status text | It lacks the established error severity and durable actionable context. | User (3A) |
-| Gesture qualification | Treat every same-cell press/release as a copyable selection | It broadens a drag-only interaction into a silent clipboard action without a motion event. | User (5A) |
+| Selection ownership | App-owned SGR drag parsing, visual selection reconstruction, and OSC 52 delivery | It replaces the proven terminal-native path and created the current gesture/copy complexity. | User (6A) |
 
 ## 6. Tool/API Interface Summary
 
 | Interface | Purpose | Mutates State? | Called By | Triggered When |
 |---|---|---|---|---|
-| TUI.#copySelectedTranscriptToClipboard | Extracts the in-app visual selection for delivery. | No | TUI.#handlePinnedInput | Motion-qualified left-drag release |
-| ClipboardTransport | Attempts OSC 52 and native macOS pasteboard delivery and returns transport results. | Yes | TUI.#copySelectedTranscriptToClipboard | Non-empty selected text |
-| InteractiveMode.showError | Presents styled actionable failure in transcript history. | Yes | ClipboardTransport | Total-copy-failure predicate |
+| TUI.enterPinned | Activates pinned rendering without claiming ordinary terminal pointer selection. | Yes | Interactive runtime | Pinned mode begins |
+| Terminal native selection | Selects and copies ordinary pinned transcript text. | Yes | Terminal host | User drags and copies text |
+| ClipboardTransport | Handles only separately specified non-pointer delivery paths. | Yes | Explicit non-pointer caller | Contracted non-pointer request |
 | MCPCommandController.#list | Formats configured MCP server inventory. | No | Slash-command dispatch | `/mcp list` |
 | InteractiveMode.showSessionInfo | Presents scrollable, focused, Escape-dismissible information. | Yes | MCPCommandController.#list | Completed MCP inventory formatting |
 
@@ -168,14 +170,14 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 
 | Requirement | Failure Condition | Behavior | Notification |
 |---|---|---|---|
-| Pinned selection copy | Native provider rejects or throws. | Emit OSC 52 for compatibility, preserve native failure, and direct the failure to InteractiveMode.showError. | Present styled showError without clipboard readback. |
-| Pinned selection copy | Left-button press/release has no motion event. | Perform an intentional no-op; do not extract text or emit OSC 52. | TUI SHALL produce no notification; the gesture did not qualify as a copy action. |
+| Ordinary pinned native selection | Terminal host cannot produce the user-selected text in the required real Herdr/tmux exercise. | TUI SHALL NOT synthesize OSC 52 or native-pasteboard fallback; record the execution failure for human review. | Human observes the failed real-terminal exercise. |
+| Pinned mouse-mode ownership | A pinned entry would write `?1002h` or `?1006h`. | Reject the behavior by contract test before release. | Test failure cites the violated native-selection clause. |
 | `/mcp list` | No configured servers exist. | Present the existing no-server guidance in the focused overlay. | Overlay remains scrollable and Escape-dismissible. |
 | `/mcp list` | Overlay closes through Escape or cancel. | Hide overlay and restore focus to the active editor area. | MCPCommandController leaves transcript output unchanged. |
 
 ## 8. Completion Promise
 
-> Completion requires one canonical contract per domain, genuine failing RED tests for both a motion-qualified one-cell drag and a no-motion click, minimal GREEN implementation, live focused execution evidence, a real Ghostty and Herdr pane-confinement exercise, and human acceptance of the observed behavior.
+> Completion requires one canonical contract per domain, a genuine failing RED test that pinned entry does not emit `?1002h/?1006h`, minimal GREEN removal of the pinned pointer-selection path, live focused execution evidence, a real Ghostty and Herdr pane-confinement exercise using terminal-native drag/copy, and human acceptance of observed behavior.
 
 ## 9. Contract Authority
 
@@ -191,3 +193,4 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | 2026-09-09 | User and coordinator | Recorded decisions 1A, 2A, and 3A; added clipboard and MCP inventory requirements; identified the unresolved OSC 52 completion boundary. |
 | 2026-09-09 | User and coordinator | Recorded decision 4A: native pasteboard resolution is authoritative, OSC 52 is compatibility-only, and clipboard readback is forbidden. |
 | 2026-09-10 | User and coordinator | Recorded decision 5A: only a gesture containing at least one motion event may copy a one-cell selection; a no-motion click is an intentional no-op. |
+| 2026-09-10 | User and coordinator | Recorded decision 6A: ordinary pinned pointer selection remains terminal-native; pinned entry does not enable `?1002h/?1006h`, app-owned pointer copy and the existing ordinary SGR wheel branch are removed, keyboard navigation remains, and any future app-owned wheel feature is deferred. |
