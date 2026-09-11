@@ -255,7 +255,7 @@ export const CONTRACT_PINNED_DOCK = {
 	},
 	"INV-PV-7": {
 		verification: "test",
-		description: "TUI SHALL NOT expose or honor an inline/unpinned viewport setting or code path",
+		description: "For every interactive TUI render, TUI SHALL render the prompt input box only in the pinned dock, including the first frame after start and every frame rendered after an exitPinned request.",
 	},
 	"INV-PV-8": {
 		verification: "test",

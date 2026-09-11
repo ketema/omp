@@ -55,6 +55,26 @@ class StaticPinnedFrameProvider implements TerminalFrameProvider {
 	}
 }
 
+/**
+ * Frame-provider stub that supplies one distinguishable prompt input line on
+ * both the unpinned viewport plan and the pinned dock plan so row placement is
+ * the observable.
+ *
+ * Double type: Stub.
+ * Contract: requirements/contracts/pinned_dock.contract.ts INV-PV-7.
+ */
+class DistinguishablePromptFrameProvider implements TerminalFrameProvider {
+	acknowledgeHistory(_id: number): void {}
+
+	renderFrame(_viewport: ViewportSize): TerminalFramePlan {
+		return {
+			viewport: ["PROMPT:observe"],
+			pinnedScroll: ["TRANSCRIPT_LINE_1"],
+			pinnedDock: ["PROMPT:observe"],
+		};
+	}
+}
+
 // ============================================================================
 // PinnedViewport.composeFrame — real implementation entry point (PRE-PV-1,
 // ERRORS-PV-1, POST-PV-1)
@@ -361,10 +381,10 @@ describe("pinned dock refactor — SGR mouse stream integrity", () => {
 
 // ============================================================================
 // Software scrollback and content-integrity supporting checks (INV-PV-1,
-// INV-PV-5) and inline-mode exposure (INV-PV-7)
+// INV-PV-5) and pinned-only prompt lifecycle (INV-PV-7)
 // ============================================================================
 
-describe("pinned dock refactor — software scrollback, content integrity, and viewport mode purity", () => {
+describe("pinned dock refactor — software scrollback, content integrity, and pinned-only prompt lifecycle", () => {
 	it("CONTRACT VERIFICATION — INV-PV-1: validateSoftwareScrollback rejects a truncated history while long history exists", () => {
 		/**
 		 * CONTRACT TRACEABILITY:
@@ -469,39 +489,127 @@ describe("pinned dock refactor — software scrollback, content integrity, and v
 		}
 	});
 
-	it("INV-PV-7: TUI exposes no viewport mode configuration and operates in pinned mode unconditionally", async () => {
+	it("INV-PV-7: first frame after start renders the prompt only in the pinned dock", async () => {
 		/**
 		 * CONTRACT TRACEABILITY:
-		 * - Contract: TUI.enterPinned() / TUI.isPinned()
-		 * - Enforces: INV-PV-7: TUI SHALL NOT expose or honor an inline/unpinned viewport setting or code path
-		 * - Category: negative-space
-		 * - Risk tier: High — an exposed inline mode is a live, reachable code path that bypasses every other
-		 *   guarantee in this contract (manifest: "this is a completely new bug" from prior ad-hoc fixes)
-		 * - Adversarial: Contract-governed, implementation-aware. Verifies that TUI operates in pinned mode
-		 *   and does not expose any unpinned or viewport-mode configuration surface.
+		 * - Contract: TUI.start()
+		 * - Enforces: INV-PV-7: For every interactive TUI render, TUI SHALL render the prompt input box only in the pinned dock, including the first frame after start and every frame rendered after an exitPinned request.
+		 * - Category: invariant
+		 * - Test pyramid: Integration
+		 * - Risk tier: High — an unpinned first frame is a live path that bypasses every pinned-dock guarantee (manifest DM-18 / Decision 9A)
+		 * - Adversarial: Contract-governed, implementation-aware. Drives the public TUI.start() lifecycle with no pin request and observes exact terminal row placement of a distinguishable prompt plus the pinned-scroll discriminator above the dock.
 		 *
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
 		 *   [✓] C1 VALID: cites INV-PV-7 in requirements/contracts/pinned_dock.contract.ts.
-		 *   [✓] C2 VALUABLE: verifies that TUI is pinned and has no unpinned/inline mode switch.
-		 *   [✓] C3 NON-DUPLICATIVE: unit-level TUI surface check, distinct from the Composer integration
-		 *       test in packages/coding-agent/test/pinned-dock-refactor.test.ts.
-		 *   [✓] C4 NOT FUTURE-EDIT: enforces the current, explicit INV-PV-7 guarantee that no viewport mode
-		 *       setting or alternate unpinned code path exists.
+		 *   [✓] C2 VALUABLE: both prompt dock placement AND pinned-scroll discriminator are observed. An unpinned/inline paint that places PROMPT:observe anywhere other than the final dock row fails; a missing prompt fails; a bottom-anchored prompt without TRANSCRIPT_LINE_1 visible above the dock fails.
+		 *   [✓] C3 NON-DUPLICATIVE: the only test asserting first-frame-after-start dock placement and pinned-scroll discriminator; the sibling asserts the post-exitPinned boundary.
+		 *   [✓] C4 NOT FUTURE-EDIT: bounds the existing start() render path (currently paints the prompt unpinned without the pinned-scroll discriminator), not a hypothetical API.
+		 *
+		 * Mock Contract: none.
+		 * Double type: Stub (DistinguishablePromptFrameProvider) of TerminalFrameProvider; Fake (VirtualTerminal) of the production Terminal interface.
+		 * VirtualTerminal.getViewport() reads the kitty WASM grid after real writes — the same observation seam already used for INV-PV-5.
 		 */
 		const invPv7 = CONTRACT_PINNED_DOCK["INV-PV-7"];
-		const terminal = new RecordingTerminal(40, 8, 100);
+		const promptLine = "PROMPT:observe";
+		const pinnedScrollDiscriminator = "TRANSCRIPT_LINE_1";
+		const dockHeight = 1;
+		const terminal = new VirtualTerminal(40, 8);
 		const tui = new TUI(terminal, false);
+		tui.setFrameProvider(new DistinguishablePromptFrameProvider());
 		try {
 			tui.start();
+			await terminal.waitForRender();
+			const viewport = terminal.getViewport();
+			const dockRows = viewport.slice(-dockHeight).map(row => row.trim());
+			const aboveDock = viewport.slice(0, -dockHeight);
+			expect(
+				dockRows,
+				`1. WHAT: test_inv_pv_7_first_frame_after_start_prompt_in_pinned_dock FAILED
+2. WHY: INV-PV-7 violation - ${invPv7.description}
+3. EXPECTED: the final ${dockHeight} physical row(s) equal [${JSON.stringify(promptLine)}]
+4. ACTUAL: dock rows=${JSON.stringify(dockRows)}; full viewport=${JSON.stringify(viewport.map(row => row.trim()))}
+5. GUIDANCE: The prompt input box must occupy the pinned dock on the first interactive frame after start, including when no separate pin request has been issued`,
+			).toEqual([promptLine]);
+			expect(
+				aboveDock.some(row => row.includes(promptLine)),
+				`1. WHAT: test_inv_pv_7_first_frame_after_start_prompt_only_in_dock FAILED
+2. WHY: INV-PV-7 violation - ${invPv7.description}
+3. EXPECTED: no row above the dock contains ${JSON.stringify(promptLine)}
+4. ACTUAL: rows above dock=${JSON.stringify(aboveDock.map(row => row.trim()))}
+5. GUIDANCE: The prompt input box must appear only in the pinned dock, never in the transcript window`,
+			).toBe(false);
+			expect(
+				aboveDock.some(row => row.includes(pinnedScrollDiscriminator)),
+				`1. WHAT: test_inv_pv_7_first_frame_after_start_pinned_scroll_discriminator FAILED
+2. WHY: INV-PV-7 violation - ${invPv7.description}
+3. EXPECTED: a row above the final prompt dock row contains ${JSON.stringify(pinnedScrollDiscriminator)}
+4. ACTUAL: rows above dock=${JSON.stringify(aboveDock.map(row => row.trim()))}; full viewport=${JSON.stringify(viewport.map(row => row.trim()))}
+5. GUIDANCE: The first interactive frame must show the pinned transcript discriminator above the prompt dock, not merely bottom-anchor the prompt`,
+			).toBe(true);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("INV-PV-7: frame after exitPinned still renders the prompt only in the pinned dock", async () => {
+		/**
+		 * CONTRACT TRACEABILITY:
+		 * - Contract: TUI.exitPinned()
+		 * - Enforces: INV-PV-7: For every interactive TUI render, TUI SHALL render the prompt input box only in the pinned dock, including the first frame after start and every frame rendered after an exitPinned request.
+		 * - Category: invariant
+		 * - Test pyramid: Integration
+		 * - Risk tier: High — honoring an exit request by painting an unpinned prompt reopens a live inline path (manifest DM-18 / Decision 9A)
+		 * - Adversarial: Contract-governed, implementation-aware. Drives the public enter-then-exit lifecycle and observes exact terminal row placement after the exit request plus the pinned-scroll discriminator above the dock.
+		 *
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites INV-PV-7 in requirements/contracts/pinned_dock.contract.ts.
+		 *   [✓] C2 VALUABLE: both prompt dock placement AND pinned-scroll discriminator are observed. Painting the prompt anywhere other than the final dock row after an exit request fails; a missing prompt fails; a bottom-anchored prompt without TRANSCRIPT_LINE_1 visible above the dock fails.
+		 *   [✓] C3 NON-DUPLICATIVE: the only test asserting post-exitPinned dock placement and pinned-scroll discriminator; the sibling asserts the first-frame-after-start boundary.
+		 *   [✓] C4 NOT FUTURE-EDIT: bounds the existing exitPinned() render path (currently paints the prompt unpinned again without the pinned-scroll discriminator), not a hypothetical API.
+		 *
+		 * Mock Contract: none.
+		 * Double type: Stub (DistinguishablePromptFrameProvider) of TerminalFrameProvider; Fake (VirtualTerminal) of the production Terminal interface.
+		 */
+		const invPv7 = CONTRACT_PINNED_DOCK["INV-PV-7"];
+		const promptLine = "PROMPT:observe";
+		const pinnedScrollDiscriminator = "TRANSCRIPT_LINE_1";
+		const dockHeight = 1;
+		const terminal = new VirtualTerminal(40, 8);
+		const tui = new TUI(terminal, false);
+		tui.setFrameProvider(new DistinguishablePromptFrameProvider());
+		try {
+			tui.start();
+			await terminal.waitForRender();
 			tui.enterPinned();
 			await terminal.waitForRender();
+			tui.exitPinned();
+			await terminal.waitForRender();
+			const viewport = terminal.getViewport();
+			const dockRows = viewport.slice(-dockHeight).map(row => row.trim());
+			const aboveDock = viewport.slice(0, -dockHeight);
 			expect(
-				tui.isPinned(),
-				`1. WHAT: test_inv_pv_7_tui_is_pinned FAILED
+				dockRows,
+				`1. WHAT: test_inv_pv_7_after_exit_pinned_prompt_in_pinned_dock FAILED
 2. WHY: INV-PV-7 violation - ${invPv7.description}
-3. EXPECTED: tui.isPinned() === true
-4. ACTUAL: tui.isPinned() === ${tui.isPinned()}
-5. GUIDANCE: TUI must run in pinned mode unconditionally without viewport mode options`,
+3. EXPECTED: the final ${dockHeight} physical row(s) equal [${JSON.stringify(promptLine)}]
+4. ACTUAL: dock rows=${JSON.stringify(dockRows)}; full viewport=${JSON.stringify(viewport.map(row => row.trim()))}
+5. GUIDANCE: The prompt input box must occupy the pinned dock on every frame rendered after an exit request`,
+			).toEqual([promptLine]);
+			expect(
+				aboveDock.some(row => row.includes(promptLine)),
+				`1. WHAT: test_inv_pv_7_after_exit_pinned_prompt_only_in_dock FAILED
+2. WHY: INV-PV-7 violation - ${invPv7.description}
+3. EXPECTED: no row above the dock contains ${JSON.stringify(promptLine)}
+4. ACTUAL: rows above dock=${JSON.stringify(aboveDock.map(row => row.trim()))}
+5. GUIDANCE: The prompt input box must appear only in the pinned dock after an exit request, never in an unpinned transcript window`,
+			).toBe(false);
+			expect(
+				aboveDock.some(row => row.includes(pinnedScrollDiscriminator)),
+				`1. WHAT: test_inv_pv_7_after_exit_pinned_pinned_scroll_discriminator FAILED
+2. WHY: INV-PV-7 violation - ${invPv7.description}
+3. EXPECTED: a row above the final prompt dock row contains ${JSON.stringify(pinnedScrollDiscriminator)}
+4. ACTUAL: rows above dock=${JSON.stringify(aboveDock.map(row => row.trim()))}; full viewport=${JSON.stringify(viewport.map(row => row.trim()))}
+5. GUIDANCE: After an exit request the frame must still show the pinned transcript discriminator above the prompt dock, not merely bottom-anchor the prompt`,
 			).toBe(true);
 		} finally {
 			tui.stop();

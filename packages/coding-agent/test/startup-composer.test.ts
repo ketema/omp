@@ -347,7 +347,7 @@ describe("Composer prepaint", () => {
 		expect(terminal.stops).toBe(1);
 	});
 
-	it("first frame mirrors canonical settings-schema defaults (INV-PV-7: viewport structurally absent)", () => {
+	it("first frame mirrors canonical settings-schema defaults", () => {
 		expect(COMPOSER_DEFAULTS).toEqual({
 			quiet: getDefault("startup.quiet"),
 			composerShape: getDefault("composer.shape") ?? "box",

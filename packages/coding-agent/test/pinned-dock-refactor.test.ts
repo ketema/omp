@@ -9,7 +9,6 @@ import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 const postPv2 = CONTRACT_PINNED_DOCK["POST-PV-2"];
 const postPv7 = CONTRACT_PINNED_DOCK["POST-PV-7"];
 const seqPv4 = CONTRACT_PINNED_DOCK["SEQ-PV-4"];
-const invPv7 = CONTRACT_PINNED_DOCK["INV-PV-7"];
 
 /**
  * Spy component: counts render() invocations to prove whether a settled
@@ -288,56 +287,4 @@ describe("pinned dock refactor — SLICE-2 full scrollback, settled-block cachin
 		}
 	});
 
-	it("INV-PV-7: ComposerPreferences exposes no viewport property and Composer operates pinned unconditionally", async () => {
-		/**
-		 * CONTRACT TRACEABILITY:
-		 * - Contract: Composer.start() / ComposerPreferences
-		 * - Enforces: INV-PV-7: TUI SHALL NOT expose or honor an inline/unpinned viewport setting or code path.
-		 * - Category: negative-space / regression
-		 * - Test pyramid: Integration
-		 * - Risk tier: High — a live, honored inline code path bypasses every pinned-mode guarantee in this
-		 *   contract for any caller that can influence composer preferences.
-		 * - Adversarial: Contract-governed, implementation-aware. Verifies that ComposerPreferences has no
-		 *   viewport property and Composer runs in pinned mode unconditionally.
-		 *
-		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites INV-PV-7 in requirements/contracts/pinned_dock.contract.ts.
-		 *   [✓] C2 VALUABLE: verifies structural removal of viewport setting and unconditional pinned operation.
-		 *   [✓] C3 NON-DUPLICATIVE: integration-level check of the live Composer/TUI wiring.
-		 *   [✓] C4 NOT FUTURE-EDIT: enforces the current, explicit INV-PV-7 structural removal requirement.
-		 */
-		await initTheme();
-
-		// Structural check: ComposerPreferences and COMPOSER_DEFAULTS must have NO viewport property
-		const hasViewportInDefaults = "viewport" in COMPOSER_DEFAULTS;
-		expect(
-			hasViewportInDefaults,
-			`1. WHAT: test_inv_pv_7_no_viewport_in_composer_defaults FAILED
-2. WHY: INV-PV-7 violation - ${invPv7.description}
-3. EXPECTED: "viewport" in COMPOSER_DEFAULTS === false (no viewport setting in ComposerPreferences)
-4. ACTUAL: "viewport" in COMPOSER_DEFAULTS === ${hasViewportInDefaults}
-5. GUIDANCE: Remove the viewport property entirely from ComposerPreferences and COMPOSER_DEFAULTS`,
-		).toBe(false);
-
-		const terminal = new VirtualTerminal(80, 10, 100);
-		const composer = new Composer({
-			terminal,
-			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
-		});
-
-		try {
-			composer.start({ playWelcomeIntro: false });
-			await terminal.waitForRender();
-			expect(
-				composer.ui.isPinned(),
-				`1. WHAT: test_inv_pv_7_starts_pinned FAILED (test setup sanity)
-2. WHY: INV-PV-7 violation - ${invPv7.description}
-3. EXPECTED: composer.ui.isPinned() === true unconditionally after start()
-4. ACTUAL: composer.ui.isPinned() === ${composer.ui.isPinned()}
-5. GUIDANCE: Composer.start() must enter pinned mode unconditionally without checking a viewport preference`,
-			).toBe(true);
-		} finally {
-			composer.stop();
-		}
-	});
 });

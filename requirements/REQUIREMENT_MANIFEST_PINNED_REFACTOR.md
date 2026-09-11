@@ -46,6 +46,8 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 > "NATIVE APPROVED"
 > "1 is approved"
 > "2. defer it"
+>
+> "this is an example of you an llm not listening. i explicitly said that there is no unpinned inline mode. you can check past convos. there is no point or need for the prompt input box to ever not be pinned"
 
 **Confirmed understanding:**
 
@@ -55,8 +57,9 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 4. The user rejected cross-pane copied bytes, persistent `/mcp list` output, pinned-local error banners, status-text-only copy errors, and the app-owned selection subsystem that created the pointer-copy path.
 5. Pinned mode does not enter `?1002h` or `?1006h` merely to support ordinary selection; host-native selection is the authoritative path. This slice removes the existing ordinary pinned SGR wheel-to-scroll path; any future app-owned wheel feature is deliberately out of scope.
 6. A fullscreen overlay owns terminal mouse reporting only when its `mouseTracking` option is explicitly `true`; omitted or `false` leaves native terminal pointer behavior unclaimed.
-7. Inherited pinned-render integrity, inline-mode, and provider-fixture remediation are deferred as recorded plan debt; this decision does not weaken their authoritative contract clauses.
-8. The newly observed pre-existing keyboard page-navigation binding defect moves to a deferred plan slice; `POST-PV-14` remains an authoritative contract obligation and does not block the explicit-overlay opt-in correction.
+7. Decision 9A keeps the prompt input box pinned throughout its interactive TUI lifecycle; no inline or unpinned viewport mode is permitted.
+8. Inherited pinned-render integrity and provider-fixture remediation are deferred as recorded plan debt; this decision does not weaken their authoritative contract clauses.
+9. The newly observed pre-existing keyboard page-navigation binding defect moves to a deferred plan slice; `POST-PV-14` remains an authoritative contract obligation and does not block the explicit-overlay opt-in correction.
 
 ## 2. Actor Matrix
 
@@ -124,7 +127,7 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | INV-PV-4 | Packet Loss | While an explicitly pointer-interactive fullscreen overlay owns tracking, TUI SHALL NOT drop concatenated SGR mouse reports from one stdin buffer chunk; ordinary pinned mode leaves those reports unclaimed. |
 | INV-PV-5 | Content Integrity | TUI SHALL NOT overwrite transcript content lines with navigation or follow hints. |
 | INV-PV-6 | Contract Coupling | ImplementationModule SHALL NOT import a contract specification file. |
-| INV-PV-7 | Mode Purity | TUI SHALL NOT expose an inline or unpinned viewport mode; Composer SHALL NOT expose one. |
+| INV-PV-7 | Pinned Prompt Lifecycle | TUI SHALL render the prompt input box only in the pinned dock throughout its interactive lifecycle. |
 | INV-PV-8 | Dock Placement | PinnedViewport SHALL place the dock in the final dock-height rows of the physical frame. |
 | INV-PV-9 | Terminal Discipline | TUI SHALL NOT use DECSTBM to pin the dock. |
 | INV-PV-10 | Native Scrollback | TUI SHALL NOT emit retired interactive transcript rows to native terminal scrollback. |
@@ -147,6 +150,7 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | Gesture qualification | Does a same-cell press/release with no motion count as a copyable one-cell selection? | Not applicable to ordinary pinned pointer selection after decision 6A; it remains historical only if a separately approved app-owned selection path is introduced. | User (5A; Decided By: User) |
 | Overlay pointer ownership | Does a fullscreen overlay with omitted `mouseTracking` receive terminal mouse reporting? | No. Only `mouseTracking === true` is an explicit pointer-interaction request; omitted and `false` retain native terminal pointer behavior. | User (7A; Decided By: User) |
 | Keyboard page-navigation repair | Does this increment repair the pre-existing `tui.viewport.pageUp` / `pageDown` keybinding defect exposed by POST-PV-14 RED evidence? | No. Defer it to a dedicated slice; retain POST-PV-14 as an authoritative obligation. | User (7B; Decided By: User) |
+| Pinned prompt lifecycle | May the prompt input box render outside the pinned dock before entry or after exit? | No. Decision 9A keeps the prompt input box pinned throughout its interactive TUI lifecycle; no inline or unpinned viewport mode is permitted. | User (9A; Decided By: User) |
 ## 5.5 Rejected Alternatives
 
 | Decision | Alternative Considered | Why Rejected | Decided By |
@@ -157,6 +161,7 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | Selection ownership | App-owned SGR drag parsing, visual selection reconstruction, and OSC 52 delivery | It replaces the proven terminal-native path and created the current gesture/copy complexity. | User (6A) |
 | Overlay pointer ownership | Default-on fullscreen overlay mouse reporting | It grants application pointer ownership without an explicit request and conflicts with terminal-native ordinary selection. | User (7A; Decided By: User) |
 | Keyboard page-navigation repair | Repair the unregistered page-navigation bindings in the Decision 7A active slice | It expands the approved explicit-overlay opt-in correction beyond the user-selected scope. | User (7B; Decided By: User) |
+| Pinned prompt lifecycle | Any inline or unpinned prompt-input surface | The user stated there is no point or need for the prompt input box ever not to be pinned. | User (9A; Decided By: User) |
 
 ## 6. Tool/API Interface Summary
 
@@ -186,7 +191,7 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 
 ## 8. Completion Promise
 
-> Completion of the active Decision 7A slice requires one canonical contract per domain, genuine RED discriminators for pinned mode emission and fullscreen-overlay `mouseTracking` omitted/false/true behavior, minimal GREEN opt-in correction, live focused execution evidence, a real Ghostty and Herdr pane-confinement exercise using terminal-native drag/copy, and human acceptance of observed behavior. The pre-existing POST-PV-14 keyboard page-navigation defect remains a separately deferred contract obligation.
+> Completion of the active Decision 7A and Decision 9A slices requires one canonical contract per domain, genuine RED discriminators for pinned mode emission, fullscreen-overlay `mouseTracking` omitted/false/true behavior, and a prompt-input lifecycle that never renders unpinned; minimal GREEN corrections; live focused execution evidence; a real Ghostty and Herdr pane-confinement exercise using terminal-native drag/copy; and human acceptance of observed behavior. The pre-existing POST-PV-14 keyboard page-navigation defect remains a separately deferred contract obligation.
 
 ## 9. Contract Authority
 
@@ -205,3 +210,4 @@ Human intent and real-world acceptance remain human-owned. This manifest records
 | 2026-09-10 | User and coordinator | Recorded decision 6A: ordinary pinned pointer selection remains terminal-native; pinned entry does not enable `?1002h/?1006h`, app-owned pointer copy and the existing ordinary SGR wheel branch are removed, keyboard navigation remains, and any future app-owned wheel feature is deferred. |
 | 2026-09-10 | User and coordinator | Recorded decision 7A: fullscreen overlay mouse reporting is explicit opt-in (`mouseTracking === true`); inherited non-native legacy debt is deferred without relaxing its authoritative clauses. |
 | 2026-09-10 | User and coordinator | Recorded decision 7B: defer the pre-existing POST-PV-14 keyboard page-navigation binding defect to a dedicated plan slice; preserve the clause authority and do not expand Decision 7A GREEN scope. |
+| 2026-09-10 | User and coordinator | Recorded decision 9A: the prompt input box remains pinned throughout its interactive lifecycle; no inline or unpinned viewport mode or path is permitted. |
