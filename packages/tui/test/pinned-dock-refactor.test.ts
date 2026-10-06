@@ -532,11 +532,11 @@ describe("pinned dock refactor — software scrollback, content integrity, and p
 		 *   [✓] C1 VALID: cites INV-PV-7 in requirements/contracts/pinned_dock.contract.ts.
 		 *   [✓] C2 VALUABLE: both prompt dock placement AND pinned-scroll discriminator are observed. An unpinned/inline paint that places PROMPT:observe anywhere other than the final dock row fails; a missing prompt fails; a bottom-anchored prompt without TRANSCRIPT_LINE_1 visible above the dock fails.
 		 *   [✓] C3 NON-DUPLICATIVE: the only test asserting first-frame-after-start dock placement and pinned-scroll discriminator; the sibling asserts the post-exitPinned boundary.
-		 *   [✓] C4 NOT FUTURE-EDIT: bounds the existing start() render path (currently paints the prompt unpinned without the pinned-scroll discriminator), not a hypothetical API.
+		 *   [✓] C4 NOT FUTURE-EDIT: bounds the current, explicit INV-PV-7 start-render guarantee through an existing public lifecycle path.
 		 *
-		 * Mock Contract: none.
-		 * Double type: Stub (DistinguishablePromptFrameProvider) of TerminalFrameProvider; Fake (VirtualTerminal) of the production Terminal interface.
-		 * VirtualTerminal.getViewport() reads the kitty WASM grid after real writes — the same observation seam already used for INV-PV-5.
+		 * Mock Contract: none — no Terminal-behavior replacement.
+		 * Double type: Stub (DistinguishablePromptFrameProvider) of TerminalFrameProvider; real VirtualTerminal kitty-vt-wasm engine, not a Fake.
+		 * Fidelity source: VirtualTerminal.getViewport() reads the kitty WASM grid after real writes — the same observation seam already used for INV-PV-5.
 		 */
 		const invPv7 = CONTRACT_PINNED_DOCK["INV-PV-7"];
 		const promptLine = "PROMPT:observe";
@@ -594,10 +594,11 @@ describe("pinned dock refactor — software scrollback, content integrity, and p
 		 *   [✓] C1 VALID: cites INV-PV-7 in requirements/contracts/pinned_dock.contract.ts.
 		 *   [✓] C2 VALUABLE: both prompt dock placement AND pinned-scroll discriminator are observed. Painting the prompt anywhere other than the final dock row after an exit request fails; a missing prompt fails; a bottom-anchored prompt without TRANSCRIPT_LINE_1 visible above the dock fails.
 		 *   [✓] C3 NON-DUPLICATIVE: the only test asserting post-exitPinned dock placement and pinned-scroll discriminator; the sibling asserts the first-frame-after-start boundary.
-		 *   [✓] C4 NOT FUTURE-EDIT: bounds the existing exitPinned() render path (currently paints the prompt unpinned again without the pinned-scroll discriminator), not a hypothetical API.
+		 *   [✓] C4 NOT FUTURE-EDIT: bounds the current, explicit INV-PV-7 exit-render guarantee through an existing public lifecycle path.
 		 *
-		 * Mock Contract: none.
-		 * Double type: Stub (DistinguishablePromptFrameProvider) of TerminalFrameProvider; Fake (VirtualTerminal) of the production Terminal interface.
+		 * Mock Contract: none — no Terminal-behavior replacement.
+		 * Double type: Stub (DistinguishablePromptFrameProvider) of TerminalFrameProvider; real VirtualTerminal kitty-vt-wasm engine, not a Fake.
+		 * Fidelity source: VirtualTerminal.getViewport() reads the kitty WASM grid after real writes — the same observation seam already used for INV-PV-5.
 		 */
 		const invPv7 = CONTRACT_PINNED_DOCK["INV-PV-7"];
 		const promptLine = "PROMPT:observe";
@@ -672,9 +673,9 @@ describe("pinned dock refactor — startup and explicit-exit alternate-screen ow
 		 *
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
 		 *   [✓] C1 VALID: cites POST-PV-28, SEQ-PV-11, INV-PV-17 in requirements/contracts/pinned_dock.contract.ts.
-		 *   [✓] C2 VALUABLE: today's start() writes ALT_SCREEN_ENTER on its very first call, failing the primary assertion; an implementation that activates the dock only after requesting a frame, or never docks the first frame, fails the secondary assertion.
+		 *   [✓] C2 VALUABLE: a startup path that writes ALT_SCREEN_ENTER, activates the dock after requesting a frame, or never docks the first frame fails an exact assertion below.
 		 *   [✓] C3 NON-DUPLICATIVE: the only test asserting TUI.start()'s terminal-mode write stream; the existing "first frame after start renders the prompt only in the pinned dock" INV-PV-7 test asserts row-exclusivity and the transcript discriminator and never inspects terminal-mode writes, so this test does not repeat it.
-		 *   [✓] C4 NOT FUTURE-EDIT: bounds the current start() path, which writes ALT_SCREEN_ENTER on its first call today, not a hypothetical API.
+		 *   [✓] C4 NOT FUTURE-EDIT: bounds the current, explicit start lifecycle obligation through an existing start() path, not a hypothetical API.
 		 *
 		 * Mock Contract: none — no Terminal-behavior replacement.
 		 * Double type: Spy (RecordingTerminal); Stub (DistinguishablePromptFrameProvider, contract-valid frame-plan input fixture).
@@ -729,9 +730,9 @@ describe("pinned dock refactor — startup and explicit-exit alternate-screen ow
 		 *
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
 		 *   [✓] C1 VALID: cites POST-PV-12b in requirements/contracts/pinned_dock.contract.ts.
-		 *   [✓] C2 VALUABLE: today's startup already claims the alternate screen, so the overlay-open call contributes zero new writes, failing the diff assertion below; a bare total-count check would pass for the wrong reason and is deliberately not used.
-		 *   [✓] C3 NON-DUPLICATIVE: the only test measuring the ALT_SCREEN_ENTER write attributable to a fullscreen-overlay-open call made after a bare, unpinned start(); distinct from the POST-PV-28/INV-PV-17 start()-only test above (no overlay involved) and from the SLICE-1 POST-PV-12 test (overlay opened while an explicit enterPinned() already owns the screen).
-		 *   [✓] C4 NOT FUTURE-EDIT: bounds the current overlay-open path, which contributes zero writes today because startup already owns the screen, not a hypothetical API.
+		 *   [✓] C2 VALUABLE: a startup or overlay path that fails to produce exactly one overlay-attributable ALT_SCREEN_ENTER write fails the diff assertion below; a bare total-count check would pass for the wrong reason and is deliberately not used.
+		 *   [✓] C3 NON-DUPLICATIVE: the only test measuring the ALT_SCREEN_ENTER write attributable to a fullscreen-overlay-open call made after dock-only start; distinct from the POST-PV-28/INV-PV-17 start()-only test above (no overlay involved) and from the SLICE-1 POST-PV-12 test (overlay opened while an explicit enterPinned() already owns the screen).
+		 *   [✓] C4 NOT FUTURE-EDIT: bounds the current, explicit overlay-open obligation through an existing fullscreen-overlay path, not a hypothetical API.
 		 *
 		 * Mock Contract: none — no Terminal-behavior replacement.
 		 * Double type: Spy (RecordingTerminal); Stub (StaticPinnedFrameProvider, contract-valid frame-plan input fixture); real Input overlay body (content not under test).
@@ -786,9 +787,9 @@ describe("pinned dock refactor — startup and explicit-exit alternate-screen ow
 		 *
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
 		 *   [✓] C1 VALID: cites POST-PV-29, SEQ-PV-12, INV-PV-18, FORBIDDEN-PV-10, ERRORS-PV-7, all present in requirements/contracts/pinned_dock.contract.ts.
-		 *   [✓] C2 VALUABLE: today's exitPinned() is an alias for enterPinned() and never writes ALT_SCREEN_LEAVE under any circumstance, so the first (pinned-owned) phase's "exactly 1" assertion fails today; an implementation that releases unconditionally regardless of ownership would instead fail the second and third phases' "exactly 0" assertions, which this same scenario also covers. Recreating or resetting PinnedViewport fails the scrolled-window discriminator (TRANSCRIPT_LINE_9 visible, TRANSCRIPT_LINE_10 absent) or the docked-prompt row.
+		 *   [✓] C2 VALUABLE: an exit path that fails to leave a pin-owned screen, leaves a foreign-owned screen, or recreates or resets PinnedViewport fails an exact ownership or continuity assertion below.
 		 *   [✓] C3 NON-DUPLICATIVE: the only test asserting the ALT_SCREEN_LEAVE write stream for TUI.exitPinned() under pinned-owned, overlay-owned, and resize-owned conditions, and the only test asserting PinnedViewport scrolled-window continuity across an exitPinned() call. INV-PV-7's post-exitPinned case asserts prompt exclusivity plus TRANSCRIPT_LINE_1 on an unscrolled 1-line history and is not repeated; SLICE-1 POST-PV-11/POST-PV-12 assert ALT_SCREEN_ENTER idempotency and overlay-open suppression and are not repeated.
-		 *   [✓] C4 NOT FUTURE-EDIT: bounds the current exitPinned() path, which never writes ALT_SCREEN_LEAVE today regardless of ownership, not a hypothetical API.
+		 *   [✓] C4 NOT FUTURE-EDIT: bounds the current, explicit exitPinned ownership constraints through an existing exit path, not a hypothetical API.
 		 *
 		 * Mock Contract: none — no Terminal-behavior replacement.
 		 * Double type: Spy (RecordingTerminal); Stub (StaticPinnedFrameProvider, contract-valid frame-plan input fixture); real Input overlay body.

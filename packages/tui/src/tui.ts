@@ -837,8 +837,7 @@ export class TUI extends Container {
 	 */
 	enterPinned(): void {
 		if (this.#stopped) return;
-		this.#pinnedActive = true;
-		this.#pinnedViewport ??= new PinnedViewport();
+		this.#activatePinnedDock();
 		this.#ensurePinnedAltScreen();
 		// SEQ-PV-10 / POST-PV-25 / INV-PV-15: pinned state before first frame;
 		// ordinary pointer selection stays unclaimed (no PINNED_MOUSE_ENTER).
