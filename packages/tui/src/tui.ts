@@ -839,13 +839,9 @@ export class TUI extends Container {
 		this.requestRender(true);
 	}
 
-	/** Leave pinned mode. Leaves the alt screen only when no overlay owns it. */
+	/** INV-PV-7: an exit request does not move the prompt out of the pinned dock. */
 	exitPinned(): void {
-		if (!this.#pinnedActive) return;
-		this.#pinnedActive = false;
-		this.#pinnedViewport = undefined;
-		this.#releasePinnedAltScreen();
-		this.requestRender(true);
+		this.enterPinned();
 	}
 
 	scrollPinnedBy(delta: number): void {
@@ -1136,6 +1132,8 @@ export class TUI extends Container {
 			this.#querySixelSupport();
 			this.#queryCellSize();
 		}
+		// INV-PV-7: first interactive frame after start paints the prompt in the pinned dock.
+		this.enterPinned();
 		this.requestRender(true, { clearScrollback: options?.clearScrollback === true });
 	}
 	/** Borrow the alternate buffer for stable, history-free resize repainting. */

@@ -5,6 +5,8 @@ import { InvalidHeightError as ImplInvalidHeightError, PinnedViewport } from "@o
 import {
 	CONTRACT_PINNED_DOCK,
 	InvalidHeightError as ContractInvalidHeightError,
+	PINNED_ALT_SCREEN_ENTER as ALT_SCREEN_ENTER,
+	PINNED_ALT_SCREEN_LEAVE as ALT_SCREEN_LEAVE,
 	validateSoftwareScrollback,
 	ZeroScrollbackError,
 } from "../../../requirements/contracts/pinned_dock.contract";
@@ -15,10 +17,14 @@ import { VirtualTerminal } from "./virtual-terminal";
 // ============================================================================
 
 /**
- * Boundary spy: delegates grid behavior to VirtualTerminal (kitty WASM engine)
- * and records every raw write chunk in call order.
+ * Boundary spy of Terminal.write: records the exact `data` argument, then
+ * delegates unchanged to VirtualTerminal.write. It does not substitute grid,
+ * viewport, or escape-sequence behavior.
  *
- * Double type: Spy.
+ * Double type: Spy (record-then-delegate; not a Mock and not a Fake screen).
+ * Fidelity source: this override (`this.writes.push(data); super.write(data)`).
+ * VirtualTerminal is the kitty-vt-wasm engine (`KittyTerminal` via
+ * `loadModuleSync("kitty-vt-wasm/kitty-vt.wasm")` in ./virtual-terminal.ts).
  * Contract: requirements/contracts/pinned_dock.contract.ts POST-PV-3, INV-PV-5, INV-PV-7.
  */
 class RecordingTerminal extends VirtualTerminal {
@@ -31,11 +37,13 @@ class RecordingTerminal extends VirtualTerminal {
 }
 
 /**
- * Immutable frame input for real TUI lifecycle tests. It contains no provider
- * behavior under test; its values are the transcript and dock inputs governed
- * by the contract.
+ * Contract-valid TerminalFrameProvider input fixture. Supplies immutable
+ * pinnedScroll/pinnedDock plan rows; it is not a terminal emulator and does
+ * not replace Terminal behavior.
  *
- * Double type: Stub.
+ * Double type: Stub (controlled return values only; no call verification).
+ * Fidelity source: TerminalFramePlan consumed by the real TUI renderer; values
+ * are test-owned transcript/dock inputs, not invented terminal output.
  * Contract: requirements/contracts/pinned_dock.contract.ts POST-PV-3.
  */
 class StaticPinnedFrameProvider implements TerminalFrameProvider {
@@ -56,11 +64,12 @@ class StaticPinnedFrameProvider implements TerminalFrameProvider {
 }
 
 /**
- * Frame-provider stub that supplies one distinguishable prompt input line on
- * both the unpinned viewport plan and the pinned dock plan so row placement is
- * the observable.
+ * Contract-valid TerminalFrameProvider input fixture. Supplies one
+ * distinguishable prompt line and a pinned-scroll discriminator so row
+ * placement is the observable. Not a terminal emulator.
  *
- * Double type: Stub.
+ * Double type: Stub (controlled return values only; no call verification).
+ * Fidelity source: TerminalFramePlan consumed by the real TUI renderer.
  * Contract: requirements/contracts/pinned_dock.contract.ts INV-PV-7.
  */
 class DistinguishablePromptFrameProvider implements TerminalFrameProvider {
@@ -73,6 +82,26 @@ class DistinguishablePromptFrameProvider implements TerminalFrameProvider {
 			pinnedDock: ["PROMPT:observe"],
 		};
 	}
+}
+
+/**
+ * Count non-overlapping occurrences of `needle` across the ordered write
+ * stream. A single terminal write may concatenate multiple escape sequences
+ * (e.g. `${ALT_SCREEN_ENTER}${enhancementEnter}`), so this scans substrings
+ * rather than comparing whole chunks.
+ */
+function countNeedle(haystacks: readonly string[], needle: string): number {
+	let count = 0;
+	for (const chunk of haystacks) {
+		let from = 0;
+		while (from < chunk.length) {
+			const at = chunk.indexOf(needle, from);
+			if (at < 0) break;
+			count++;
+			from = at + needle.length;
+		}
+	}
+	return count;
 }
 
 // ============================================================================
@@ -611,6 +640,266 @@ describe("pinned dock refactor — software scrollback, content integrity, and p
 4. ACTUAL: rows above dock=${JSON.stringify(aboveDock.map(row => row.trim()))}; full viewport=${JSON.stringify(viewport.map(row => row.trim()))}
 5. GUIDANCE: After an exit request the frame must still show the pinned transcript discriminator above the prompt dock, not merely bottom-anchor the prompt`,
 			).toBe(true);
+		} finally {
+			tui.stop();
+		}
+	});
+});
+
+// ============================================================================
+// Startup and explicit-exit alternate-screen ownership lifecycle (POST-PV-12b,
+// POST-PV-28, POST-PV-29, SEQ-PV-11, SEQ-PV-12, INV-PV-17, INV-PV-18,
+// FORBIDDEN-PV-10, ERRORS-PV-7) — Decision 9B / Decision 9C
+// ============================================================================
+
+describe("pinned dock refactor — startup and explicit-exit alternate-screen ownership", () => {
+	it("POST-PV-28 / SEQ-PV-11 / INV-PV-17: start() renders the first prompt frame in the pinned dock without writing ALT_SCREEN_ENTER", async () => {
+		/**
+		 * CONTRACT TRACEABILITY:
+		 * - Contract: TUI.start()
+		 * - Enforces: POST-PV-28: TUI.start SHALL render its first prompt frame in the pinned dock without writing ALT_SCREEN_ENTER solely for startup
+		 * - Enforces: SEQ-PV-11: TUI.start SHALL invoke TUI.#activatePinnedDock before requesting its first interactive frame
+		 * - Enforces: INV-PV-17: TUI.start SHALL NOT write ALT_SCREEN_ENTER solely to render the first pinned prompt frame
+		 * - Category: state-transition / integration
+		 * - Test pyramid: Integration
+		 * - Risk tier: High — every interactive session runs this startup path; a startup-owned alternate screen makes an independently requested fullscreen overlay a guest of the wrong canvas (manifest IP-PV-6 "Breaks If Missing", Decision 9B rejected-alternative rationale)
+		 * - Adversarial: Contract-governed, implementation-aware. Drives the real TUI.start() lifecycle with no explicit pin request and captures the raw terminal write stream plus the first rendered frame's dock placement; only a real write-stream capture can distinguish "docked without alt-screen ownership" from "docked because isPinned() happens to be true", which the task's constraints bar as sole evidence.
+		 *
+		 * SEQ_TEST_SELF_CHECK:
+		 *   [✓] Constructs the real TUI via new TUI(...) and drives it through start(), never a direct call to a private activation method.
+		 *   [✓] Verifies SEQ-PV-11 ordering through the observable first-rendered-frame dock placement, not a direct #activatePinnedDock call.
+		 *   [✓] Doubles: RecordingTerminal is a Spy — write(data) records the exact argument then delegates unchanged to VirtualTerminal.write (kitty-vt-wasm KittyTerminal). DistinguishablePromptFrameProvider is a Stub input fixture supplying a contract-valid TerminalFramePlan; it is not a terminal emulator and does not replace Terminal behavior.
+		 *
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites POST-PV-28, SEQ-PV-11, INV-PV-17 in requirements/contracts/pinned_dock.contract.ts.
+		 *   [✓] C2 VALUABLE: today's start() writes ALT_SCREEN_ENTER on its very first call, failing the primary assertion; an implementation that activates the dock only after requesting a frame, or never docks the first frame, fails the secondary assertion.
+		 *   [✓] C3 NON-DUPLICATIVE: the only test asserting TUI.start()'s terminal-mode write stream; the existing "first frame after start renders the prompt only in the pinned dock" INV-PV-7 test asserts row-exclusivity and the transcript discriminator and never inspects terminal-mode writes, so this test does not repeat it.
+		 *   [✓] C4 NOT FUTURE-EDIT: bounds the current start() path, which writes ALT_SCREEN_ENTER on its first call today, not a hypothetical API.
+		 *
+		 * Mock Contract: none — no Terminal-behavior replacement.
+		 * Double type: Spy (RecordingTerminal); Stub (DistinguishablePromptFrameProvider, contract-valid frame-plan input fixture).
+		 * Fidelity source: RecordingTerminal.write records `data` then super.write(data). VirtualTerminal is backed by kitty-vt-wasm (KittyTerminal + loadModuleSync of kitty-vt.wasm in packages/tui/test/virtual-terminal.ts). The Spy cannot diverge from VirtualTerminal grid/mode semantics because it never substitutes them.
+		 */
+		const postPv28 = CONTRACT_PINNED_DOCK["POST-PV-28"];
+		const seqPv11 = CONTRACT_PINNED_DOCK["SEQ-PV-11"];
+		const invPv17 = CONTRACT_PINNED_DOCK["INV-PV-17"];
+		const promptLine = "PROMPT:observe";
+		const dockHeight = 1;
+		const terminal = new RecordingTerminal(40, 8, 100);
+		const tui = new TUI(terminal, false);
+		tui.setFrameProvider(new DistinguishablePromptFrameProvider());
+		try {
+			tui.start();
+			await terminal.waitForRender();
+
+			const enterCount = countNeedle(terminal.writes, ALT_SCREEN_ENTER);
+			expect(
+				enterCount,
+				`1. WHAT: test_post_pv_28_inv_pv_17_start_writes_no_alt_screen_enter FAILED
+2. WHY: POST-PV-28 / INV-PV-17 violation - ${postPv28.description}; ${invPv17.description}
+3. EXPECTED: 0 ALT_SCREEN_ENTER writes once TUI.start() settles its first frame
+4. ACTUAL: ${enterCount}
+5. GUIDANCE: Startup must dock the first prompt frame without acquiring alternate-screen ownership; reserve ALT_SCREEN_ENTER for an explicit pinned entry or an independently requested fullscreen overlay`,
+			).toBe(0);
+
+			const viewport = terminal.getViewport();
+			const dockRows = viewport.slice(-dockHeight).map(row => row.trim());
+			expect(
+				dockRows,
+				`1. WHAT: test_seq_pv_11_dock_active_on_first_rendered_frame FAILED
+2. WHY: SEQ-PV-11 violation - ${seqPv11.description}
+3. EXPECTED: the final ${dockHeight} physical row(s) of the first rendered frame equal [${JSON.stringify(promptLine)}]
+4. ACTUAL: dock rows=${JSON.stringify(dockRows)}
+5. GUIDANCE: Dock activation must run before the first interactive frame is requested, so the very first frame the terminal ever sees already carries the dock`,
+			).toEqual([promptLine]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("POST-PV-12b: a fullscreen overlay opened after dock-only startup writes exactly one ALT_SCREEN_ENTER", async () => {
+		/**
+		 * CONTRACT TRACEABILITY:
+		 * - Contract: TUI.showOverlay() / TUI.#doRender()
+		 * - Enforces: POST-PV-12b: opening a fullscreen overlay when no lifecycle owns the alternate screen SHALL write exactly one ALT_SCREEN_ENTER
+		 * - Category: positive / integration
+		 * - Test pyramid: Integration
+		 * - Risk tier: High — a startup-owned alternate screen makes the overlay a silent guest of the wrong canvas instead of claiming its own entry (manifest Decision 9B rejected-alternative rationale)
+		 * - Adversarial: Contract-governed, implementation-aware. Drives real start() then showOverlay({ fullscreen: true }) and measures the ALT_SCREEN_ENTER write attributable to the overlay-open call specifically — the diff across that call — rather than a bare post-hoc total; a startup bug that already claimed the screen would make a bare "total == 1" assertion pass for the wrong reason.
+		 *
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites POST-PV-12b in requirements/contracts/pinned_dock.contract.ts.
+		 *   [✓] C2 VALUABLE: today's startup already claims the alternate screen, so the overlay-open call contributes zero new writes, failing the diff assertion below; a bare total-count check would pass for the wrong reason and is deliberately not used.
+		 *   [✓] C3 NON-DUPLICATIVE: the only test measuring the ALT_SCREEN_ENTER write attributable to a fullscreen-overlay-open call made after a bare, unpinned start(); distinct from the POST-PV-28/INV-PV-17 start()-only test above (no overlay involved) and from the SLICE-1 POST-PV-12 test (overlay opened while an explicit enterPinned() already owns the screen).
+		 *   [✓] C4 NOT FUTURE-EDIT: bounds the current overlay-open path, which contributes zero writes today because startup already owns the screen, not a hypothetical API.
+		 *
+		 * Mock Contract: none — no Terminal-behavior replacement.
+		 * Double type: Spy (RecordingTerminal); Stub (StaticPinnedFrameProvider, contract-valid frame-plan input fixture); real Input overlay body (content not under test).
+		 * Fidelity source: RecordingTerminal.write records `data` then super.write(data). VirtualTerminal is backed by kitty-vt-wasm (KittyTerminal + loadModuleSync of kitty-vt.wasm in packages/tui/test/virtual-terminal.ts). StaticPinnedFrameProvider is not a terminal emulator.
+		 */
+		const postPv12b = CONTRACT_PINNED_DOCK["POST-PV-12b"];
+		const terminal = new RecordingTerminal(40, 8, 100);
+		const tui = new TUI(terminal, false);
+		tui.setFrameProvider(new StaticPinnedFrameProvider(["TRANSCRIPT_LINE_1"], ["DOCK_LINE_1"]));
+		const overlay = new Input();
+		overlay.prompt = "OVERLAY_BODY:";
+		try {
+			tui.start();
+			await terminal.waitForRender();
+			const beforeOverlayEnterCount = countNeedle(terminal.writes, ALT_SCREEN_ENTER);
+
+			tui.showOverlay(overlay, { fullscreen: true });
+			await terminal.waitForRender();
+			const afterOverlayEnterCount = countNeedle(terminal.writes, ALT_SCREEN_ENTER);
+
+			expect(
+				afterOverlayEnterCount - beforeOverlayEnterCount,
+				`1. WHAT: test_post_pv_12b_overlay_open_writes_one_alt_screen_enter FAILED
+2. WHY: POST-PV-12b violation - ${postPv12b.description}
+3. EXPECTED: exactly 1 new ALT_SCREEN_ENTER write attributable to the fullscreen-overlay-open call
+4. ACTUAL: ${afterOverlayEnterCount - beforeOverlayEnterCount} new write(s) (before=${beforeOverlayEnterCount}, after=${afterOverlayEnterCount})
+5. GUIDANCE: When no lifecycle yet owns the alternate screen, the fullscreen overlay's own open must be the action that claims it`,
+			).toBe(1);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("POST-PV-29 / SEQ-PV-12 / INV-PV-18 / FORBIDDEN-PV-10 / ERRORS-PV-7: exitPinned releases only an alternate screen it explicitly owns, never one owned by an overlay or an in-flight resize", async () => {
+		/**
+		 * CONTRACT TRACEABILITY:
+		 * - Contract: TUI.exitPinned()
+		 * - Enforces: POST-PV-29: TUI.exitPinned SHALL write exactly one ALT_SCREEN_LEAVE when the explicit pinned session owns the alternate screen and no overlay or resize lifecycle owns it
+		 * - Enforces: SEQ-PV-12: TUI.exitPinned SHALL invoke TUI.#releasePinnedAltScreen after retaining dock state, and only the pinned-owned screen may be released
+		 * - Enforces: INV-PV-18: TUI.exitPinned SHALL retain pinned state, PinnedViewport, and docked prompt after an explicit pinned exit
+		 * - Enforces: FORBIDDEN-PV-10: TUI.exitPinned SHALL NOT write ALT_SCREEN_LEAVE when the explicit pinned session does not own the alternate screen, including while overlay or resize lifecycle state owns it
+		 * - Enforces: ERRORS-PV-7: when no explicit pinned screen is owned, TUI.exitPinned SHALL intentionally retain the dock and emit no ALT_SCREEN_LEAVE; error class: none; propagation: none
+		 * - Category: state-transition / invariant / error (combined single-lifecycle scenario)
+		 * - Test pyramid: Integration
+		 * - Risk tier: High — releasing a screen exitPinned does not own corrupts an overlay's or an in-flight resize's borrowed buffer; never releasing one it does own leaves the session fullscreen forever (manifest IP-PV-7 "Breaks If Missing")
+		 * - Adversarial: Contract-governed, implementation-aware. Drives one continuous real start() -> enterPinned() -> scrollPinnedBy() -> exitPinned() -> showOverlay(fullscreen) -> exitPinned() -> resize() -> exitPinned() lifecycle and measures the ALT_SCREEN_LEAVE write diff attributable to each exitPinned() call plus the PinnedViewport scroll window, never isPinned() alone. The three exitPinned() calls exercise, in order: a pinned-owned screen (must release exactly once), an overlay-owned screen (must not release), and an in-flight resize-owned screen (must not release) — the positive and negative branches of the same ownership check, so this single scenario cannot be satisfied by an implementation that always releases or one that never releases.
+		 *
+		 * SEQ_TEST_SELF_CHECK:
+		 *   [✓] Constructs the real TUI via new TUI(...) and drives start()/enterPinned()/exitPinned()/showOverlay()/terminal.resize(), never a direct call to #releasePinnedAltScreen or #ensurePinnedAltScreen.
+		 *   [✓] Verifies SEQ-PV-12 through the observable ALT_SCREEN_LEAVE write diff across each real exitPinned() call.
+		 *   [✓] Doubles: RecordingTerminal is a Spy — write(data) records the exact argument then delegates unchanged to VirtualTerminal.write (kitty-vt-wasm KittyTerminal). StaticPinnedFrameProvider is a Stub input fixture supplying a contract-valid TerminalFramePlan; it is not a terminal emulator and does not replace Terminal behavior. terminal.resize() drives the real resize handler synchronously, so the in-flight resize-owned window is observed before its ~120ms settle timer, never by mutating a private flag.
+		 *
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites POST-PV-29, SEQ-PV-12, INV-PV-18, FORBIDDEN-PV-10, ERRORS-PV-7, all present in requirements/contracts/pinned_dock.contract.ts.
+		 *   [✓] C2 VALUABLE: today's exitPinned() is an alias for enterPinned() and never writes ALT_SCREEN_LEAVE under any circumstance, so the first (pinned-owned) phase's "exactly 1" assertion fails today; an implementation that releases unconditionally regardless of ownership would instead fail the second and third phases' "exactly 0" assertions, which this same scenario also covers. Recreating or resetting PinnedViewport fails the scrolled-window discriminator (TRANSCRIPT_LINE_9 visible, TRANSCRIPT_LINE_10 absent) or the docked-prompt row.
+		 *   [✓] C3 NON-DUPLICATIVE: the only test asserting the ALT_SCREEN_LEAVE write stream for TUI.exitPinned() under pinned-owned, overlay-owned, and resize-owned conditions, and the only test asserting PinnedViewport scrolled-window continuity across an exitPinned() call. INV-PV-7's post-exitPinned case asserts prompt exclusivity plus TRANSCRIPT_LINE_1 on an unscrolled 1-line history and is not repeated; SLICE-1 POST-PV-11/POST-PV-12 assert ALT_SCREEN_ENTER idempotency and overlay-open suppression and are not repeated.
+		 *   [✓] C4 NOT FUTURE-EDIT: bounds the current exitPinned() path, which never writes ALT_SCREEN_LEAVE today regardless of ownership, not a hypothetical API.
+		 *
+		 * Mock Contract: none — no Terminal-behavior replacement.
+		 * Double type: Spy (RecordingTerminal); Stub (StaticPinnedFrameProvider, contract-valid frame-plan input fixture); real Input overlay body.
+		 * Fidelity source: RecordingTerminal.write records `data` then super.write(data). VirtualTerminal is backed by kitty-vt-wasm (KittyTerminal + loadModuleSync of kitty-vt.wasm in packages/tui/test/virtual-terminal.ts). StaticPinnedFrameProvider is not a terminal emulator.
+		 */
+		const postPv29 = CONTRACT_PINNED_DOCK["POST-PV-29"];
+		const seqPv12 = CONTRACT_PINNED_DOCK["SEQ-PV-12"];
+		const invPv18 = CONTRACT_PINNED_DOCK["INV-PV-18"];
+		const forbiddenPv10 = CONTRACT_PINNED_DOCK["FORBIDDEN-PV-10"];
+		const errorsPv7 = CONTRACT_PINNED_DOCK["ERRORS-PV-7"];
+		const transcript = Array.from({ length: 10 }, (_, i) => `TRANSCRIPT_LINE_${i + 1}`);
+		const terminal = new RecordingTerminal(40, 8, 100);
+		const tui = new TUI(terminal, false);
+		tui.setFrameProvider(new StaticPinnedFrameProvider(transcript, ["PROMPT:observe"]));
+		try {
+			// ---- Phase 1: pinned alone explicitly owns the alternate screen ----
+			tui.start();
+			await terminal.waitForRender();
+			tui.enterPinned();
+			await terminal.waitForRender();
+			tui.scrollPinnedBy(-1);
+			await terminal.waitForRender();
+			const scrolledViewport = terminal.getViewport().map(row => row.trim());
+
+			const leaveBeforePinnedExit = countNeedle(terminal.writes, ALT_SCREEN_LEAVE);
+			tui.exitPinned();
+			await terminal.waitForRender();
+			const leaveAfterPinnedExit = countNeedle(terminal.writes, ALT_SCREEN_LEAVE);
+			expect(
+				leaveAfterPinnedExit - leaveBeforePinnedExit,
+				`1. WHAT: test_post_pv_29_seq_pv_12_pinned_owned_exit_writes_one_alt_screen_leave FAILED
+2. WHY: POST-PV-29 / SEQ-PV-12 violation - ${postPv29.description}; ${seqPv12.description}
+3. EXPECTED: exactly 1 new ALT_SCREEN_LEAVE write when exitPinned() is called while the explicit pinned session alone owns the alternate screen
+4. ACTUAL: ${leaveAfterPinnedExit - leaveBeforePinnedExit} new write(s) (before=${leaveBeforePinnedExit}, after=${leaveAfterPinnedExit})
+5. GUIDANCE: exitPinned must release a pinned-owned alternate screen exactly once`,
+			).toBe(1);
+
+			const postExitViewport = terminal.getViewport().map(row => row.trim());
+			const postExitAboveDock = postExitViewport.slice(0, -1);
+			const postExitDockRows = postExitViewport.slice(-1);
+			const retainedPinnedWindow = {
+				scrolledLineVisible: postExitAboveDock.some(row => row.includes("TRANSCRIPT_LINE_9")),
+				tailLineVisible: postExitAboveDock.some(row => row.includes("TRANSCRIPT_LINE_10")),
+			};
+			expect(
+				postExitDockRows,
+				`1. WHAT: test_inv_pv_18_docked_prompt_retained_after_exit FAILED
+2. WHY: INV-PV-18 violation - ${invPv18.description}
+3. EXPECTED: the final dock row equals ["PROMPT:observe"] after explicit pinned exit
+4. ACTUAL: dock=${JSON.stringify(postExitDockRows)}; before=${JSON.stringify(scrolledViewport)}; after=${JSON.stringify(postExitViewport)}
+5. GUIDANCE: An explicit pinned exit must keep the prompt docked; it must not drop or unpin the dock`,
+			).toEqual(["PROMPT:observe"]);
+			expect(
+				retainedPinnedWindow,
+				`1. WHAT: test_inv_pv_18_pinned_viewport_scroll_window_retained_after_exit FAILED
+2. WHY: INV-PV-18 violation - ${invPv18.description}
+3. EXPECTED: after exitPinned() the retained PinnedViewport still shows the scrolled window: { scrolledLineVisible: true, tailLineVisible: false } ("TRANSCRIPT_LINE_9" above the dock, "TRANSCRIPT_LINE_10" absent)
+4. ACTUAL: ${JSON.stringify(retainedPinnedWindow)}; before=${JSON.stringify(scrolledViewport)}; after above-dock=${JSON.stringify(postExitAboveDock)}
+5. GUIDANCE: exitPinned must retain the existing PinnedViewport scroll window, never recreate or reset it to the tail or the top`,
+			).toEqual({ scrolledLineVisible: true, tailLineVisible: false });
+			expect(
+				tui.isPinned(),
+				`1. WHAT: test_inv_pv_18_pinned_state_retained_after_exit FAILED
+2. WHY: INV-PV-18 violation - ${invPv18.description}
+3. EXPECTED: isPinned() still true after an explicit pinned exit
+4. ACTUAL: ${tui.isPinned()}
+5. GUIDANCE: An explicit pinned exit retains pinned state; it does not unpin the session`,
+			).toBe(true);
+
+			// ---- Phase 2: a fullscreen overlay owns the alternate screen ----
+			const overlay = new Input();
+			overlay.prompt = "OVERLAY_BODY:";
+			const handle = tui.showOverlay(overlay, { fullscreen: true });
+			await terminal.waitForRender();
+
+			const leaveBeforeOverlayExit = countNeedle(terminal.writes, ALT_SCREEN_LEAVE);
+			tui.exitPinned();
+			await terminal.waitForRender();
+			const leaveAfterOverlayExit = countNeedle(terminal.writes, ALT_SCREEN_LEAVE);
+			expect(
+				leaveAfterOverlayExit - leaveBeforeOverlayExit,
+				`1. WHAT: test_forbidden_pv_10_errors_pv_7_overlay_owned_exit_writes_no_alt_screen_leave FAILED
+2. WHY: FORBIDDEN-PV-10 / ERRORS-PV-7 violation - ${forbiddenPv10.description}; ${errorsPv7.description}
+3. EXPECTED: 0 new ALT_SCREEN_LEAVE writes when exitPinned() is called while a fullscreen overlay owns the alternate screen
+4. ACTUAL: ${leaveAfterOverlayExit - leaveBeforeOverlayExit} new write(s) (before=${leaveBeforeOverlayExit}, after=${leaveAfterOverlayExit})
+5. GUIDANCE: exitPinned must not release an alternate screen owned by a fullscreen overlay`,
+			).toBe(0);
+			expect(
+				tui.isPinned(),
+				`1. WHAT: test_errors_pv_7_dock_retained_during_overlay_ownership FAILED (secondary signal)
+2. WHY: ERRORS-PV-7 violation - ${errorsPv7.description}
+3. EXPECTED: isPinned() still true — the dock is retained, not torn down, when exitPinned() finds no pinned-owned screen to release
+4. ACTUAL: ${tui.isPinned()}
+5. GUIDANCE: Intentionally retain the dock and emit no exception when exitPinned() does not own the alternate screen`,
+			).toBe(true);
+			handle.hide();
+			await terminal.waitForRender();
+
+			// ---- Phase 3: an in-flight resize owns the alternate screen ----
+			const leaveBeforeResizeExit = countNeedle(terminal.writes, ALT_SCREEN_LEAVE);
+			terminal.resize(60, 10);
+			tui.exitPinned();
+			const leaveAfterResizeExit = countNeedle(terminal.writes, ALT_SCREEN_LEAVE);
+			expect(
+				leaveAfterResizeExit - leaveBeforeResizeExit,
+				`1. WHAT: test_forbidden_pv_10_resize_owned_exit_writes_no_alt_screen_leave FAILED
+2. WHY: FORBIDDEN-PV-10 violation - ${forbiddenPv10.description}
+3. EXPECTED: 0 new ALT_SCREEN_LEAVE writes when exitPinned() is called while an in-flight resize owns the alternate screen
+4. ACTUAL: ${leaveAfterResizeExit - leaveBeforeResizeExit} new write(s) (before=${leaveBeforeResizeExit}, after=${leaveAfterResizeExit})
+5. GUIDANCE: exitPinned must not release an alternate screen borrowed by an in-flight resize repaint`,
+			).toBe(0);
 		} finally {
 			tui.stop();
 		}

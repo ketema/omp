@@ -1,10 +1,10 @@
-version: "3.4"
+version: "3.5"
 feature_name: "pinned-terminal-native-selection-restoration"
 manifest_path: "requirements/REQUIREMENT_MANIFEST_PINNED_REFACTOR.md"
-manifest_hash: "sha256:a8c623e1475be900afca207bb328205f4e4a03bd48d3953db9c9d9783b46ffa0"
+manifest_hash: "sha256:676b4a6e0d8eca44ef453e820ed8baa84684d1bc28338a0e588afdee959d1f87"
 disconnect_matrix_path: "requirements/DISCONNECT_MATRIX_PINNED_JITTER.md"
 created: "2026-09-07"
-last_updated: "2026-09-10"
+last_updated: "2026-09-24"
 status: "ACTIVE"
 
 contract_authorities:
@@ -47,6 +47,14 @@ user_decisions:
     decision: "The prompt input box remains pinned throughout its interactive TUI lifecycle; there is no inline or unpinned viewport mode."
     decided_by: "User"
     source: "there is no unpinned inline mode. ... there is no point or need for the prompt input box to ever not be pinned"
+  - id: "9B"
+    decision: "TUI.start renders the first prompt in the pinned dock without acquiring alternate-screen ownership merely for startup; fullscreen overlays retain independent ownership."
+    decided_by: "User"
+    source: "2"
+  - id: "9C"
+    decision: "After explicit TUI.enterPinned() ownership, TUI.exitPinned() releases only the pinned session's alternate screen and retains the dock on the primary screen; overlay- and resize-owned state remains untouched."
+    decided_by: "User"
+    source: "A."
 
 scope_boundary:
   included_domains:
@@ -54,7 +62,7 @@ scope_boundary:
     - "Removal of root-commit `3254d854` pinned mouse-reporting, application selection, OSC 52, clipboard-delivery, and application wheel handling at the smallest seam"
     - "Fullscreen-overlay pointer tracking restricted to the explicit `mouseTracking === true` opt-in"
     - "Focused native-selection regression tests and real Ghostty/Herdr execution verification in DM-4 through DM-9, DM-15 through DM-17"
-    - "Pinned-only prompt lifecycle: from TUI start through any exit request, the prompt input box remains in the pinned dock"
+    - "Pinned-only prompt lifecycle: from TUI start through any exit request, the prompt input box remains in the pinned dock; startup does not acquire alternate-screen ownership solely for docking; an explicit pinned exit releases only its owned alternate screen."
   excluded_domains:
     - "New future application-owned wheel features; removal of the existing ordinary pinned SGR wheel branch is included"
     - "Any replacement clipboard provider, clipboard readback, or application-owned pointer-selection fallback"
@@ -68,13 +76,15 @@ scope_boundary:
     - "The first round uses an isolated RED test writer followed by an isolated GREEN coder."
     - "Fullscreen overlays retain terminal mouse tracking only after an explicit `mouseTracking === true` request; ordinary pinned mode does not claim pointer selection."
     - "Decision 9A prohibits a configuration, lifecycle path, or compatibility behavior that renders the prompt input box outside the pinned dock."
+    - "Decision 9B prohibits startup `?1049h` ownership solely to render the first pinned prompt; fullscreen overlays retain their independent alternate-screen entry when no lifecycle owns it."
+    - "Decision 9C requires `exitPinned()` to retain the dock and release `?1049l` only for a pinned-owned alternate screen; overlay- and resize-owned state remains untouched."
 
 execution_schedule:
   mode: "serial"
   active_sequence: ["SLICE-1", "SLICE-7"]
   deferred_slices: ["SLICE-2", "SLICE-4", "SLICE-5", "SLICE-6"]
   retired_slices: ["SLICE-3"]
-  rationale: "Decision 7A keeps active work at the explicit-overlay opt-in and terminal-native selection seam. Decision 7B defers the pre-existing keyboard binding defect to SLICE-6. Decision 9A activates only the actual prompt lifecycle defect observed at TUI start and exit; no contract clause is retired or relaxed."
+  rationale: "Decision 7A keeps active work at the explicit-overlay opt-in and terminal-native selection seam. Decision 7B defers the pre-existing keyboard binding defect to SLICE-6. Decisions 9A, 9B, and 9C activate the prompt lifecycle correction: no inline prompt, no startup alternate-screen ownership for the dock, and release of only the explicit pinned session's alternate screen on exit; no contract clause is retired or relaxed."
 
 historical_evidence:
   root_commit: "3254d85409c168ad270fb47c028ee5c6099a66fc"
@@ -123,24 +133,31 @@ slices:
       - "Do not mock host native selection or clipboard: POST-PV-26 is an execution-only real terminal exercise."
       - "Keep concatenated SGR parser tests only where a fullscreen overlay explicitly owns tracking."
   - id: "SLICE-7"
-    name: "Pinned-only prompt lifecycle"
+    name: "Pinned dock lifecycle and alternate-screen ownership"
     disconnect_rows: ["DM-18"]
     scope:
       - "packages/tui/src/tui.ts"
       - "packages/tui/test/pinned-dock-refactor.test.ts"
-      - "packages/coding-agent/test/pinned-dock-refactor.test.ts"
-      - "packages/coding-agent/test/startup-composer.test.ts"
     clauses_in_scope:
+      - "POST-PV-12b"
+      - "POST-PV-28"
+      - "POST-PV-29"
+      - "SEQ-PV-11"
+      - "SEQ-PV-12"
       - "INV-PV-7"
-    negative_constraints: ["INV-PV-7"]
-    red_gate: "Tests must drive a real TUI with a frame provider that supplies a distinguishable prompt input line and pinned-scroll discriminator. They must observe the first interactive frame after start() and a frame after an actual enterPinned()/exitPinned() lifecycle, proving at both boundaries that the prompt occupies the final pinned dock rows and the pinned-scroll discriminator appears above it. The first-boundary test must not invoke enterPinned() before its observation. Tests must not rely only on isPinned(), mutate private state, or use source-text scans. The observed current start()/exitPinned() behavior must fail."
-    green_boundary: "Change only the TUI lifecycle behavior necessary to keep the prompt input box in the pinned dock from startup through any exit request. Preserve the existing dock layout, terminal-native selection, alternate-screen ownership, overlays, transcript behavior, and public input semantics. Add no setting, alternate viewport mode, dependency, or unrelated test change."
+      - "INV-PV-17"
+      - "INV-PV-18"
+      - "FORBIDDEN-PV-10"
+      - "ERRORS-PV-7"
+    negative_constraints: ["INV-PV-7", "INV-PV-17", "FORBIDDEN-PV-10"]
+    red_gate: "Tests must use the real TUI lifecycle with a distinguishable prompt input line and pinned-scroll discriminator. They must prove: start() renders the prompt in final dock rows without ALT_SCREEN_ENTER; a fullscreen overlay after dock-only start writes exactly one ALT_SCREEN_ENTER; actual start() -> enterPinned() -> exitPinned() writes one matching ALT_SCREEN_LEAVE only for pinned ownership and leaves the prompt docked on the primary frame; and exitPinned() during overlay or resize ownership emits no ALT_SCREEN_LEAVE. Tests must not rely only on isPinned(), mutate private state, use source-text scans, or replace terminal behavior with mocks. The current start()/exitPinned() implementation must fail these clause-linked observations."
+    green_boundary: "Change only TUI lifecycle ownership needed to introduce dock-only startup activation and pinned-owned alternate-screen release on exit. Preserve explicit enterPinned() ownership, dock layout, terminal-native selection, fullscreen-overlay entry/exit, resize ownership, transcript behavior, and public input semantics. Add no setting, alternate viewport mode, dependency, unrelated test change, or contract relaxation."
     test_migration:
-      - "Replace only the inherited INV-PV-7 surface/configuration check with clause-cited real lifecycle render assertions in packages/tui/test/pinned-dock-refactor.test.ts."
-      - "The assertion must prove prompt dock placement and a pinned-scroll discriminator, not merely a pinned boolean, bottom anchoring, an absence of a property name, or a source-text condition."
-      - "Delete the inherited ComposerPreferences structural/Boolean INV-PV-7 case in packages/coding-agent/test/pinned-dock-refactor.test.ts: the Decision-9A contract replaced its superseded semantics, and no source/property substitute is authorized."
-      - "Remove only the superseded `(INV-PV-7: viewport structurally absent)` parenthetical from the `COMPOSER_DEFAULTS` defaults-mirror test title in packages/coding-agent/test/startup-composer.test.ts; preserve its settings-schema assertion unchanged."
-      - "Do not alter deferred render-integrity clauses in either test file unless a contract-preserving test harness correction is indispensable and documented."
+      - "Add clause-cited lifecycle tests only in packages/tui/test/pinned-dock-refactor.test.ts for POST-PV-28, POST-PV-29, SEQ-PV-11, SEQ-PV-12, INV-PV-17, INV-PV-18, FORBIDDEN-PV-10, and ERRORS-PV-7."
+      - "Keep packages/tui/test/kitty-keyboard-da1-ordering.test.ts as a regression sentinel: its fullscreen overlay entry expectation must pass without weakening its assertion."
+      - "Retain the completed Decision-9A migration in packages/coding-agent/test/pinned-dock-refactor.test.ts and packages/coding-agent/test/startup-composer.test.ts; no additional change is authorized there for Decisions 9B or 9C."
+      - "The assertion must prove terminal mode writes and rendered dock placement, not merely a pinned Boolean, bottom anchoring, property absence, or source-text condition."
+      - "Do not alter deferred render-integrity clauses unless a contract-preserving test harness correction is indispensable and documented."
 
   - id: "SLICE-2"
     name: "Software scrollback, header retirement, dock clipping, and follow behavior"
@@ -240,22 +257,22 @@ slices:
 
 verification_plan:
   contract_gate:
-    - "Import the TypeScript contract and assert every clause verification method is valid, every active and deferred pinned clause appears in exactly one slice, and every Decision-7A / Decision-7B / Decision-9A clause ID exists."
+    - "Import the TypeScript contract and assert every clause verification method is valid, every active and deferred pinned clause appears in exactly one slice, and every Decision-7A / Decision-7B / Decision-9A / Decision-9B / Decision-9C clause ID exists."
     - "Manually audit all five runtime-enforceable artifact classes and verification fields because the authoritative Python checker does not parse TypeScript."
     - "Use bounded production-source scans to discharge INV-PV-6 and FORBIDDEN-PV-9."
   test_gate:
     - "Each RED test includes a clause ID in its assertion failure text and passes the theater question: can production be wrong while this test passes?"
     - "The entry, omitted, false, and true overlay tests observe actual terminal mode writes; only the explicit true overlay case observes raw-SGR input routing."
     - "No mock, fake, or module replacement may stand in for terminal-native host selection."
-    - "Decision-9A tests observe actual rendered prompt placement at TUI start and after an exit request; a public Boolean or source-text scan alone is insufficient."
+    - "Decision-9A / Decision-9B / Decision-9C tests observe actual rendered prompt placement and exact terminal mode writes at TUI start, explicit pinned exit, and fullscreen-overlay ownership boundaries; a public Boolean or source-text scan alone is insufficient."
     - "Run focused package tests after GREEN; offload commands exceeding ten seconds or one kilobyte of output to TMUX-OFFLOAD."
   integration_gate:
-    - "Exercise actual TUI pinned entry and overlay focus/close lifecycle rather than direct private-state mutation."
+    - "Exercise actual TUI start, explicit enterPinned()/exitPinned(), and fullscreen-overlay focus/close lifecycle rather than direct private-state mutation."
     - "Before acceptance, exercise real Ghostty and Herdr pane-confinement drag/copy selection; tests and metrics do not establish human acceptance."
   audit_gate:
     - "Run the native constitutional audit after GREEN and remediate all clause-cited findings before final validation."
 
 approval:
-  plan_review: "APPROVED: focused anthropic/claude-fable-5 review of RED-findings scope remediation returned ZERO FINDINGS with first-line lineage disclosure."
-  human_plan_approval: "User Decision 7A — `1 is approved`; User Decision 7B — `2. defer it`; User Decision 9A — prompt input is always pinned; Decided By: User."
-  green_approval: "A new explicit immediate-preceding GREEN approval is required after Decision 9A and honest RED evidence. The active source change remains limited to actual prompt lifecycle behavior."
+  plan_review: "Coordinator review PASS (2026-09-24): Decision 9A/9B/9C requirement-to-contract traceability, 56/56 single-slice clause ownership, Slice-7 scope minimization, and current-diff divergence were checked. User approved Plan 3.5 for RED on 2026-10-02."
+  human_plan_approval: "APPROVED: User said `I approve plan 3.5.` on 2026-10-02. Decided By: User. Authorizes M4.2 RED only; it is not GREEN approval."
+  green_approval: "A new explicit immediate-preceding GREEN approval is required after revised-plan approval and honest RED evidence. The active source change remains limited to actual prompt lifecycle and alternate-screen ownership behavior."

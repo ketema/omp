@@ -159,7 +159,11 @@ export const CONTRACT_PINNED_DOCK = {
 	},
 	"POST-PV-12": {
 		verification: "test",
-		description: "opening a fullscreen overlay while pinned SHALL NOT write a second ALT_SCREEN_ENTER when pin already owns the alt screen",
+		description: "opening a fullscreen overlay while an explicit pinned session owns the alternate screen SHALL NOT write a second ALT_SCREEN_ENTER",
+	},
+	"POST-PV-12b": {
+		verification: "test",
+		description: "opening a fullscreen overlay when no lifecycle owns the alternate screen SHALL write exactly one ALT_SCREEN_ENTER",
 	},
 	"POST-PV-13": {
 		verification: "test",
@@ -205,13 +209,21 @@ export const CONTRACT_PINNED_DOCK = {
 		verification: "test",
 		description: "TUI SHALL enable fullscreen-overlay mouse reporting only when the top visible fullscreen overlay has mouseTracking === true; omitted and false SHALL leave terminal pointer behavior unclaimed",
 	},
+	"POST-PV-28": {
+		verification: "test",
+		description: "TUI.start SHALL render its first prompt frame in the pinned dock without writing ALT_SCREEN_ENTER solely for startup",
+	},
+	"POST-PV-29": {
+		verification: "test",
+		description: "TUI.exitPinned SHALL write exactly one ALT_SCREEN_LEAVE when the explicit pinned session owns the alternate screen and no overlay or resize lifecycle owns it",
+	},
 	"SEQ-PV-1": {
 		verification: "test",
 		description: "TUI.#renderPinnedFrame SHALL invoke PinnedViewport.composeFrame before overlay compositing",
 	},
 	"SEQ-PV-2": {
 		verification: "test",
-		description: "TUI.#renderPinnedFrame SHALL invoke TUI.#compositeOverlaysIntoWindow after composeFrame and before emitting the alternate-screen frame",
+		description: "TUI.#renderPinnedFrame SHALL invoke TUI.#compositeOverlaysIntoWindow after composeFrame and before emitting its terminal frame",
 	},
 	"SEQ-PV-3": {
 		verification: "test",
@@ -227,7 +239,15 @@ export const CONTRACT_PINNED_DOCK = {
 	},
 	"SEQ-PV-10": {
 		verification: "test",
-		description: "TUI.enterPinned SHALL establish pinned state and alternate-screen ownership before its first frame while leaving ordinary pointer selection unclaimed by writing neither ?1002h nor ?1006h. Source: REQ-2026-PINNED-001, IP-PV-1",
+		description: "TUI.enterPinned SHALL establish pinned state and alternate-screen ownership before its explicitly requested pinned-screen frame while leaving ordinary pointer selection unclaimed by writing neither ?1002h nor ?1006h. Source: REQ-2026-PINNED-001, IP-PV-1",
+	},
+	"SEQ-PV-11": {
+		verification: "test",
+		description: "TUI.start SHALL invoke TUI.#activatePinnedDock before requesting its first interactive frame. Source: REQ-2026-PINNED-001, IP-PV-6",
+	},
+	"SEQ-PV-12": {
+		verification: "test",
+		description: "TUI.exitPinned SHALL invoke TUI.#releasePinnedAltScreen after retaining dock state, and only the pinned-owned screen may be released. Source: REQ-2026-PINNED-001, IP-PV-7",
 	},
 	"INV-PV-1": {
 		verification: "test",
@@ -277,9 +297,17 @@ export const CONTRACT_PINNED_DOCK = {
 		verification: "test",
 		description: "A fullscreen overlay with mouseTracking omitted or false SHALL NOT enable terminal mouse reporting",
 	},
+	"INV-PV-17": {
+		verification: "test",
+		description: "TUI.start SHALL NOT write ALT_SCREEN_ENTER solely to render the first pinned prompt frame",
+	},
+	"INV-PV-18": {
+		verification: "test",
+		description: "TUI.exitPinned SHALL retain pinned state, PinnedViewport, and docked prompt after an explicit pinned exit",
+	},
 	"LIFETIME_INV-PV-1": {
 		verification: "test",
-		description: "From pinned entry through explicit fullscreen-overlay ownership transfer, pinned exit, and stop, TUI SHALL enable and release only terminal modes it owns; ordinary pinned mode SHALL never acquire ?1002h or ?1006h ownership",
+		description: "From startup dock activation through explicit pinned entry, overlay or resize ownership transfer, pinned exit, and stop, TUI SHALL enable and release only terminal modes it owns; ordinary pinned mode SHALL never acquire ?1002h or ?1006h ownership",
 	},
 	"FORBIDDEN-PV-1": {
 		verification: "test",
@@ -301,6 +329,10 @@ export const CONTRACT_PINNED_DOCK = {
 		verification: "tool",
 		description: "The pinned input implementation SHALL not import or invoke an SGR parser for ordinary pinned input; a bounded production-source policy scan discharges this internal non-observable prohibition",
 	},
+	"FORBIDDEN-PV-10": {
+		verification: "test",
+		description: "TUI.exitPinned SHALL NOT write ALT_SCREEN_LEAVE when the explicit pinned session does not own the alternate screen, including while overlay or resize lifecycle state owns it",
+	},
 	"ERRORS-PV-1": {
 		verification: "test",
 		description: "validateComposeHeight SHALL throw InvalidHeightError citing PRE-PV-1 on non-positive height",
@@ -312,5 +344,9 @@ export const CONTRACT_PINNED_DOCK = {
 	"ERRORS-PV-6": {
 		verification: "test",
 		description: "For an ordinary pinned pointer gesture, TUI SHALL intentionally perform no application copy and throw no exception because the terminal owns selection; error class: none; propagation: none",
+	},
+	"ERRORS-PV-7": {
+		verification: "test",
+		description: "When no explicit pinned screen is owned, TUI.exitPinned SHALL intentionally retain the dock and emit no ALT_SCREEN_LEAVE; error class: none; propagation: none",
 	},
 } as const satisfies Record<string, ContractClause>;
