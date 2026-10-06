@@ -825,6 +825,12 @@ export class TUI extends Container {
 		return this.#pinnedActive;
 	}
 
+	/** SEQ-PV-11 / POST-PV-28 / INV-PV-17: dock the prompt without acquiring DECSET 1049. */
+	#activatePinnedDock(): void {
+		this.#pinnedActive = true;
+		this.#pinnedViewport ??= new PinnedViewport();
+	}
+
 	/**
 	 * Paint the interactive session on the alternate screen with a bottom dock.
 	 * Idempotent: a second call does not re-enter DECSET 1049.
@@ -839,9 +845,12 @@ export class TUI extends Container {
 		this.requestRender(true);
 	}
 
-	/** INV-PV-7: an exit request does not move the prompt out of the pinned dock. */
+	/** INV-PV-7 / INV-PV-18 / SEQ-PV-12 / POST-PV-29 / FORBIDDEN-PV-10 / ERRORS-PV-7 */
 	exitPinned(): void {
-		this.enterPinned();
+		if (this.#stopped) return;
+		this.#activatePinnedDock();
+		this.#releasePinnedAltScreen();
+		this.requestRender(true);
 	}
 
 	scrollPinnedBy(delta: number): void {
@@ -1132,8 +1141,8 @@ export class TUI extends Container {
 			this.#querySixelSupport();
 			this.#queryCellSize();
 		}
-		// INV-PV-7: first interactive frame after start paints the prompt in the pinned dock.
-		this.enterPinned();
+		// SEQ-PV-11 / POST-PV-28 / INV-PV-17 / INV-PV-7: dock first, no startup-owned 1049h.
+		this.#activatePinnedDock();
 		this.requestRender(true, { clearScrollback: options?.clearScrollback === true });
 	}
 	/** Borrow the alternate buffer for stable, history-free resize repainting. */
