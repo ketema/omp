@@ -1303,6 +1303,8 @@ describe("agent frontmatter structured opt-in", () => {
 		},
 		30_000,
 	);
+});
+
 describe("per-call selector syntax", () => {
 	it("rejects a comma-only selector instead of treating it as no selector", () => {
 		expect(invalidModelSelectorReason(" , ", "The call")).toMatch(/invalid .*model/);

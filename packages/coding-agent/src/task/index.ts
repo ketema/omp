@@ -208,7 +208,6 @@ function createTaskModeError(text: string): AgentToolResult<TaskToolDetails> {
 	return {
 		isError: true,
 		content: [{ type: "text", text }],
-		isError: true,
 		details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 	};
 }

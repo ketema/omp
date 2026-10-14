@@ -1,16 +1,20 @@
 import { afterEach, describe, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { CONTRACT_SPAWN_MODEL, MODEL_FIELD } from "../../../requirements/contracts/spawn-model.contract";
+import { AsyncJobManager } from "../src/async";
 import { Settings } from "../src/config/settings";
 import { runEvalAgent } from "../src/eval/agent-bridge";
+import { runEvalWait } from "../src/eval/handle-bridge";
 import * as taskDiscovery from "../src/task/discovery";
 import type { ExecutorOptions } from "../src/task/executor";
 import * as taskExecutor from "../src/task/executor";
-import type { AgentDefinition, SingleResult } from "../src/task/types";
+import type { AgentDefinition } from "../src/task/types";
+import type { SingleResult } from "@oh-my-pi/pi-tui/tools/task";
 import { taskSchema } from "../src/task/types";
 import type { ToolSession } from "../src/tools";
 
 type ClauseId = keyof typeof CONTRACT_SPAWN_MODEL;
+const jobManagers = new Set<AsyncJobManager>();
 
 function describeActual(value: unknown): string {
 	const serialized = JSON.stringify(value);
@@ -55,6 +59,8 @@ const taskAgent = {
 } satisfies AgentDefinition;
 
 function makeEvalSession(): ToolSession {
+	const asyncJobManager = new AsyncJobManager({});
+	jobManagers.add(asyncJobManager);
 	return {
 		cwd: "/tmp",
 		hasUI: false,
@@ -63,6 +69,7 @@ function makeEvalSession(): ToolSession {
 			"task.isolation.mode": "none",
 			"task.enableLsp": false,
 		}),
+		asyncJobManager,
 		taskDepth: 0,
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
@@ -94,8 +101,10 @@ function successfulChild(options: ExecutorOptions): SingleResult {
 }
 
 describe("optional per-invocation spawn model", () => {
-	afterEach(() => {
+	afterEach(async () => {
 		vi.restoreAllMocks();
+		await Promise.all([...jobManagers].map(manager => manager.dispose()));
+		jobManagers.clear();
 	});
 
 	it("keeps a supplied model through taskSchema unknown-key deletion", () => {
@@ -113,7 +122,7 @@ describe("optional per-invocation spawn model", () => {
 		 * [✓] C4 NOT FUTURE-EDIT: enforces the current contracted negative obligation.
 		 */
 		const testName = "keeps a supplied model through taskSchema unknown-key deletion";
-		const parsed = taskSchema({ task: "x", [MODEL_FIELD]: "xai/grok" });
+		const parsed = taskSchema({ task: "x", solutionSpace: "test", [MODEL_FIELD]: "xai/grok" });
 
 		assertContract(!(parsed instanceof type.errors), {
 			testName,
@@ -159,7 +168,9 @@ describe("optional per-invocation spawn model", () => {
 			.spyOn(taskExecutor, "runSubprocess")
 			.mockImplementation(async options => successfulChild(options));
 
-		await runEvalAgent({ prompt: "inspect the model handoff", model: "xai/grok" }, { session: makeEvalSession() });
+		const session = makeEvalSession();
+		const handle = await runEvalAgent({ prompt: "inspect the model handoff", model: "xai/grok" }, { session });
+		await runEvalWait({ items: [{ kind: "agent", id: handle.id }] }, { session });
 
 		assertContract(runSpy.mock.calls.length === 1, {
 			testName,
