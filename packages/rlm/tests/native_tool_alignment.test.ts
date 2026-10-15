@@ -116,14 +116,14 @@ describe("INV-NATIVE-1 survives mid-session reselection (audit #7)", () => {
 			const before = session.getActiveToolNames();
 			expect(before).toContain(NATIVE_TOOL_NAME);
 
-			if (!("setActiveTools" in session)) {
+			if (!("setActiveToolsByName" in session)) {
 				throw new Error(
-					"INV-NATIVE-1 test cannot run: no setActiveTools reselection path on the session surface",
+					"INV-NATIVE-1 test cannot run: no setActiveToolsByName reselection path on the session surface",
 				);
 			}
-			const reselect = session.setActiveTools;
+			const reselect = session.setActiveToolsByName;
 			if (typeof reselect !== "function") {
-				throw new Error("INV-NATIVE-1 test cannot run: setActiveTools is not callable");
+				throw new Error("INV-NATIVE-1 test cannot run: setActiveToolsByName is not callable");
 			}
 			await reselect.call(session, ["read", "write"]);
 
