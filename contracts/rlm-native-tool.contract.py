@@ -111,12 +111,18 @@ def validate_essential_load_mode(mode: object) -> str:
 RLM_NATIVE_TOOL_CONTRACT: Final[dict[str, Clause]] = {
     "PRE-NATIVE-1": Clause(
         "test",
-        "Session tool assembly is unrestricted (restrictToolNames is false).",
+        "Session tool assembly is unrestricted (restrictToolNames is false) AND "
+        "the session is not a read-only tool selection. A selection is read-only "
+        "only when the explicit toolNames list GRANTS 'read' AND OMITS 'write' "
+        "(upstream tools/index.ts:874-879). An absent list is the full default "
+        "set and is NOT read-only; a write-capable list such as ['bash','edit'] "
+        "is NOT read-only and retains ipython.",
     ),
     "POST-NATIVE-1": Clause(
         "test",
-        "After unrestricted session initialization, ipython is present in the "
-        "top-level active tools array getActiveToolNames() (REQ-RLM-0002).",
+        "After initialization of a session satisfying PRE-NATIVE-1, ipython is "
+        "present in the top-level active tools array getActiveToolNames() "
+        "(REQ-RLM-0002).",
     ),
     "POST-NATIVE-2": Clause(
         "test",
@@ -124,12 +130,30 @@ RLM_NATIVE_TOOL_CONTRACT: Final[dict[str, Clause]] = {
     ),
     "INV-NATIVE-1": Clause(
         "test",
-        "From unrestricted session initialization through session disposal, "
-        "ipython remains in the top-level active tools array.",
+        "From initialization of a session satisfying PRE-NATIVE-1 through "
+        "session disposal, ipython remains in the top-level active tools array "
+        "across every mid-session reselection path, including "
+        "AgentSession.setActiveTools / applyActiveToolsByName.",
     ),
     "FORBIDDEN-NATIVE-1": Clause(
         "test",
-        "An unrestricted session SHALL NOT unmount ipython from the top-level "
-        "active tool array or demote ipython to discoverable-only status.",
+        "A session satisfying PRE-NATIVE-1 SHALL NOT unmount ipython from the "
+        "top-level active tool array or demote ipython to discoverable-only "
+        "status.",
+    ),
+    "FORBIDDEN-NATIVE-2": Clause(
+        "test",
+        "A read-only session SHALL NOT surface ipython in getActiveToolNames() "
+        "and SHALL NOT mount it under xd:// (getMountedXdevToolNames()). ipython "
+        "executes arbitrary Python, so surfacing it would grant working-tree "
+        "writes the session was explicitly denied.",
+    ),
+    "ERRORS-NATIVE-1": Clause(
+        "test",
+        "Every contract validator in this file SHALL signal violation by raising "
+        "RlmNativeToolContractError with clause_id set to the violated clause ID "
+        "and the message naming the offending tool or value. The error SHALL "
+        "propagate uncaught; validators SHALL NOT absorb, downgrade, or return a "
+        "boolean in place of raising. An uninspectable surface SHALL fail closed.",
     ),
 }

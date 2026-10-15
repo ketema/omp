@@ -90,16 +90,27 @@ export function assertEssentialLoadMode(mode: unknown): void {
 }
 
 /**
- * Read-only session predicate (upstream canonical definition, sdk.ts:382-384):
- * a session whose EXPLICIT tool list grants `read` but omits `write`. Upstream
- * gives such sessions a device-only write transport so xd:// mounting can
- * engage "without granting working-tree writes".
+ * Read-only session predicate.
+ *
+ * Upstream canonical definition lives at
+ * packages/coding-agent/src/tools/index.ts:874-879 (verified identical in the
+ * pristine v18.11.0 baseline): a session is read-only when its EXPLICIT tool
+ * list GRANTS `read` AND OMITS `write`. Upstream gives exactly those sessions a
+ * device-only write transport so xd:// mounting can engage without granting
+ * working-tree writes (see the `deviceOnlyWrite` doc in sdk.ts).
+ *
+ * BOTH conjuncts are load-bearing. Omitting the `read` conjunct makes the
+ * predicate strictly broader than upstream's and misclassifies write-capable
+ * selections: a subagent declaring `tools: ["bash","edit"]` can write the
+ * working tree and run arbitrary shell, so it is NOT read-only and MUST retain
+ * the native tool. Human decision 2026-10-15: "in any session mode that is not
+ * read only ipython must be loaded and available."
  *
  * `toolNames === undefined` means the full default set — NOT read-only.
  */
 export function isReadOnlyToolSelection(toolNames: readonly string[] | undefined): boolean {
 	if (toolNames === undefined) return false;
-	return !toolNames.includes("write");
+	return toolNames.includes("read") && !toolNames.includes("write");
 }
 
 /**
@@ -135,7 +146,7 @@ export function assertIpythonAbsentForReadOnly(toolNames: readonly string[] | un
 export const RLM_NATIVE_TOOL_CONTRACT = {
 	"PRE-NATIVE-1": {
 		verification: "test",
-		text: "Session tool assembly is unrestricted (restrictToolNames is false) AND the session is not a read-only tool selection (isReadOnlyToolSelection(toolNames) is false; an explicit toolNames list omitting 'write' is read-only, while an absent list is the full default set).",
+		text: "Session tool assembly is unrestricted (restrictToolNames is false) AND the session is not a read-only tool selection. isReadOnlyToolSelection(toolNames) is true only when the explicit toolNames list GRANTS 'read' AND OMITS 'write' (upstream tools/index.ts:874-879). An absent list is the full default set and is NOT read-only; a write-capable list such as ['bash','edit'] is NOT read-only and retains ipython.",
 	},
 	"POST-NATIVE-1": {
 		verification: "test",
@@ -147,7 +158,7 @@ export const RLM_NATIVE_TOOL_CONTRACT = {
 	},
 	"INV-NATIVE-1": {
 		verification: "test",
-		text: "From initialization of a session satisfying PRE-NATIVE-1 through session disposal, ipython remains in the top-level active tools array.",
+		text: "From initialization of a session satisfying PRE-NATIVE-1 through session disposal, ipython remains in the top-level active tools array across every mid-session reselection path, including AgentSession.setActiveTools / applyActiveToolsByName invoked by extensions.",
 	},
 	"FORBIDDEN-NATIVE-1": {
 		verification: "test",
@@ -156,6 +167,10 @@ export const RLM_NATIVE_TOOL_CONTRACT = {
 	"FORBIDDEN-NATIVE-2": {
 		verification: "test",
 		text: "A read-only session (isReadOnlyToolSelection(toolNames) is true) SHALL NOT surface ipython in getActiveToolNames() and SHALL NOT mount it under xd:// (getMountedXdevToolNames()). ipython executes arbitrary Python, so surfacing it would grant working-tree writes the session was explicitly denied; upstream 603312bcc0 fixed the structurally identical startup-pin promotion defect.",
+	},
+	"ERRORS-NATIVE-1": {
+		verification: "test",
+		text: "Every contract validator in this file SHALL signal violation by throwing RlmNativeToolContractError with its clauseId field set to the violated clause ID and the message naming the offending tool or value. The error SHALL propagate to the caller uncaught; validators SHALL NOT absorb, downgrade, or return a boolean in place of throwing. An uninspectable surface SHALL fail closed (throw) rather than pass silently (CL9-A).",
 	},
 } as const satisfies Record<string, Clause>;
 
