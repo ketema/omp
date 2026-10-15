@@ -304,6 +304,37 @@ describe("RLM native tool session scope (RED — FORBIDDEN-NATIVE-2 / POST-NATIV
     }
   });
 
+  // ---- Post-audit repair (audit finding #6): predicate classes at the SESSION
+  // surface. The implementation's redeclared predicate was previously exercised
+  // by only two boots (undefined, read-only list). Human decision 2026-10-15:
+  // read-only means GRANTS "read" AND OMITS "write".
+  test("PRE-NATIVE-1: a write-capable explicit selection is not read-only and retains the native Python tool", async () => {
+    const tempDir = makeTempDir();
+    const settings = Settings.isolated();
+    const { session } = await createAgentSession({
+      ...unrestrictedSessionOptions(tempDir, settings),
+      toolNames: ["read", "bash", "edit"],
+    });
+    try {
+      const activeToolNames = session.getActiveToolNames();
+      const mountedToolNames = session.getMountedXdevToolNames();
+      expect(
+        activeToolNames.includes(NATIVE_TOOL_NAME),
+        fivePoint({
+          what: "a write-capable explicit selection lost the native Python tool",
+          why: "PRE-NATIVE-1 violation — a selection granting working-tree writes was classified read-only",
+          expected: "ipython present in getActiveToolNames()",
+          actual: `active = ${JSON.stringify(activeToolNames)}; devices = ${JSON.stringify(mountedToolNames)}`,
+          guidance:
+            "A session that can write the working tree and run shell is not a write-denied session; it must finish initialization with the native Python tool directly callable.",
+        }),
+      ).toBe(true);
+    } finally {
+      await session.dispose();
+    }
+  });
+
+
   test("FORBIDDEN-NATIVE-2: a read-only session does not surface the native Python tool when every enabled tool is presented top-level", async () => {
     /**
      * CONTRACT TRACEABILITY:
