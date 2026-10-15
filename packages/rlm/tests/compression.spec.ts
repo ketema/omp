@@ -1,7 +1,7 @@
 /**
  * RED Phase TypeScript tests for RLM Snapshot Manifest Compression Telemetry.
  *
- * Contract Authority: requirements/contracts/rlm-dill-compression.contract.ts
+ * Contract Authority: contracts/rlm-dill-compression.contract.ts
  * Requirements Manifest: requirements/REQ-2026-RLM-DILL-COMPRESSION.md
  * Issue: ketema/omp#15
  */
@@ -18,7 +18,7 @@ import {
   validateCompressionHeader,
   validateCompressionRatio,
   validateSnapshotMagic,
-} from "../../../requirements/contracts/rlm-dill-compression.contract";
+} from "../../../contracts/rlm-dill-compression.contract";
 
 describe("RLM Dill Compression Contracts & Validators", () => {
   test("INV-DETECT-1: validateSnapshotMagic identifies LZMA, Gzip, and Raw headers", () => {

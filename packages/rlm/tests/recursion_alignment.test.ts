@@ -1,7 +1,7 @@
 /**
  * CONTRACT-IMPLEMENTATION ALIGNMENT (supporting test, dual-stack rule).
  *
- * Imports BOTH the contract authority (requirements/contracts/
+ * Imports BOTH the contract authority (contracts/
  * rlm-recursion.contract.ts) and the implementation (packages/rlm/src/recursion.ts),
  * asserting value equality. The implementation redeclares its own values
  * and never imports the contract (Contract-Implementation Independence).
@@ -32,7 +32,7 @@ import {
   REC_NAME_MAX_CHARS as CONTRACT_NAME_MAX_CHARS,
   REC_TASK_PREFIX as CONTRACT_TASK_PREFIX,
   RlmRecursionContractError as ContractRecursionContractError,
-} from "../../../requirements/contracts/rlm-recursion.contract.ts";
+} from "../../../contracts/rlm-recursion.contract.ts";
 import {
   REC_CHILD_DIR_PREFIX,
   REC_CHILD_ID_HEX_LEN,

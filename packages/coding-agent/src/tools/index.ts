@@ -828,6 +828,20 @@ export function createXdevState(
 /**
  * Create tools from BUILTIN_TOOLS registry.
  */
+/**
+ * Read-only tool selection: an EXPLICIT tool list that GRANTS `read` and OMITS
+ * `write`. Single authority for this question (CL11-C) — `createTools` uses it
+ * to decide the device-only write transport, and session assembly uses it to
+ * decide native-tool admission. Both decisions must answer identically; a
+ * second local copy is how they drifted (audit finding #3).
+ *
+ * `toolNames === undefined` is the full default grant and is NOT read-only.
+ */
+export function isReadOnlyToolSelection(toolNames: readonly string[] | undefined): boolean {
+	if (toolNames === undefined) return false;
+	return toolNames.includes("read") && !toolNames.includes("write");
+}
+
 export async function createTools(session: ToolSession, toolNames?: string[]): Promise<Tool[]> {
 	const restrictToolNames = session.restrictToolNames === true;
 	const { requestedTools, names } = await resolveBuiltinToolPlan(session, toolNames);
@@ -871,12 +885,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	// outside the local:// session scratch stay rejected (enforced by WriteTool
 	// via `session.deviceOnlyWrite`). Mounted tools gain no capability: without
 	// mounting, they were already presented — and callable — top-level.
-	if (
-		xdevRequested &&
-		requestedTools !== undefined &&
-		!tools.some(tool => tool.name === "write") &&
-		tools.some(tool => tool.name === "read")
-	) {
+	if (xdevRequested && isReadOnlyToolSelection(tools.map(tool => tool.name)) && requestedTools !== undefined) {
 		session.deviceOnlyWrite = true;
 		const writeTool = await logger.time("createTools:write:xdev-transport", BUILTIN_TOOLS.write, session);
 		if (writeTool) {

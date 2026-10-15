@@ -1,7 +1,7 @@
 """CONTRACT-IMPLEMENTATION ALIGNMENT (supporting test, dual-stack rule).
 
 Per the plan's pivot guidance, every slice runs alignment tests importing BOTH
-the contract authority (requirements/contracts/rlm-runtime.contract.ts, read as
+the contract authority (contracts/rlm-runtime.contract.ts, read as
 text — the TS contract cannot be imported from the Python lane) and the
 implementation (the `rlm` module), asserting value equality.
 

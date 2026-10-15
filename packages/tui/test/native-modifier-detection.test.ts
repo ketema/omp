@@ -8,12 +8,12 @@ import {
 	type ModifierFlagsState,
 	type ModifierKey,
 	NATIVE_SHIFT_ENTER_SEQUENCE,
-} from "../../../requirements/contracts/native-modifier-detection.contract";
+} from "../../../contracts/native-modifier-detection.contract";
 
 /**
  * Contract-derived CoreGraphics reader fake.
  *
- * Contract: requirements/contracts/native-modifier-detection.contract.ts
+ * Contract: contracts/native-modifier-detection.contract.ts
  * Derives: PROVIDER-1 (the external CoreGraphics call's own documented
  * shape — a synchronous CGEventFlags bitmask), consumed by POST-2, INV-1,
  * ERRORS-1. Injected through the implementation's test-only

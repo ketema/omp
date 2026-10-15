@@ -1,7 +1,7 @@
 /**
  * RLM Transport — real kernel runner transport over JSON-lines-on-stdio.
  *
- * Implements the contract at requirements/contracts/rlm-transport.contract.ts.
+ * Implements the contract at contracts/rlm-transport.contract.ts.
  * All constants and error classes are redeclared independently (the
  * implementation never imports the contract; tests import BOTH and assert
  * alignment — Contract-Implementation Independence).

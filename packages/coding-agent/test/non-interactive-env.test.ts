@@ -8,7 +8,7 @@ import {
 	DISABLED_ASKPASS_PATH,
 	SSH_ASKPASS_DISPLAY_VALUE,
 	SSH_ASKPASS_REQUIRE_VALUE,
-} from "../../../requirements/contracts/omp_ssh_askpass_restoration.contract";
+} from "../../../contracts/omp_ssh_askpass_restoration.contract";
 
 describe("buildNonInteractiveEnv", () => {
 	it("defaults Windows child-process encoding to UTF-8 when inherited env is unset", () => {
@@ -141,7 +141,7 @@ describe("buildNonInteractiveEnv askpass resolver restoration", () => {
 		/**
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
 		 *   C1 VALID: POST-AR-1, POST-AR-2, POST-AR-5, FORBIDDEN-AR-1, SEQ-AR-2
-		 *     (requirements/contracts/omp_ssh_askpass_restoration.contract.ts)
+		 *     (contracts/omp_ssh_askpass_restoration.contract.ts)
 		 *   C2 VALUABLE: a resolver that ignores the executable parent, or a
 		 *     builder that drops SSH_ASKPASS_REQUIRE/DISPLAY, fails every assertion.
 		 *   C3 NON-DUPLICATIVE: only test asserting buildNonInteractiveEnv's
@@ -212,7 +212,7 @@ describe("buildNonInteractiveEnv askpass resolver restoration", () => {
 		/**
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
 		 *   C1 VALID: PRE-AR-1, POST-AR-2, POST-AR-5, SEQ-AR-2
-		 *     (requirements/contracts/omp_ssh_askpass_restoration.contract.ts)
+		 *     (contracts/omp_ssh_askpass_restoration.contract.ts)
 		 *   C2 VALUABLE: a resolver that selects the broken parent path, or a
 		 *     builder that skips SSH_ASKPASS_REQUIRE/DISPLAY once the parent is
 		 *     rejected, fails this when a generic fallback is discoverable.

@@ -6,7 +6,7 @@ ModuleNotFoundError. Contract verification lives in
 test_ledger_alignment.py (supporting, labeled).
 
 CONTRACT AUTHORITY RECORD:
-- File: requirements/contracts/rlm-ledger.contract.ts
+- File: contracts/rlm-ledger.contract.ts
 - Authority: specification authority for the harness ledger
 - PRE: 1, POST: 4, INV: 2, INV-LIFETIME: 2, ERRORS: 1, FORBIDDEN: 2
 
@@ -61,7 +61,7 @@ def test_pre_led_1_create_each_kind_persists_entry(tmp_path, kind):
     - Adversarial: Implementation-blind
 
     FOUR-CRITERIA TEST VALIDITY GATE:
-    [x] C1 VALID: cites PRE-LED-1 in requirements/contracts/rlm-ledger.contract.ts
+    [x] C1 VALID: cites PRE-LED-1 in contracts/rlm-ledger.contract.ts
     [x] C2 VALUABLE: wrong kind routing (entry under wrong kind) fails this test
     [x] C3 NON-DUPLICATIVE: only test asserting per-kind persistence
     [x] C4 NOT FUTURE-EDIT: enforces current contracted kind set

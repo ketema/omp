@@ -1,6 +1,6 @@
 """Adversarial unit tests for RLM transparent snapshot compression.
 
-Contract Authority: requirements/contracts/rlm-dill-compression.contract.ts
+Contract Authority: contracts/rlm-dill-compression.contract.ts
 Requirements Manifest: requirements/REQ-2026-RLM-DILL-COMPRESSION.md
 Issue: ketema/omp#15
 """

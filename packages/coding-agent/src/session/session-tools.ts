@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { ESSENTIAL_NATIVE_TOOL_NAMES } from "../tools/essential-tools";
 import type { Agent, AgentMessage, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { resolveDelegationBias } from "@oh-my-pi/pi-catalog/compat/delegation";
@@ -1046,6 +1047,16 @@ export class SessionTools {
 			const tool = this.#toolRegistry.get(name);
 			return tool ? [{ name, tool }] : [];
 		});
+		// INV-NATIVE-1: a tool resolved at the `essential` presentation mode is
+		// pinned for the session LIFETIME, not only at initialization. This path
+		// rebuilds the active set from a caller-supplied name list, so without
+		// re-applying the pin an extension calling setActiveTools could retire a
+		// tool the specification requires to stay top-level.
+		for (const [name, tool] of this.#toolRegistry) {
+			if (selectedTools.some(entry => entry.name === name)) continue;
+			if (ESSENTIAL_NATIVE_TOOL_NAMES[name] !== true) continue;
+			selectedTools.push({ name, tool });
+		}
 		const xdevReadAvailable = this.#builtInToolNames.has("read") && selectedTools.some(({ name }) => name === "read");
 		const xdevWriteAvailable =
 			builtInWriteAvailable &&

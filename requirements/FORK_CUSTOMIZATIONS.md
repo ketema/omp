@@ -42,7 +42,7 @@ Docs-only presence is **NOT** preservation. Row 7 is the standing counterexample
 
 | Group | Disposition |
 |---|---|
-| G07-PINNED-SPAWN (**pinned dock half**) | **Intentionally dropped.** The pinned TUI prompt input box (`packages/tui/src/pinned-viewport.ts`, `requirements/contracts/pinned_dock.contract.ts`, `plans/pinned-dock-refactor.plan.yml`, and 6 further artifacts) is not carried forward. Do not re-replay without an explicit decision. The **spawn-model half of G07 is separate and MUST survive** — see row 8. |
+| G07-PINNED-SPAWN (**pinned dock half**) | **Intentionally dropped.** The pinned TUI prompt input box (`packages/tui/src/pinned-viewport.ts`, `contracts/pinned_dock.contract.ts`, `plans/pinned-dock-refactor.plan.yml`, and 6 further artifacts) is not carried forward. Do not re-replay without an explicit decision. The **spawn-model half of G07 is separate and MUST survive** — see row 8. |
 | G05-UPSTREAM-SYNC-MARKERS, G06-FORK-MERGES | Historical topology/markers; superseded, dropped by disposition. |
 | G13-OLD-PROMPT, G14-OLD-PINNED-TIPS, G15-ORIGIN-UPSTREAM | Superseded or already upstream. |
 | `packages/coding-agent/src/utils/git.ts` | **Not ours to keep.** Upstream removed it in `2a7db5855d` (pi-vcs crate unifying Git and Jujutsu). A prior replay resurrected it by accident; `148c11294a` correctly deleted it again. Its absence is *correct*, not a regression. |

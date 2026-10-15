@@ -6,7 +6,7 @@ Targets the IMPLEMENTATION artifact packages/rlm/python/rlm-runtime/src/rlm/
 canonical implementation-missing RED state.
 
 CONTRACT AUTHORITY RECORD:
-- File: requirements/contracts/rlm-runtime.contract.ts
+- File: contracts/rlm-runtime.contract.ts
 - Authority: "AUTHORITATIVE for the kernel-side rlm runtime"
 - PRE: 1 (PRE-RT-1)  POST: 5 (POST-RT-1..5)  INV-LIFETIME: 1
 - ERRORS: 2 (ERRORS-RT-1/2)  FORBIDDEN: 2 (FORBIDDEN-RT-1/2)

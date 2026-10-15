@@ -1,7 +1,7 @@
 /**
  * RLM Kernel Manager implementation.
  *
- * Implements the contract at requirements/contracts/rlm-kernel.contract.ts.
+ * Implements the contract at contracts/rlm-kernel.contract.ts.
  * All constants are redeclared independently (no import from the contract);
  * tests import BOTH and assert alignment.
  */

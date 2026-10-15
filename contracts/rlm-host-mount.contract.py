@@ -2,7 +2,7 @@
 RLM Host Mount Contract — companion schema for Python audit tooling.
 
 CL12-C SINGULAR AUTHORITY:
-The authoritative specification is `requirements/contracts/rlm-host-mount.contract.ts`.
+The authoritative specification is `contracts/rlm-host-mount.contract.ts`.
 This Python file is a companion schema for Python meta-checkers and cross-surface audit tooling.
 
 WHAT the host session must guarantee: the model-facing tool inventory

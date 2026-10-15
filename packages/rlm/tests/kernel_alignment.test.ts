@@ -1,7 +1,7 @@
 /**
  * CONTRACT-IMPLEMENTATION ALIGNMENT (supporting test, dual-stack rule).
  *
- * Imports BOTH the contract authority (requirements/contracts/
+ * Imports BOTH the contract authority (contracts/
  * rlm-kernel.contract.ts) and the implementation (packages/rlm/src/
  * kernel.ts), asserting value equality. The implementation redeclares its
  * own values and never imports the contract (audit r2 C7: this file was
@@ -28,7 +28,7 @@ import {
   KM_SNAPSHOT_MAX_BYTES,
   KM_STDERR_TAIL_CHARS,
   KM_TRUNCATION_MARKER,
-} from "../../../requirements/contracts/rlm-kernel.contract.ts"
+} from "../../../contracts/rlm-kernel.contract.ts"
 import {
   ABORT_GRACE_MS,
   BUSY_INTERRUPT_INTERVAL_MS,
