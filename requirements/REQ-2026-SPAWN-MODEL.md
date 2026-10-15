@@ -158,7 +158,7 @@ A live `task` spawn and a live eval `agent()` call that supply `model: "provider
 
 ## 9. Contract Authority
 
-Authoritative Source: `requirements/contracts/spawn-model.contract.ts`
+Authoritative Source: `contracts/spawn-model.contract.ts`
 
 ## 10. Revision History
 

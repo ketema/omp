@@ -1,7 +1,7 @@
 /**
  * CONTRACT-IMPLEMENTATION ALIGNMENT (supporting test, dual-stack rule).
  *
- * Imports BOTH the contract authority (requirements/contracts/
+ * Imports BOTH the contract authority (contracts/
  * rlm-safety.contract.ts) and the implementation (packages/rlm/src/safety.ts),
  * asserting value equality. The implementation redeclares its own values
  * and never imports the contract (Contract-Implementation Independence).
@@ -19,7 +19,7 @@ import {
   SAFE_MODEL_CROSSING as CONTRACT_MODEL_CROSSING,
   SAFE_SESSION_ENV_KEYS as CONTRACT_SESSION_ENV_KEYS,
   SAFE_TRUST_POSTURE as CONTRACT_TRUST_POSTURE,
-} from "../../../requirements/contracts/rlm-safety.contract.ts";
+} from "../../../contracts/rlm-safety.contract.ts";
 import {
   CredentialBoundaryViolationError,
   RlmSafetyContractError,

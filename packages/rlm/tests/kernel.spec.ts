@@ -6,7 +6,7 @@
  * a module-resolution error.
  *
  * CONTRACT AUTHORITY RECORD:
- * - File: requirements/contracts/rlm-kernel.contract.ts
+ * - File: contracts/rlm-kernel.contract.ts
  * - PRE: 1, POST: 3, INV: 3, INV-LIFETIME: 3, SEQ: 5, ERRORS: 3, FORBIDDEN: 3
  *
  * TSR discipline (standing rule): this file restates CLAUSE observables.
@@ -446,7 +446,7 @@ test("SEQ-KM-3 coalescing: successive executions defer to one snapshot per quiet
 test("POST-MANIFEST-1: KernelManager persists full compression telemetry when writing manifest", async () => {
   /**
    * CONTRACT TRACEABILITY:
-   * - Authority: requirements/contracts/rlm-dill-compression.contract.ts
+   * - Authority: contracts/rlm-dill-compression.contract.ts
    * - Enforces: POST-MANIFEST-1, IP-4
    * - Category: integration (KernelManager manifest rewrite carries compression telemetry)
    */
@@ -937,7 +937,7 @@ test("POST-KM-4: execute after timeout still runs", async () => {
 test("POST-KM-4/POST-TRANS-2: issue #12 sequential execute after timeout desync reproduces failure", async () => {
   /**
    * CONTRACT TRACEABILITY:
-   * - Authority: requirements/contracts/rlm-timeout-desync.contract.ts
+   * - Authority: contracts/rlm-timeout-desync.contract.ts
    * - Enforces: POST-KM-4, POST-TRANS-2, INV-TRANS-1, SEQ-2, SEQ-3, FORBIDDEN-1
    * - Category: Timing boundary / Desynchronization recovery
    * - Behavior: When execute times out in KernelManager, in-flight transport execution
@@ -1141,7 +1141,7 @@ test("FORBIDDEN-KM-6: abort-grace callback must not settle a later execution in 
    *
    * FOUR-CRITERIA TEST VALIDITY GATE:
    * [✓] C1 VALID: cites FORBIDDEN-KM-6, present in
-   *     requirements/contracts/rlm-kernel.contract.ts today
+   *     contracts/rlm-kernel.contract.ts today
    * [✓] C2 VALUABLE: an implementation whose grace callback settles
    *     whatever execution is current (rather than the id captured at
    *     abort() time) makes this test FAIL

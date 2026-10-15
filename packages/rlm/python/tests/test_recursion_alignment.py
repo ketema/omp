@@ -1,7 +1,7 @@
 """CONTRACT-IMPLEMENTATION ALIGNMENT (supporting test, dual-stack rule).
 
 SLICE-6 alignment tests importing BOTH the contract authority
-(requirements/contracts/rlm-recursion.contract.ts, read as text) and the
+(contracts/rlm-recursion.contract.ts, read as text) and the
 implementation (the `rlm` module), asserting value equality.
 
 RED state: fails with AttributeError (recursion constants/classes absent in `rlm`)

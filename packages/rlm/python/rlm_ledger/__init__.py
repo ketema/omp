@@ -1,6 +1,6 @@
 """rlm_ledger — harness state ledger for the OMP RLM subsystem.
 
-Implements the contract at requirements/contracts/rlm-ledger.contract.ts.
+Implements the contract at contracts/rlm-ledger.contract.ts.
 All constants, exceptions, and types are redeclared independently (no import
 from the contract file).
 """

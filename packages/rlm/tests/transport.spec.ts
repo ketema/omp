@@ -10,7 +10,7 @@
  * tests -> implementation provenance chain).
  *
  * CONTRACT AUTHORITY RECORD:
- * - File: requirements/contracts/rlm-transport.contract.ts
+ * - File: contracts/rlm-transport.contract.ts
  * - PRE: 1, POST: 5, INV: 1, SEQ: 2, ERRORS: 3, FORBIDDEN: 2
  *
  * Two tiers (test pyramid):
@@ -40,7 +40,7 @@ import {
   TransportUnresponsiveError as ContractTransportUnresponsiveError,
   validateFrameType,
   validateTransportConfig,
-} from "../../../requirements/contracts/rlm-transport.contract.ts"
+} from "../../../contracts/rlm-transport.contract.ts"
 import {
   bootstrapManagedVenv,
   buildKernelEnv,
@@ -343,7 +343,7 @@ describe("transport wire protocol", () => {
   test("POST-TRANS-2/POST-TRANS-3: sequential execute after timeout/interrupt desync recovers cleanly", async () => {
     /**
      * CONTRACT TRACEABILITY:
-     * - Authority: requirements/contracts/rlm-timeout-desync.contract.ts
+     * - Authority: contracts/rlm-timeout-desync.contract.ts
      * - Enforces: POST-TRANS-2, POST-TRANS-3, INV-TRANS-1, SEQ-3, FORBIDDEN-1, FORBIDDEN-2
      * - Category: Wire tier protocol / Desync recovery
      * - Behavior: When execute is interrupted / times out, subsequent execute must not deadlock
@@ -679,7 +679,7 @@ time.sleep(30)`,
   test("POST-COMPRESS-1/POST-RESTORE-1 live: transparent stream compression round-trips with verified magic header and manifest", async () => {
     /**
      * CONTRACT TRACEABILITY:
-     * - Authority: requirements/contracts/rlm-dill-compression.contract.ts
+     * - Authority: contracts/rlm-dill-compression.contract.ts
      * - Enforces: POST-COMPRESS-1, POST-RESTORE-1, POST-MANIFEST-1, SEQ-3, SEQ-4, IP-2, IP-3, IP-4, IP-5
      * - Category: Live transport stream compression round-trip
      */

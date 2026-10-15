@@ -1,6 +1,6 @@
 import { afterEach, describe, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
-import { CONTRACT_SPAWN_MODEL, MODEL_FIELD } from "../../../requirements/contracts/spawn-model.contract";
+import { CONTRACT_SPAWN_MODEL, MODEL_FIELD } from "../../../contracts/spawn-model.contract";
 import { AsyncJobManager } from "../src/async";
 import { Settings } from "../src/config/settings";
 import { runEvalAgent } from "../src/eval/agent-bridge";

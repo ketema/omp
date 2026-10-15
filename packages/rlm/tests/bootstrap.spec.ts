@@ -8,7 +8,7 @@
  * fails these tests.
  *
  * CONTRACT AUTHORITY RECORD:
- * - File: requirements/contracts/rlm-bootstrap.contract.ts
+ * - File: contracts/rlm-bootstrap.contract.ts
  * - PRE: 1, POST: 3, INV: 2, INV-LIFETIME: 1, SEQ: 2, ERRORS: 2, FORBIDDEN: 2
  */
 
@@ -757,7 +757,7 @@ test("kernel env is EXACTLY the bounded session+caps set (cross-validated with S
    * - Risk tier: High — env assembly is the credential boundary
    */
   const { validateKernelEnv, SAFE_SESSION_ENV_KEYS } = await import(
-    "../../../requirements/contracts/rlm-safety.contract.ts"
+    "../../../contracts/rlm-safety.contract.ts"
   )
   const env = buildKernelEnv(
     {

@@ -147,7 +147,7 @@ A real OMP Git SSH transport preserves normal OpenSSH key order, starts the gene
 
 ## 9. Contract Authority
 
-Authoritative Source: `requirements/contracts/omp_ssh_askpass_restoration.contract.ts`
+Authoritative Source: `contracts/omp_ssh_askpass_restoration.contract.ts`
 
 ## 10. Revision History
 

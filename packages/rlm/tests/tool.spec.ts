@@ -6,7 +6,7 @@
  * a module-resolution error.
  *
  * CONTRACT AUTHORITY RECORD:
- * - File: requirements/contracts/rlm-tool.contract.ts
+ * - File: contracts/rlm-tool.contract.ts
  * - PRE: 1, POST: 5, INV: 1, INV-LIFETIME: 1, ERRORS: 1, FORBIDDEN: 2
  *
  * TSR discipline (standing rule): this file restates CLAUSE observables,

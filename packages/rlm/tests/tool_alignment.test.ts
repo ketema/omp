@@ -1,7 +1,7 @@
 /**
  * CONTRACT-IMPLEMENTATION ALIGNMENT (supporting test, dual-stack rule).
  *
- * Imports BOTH the contract authority (requirements/contracts/
+ * Imports BOTH the contract authority (contracts/
  * rlm-tool.contract.ts) and the implementation (packages/rlm/src/tool.ts),
  * asserting value equality. The implementation redeclares its own values
  * and never imports the contract (Contract-Implementation Independence).
@@ -21,7 +21,7 @@ import {
   TOOL_RESTART_NOTICE_CLOSE as CONTRACT_NOTICE_CLOSE,
   TOOL_RESTART_NOTICE_OPEN as CONTRACT_NOTICE_OPEN,
   TOOL_WORKING_MESSAGES as CONTRACT_WORKING_MESSAGES,
-} from "../../../requirements/contracts/rlm-tool.contract.ts"
+} from "../../../contracts/rlm-tool.contract.ts"
 import {
   RlmRuntimeMissingError,
   TOOL_BUSY_CHOICES,

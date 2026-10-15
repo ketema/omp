@@ -1,7 +1,7 @@
 /**
  * CONTRACT-IMPLEMENTATION ALIGNMENT (supporting test, dual-stack rule).
  *
- * Imports BOTH the contract authority (requirements/contracts/
+ * Imports BOTH the contract authority (contracts/
  * rlm-bootstrap.contract.ts) and the implementation (packages/rlm/src/
  * bootstrap.ts), asserting value equality. The implementation redeclares
  * its own values and never imports the contract.
@@ -22,7 +22,7 @@ import {
   BOOT_PYTHON_VERSION,
   BOOT_RUNTIME_IDENTITY_KIND,
   BOOT_SCHEMA_VERSION,
-} from "../../../requirements/contracts/rlm-bootstrap.contract.ts"
+} from "../../../contracts/rlm-bootstrap.contract.ts"
 import {
   BASE_PACKAGES,
   EXTRAS_PACKAGES,

@@ -1,7 +1,7 @@
 /**
  * CONTRACT-IMPLEMENTATION ALIGNMENT (supporting test, dual-stack rule).
  *
- * Imports BOTH the contract authority (requirements/contracts/
+ * Imports BOTH the contract authority (contracts/
  * rlm-bridge.contract.ts) and the implementation (packages/rlm/src/engines.ts),
  * asserting value equality. The implementation redeclares its own values
  * and never imports the contract (Contract-Implementation Independence).
@@ -20,7 +20,7 @@ import {
   BR_MESSAGE_ROLES as CONTRACT_MESSAGE_ROLES,
   BR_REFINE_NOTE as CONTRACT_REFINE_NOTE,
   RlmBridgeContractError as ContractBridgeContractError,
-} from "../../../requirements/contracts/rlm-bridge.contract.ts";
+} from "../../../contracts/rlm-bridge.contract.ts";
 import {
   BR_COMM_TARGET,
   BR_COMPACT_NOTE,
