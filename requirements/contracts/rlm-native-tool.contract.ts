@@ -66,7 +66,7 @@ export function assertActiveIpython(surface: unknown): asserts surface is Active
 		throw new RlmNativeToolContractError("POST-NATIVE-1", "active tool surface has no activeToolNames property");
 	}
 	const names = surface.activeToolNames;
-	if (!Array.isArray(names) || names.some((name) => typeof name !== "string")) {
+	if (!Array.isArray(names) || names.some(name => typeof name !== "string")) {
 		throw new RlmNativeToolContractError("POST-NATIVE-1", "activeToolNames must be a string array");
 	}
 	if (!names.includes(NATIVE_TOOL_NAME)) {
@@ -89,6 +89,45 @@ export function assertEssentialLoadMode(mode: unknown): void {
 	}
 }
 
+/**
+ * Read-only session predicate (upstream canonical definition, sdk.ts:382-384):
+ * a session whose EXPLICIT tool list grants `read` but omits `write`. Upstream
+ * gives such sessions a device-only write transport so xd:// mounting can
+ * engage "without granting working-tree writes".
+ *
+ * `toolNames === undefined` means the full default set — NOT read-only.
+ */
+export function isReadOnlyToolSelection(toolNames: readonly string[] | undefined): boolean {
+	if (toolNames === undefined) return false;
+	return !toolNames.includes("write");
+}
+
+/**
+ * FORBIDDEN-NATIVE-2: a read-only session SHALL NOT surface `ipython`.
+ *
+ * The tool executes arbitrary Python (`open(...,"w")`, `%%bash`, subprocess),
+ * so mounting it into a session that was explicitly denied working-tree writes
+ * would make that denial decorative. Upstream fixed the structurally identical
+ * defect in 603312bcc0, where a startup pin promoted a device-only write to
+ * full filesystem access.
+ */
+export function assertIpythonAbsentForReadOnly(toolNames: readonly string[] | undefined, surface: unknown): void {
+	if (!isReadOnlyToolSelection(toolNames)) return;
+	if (typeof surface !== "object" || surface === null || !("activeToolNames" in surface)) {
+		throw new RlmNativeToolContractError("FORBIDDEN-NATIVE-2", "active tool surface is not inspectable");
+	}
+	const names = surface.activeToolNames;
+	if (!Array.isArray(names)) {
+		throw new RlmNativeToolContractError("FORBIDDEN-NATIVE-2", "activeToolNames must be an array");
+	}
+	if (names.includes(NATIVE_TOOL_NAME)) {
+		throw new RlmNativeToolContractError(
+			"FORBIDDEN-NATIVE-2",
+			`read-only session (toolNames=${JSON.stringify(toolNames)}) surfaced ${NATIVE_TOOL_NAME}`,
+		);
+	}
+}
+
 // =============================================================================
 // Artifact 5: Traceability
 // =============================================================================
@@ -96,11 +135,11 @@ export function assertEssentialLoadMode(mode: unknown): void {
 export const RLM_NATIVE_TOOL_CONTRACT = {
 	"PRE-NATIVE-1": {
 		verification: "test",
-		text: "Session tool assembly is unrestricted (restrictToolNames is false).",
+		text: "Session tool assembly is unrestricted (restrictToolNames is false) AND the session is not a read-only tool selection (isReadOnlyToolSelection(toolNames) is false; an explicit toolNames list omitting 'write' is read-only, while an absent list is the full default set).",
 	},
 	"POST-NATIVE-1": {
 		verification: "test",
-		text: "After unrestricted session initialization, ipython is present in the top-level active tools array getActiveToolNames() (REQ-RLM-0002).",
+		text: "After initialization of a session satisfying PRE-NATIVE-1, ipython is present in the top-level active tools array getActiveToolNames() (REQ-RLM-0002).",
 	},
 	"POST-NATIVE-2": {
 		verification: "test",
@@ -108,11 +147,15 @@ export const RLM_NATIVE_TOOL_CONTRACT = {
 	},
 	"INV-NATIVE-1": {
 		verification: "test",
-		text: "From unrestricted session initialization through session disposal, ipython remains in the top-level active tools array.",
+		text: "From initialization of a session satisfying PRE-NATIVE-1 through session disposal, ipython remains in the top-level active tools array.",
 	},
 	"FORBIDDEN-NATIVE-1": {
 		verification: "test",
-		text: "An unrestricted session SHALL NOT unmount ipython from the top-level active tool array or demote ipython to discoverable-only status.",
+		text: "A session satisfying PRE-NATIVE-1 SHALL NOT unmount ipython from the top-level active tool array or demote ipython to discoverable-only status.",
+	},
+	"FORBIDDEN-NATIVE-2": {
+		verification: "test",
+		text: "A read-only session (isReadOnlyToolSelection(toolNames) is true) SHALL NOT surface ipython in getActiveToolNames() and SHALL NOT mount it under xd:// (getMountedXdevToolNames()). ipython executes arbitrary Python, so surfacing it would grant working-tree writes the session was explicitly denied; upstream 603312bcc0 fixed the structurally identical startup-pin promotion defect.",
 	},
 } as const satisfies Record<string, Clause>;
 
