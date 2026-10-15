@@ -2,7 +2,7 @@
  * RLM safety enforcement — credential boundary filtering, trust-posture
  * validation, and model crossing isolation.
  *
- * Implements requirements/contracts/rlm-safety.contract.ts.
+ * Implements contracts/rlm-safety.contract.ts.
  * All constants, exceptions, types, and validators are redeclared
  * independently (no import from the contract file).
  *

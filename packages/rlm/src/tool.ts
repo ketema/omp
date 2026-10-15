@@ -1,7 +1,7 @@
 /**
  * RLM model-facing tool — the ipython tool definition.
  *
- * Implements the contract at requirements/contracts/rlm-tool.contract.ts.
+ * Implements the contract at contracts/rlm-tool.contract.ts.
  * All constants are redeclared independently (no import from the contract);
  * alignment tests import both sides and assert equality.
  */

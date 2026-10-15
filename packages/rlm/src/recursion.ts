@@ -2,7 +2,7 @@
  * RLM host recursion engine — `await rlm()` admission, registry, model
  * resolution, and attribution.
  *
- * Implements requirements/contracts/rlm-recursion.contract.ts (SLICE-6).
+ * Implements contracts/rlm-recursion.contract.ts (SLICE-6).
  * All constants, exceptions, structural types, and validators are
  * redeclared independently here (no import of the contract); tests import
  * both this file and the contract to assert alignment.

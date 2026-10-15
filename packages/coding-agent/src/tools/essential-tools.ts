@@ -37,6 +37,23 @@ export const ESSENTIAL_BUILTIN_TOOL_NAMES: Record<string, true> = {
 };
 
 /**
+ * Non-built-in tool names that also resolve to `"essential"`.
+ *
+ * These arrive through an adapter boundary (extension `registerTool`) with no
+ * declared `loadMode`, so the `"discoverable"` default would demote them into
+ * the `xd://` device catalog whenever `tools.xdev` is on. Kept separate from
+ * {@link ESSENTIAL_BUILTIN_TOOL_NAMES} because that record mirrors built-in
+ * tool classes and is drift-guarded against them.
+ *
+ * `ipython` is the session's persistent programmatic workbench; the
+ * specification requires it top-level at the essential mode (POST-NATIVE-2)
+ * and forbids demoting it to discoverable-only (FORBIDDEN-NATIVE-1).
+ */
+export const ESSENTIAL_NATIVE_TOOL_NAMES: Record<string, true> = {
+	ipython: true,
+};
+
+/**
  * Resolve a tool's presentation mode at an adapter boundary. An explicit
  * `declared` mode always wins. When omitted, known essential built-in names
  * default to `"essential"` (so a re-register never demotes them); everything
@@ -44,5 +61,6 @@ export const ESSENTIAL_BUILTIN_TOOL_NAMES: Record<string, true> = {
  */
 export function defaultLoadModeForToolName(name: string, declared?: ToolLoadMode): ToolLoadMode {
 	if (declared) return declared;
-	return name in ESSENTIAL_BUILTIN_TOOL_NAMES ? "essential" : "discoverable";
+	// POST-NATIVE-2: `defaultLoadModeForToolName("ipython")` resolves "essential".
+	return name in ESSENTIAL_BUILTIN_TOOL_NAMES || name in ESSENTIAL_NATIVE_TOOL_NAMES ? "essential" : "discoverable";
 }

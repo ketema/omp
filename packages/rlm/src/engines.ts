@@ -5,7 +5,7 @@
  * host_request dispatch answers real machinery instead of the F-166
  * unavailability string wherever a capability is enabled (Z-2 a-full).
  *
- * Implements requirements/contracts/rlm-bridge.contract.ts (SLICE-7 slice
+ * Implements contracts/rlm-bridge.contract.ts (SLICE-7 slice
  * of the bridge). All constants, exceptions, structural types, and
  * validators used by this slice are redeclared independently here (no
  * import of the contract); tests import both this file and the contract

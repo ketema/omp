@@ -1,7 +1,7 @@
 /**
  * RLM kernel environment bootstrap.
  *
- * Implements the contract at requirements/contracts/rlm-bootstrap.contract.ts.
+ * Implements the contract at contracts/rlm-bootstrap.contract.ts.
  * All constants are redeclared independently (no import from the contract);
  * alignment tests import both sides and assert equality.
  */

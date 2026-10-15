@@ -399,6 +399,20 @@ import {
 } from "./session/context-settings";
 import { cfgTaskBatch, cfgTaskDisabledAgents, cfgTaskEager, cfgTaskMaxConcurrency } from "./task/settings";
 
+/**
+ * A session whose EXPLICIT tool list omits `write`. Upstream hands such a
+ * session a device-only write transport (see `ToolSession.deviceOnlyWrite`)
+ * so `xd://` mounting can engage without granting working-tree writes.
+ *
+ * `toolNames === undefined` is the full default set, NOT a read-only
+ * selection. Redeclared here rather than imported: the contract specifies,
+ * it is never a dependency of the code it constrains (CL11-F).
+ */
+function isReadOnlyToolSelection(toolNames: readonly string[] | undefined): boolean {
+	if (toolNames === undefined) return false;
+	return !toolNames.includes("write");
+}
+
 /** Agent-level tool-call switches, snapshotted by the agent loop per prompt run. */
 const cfgToolCallSwitches = combine({
 	intentTracing: cfgToolsIntentTracing,
@@ -2649,7 +2663,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 			inlineExtensions.push(...(options.extensions ?? []));
 			inlineExtensions.push(createAutoresearchExtension);
-			inlineExtensions.push(createRlmExtension());
+			// FORBIDDEN-NATIVE-2: `ipython` executes arbitrary Python (`open(...,"w")`,
+			// `%%bash`, subprocess), so a session whose explicit tool list omits
+			// `write` would recover exactly the working-tree writes that list denied
+			// — the promotion defect upstream fixed in 603312bcc0. Withholding the
+			// factory is structural, not avoidance: the tool never enters
+			// `toolRegistry`, so no later presentation pass, `alwaysInclude` sweep,
+			// or xdev partition can surface it top-level or mount it under `xd://`.
+			// The surviving branch is PRE-NATIVE-1: unrestricted AND not read-only.
+			if (!isReadOnlyToolSelection(options.toolNames)) {
+				inlineExtensions.push(createRlmExtension());
+			}
 			if (customTools.length > 0) {
 				inlineExtensions.push(createCustomToolsExtension(customTools, customToolSourcePaths));
 			}
