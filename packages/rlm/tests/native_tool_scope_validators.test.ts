@@ -158,7 +158,7 @@ describe("read-only tool-selection predicate (CONTRACT VERIFICATION — PRE-NATI
     ).toBe(true);
   });
 
-  test("PRE-NATIVE-1: an empty explicit tool list is a read-only selection", () => {
+  test("PRE-NATIVE-1: an empty explicit tool list is NOT a read-only selection (grants no read)", () => {
     /**
      * CONTRACT TRACEABILITY:
      * - Enforces: PRE-NATIVE-1 — read-only is "an explicit toolNames list
@@ -180,14 +180,14 @@ describe("read-only tool-selection predicate (CONTRACT VERIFICATION — PRE-NATI
     expect(
       isReadOnlyToolSelection([]),
       fivePoint({
-        what: "empty explicit tool list not classified as a read-only selection",
-        why: "PRE-NATIVE-1 violation — an explicit list that grants nothing was treated as the full default set",
-        expected: "isReadOnlyToolSelection([]) === true",
+        what: "empty explicit tool list misclassified as a read-only selection",
+        why: "PRE-NATIVE-1 violation — read-only requires GRANTING read and OMITTING write; an empty list grants no read",
+        expected: "isReadOnlyToolSelection([]) === false",
         actual: `isReadOnlyToolSelection([]) === ${isReadOnlyToolSelection([])}`,
         guidance:
-          "Emptiness of an explicit tool list is still an explicit denial of write; only the complete absence of a list is the full default grant.",
+          "Read-only classification requires both conjuncts: the list must grant read and omit write. A list granting neither is not the write-denied class this predicate names.",
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 

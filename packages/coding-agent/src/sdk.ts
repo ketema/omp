@@ -410,7 +410,12 @@ import { cfgTaskBatch, cfgTaskDisabledAgents, cfgTaskEager, cfgTaskMaxConcurrenc
  */
 function isReadOnlyToolSelection(toolNames: readonly string[] | undefined): boolean {
 	if (toolNames === undefined) return false;
-	return !toolNames.includes("write");
+	// BOTH conjuncts are load-bearing and mirror upstream's own detection at
+	// tools/index.ts:874-879. Dropping the `read` conjunct would misclassify
+	// write-capable selections: a subagent given ["read","bash","edit"] can
+	// write the working tree and run shell, so it is NOT write-denied and must
+	// retain the native tool.
+	return toolNames.includes("read") && !toolNames.includes("write");
 }
 
 /** Agent-level tool-call switches, snapshotted by the agent loop per prompt run. */
@@ -2671,7 +2676,15 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// `toolRegistry`, so no later presentation pass, `alwaysInclude` sweep,
 			// or xdev partition can surface it top-level or mount it under `xd://`.
 			// The surviving branch is PRE-NATIVE-1: unrestricted AND not read-only.
-			if (!isReadOnlyToolSelection(options.toolNames)) {
+			if (isReadOnlyToolSelection(options.toolNames)) {
+				// A capability is being removed from this session. Make the denial and
+				// its cause observable, so a misclassification produces an operational
+				// signal instead of a silently missing tool.
+				logger.info("Native RLM tool withheld from read-only session", {
+					clause: "FORBIDDEN-NATIVE-2",
+					toolNames: options.toolNames,
+				});
+			} else {
 				inlineExtensions.push(createRlmExtension());
 			}
 			if (customTools.length > 0) {

@@ -313,7 +313,7 @@ describe("RLM native tool session scope (RED — FORBIDDEN-NATIVE-2 / POST-NATIV
     const settings = Settings.isolated();
     const { session } = await createAgentSession({
       ...unrestrictedSessionOptions(tempDir, settings),
-      toolNames: ["read", "bash", "edit"],
+      toolNames: ["bash", "edit"],
     });
     try {
       const activeToolNames = session.getActiveToolNames();
