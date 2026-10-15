@@ -224,6 +224,25 @@ describe("tool descriptor surface", () => {
     // F-049 a child's reply is never the rlm() return value
     expect(d.toLowerCase()).toContain("reply")
   })
+
+  test("F-269/F-270: description carries the literal write-path and dill.dump_session guidance", () => {
+    // Risk tier: LOW — pure documentation content, added after a live
+    // session incident where a computed (f-string) write path was rejected
+    // by a governance write-guard, and a separate dill.dump_session call
+    // failed because an open lzma compressor handle was still in scope.
+    //
+    // Provenance: originally landed as d77c5e1f1d (G08-IPYTHON-PROMPT).
+    // The assertions and the description lines they pin were both dropped
+    // in the 2026-10-14 upstream reconcile; restored together here.
+    const { descriptor } = makeTool()
+    const d = descriptor.description
+    // F-269 literal write-path rule
+    expect(d.toLowerCase()).toContain("literal")
+    expect(d).toContain("f-string")
+    // F-270 dill.dump_session bare-filename rule
+    expect(d).toContain("dill.dump_session")
+    expect(d.toLowerCase()).toContain("compressor")
+  })
 })
 
 // ---------------------------------------------------------------------------
