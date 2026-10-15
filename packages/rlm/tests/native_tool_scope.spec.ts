@@ -31,9 +31,16 @@
  * - FORBIDDEN-NATIVE-2: a read-only session SHALL NOT surface ipython in
  *                       getActiveToolNames() and SHALL NOT mount it under xd://
  *                       (getMountedXdevToolNames()).
- * Not exercised here (no test; reported to the coordinator): POST-NATIVE-2
- * (load-mode resolution), INV-NATIVE-1 (disposal-spanning lifetime),
- * FORBIDDEN-NATIVE-1 (no demotion for a PRE-NATIVE-1 session).
+ * - POST-NATIVE-2:      the presentation mode resolved for the native tool is
+ *                       `essential` (observed at the session surface; the SCOPE
+ *                       NOTE on that test records what the clause's literal
+ *                       phrasing additionally names and why it is not asserted).
+ * - FORBIDDEN-NATIVE-1: a session satisfying PRE-NATIVE-1 SHALL NOT unmount
+ *                       ipython from the top-level active tool array or demote
+ *                       ipython to discoverable-only status.
+ * Not exercised here (no test; reported to the coordinator): INV-NATIVE-1 — the
+ * disposal-spanning lifetime obligation. Every test here observes a single
+ * post-initialization instant, not the interval through disposal.
  *
  * CL11-B CONSISTENCY CHECK — PASS. PRE-NATIVE-1 excludes read-only selections
  * from POST-NATIVE-1's domain, so FORBIDDEN-NATIVE-2 (read-only: ipython absent)
@@ -42,7 +49,11 @@
  *
  * EQUIVALENCE PARTITION RECORD (session tool selection, per PRE-NATIVE-1):
  *   Class A — toolNames undefined (full default set): NOT read-only
- *             -> POST-NATIVE-1 applies. Representative: omit `toolNames`.
+ *             -> POST-NATIVE-1 applies. Representative: omit `toolNames`. BOTH
+ *                presentation configurations are observed for this class,
+ *                because whether a discoverable-only demotion target exists at
+ *                all depends on it: device mounting ENABLED (the product
+ *                default) and DISABLED.
  *   Class B — explicit list CONTAINING "write":       NOT read-only
  *             -> POST-NATIVE-1 applies. Indistinguishable from Class A at the
  *                session surface; covered at the predicate surface in
@@ -73,7 +84,11 @@
  * contract can express it.
  *
  * RED EXPECTATION AT AUTHORING TIME: the FORBIDDEN-NATIVE-2 tests FAIL — a
- * read-only session reaches the native tool today. The POST-NATIVE-1 guard
+ * read-only session reaches the native tool today. The POST-NATIVE-1,
+ * FORBIDDEN-NATIVE-1 and POST-NATIVE-2 tests in the product-default
+ * presentation configuration also FAIL — a full-default session carries the
+ * native tool in the discoverable-only device catalog instead of the top-level
+ * active array. The POST-NATIVE-1 guard in the mounting-disabled configuration
  * PASSES and must keep passing: the fix must scope the tool away from read-only
  * sessions WITHOUT removing it from full-default sessions.
  */
@@ -91,8 +106,10 @@ import { cfgToolsXdev } from "@oh-my-pi/pi-coding-agent/tools/settings";
 
 import {
   assertActiveIpython,
+  assertEssentialLoadMode,
   assertIpythonAbsentForReadOnly,
   isReadOnlyToolSelection,
+  NATIVE_TOOL_LOAD_MODE,
   NATIVE_TOOL_NAME,
 } from "../../../contracts/rlm-native-tool.contract.ts";
 
@@ -112,7 +129,7 @@ const fivePoint = (points: {
     `5. GUIDANCE: ${points.guidance}`,
   ].join("\n");
 
-describe("RLM native tool session scope (RED — FORBIDDEN-NATIVE-2 / POST-NATIVE-1)", () => {
+describe("RLM native tool session scope (RED — FORBIDDEN-NATIVE-2 / POST-NATIVE-1 / POST-NATIVE-2 / FORBIDDEN-NATIVE-1)", () => {
   const tempDirs: string[] = [];
 
   // Built once: `ModelRegistry` eagerly loads bundled models and
@@ -406,13 +423,13 @@ describe("RLM native tool session scope (RED — FORBIDDEN-NATIVE-2 / POST-NATIV
      * - Equivalence class: A (toolNames undefined — full default set)
      * - Adversarial: contract-governed, implementation-aware
      *
-     * CONFIGURATION NOTE (reported to the coordinator, not silently encoded):
-     * this guard runs with device mounting disabled, the configuration in which
-     * POST-NATIVE-1's observable is satisfied at HEAD. With device mounting
-     * enabled (the product default) the native tool is presented as a mounted
-     * device rather than a top-level entry, so POST-NATIVE-1 is NOT satisfied
-     * there today. That gap is outside this slice's scope and no test here
-     * encodes a weakened disjunction ("top-level OR mounted") in its place.
+     * CONFIGURATION NOTE: this guard runs with device mounting disabled, the
+     * configuration in which POST-NATIVE-1's observable is satisfied at HEAD.
+     * The product-default configuration (device mounting enabled), in which the
+     * native tool is presented as a mounted device rather than a top-level
+     * entry, is observed by the three sibling tests below — which fail at HEAD.
+     * No test here encodes a weakened disjunction ("top-level OR mounted") in
+     * place of the clause.
      *
      * FOUR-CRITERIA TEST VALIDITY GATE:
      *   [x] C1 VALID: cites POST-NATIVE-1, present in
@@ -420,8 +437,11 @@ describe("RLM native tool session scope (RED — FORBIDDEN-NATIVE-2 / POST-NATIV
      *   [x] C2 VALUABLE: NO — exact-set equality pins exactly one native-tool
      *       entry, so both removal and duplicate registration fail it; the
      *       contract's own validator must also accept the surface.
-     *   [x] C3 NON-DUPLICATIVE: the only test observing a non-read-only session;
-     *       the sibling tests observe read-only sessions, the complementary class.
+     *   [x] C3 NON-DUPLICATIVE: the only test observing a non-read-only session
+     *       with device mounting DISABLED; the read-only tests observe the
+     *       complementary selection class, and the default-configuration
+     *       siblings observe the configuration in which a demotion target
+     *       exists.
      *   [x] C4 NOT FUTURE-EDIT: POST-NATIVE-1 is a written clause and this is a
      *       positive obligation on behaviour the session performs today.
      */
@@ -475,6 +495,317 @@ describe("RLM native tool session scope (RED — FORBIDDEN-NATIVE-2 / POST-NATIV
             actual: `active tools = ${JSON.stringify(activeToolNames)}`,
             guidance:
               "A session holding the full default tool grant must expose the native Python tool on its top-level callable surface.",
+          }),
+        );
+      }
+    } finally {
+      await session.dispose();
+    }
+  });
+
+  test("POST-NATIVE-1: a full default session keeps the native Python tool in the top-level active array under the default presentation configuration", async () => {
+    /**
+     * CONTRACT TRACEABILITY:
+     * - Contract: contracts/rlm-native-tool.contract.ts
+     * - Enforces: POST-NATIVE-1 — "After initialization of a session satisfying
+     *   PRE-NATIVE-1, ipython is present in the top-level active tools array
+     *   getActiveToolNames() (REQ-RLM-0002)." PRE-NATIVE-1 is satisfied here:
+     *   tool assembly is unrestricted and `toolNames` is absent, which
+     *   isReadOnlyToolSelection classifies as NOT read-only.
+     * - Category: positive
+     * - Risk tier: HIGH — POST-NATIVE-1 is unconditional on presentation
+     *   configuration, and the default configuration is the one every shipped
+     *   session runs in. A failure here means the clause is unsatisfied for
+     *   effectively every real session, not for a rare corner.
+     * - Equivalence class: A (toolNames undefined — full default set),
+     *   presentation configuration = product default (device mounting ENABLED,
+     *   so a discoverable-only demotion target exists).
+     * - Test pyramid level: Integration — the obligation is only observable
+     *   through the wiring between session assembly and tool presentation.
+     * - Adversarial: contract-governed, implementation-aware
+     *
+     * FOUR-CRITERIA TEST VALIDITY GATE:
+     *   [x] C1 VALID: cites POST-NATIVE-1, present in
+     *       contracts/rlm-native-tool.contract.ts
+     *   [x] C2 VALUABLE: "can the implementation be wrong and this test pass?" =
+     *       NO. Exact-set equality on the clause projection pins exactly one
+     *       top-level entry, so removal, duplicate registration, and presence on
+     *       some OTHER surface instead all fail it. A session that merely carries
+     *       the tool somewhere reachable does not satisfy this test.
+     *   [x] C3 NON-DUPLICATIVE: the sibling POST-NATIVE-1 guard observes the same
+     *       surface only with device mounting DISABLED, where no demotion target
+     *       exists; at authoring time that guard PASSES while this test FAILS,
+     *       which is the proof they are not one observation. The
+     *       FORBIDDEN-NATIVE-1 sibling observes the device catalog, a different
+     *       surface: an implementation that dropped the tool from the session
+     *       entirely fails this test and passes that one.
+     *   [x] C4 NOT FUTURE-EDIT: POST-NATIVE-1 is a written clause and the session
+     *       already assembles a top-level active array during initialization —
+     *       this bounds existing behaviour rather than awaiting a feature.
+     */
+    // ARRANGE: no `toolNames` at all — the full default set, which the contract
+    // predicate classifies as NOT read-only. Settings are left untouched: nothing
+    // here turns device mounting off, so the session is assembled exactly the way
+    // a shipped default session is.
+    const tempDir = makeTempDir();
+    const settings = Settings.isolated();
+
+    expect(
+      isReadOnlyToolSelection(undefined),
+      fivePoint({
+        what: "non-read-only precondition for POST-NATIVE-1",
+        why: "PRE-NATIVE-1 violation — an absent tool list was classified as a read-only selection",
+        expected:
+          "isReadOnlyToolSelection(undefined) === false (an absent list is the full default set, not a read-only selection)",
+        actual: `isReadOnlyToolSelection(undefined) === ${isReadOnlyToolSelection(undefined)}`,
+        guidance:
+          "Only an explicit tool list that omits write denotes a read-only session; a session that never restricted its tools retains the full default grant.",
+      }),
+    ).toBe(false);
+
+    expect(
+      cfgToolsXdev.get(settings),
+      fivePoint({
+        what: "default-configuration precondition for POST-NATIVE-1",
+        why: "configuration drift — this test must exercise the shipped default configuration, in which a discoverable-only demotion target exists, and it changes no setting to get there",
+        expected: "device mounting enabled for a session built from untouched default settings",
+        actual: `device mounting enabled = ${cfgToolsXdev.get(settings)}`,
+        guidance:
+          "This test pins the clause in the presentation configuration that ships on by default; if that default ever flips, the clause still needs an observation in the configuration where rarely-used tools are presented as devices.",
+      }),
+    ).toBe(true);
+
+    // ACT: initialize the session through the real creation path.
+    const { session } = await createAgentSession(unrestrictedSessionOptions(tempDir, settings));
+
+    try {
+      const activeToolNames = session.getActiveToolNames();
+      const mountedToolNames = session.getMountedXdevToolNames();
+
+      // ASSERT: present exactly once in the top-level array. Both surfaces are
+      // reported so a failure names WHERE the tool ended up instead.
+      expect(
+        activeToolNames.filter(name => name === NATIVE_TOOL_NAME),
+        fivePoint({
+          what: "full default session does not carry the native Python tool in its top-level active array",
+          why: "POST-NATIVE-1 violation — a session satisfying PRE-NATIVE-1 finished initialization without exactly one top-level native-tool entry",
+          expected: `exactly one ${NATIVE_TOOL_NAME} entry in getActiveToolNames()`,
+          actual: `active tools = ${JSON.stringify(activeToolNames)}; discoverable-only devices = ${JSON.stringify(mountedToolNames)}`,
+          guidance:
+            "A session holding the full default tool grant must finish initialization with the native Python tool on its top-level callable surface, registered once. Being reachable by some other route does not satisfy this: the top-level array is the observable the clause names.",
+        }),
+      ).toEqual([NATIVE_TOOL_NAME]);
+
+      // ASSERT (contract bridge): the contract's own executable validator, fed
+      // the implementation's observable, must accept it.
+      try {
+        assertActiveIpython({ activeToolNames });
+      } catch (cause) {
+        throw new Error(
+          fivePoint({
+            what: "contract validator rejected the live default-configuration session surface",
+            why: `POST-NATIVE-1 violation — ${(cause as Error).message}`,
+            expected: "the contract validator accepts the session's active tool array for a non-read-only selection",
+            actual: `active tools = ${JSON.stringify(activeToolNames)}; discoverable-only devices = ${JSON.stringify(mountedToolNames)}`,
+            guidance:
+              "The top-level tool surface of a full-default session must satisfy the specification's own acceptance check without exception.",
+          }),
+        );
+      }
+    } finally {
+      await session.dispose();
+    }
+  });
+
+  test("FORBIDDEN-NATIVE-1: a full default session does not demote the native Python tool to a discoverable-only device", async () => {
+    /**
+     * CONTRACT TRACEABILITY:
+     * - Contract: contracts/rlm-native-tool.contract.ts
+     * - Enforces: FORBIDDEN-NATIVE-1 — "A session satisfying PRE-NATIVE-1 SHALL
+     *   NOT unmount ipython from the top-level active tool array or demote
+     *   ipython to discoverable-only status."
+     * - Category: negative (negative-space obligation)
+     * - Risk tier: HIGH — the directive this contract records asks for the tool
+     *   at the highest presentation priority the session can give it. A silent
+     *   demotion leaves the session nominally carrying the tool while the model
+     *   no longer sees it, so the capability is lost without any error.
+     * - Equivalence class: A (toolNames undefined — full default set),
+     *   presentation configuration = product default (device mounting ENABLED —
+     *   the only configuration in which the forbidden outcome has a surface).
+     * - Test pyramid level: Integration.
+     * - Adversarial: contract-governed, implementation-aware
+     *
+     * OBSERVABLE: the device catalog (getMountedXdevToolNames()) IS the
+     * discoverable-only presentation. A name there is offered to the model as a
+     * device to be discovered rather than as a top-level tool, which is exactly
+     * the demotion the clause forbids. The contract exposes no executable
+     * validator for this clause, so the assertion states the clause text
+     * directly against the implementation's observable.
+     *
+     * FOUR-CRITERIA TEST VALIDITY GATE:
+     *   [x] C1 VALID: cites FORBIDDEN-NATIVE-1, present in
+     *       contracts/rlm-native-tool.contract.ts
+     *   [x] C2 VALUABLE: "can the implementation be wrong and this test pass?" =
+     *       NO. Exact-set equality on the clause projection: native-tool entries
+     *       in the device catalog must be exactly none, so leaving it mounted —
+     *       or mounting it in addition to activating it — fails.
+     *   [x] C3 NON-DUPLICATIVE: the only test observing the device catalog of a
+     *       NON-read-only session. The POST-NATIVE-1 sibling observes the
+     *       top-level array: an implementation that dropped the tool from the
+     *       session entirely passes this test and fails that one.
+     *   [x] C4 NOT FUTURE-EDIT: the session already populates a device catalog
+     *       during initialization and already places this tool in it — the
+     *       forbidden outcome is produced by behaviour performed today.
+     */
+    // ARRANGE: full default grant, untouched settings — the same session class
+    // POST-NATIVE-1 governs, observed on the other presentation surface.
+    const tempDir = makeTempDir();
+    const settings = Settings.isolated();
+
+    expect(
+      isReadOnlyToolSelection(undefined),
+      fivePoint({
+        what: "non-read-only precondition for FORBIDDEN-NATIVE-1",
+        why: "PRE-NATIVE-1 violation — an absent tool list was classified as a read-only selection, so the clause under test would not apply",
+        expected:
+          "isReadOnlyToolSelection(undefined) === false (an absent list is the full default set, not a read-only selection)",
+        actual: `isReadOnlyToolSelection(undefined) === ${isReadOnlyToolSelection(undefined)}`,
+        guidance:
+          "Only an explicit tool list that omits write denotes a read-only session; a session that never restricted its tools retains the full default grant.",
+      }),
+    ).toBe(false);
+
+    expect(
+      cfgToolsXdev.get(settings),
+      fivePoint({
+        what: "default-configuration precondition for FORBIDDEN-NATIVE-1",
+        why: "FORBIDDEN-NATIVE-1 observable missing — the demotion this clause forbids only has a surface when rarely-used tools are presented as devices",
+        expected: "device mounting enabled for a session built from untouched default settings",
+        actual: `device mounting enabled = ${cfgToolsXdev.get(settings)}`,
+        guidance:
+          "This test asserts that the native Python tool is not presented as a discoverable device; it requires the session configuration in which such a presentation is possible at all.",
+      }),
+    ).toBe(true);
+
+    // ACT
+    const { session } = await createAgentSession(unrestrictedSessionOptions(tempDir, settings));
+
+    try {
+      const mountedToolNames = session.getMountedXdevToolNames();
+      const activeToolNames = session.getActiveToolNames();
+
+      // ASSERT: the discoverable-only catalog must carry no native-tool entry.
+      expect(
+        mountedToolNames.filter(name => name === NATIVE_TOOL_NAME),
+        fivePoint({
+          what: "full default session presents the native Python tool as a discoverable-only device",
+          why: "FORBIDDEN-NATIVE-1 violation — a session satisfying PRE-NATIVE-1 demoted the native tool to discoverable-only status",
+          expected: `no ${NATIVE_TOOL_NAME} entry in the discoverable-only device set (exactly [])`,
+          actual: `discoverable-only devices = ${JSON.stringify(mountedToolNames)}; active tools = ${JSON.stringify(activeToolNames)}`,
+          guidance:
+            "A session holding the full default tool grant must offer the native Python tool to the model directly, never as a device the model has to discover before it can call it.",
+        }),
+      ).toEqual([]);
+    } finally {
+      await session.dispose();
+    }
+  });
+
+  test("POST-NATIVE-2: a full default session registers the native Python tool with the essential presentation mode", async () => {
+    /**
+     * CONTRACT TRACEABILITY:
+     * - Contract: contracts/rlm-native-tool.contract.ts
+     * - Enforces: POST-NATIVE-2 — "defaultLoadModeForToolName('ipython')
+     *   evaluates to 'essential'."
+     * - Category: positive
+     * - Risk tier: HIGH — the contract's stated WHAT ("exposed directly in the
+     *   top-level native active tools array ... with `essential` load mode") and
+     *   the user directive it records both require the top presentation
+     *   priority. A session that pins the tool top-level while still classifying
+     *   it as a discover-on-demand tool satisfies neither, and the classification
+     *   is what every later presentation decision reads.
+     * - Equivalence class: A (toolNames undefined — full default set),
+     *   presentation configuration = product default.
+     * - Test pyramid level: Integration — the observed value is the mode the
+     *   SESSION resolved for the registered tool, not a pure function result.
+     * - Adversarial: contract-governed, implementation-aware
+     *
+     * SCOPE NOTE (reported to the coordinator, not silently encoded): the clause
+     * text names an internal resolver. The host session surface does not expose
+     * that resolver; what it exposes is the presentation mode the session
+     * resolved for the registered tool, which this test reads through the public
+     * session lookup. That value is a necessary consequence of the clause — were
+     * the default resolution for this name `essential`, a registration that
+     * declares no mode of its own would carry `essential` here. The converse is
+     * NOT pinned: an implementation that reaches `essential` by declaring the
+     * mode on the registration itself satisfies this test and the contract's
+     * stated WHAT while leaving the clause's literal phrasing about the resolver
+     * unobserved. Asserting the resolver directly would mean reaching past the
+     * session surface into implementation internals, which this test does not do.
+     *
+     * FOUR-CRITERIA TEST VALIDITY GATE:
+     *   [x] C1 VALID: cites POST-NATIVE-2, present in
+     *       contracts/rlm-native-tool.contract.ts
+     *   [x] C2 VALUABLE: NO for the session-surface obligation — exact equality
+     *       against the contract's own constant, so any other resolved mode
+     *       (including an unregistered tool, which resolves to none) fails. The
+     *       SCOPE NOTE records the single direction this does not pin.
+     *   [x] C3 NON-DUPLICATIVE: the only test observing the resolved presentation
+     *       mode; the siblings observe which array the name lands in. An
+     *       implementation that forced the name top-level without changing its
+     *       presentation mode passes both siblings and fails this test.
+     *   [x] C4 NOT FUTURE-EDIT: POST-NATIVE-2 is a written clause and the session
+     *       already resolves a presentation mode for this tool at registration;
+     *       this bounds that existing resolution.
+     */
+    // ARRANGE: full default grant, untouched settings.
+    const tempDir = makeTempDir();
+    const settings = Settings.isolated();
+
+    expect(
+      isReadOnlyToolSelection(undefined),
+      fivePoint({
+        what: "non-read-only precondition for POST-NATIVE-2",
+        why: "PRE-NATIVE-1 violation — an absent tool list was classified as a read-only selection",
+        expected:
+          "isReadOnlyToolSelection(undefined) === false (an absent list is the full default set, not a read-only selection)",
+        actual: `isReadOnlyToolSelection(undefined) === ${isReadOnlyToolSelection(undefined)}`,
+        guidance:
+          "Only an explicit tool list that omits write denotes a read-only session; a session that never restricted its tools retains the full default grant.",
+      }),
+    ).toBe(false);
+
+    // ACT
+    const { session } = await createAgentSession(unrestrictedSessionOptions(tempDir, settings));
+
+    try {
+      const registeredNativeTool = session.getToolByName(NATIVE_TOOL_NAME);
+
+      // ASSERT: the mode the session resolved equals the mode the contract names.
+      expect(
+        registeredNativeTool?.loadMode,
+        fivePoint({
+          what: "full default session registered the native Python tool at a lower presentation priority than the contract requires",
+          why: "POST-NATIVE-2 violation — the presentation mode resolved for the native tool is not the essential mode",
+          expected: `resolved presentation mode for ${NATIVE_TOOL_NAME} === ${JSON.stringify(NATIVE_TOOL_LOAD_MODE)}`,
+          actual: `registered = ${registeredNativeTool !== undefined}; resolved presentation mode = ${JSON.stringify(registeredNativeTool?.loadMode)}`,
+          guidance:
+            "A session holding the full default tool grant must classify the native Python tool as one the model always sees directly, not as one it discovers on demand; the mode the session resolves for it must equal the mode the specification names.",
+        }),
+      ).toBe(NATIVE_TOOL_LOAD_MODE);
+
+      // ASSERT (contract bridge)
+      try {
+        assertEssentialLoadMode(registeredNativeTool?.loadMode);
+      } catch (cause) {
+        throw new Error(
+          fivePoint({
+            what: "contract validator rejected the presentation mode resolved by the live session",
+            why: `POST-NATIVE-2 violation — ${(cause as Error).message}`,
+            expected: "the contract validator accepts the presentation mode the session resolved for the native tool",
+            actual: `resolved presentation mode = ${JSON.stringify(registeredNativeTool?.loadMode)}`,
+            guidance:
+              "The presentation mode a full-default session resolves for the native Python tool must satisfy the specification's own acceptance check without exception.",
           }),
         );
       }
