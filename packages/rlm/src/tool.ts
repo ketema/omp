@@ -102,7 +102,7 @@ const ipythonSchema = type({
 });
 
 // =============================================================================
-// Tool description (POST-TOOL-5: F-040..F-062 + F-269/F-270 prompt contract)
+// Tool description (POST-TOOL-5: F-040..F-062 prompt contract)
 // =============================================================================
 
 const TOOL_DESCRIPTION = [

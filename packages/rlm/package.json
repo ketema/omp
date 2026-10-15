@@ -1,7 +1,7 @@
 {
   "type": "module",
   "name": "@oh-my-pi/pi-rlm",
-  "version": "17.3.8",
+  "version": "18.1.14",
   "description": "Recursive Language Model (RLM) persistent IPython kernel integration for Oh My Pi",
   "homepage": "https://omp.sh",
   "author": "Can Boluk",

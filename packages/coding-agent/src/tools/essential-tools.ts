@@ -26,23 +26,14 @@ export const ESSENTIAL_BUILTIN_TOOL_NAMES: Record<string, true> = {
 	bash: true,
 	edit: true,
 	glob: true,
-	computer: true,
+	find: true,
 	eval: true,
 	task: true,
-	hub: true,
+	wait: true,
 	learn: true,
 	manage_skill: true,
-};
-
-/**
- * Native (non-built-in-class) tool names pinned to `"essential"` load mode.
- * Distinct from {@link ESSENTIAL_BUILTIN_TOOL_NAMES}: the set's drift guard
- * requires every member to have a `BUILTIN_TOOLS` factory, but `ipython` is
- * registered by the RLM extension through `registerTool`, not `BUILTIN_TOOLS`.
- * Never demoted to `"discoverable"` regardless of adapter boundary.
- */
-export const ESSENTIAL_NATIVE_TOOL_NAMES: Record<string, true> = {
-	ipython: true,
+	context_notes: true,
+	new_context: true,
 };
 
 /**
@@ -53,6 +44,5 @@ export const ESSENTIAL_NATIVE_TOOL_NAMES: Record<string, true> = {
  */
 export function defaultLoadModeForToolName(name: string, declared?: ToolLoadMode): ToolLoadMode {
 	if (declared) return declared;
-	if (name in ESSENTIAL_NATIVE_TOOL_NAMES) return "essential";
 	return name in ESSENTIAL_BUILTIN_TOOL_NAMES ? "essential" : "discoverable";
 }

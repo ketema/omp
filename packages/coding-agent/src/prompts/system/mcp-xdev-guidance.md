@@ -1,16 +1,9 @@
 ## MCP Tool Routes
 
 {{#if tools.length}}
-The agent SHALL execute each mounted MCP tool via the native `write` tool by providing the destination path and a JSON-encoded string in `content` matching the tool's schema:
-`write(path="xd://<device>", content=JSON_STRING)`
-
-The agent SHALL NOT use `hub.send` or subprocess commands to execute `xd://` virtual devices.
-To inspect a device's parameter schema or documentation, the agent SHALL invoke `read(path="xd://<device>")`.
-To list all mounted virtual devices, the agent SHALL invoke `read(path="xd://")`.
-
-Mounted routes:
+Execute each mounted tool: write JSON arguments to its path.{{#if hasCatalogOnlyTools}} Paths with a summary: read for docs + JSON schema before first use.{{/if}}
 {{#each tools}}
-- {{mcpToolName}} → `{{path}}`
+- {{mcpToolName}} → `{{path}}`{{#if summary}} — {{summary}}{{/if}}
 {{/each}}
 {{/if}}
 {{#if hasOmittedTools}}
