@@ -14,7 +14,6 @@
 
 import { describe, expect, test } from "bun:test"
 import * as fs from "node:fs"
-import { fileURLToPath } from "node:url"
 
 import {
   BASE_PACKAGES,

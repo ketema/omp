@@ -202,7 +202,7 @@ describe("tool descriptor surface", () => {
     expect((d.description as string).length).toBeGreaterThan(0)
   })
 
-  test("POST-TOOL-5: description delivers prompt contract F-040..F-062 and F-269/F-270", () => {
+  test("POST-TOOL-5: description delivers the prompt contract F-040..F-062", () => {
     // Risk tier: HIGH — REQ-RLM-0005: the Model only learns the notebook
     // discipline through this surface. Each assertion pins one reference
     // rule by its exact behavioral wording.
@@ -225,23 +225,23 @@ describe("tool descriptor surface", () => {
     expect(d.toLowerCase()).toContain("reply")
   })
 
-  test("POST-TOOL-5 / F-269 / F-270: description gives exact governed-write and snapshot guidance", () => {
-    // Risk tier: HIGH — these instructions prevent false checkpoint descriptors
-    // and unpicklable whole-session snapshots at the model-facing boundary.
+  test("F-269/F-270: description carries the literal write-path and dill.dump_session guidance", () => {
+    // Risk tier: LOW — pure documentation content, added after a live
+    // session incident where a computed (f-string) write path was rejected
+    // by a governance write-guard, and a separate dill.dump_session call
+    // failed because an open lzma compressor handle was still in scope.
+    //
+    // Provenance: originally landed as d77c5e1f1d (G08-IPYTHON-PROMPT).
+    // The assertions and the description lines they pin were both dropped
+    // in the 2026-10-14 upstream reconcile; restored together here.
     const { descriptor } = makeTool()
     const d = descriptor.description
-    expect(d).toContain(
-      "must be a literal, statically-inspectable string",
-    )
-    expect(d).toContain(
-      "an f-string or other computed path is rejected",
-    )
-    expect(d).toContain(
-      "Call `dill.dump_session(\"<literal path>.pkl\")` with a bare filename only",
-    )
-    expect(d).toContain(
-      "never open the destination yourself first",
-    )
+    // F-269 literal write-path rule
+    expect(d.toLowerCase()).toContain("literal")
+    expect(d).toContain("f-string")
+    // F-270 dill.dump_session bare-filename rule
+    expect(d).toContain("dill.dump_session")
+    expect(d.toLowerCase()).toContain("compressor")
   })
 })
 

@@ -88,7 +88,7 @@ function makeApi(options: { flags?: Record<string, string | boolean> } = {}) {
     handlers: Map<string, Array<(event: unknown) => unknown>>
     sentMessages: Array<{ payload: unknown; options: unknown }>
   } = { tools: [], flags: [], commands: [], handlers: new Map(), sentMessages: [] }
-  const flagValues: Record<string, string | boolean> = { ...(options.flags ?? {}) }
+  const flagValues: Record<string, string | boolean> = { ...options.flags }
   const api = {
     registerTool(tool: Record<string, unknown>) {
       registered.tools.push(tool)

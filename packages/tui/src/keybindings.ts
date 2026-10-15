@@ -34,10 +34,6 @@ export interface Keybindings {
 	"tui.input.tab": true;
 	"tui.input.copy": true;
 	// Generic selection actions
-	"tui.viewport.pageUp": true;
-	"tui.viewport.pageDown": true;
-	"tui.viewport.top": true;
-	"tui.viewport.follow": true;
 	"tui.select.up": true;
 	"tui.select.down": true;
 	"tui.select.pageUp": true;
@@ -109,7 +105,7 @@ export const TUI_KEYBINDINGS = {
 		description: "Delete word backward",
 	},
 	"tui.editor.deleteWordForward": {
-		defaultKeys: ["alt+delete", "alt+d", "super+alt+delete", "super+alt+d"],
+		defaultKeys: ["alt+delete", "alt+d", "ctrl+delete", "super+alt+delete", "super+alt+d"],
 		description: "Delete word forward",
 	},
 	"tui.editor.deleteToLineStart": {
@@ -131,22 +127,6 @@ export const TUI_KEYBINDINGS = {
 	"tui.input.submit": { defaultKeys: "enter", description: "Submit input" },
 	"tui.input.tab": { defaultKeys: "tab", description: "Tab / autocomplete" },
 	"tui.input.copy": { defaultKeys: "ctrl+c", description: "Copy selection" },
-	"tui.viewport.pageUp": {
-		defaultKeys: "pageUp",
-		description: "Scroll transcript up a page",
-	},
-	"tui.viewport.pageDown": {
-		defaultKeys: "pageDown",
-		description: "Scroll transcript down a page",
-	},
-	"tui.viewport.top": {
-		defaultKeys: "shift+alt+up",
-		description: "Scroll transcript to top",
-	},
-	"tui.viewport.follow": {
-		defaultKeys: "ctrl+shift+down",
-		description: "Scroll to bottom and follow output",
-	},
 	"tui.select.up": { defaultKeys: "up", description: "Move selection up" },
 	"tui.select.down": { defaultKeys: "down", description: "Move selection down" },
 	"tui.select.pageUp": { defaultKeys: "pageUp", description: "Selection page up" },

@@ -17,6 +17,7 @@ target/
 
 # Environment
 .env
+.venv
 
 # Editors
 .vscode/
@@ -65,8 +66,8 @@ pi-*.html
 packages/coding-agent/src/export/html/tool-views.generated.js
 packages/natives/npm/
 /runs/
-python/omp-rpc/src/omp_rpc.egg-info/
-python/omp-rpc/build/
+sdk/python/omp-rpc/src/omp_rpc.egg-info/
+sdk/python/omp-rpc/build/
 # parallel-agent worktrees
 .wt/
 CPU*.md
@@ -92,7 +93,19 @@ packages/coding-agent/bench/boot-baseline.json
 /bazel-oh-my-pi
 /.bazelrc.user
 
+<<<<<<< HEAD
+.parity/
+
+# serena
+.serena/
+
+# RLM runtime state & artifacts
+.omp/artifacts/
+kernel-state.dill
+kernel-state.json
+**/kernel-state.*
+=======
 # Local agent runtime artifacts
 **/.serena/
 **/.omp/artifacts/
-**/kernel-state.*
+>>>>>>> 33c620948f (chore: ignore local agent runtime artifacts)
