@@ -289,6 +289,7 @@ import {
 	WriteTool,
 	warmupLspServers,
 	xdevEntries,
+	isReadOnlyToolSelection,
 } from "./tools";
 import { resolveYieldReportText } from "./tools/yield";
 import { createBrowserPrelude } from "./tools/browser";
@@ -408,15 +409,7 @@ import { cfgTaskBatch, cfgTaskDisabledAgents, cfgTaskEager, cfgTaskMaxConcurrenc
  * selection. Redeclared here rather than imported: the contract specifies,
  * it is never a dependency of the code it constrains (CL11-F).
  */
-function isReadOnlyToolSelection(toolNames: readonly string[] | undefined): boolean {
-	if (toolNames === undefined) return false;
-	// BOTH conjuncts are load-bearing and mirror upstream's own detection at
-	// tools/index.ts:874-879. Dropping the `read` conjunct would misclassify
-	// write-capable selections: a subagent given ["read","bash","edit"] can
-	// write the working tree and run shell, so it is NOT write-denied and must
-	// retain the native tool.
-	return toolNames.includes("read") && !toolNames.includes("write");
-}
+// isReadOnlyToolSelection now lives in ./tools (single authority, audit #3).
 
 /** Agent-level tool-call switches, snapshotted by the agent loop per prompt run. */
 const cfgToolCallSwitches = combine({
