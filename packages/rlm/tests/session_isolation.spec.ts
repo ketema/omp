@@ -18,7 +18,6 @@ import { join } from "node:path"
 import {
   createRlmExtension,
   type RlmExtensionKernelPort,
-  type RlmKernelConfig,
 } from "../src/extension.ts"
 
 function makeKernelPort(overrides: { restoredNames?: string[] } = {}) {
@@ -91,13 +90,6 @@ function makeApi() {
 
 describe("SLICE-2: Session Artifacts Isolation", () => {
   test("POST-SESSION-ISOLATION-1: fresh session with sessionId partitions artifactsDir and does NOT bleed shared root snapshot", async () => {
-    /**
-     * FOUR-CRITERIA TEST VALIDITY GATE:
-     *   [✓] C1 VALID: cites clause POST-SESSION-ISOLATION-1 and FORBIDDEN-CROSS-SESSION-BLEED-1
-     *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO
-     *   [✓] C3 NON-DUPLICATIVE: asserts artifactsDir partition when event has sessionId
-     *   [✓] C4 NOT FUTURE-EDIT: exercises session_start event handling in extension.ts
-     */
     const tempRoot = fs.mkdtempSync("/tmp/rlm-session-iso-")
     try {
       // Create a fake legacy snapshot in unpartitioned root: .omp/artifacts/kernel-state.dill
@@ -105,19 +97,16 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
       fs.mkdirSync(sharedRoot, { recursive: true })
       fs.writeFileSync(join(sharedRoot, "kernel-state.dill"), "STALE_PRIOR_SESSION_DATA")
 
-      let capturedConfig: RlmKernelConfig | null = null
       const kernel = makeKernelPort({ restoredNames: ["stale_leaked_var"] })
 
       const { api, registered } = makeApi()
       const factory = createRlmExtension({
-        createKernel(config) {
-          capturedConfig = config
+        createKernel() {
           return kernel.port
         },
       })
       await factory(api as never)
 
-      // Emit session_start for a fresh session with a unique sessionId
       const sessionStartHandlers = registered.handlers.get("session_start") ?? []
       expect(sessionStartHandlers.length).toBeGreaterThan(0)
 
@@ -128,9 +117,6 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
         cwd: tempRoot,
       })
 
-      // Under contract POST-SESSION-ISOLATION-1:
-      // The kernel must NOT have been started with the stale shared root snapshot,
-      // and no revival message should announce leaked variables from the shared root.
       const revivalMessages = registered.sentMessages.filter(m => {
         if (typeof m.payload === "object" && m.payload !== null && "customType" in m.payload) {
           return m.payload.customType === "rlm-revival"
@@ -138,11 +124,45 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
         return false
       })
 
-      // ASSERT: Fresh session must NOT bleed the shared unpartitioned snapshot
-      expect(revivalMessages.length).toBe(
-        0,
-        "FORBIDDEN-CROSS-SESSION-BLEED-1 violation: fresh session restored stale snapshot from unpartitioned shared root"
-      )
+      expect(revivalMessages.length).toBe(0)
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("POST-SESSION-ISOLATION-1: session with explicit sessionDir restores from partitioned path", async () => {
+    const tempRoot = fs.mkdtempSync("/tmp/rlm-session-iso-dir-")
+    try {
+      const explicitSessionDir = join(tempRoot, "my-session-dir")
+      fs.mkdirSync(explicitSessionDir, { recursive: true })
+      fs.writeFileSync(join(explicitSessionDir, "kernel-state.dill"), "VALID_SESSION_SNAPSHOT")
+
+      const kernel = makeKernelPort({ restoredNames: ["valid_session_var"] })
+
+      const { api, registered } = makeApi()
+      const factory = createRlmExtension({
+        createKernel() {
+          return kernel.port
+        },
+      })
+      await factory(api as never)
+
+      const sessionStartHandlers = registered.handlers.get("session_start") ?? []
+      expect(sessionStartHandlers.length).toBeGreaterThan(0)
+
+      await sessionStartHandlers[0]({
+        type: "session_start",
+        sessionDir: explicitSessionDir,
+      })
+
+      const revivalMessages = registered.sentMessages.filter(m => {
+        if (typeof m.payload === "object" && m.payload !== null && "customType" in m.payload) {
+          return m.payload.customType === "rlm-revival"
+        }
+        return false
+      })
+
+      expect(revivalMessages.length).toBe(1)
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true })
     }
