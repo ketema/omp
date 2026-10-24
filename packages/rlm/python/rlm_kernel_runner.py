@@ -304,13 +304,24 @@ def _detect_codec(data: bytes) -> str:
     raise UnsupportedCodecError(f"Unrecognized magic header: [{header_hex}]")
 
 
+# Shell builtins and interactive wrappers that SHALL NOT be serialized into user state (POST-NAME-FILTER-1)
+_EXCLUDED_SNAPSHOT_NAMES: frozenset[str] = frozenset({
+    "In",
+    "Out",
+    "get_ipython",
+    "exit",
+    "quit",
+    "open",  # IPython _modified_open wrapper
+})
+
+
 def _snapshot_names() -> list[str]:
-    """Return sorted list of user-defined variable names eligible for snapshotting."""
+    """Return sorted list of user-defined variable names eligible for snapshotting (POST-NAME-FILTER-1)."""
     ns = _get_ns()
     # Filter out private / builtin variables
     return sorted([
         k for k in ns.keys()
-        if not k.startswith("_") and k not in ("In", "Out", "get_ipython", "exit", "quit")
+        if not k.startswith("_") and k not in _EXCLUDED_SNAPSHOT_NAMES
     ])
 
 
@@ -644,13 +655,19 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
     # deserialization executes __setstate__ / reducer callables during dill.loads, so
     # transactional heap rollback for custom reducer side effects requires a process fork).
     temp_restored = {}
+    skipped_restores = []
     for name, blob in payload.items():
         if not isinstance(name, str):
             raise CorruptSnapshotError(f"Invalid non-string variable name in snapshot payload: {name!r}")
         try:
             temp_restored[name] = dill.loads(blob)
         except Exception as exc:
-            raise CorruptSnapshotError(f"Failed to unpickle variable '{name}': {exc}") from exc
+            # POST-RESTORE-SKIP-1: Resilient restore skips unpicklable variable instead of aborting
+            skipped_restores.append({
+                "name": name,
+                "reason": f"unpicklable ({type(exc).__name__}: {exc})",
+                "error_type": type(exc).__name__,
+            })
 
     # Validate and sort restored names BEFORE mutating active user namespace
     try:
@@ -658,11 +675,14 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
     except Exception as exc:
         raise CorruptSnapshotError(f"Failed to order restored variable names: {exc}") from exc
 
-    # Commit atomically to user namespace only after all variables and names are validated
+    # Commit atomically to user namespace only after all variables and names are validated (INV-RESTORE-PURITY-1)
     ns = _get_ns()
     ns.update(temp_restored)
 
-    return {"restoredNames": restored_names}
+    return {
+        "restoredNames": restored_names,
+        "skipped": skipped_restores,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -671,12 +691,24 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
 
 
 def _bootstrap() -> None:
-    """Execute the runtime bootstrap: import the runtime package; verify dill."""
+    """Execute the runtime bootstrap: import base primitives; pre-freeze snapshot codec (POST-BOOTSTRAP-PRIMITIVES-1)."""
     # Verify dill is importable
     import dill  # noqa: F401
 
-    # Import the runtime package
-    import rlm  # noqa: F401
+    # Import the runtime package if available
+    try:
+        import rlm  # noqa: F401
+    except ImportError:
+        pass
+
+    # Pre-load base interactive and standard library primitives into sys.modules (POST-BOOTSTRAP-PRIMITIVES-1)
+    import json  # noqa: F401
+    import pathlib  # noqa: F401
+    try:
+        import IPython  # noqa: F401
+        import IPython.display  # noqa: F401
+    except ImportError:
+        pass
 
     # Pre-freeze the snapshot compression codec (FORBIDDEN-4).
     _freeze_snapshot_codec()
@@ -749,6 +781,7 @@ def _handle_op(op: dict) -> None:
                 "type": "result",
                 "id": op_id,
                 "restoredNames": res["restoredNames"],
+                "skipped": res.get("skipped", []),
             })
         except Exception as exc:
             _emit({
