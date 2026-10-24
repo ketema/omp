@@ -37,6 +37,7 @@ type MutableKernelConfig = {
 export interface RlmExtensionKernelPort extends RlmToolKernelPort {
 	onCompactionComplete(): Promise<void>;
 	compactionNotice(): string | null;
+	restoredSkipped?(): ReadonlyArray<{ readonly name: string; readonly reason: string }>;
 }
 
 // =============================================================================
@@ -116,7 +117,11 @@ class KernelManagerAdapter implements RlmExtensionKernelPort {
 	}
 
 	restoredNames(): readonly string[] {
-		return this._restoredNames;
+		return this.manager.restoredNames();
+	}
+
+	restoredSkipped(): ReadonlyArray<{ readonly name: string; readonly reason: string }> {
+		return this.manager.restoredSkipped();
 	}
 
 	async onCompactionComplete(): Promise<void> {
@@ -335,6 +340,10 @@ export function createRlmExtension(
 					if (kernel === null) return [];
 					return kernel.restoredNames();
 				},
+				restoredSkipped() {
+					if (kernel === null) return [];
+					return kernel.restoredSkipped?.() ?? [];
+				},
 			},
 			onRevival: (names: readonly string[]) => {
 				// SEQ-KM-5: revival notice enumerating restored names via api.sendMessage
@@ -416,15 +425,29 @@ export function createRlmExtension(
 		});
 
 		// on('session_start'): restore and announce revived names
-		api.on("session_start", async (event: unknown) => {
-			// Resolve artifactsDir from the session event (POST-SESSION-ISOLATION-1)
-			const sessionEvent = event as { sessionDir?: string; sessionId?: string };
-			if (typeof sessionEvent?.sessionDir === "string") {
+		api.on("session_start", async (event: unknown, ctx?: unknown) => {
+			// Resolve artifactsDir from session context or event (F2 / F6 fix)
+			const sessionCtx = ctx as {
+				cwd?: string;
+				sessionManager?: {
+					getArtifactsDir?: () => string | null;
+					getSessionId?: () => string;
+				};
+			} | undefined;
+			const sessionEvent = event as { sessionDir?: string; sessionId?: string; cwd?: string } | undefined;
+
+			const effectiveCwd = sessionCtx?.cwd ?? sessionEvent?.cwd ?? process.cwd();
+			const managerArtifactsDir = sessionCtx?.sessionManager?.getArtifactsDir?.();
+			const sessionId = sessionCtx?.sessionManager?.getSessionId?.() ?? sessionEvent?.sessionId;
+
+			if (typeof managerArtifactsDir === "string" && managerArtifactsDir.trim() !== "") {
+				artifactsDir = managerArtifactsDir;
+			} else if (typeof sessionEvent?.sessionDir === "string" && sessionEvent.sessionDir.trim() !== "") {
 				artifactsDir = sessionEvent.sessionDir;
-			} else if (typeof sessionEvent?.sessionId === "string" && sessionEvent.sessionId.trim() !== "") {
-				artifactsDir = join(process.cwd(), ".omp", "artifacts", sessionEvent.sessionId.trim());
+			} else if (typeof sessionId === "string" && sessionId.trim() !== "") {
+				artifactsDir = join(effectiveCwd, ".omp", "artifacts", sessionId.trim());
 			} else {
-				artifactsDir = join(process.cwd(), ".omp", "artifacts");
+				artifactsDir = join(effectiveCwd, ".omp", "artifacts");
 			}
 
 			// Restore and announce revival only when an actual snapshot exists in the resolved artifactsDir
@@ -434,12 +457,21 @@ export function createRlmExtension(
 					const k = await ensureKernel();
 					await k.ensureStarted();
 					const names = k.restoredNames();
-					if (names.length > 0) {
+					const skipped = k.restoredSkipped?.() ?? [];
+					if (names.length > 0 || skipped.length > 0) {
+						const parts: string[] = [];
+						if (names.length > 0) {
+							parts.push(`IPython state restored. The following names are available again: ${names.join(", ")}`);
+						}
+						if (skipped.length > 0) {
+							const skippedNames = skipped.map(s => s.name).join(", ");
+							parts.push(`Warning: The following unpicklable variables were skipped: ${skippedNames}`);
+						}
 						api.sendMessage(
 							{
 								role: "custom",
 								customType: "rlm-revival",
-								content: `IPython state restored. The following names are available again: ${names.join(", ")}`,
+								content: parts.join("\n"),
 								display: true,
 								attribution: "agent",
 								timestamp: Date.now(),

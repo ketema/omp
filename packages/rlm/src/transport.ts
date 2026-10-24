@@ -861,7 +861,10 @@ export class RlmTransport implements KernelTransport {
 					if (frame.names !== undefined) {
 						op.resolve(frame.names);
 					} else if (frame.restoredNames !== undefined) {
-						op.resolve(frame.restoredNames);
+						const res = Object.assign([...frame.restoredNames], {
+							skipped: frame.skipped ?? [],
+						});
+						op.resolve(res);
 					} else if (frame.bytes !== undefined) {
 						op.resolve({
 							bytes: frame.bytes,

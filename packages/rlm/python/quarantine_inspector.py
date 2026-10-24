@@ -11,10 +11,13 @@ Compliance: CL11-F (does not import from contract module; redeclares independent
 
 from __future__ import annotations
 
+import gzip
+import hashlib
 import json
 import lzma
 import os
 import shutil
+import time
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
@@ -56,7 +59,7 @@ class QuarantineReport:
 
 
 def _detect_and_load(path: str) -> dict[str, Any]:
-    """Detect compression and load the snapshot payload dict."""
+    """Detect compression (LZMA, Gzip, or Raw) and load the snapshot payload dict (F4)."""
     with open(path, "rb") as fh:
         header = fh.read(6)
 
@@ -64,12 +67,16 @@ def _detect_and_load(path: str) -> dict[str, Any]:
     if len(header) >= 6 and header[:6] == bytes([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]):
         with lzma.open(path, "rb") as comp_fh:
             payload = dill.load(comp_fh)
+    # Check for Gzip magic bytes 0x1f 0x8b (F4 fix)
+    elif len(header) >= 2 and header[:2] == bytes([0x1f, 0x8b]):
+        with gzip.open(path, "rb") as comp_fh:
+            payload = dill.load(comp_fh)
     else:
         with open(path, "rb") as raw_fh:
             payload = dill.load(raw_fh)
 
     if not isinstance(payload, dict):
-        raise ValueError(f"Expected dict payload in snapshot, got {type(payload).__name__}")
+        raise TypeError(f"Expected dict payload in snapshot, got {type(payload).__name__}")
     return payload
 
 
@@ -81,18 +88,28 @@ def quarantine_and_inspect(
     Safely archive a legacy snapshot and inspect its variables non-destructively.
 
     POST-QUARANTINE-INSPECT-1:
-      Copies source_path to quarantine_root, inspects all variables,
-      and writes REPORT_FILENAME into quarantine_root.
+      Copies source_path to a dedicated unique subfolder under quarantine_root (F1 fix),
+      inspects all variables (supporting LZMA, Gzip, Raw - F4 fix),
+      and writes REPORT_FILENAME into that unique quarantine subfolder.
     FORBIDDEN-UNARCHIVED-DELETE-1:
       Source is never removed unless verified copy exists in quarantine.
     """
     if not os.path.exists(source_path):
         raise FileNotFoundError(f"Source snapshot not found: {source_path}")
 
-    os.makedirs(quarantine_root, exist_ok=True)
-    quarantine_target = os.path.join(quarantine_root, os.path.basename(source_path))
+    with open(source_path, "rb") as f:
+        source_bytes = f.read()
 
-    # FORBIDDEN-UNARCHIVED-DELETE-1: Archive copy first before any inspection or manipulation
+    file_hash = hashlib.sha256(source_bytes).hexdigest()[:12]
+    timestamp_ns = time.time_ns()
+    unique_subfolder_name = f"{timestamp_ns}_{file_hash}"
+
+    # F1 fix: Allocate an isolated per-snapshot quarantine directory
+    quarantine_subfolder = os.path.join(quarantine_root, unique_subfolder_name)
+    os.makedirs(quarantine_subfolder, exist_ok=True)
+    quarantine_target = os.path.join(quarantine_subfolder, os.path.basename(source_path))
+
+    # FORBIDDEN-UNARCHIVED-DELETE-1: Archive copy first before any inspection
     shutil.copy2(source_path, quarantine_target)
 
     # Inspect variables from the quarantined copy
@@ -115,7 +132,7 @@ def quarantine_and_inspect(
                 )
             )
             recoverable_count += 1
-        except Exception as exc:
+        except (dill.PicklingError, dill.UnpicklingError, ModuleNotFoundError, AttributeError, EOFError, ValueError) as exc:
             status_records.append(
                 VariableStatusRecord(
                     name=name,
@@ -135,8 +152,8 @@ def quarantine_and_inspect(
         variables=tuple(status_records),
     )
 
-    # Write manifest report
-    manifest_path = os.path.join(quarantine_root, REPORT_FILENAME)
+    # Write manifest report beside the archived file in the unique subfolder (F1 fix)
+    manifest_path = os.path.join(quarantine_subfolder, REPORT_FILENAME)
     with open(manifest_path, "w", encoding="utf-8") as mfh:
         json.dump(report.to_dict(), mfh, indent=2)
 

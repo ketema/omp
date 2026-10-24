@@ -252,6 +252,7 @@ export class KernelManager {
 
 	// SLICE-4 additive: names restored by the last admission (for tool/extension)
 	private lastRestoredNames: readonly string[] = [];
+	private lastRestoredSkipped: ReadonlyArray<{ readonly name: string; readonly reason: string }> = [];
 
 	constructor(transport: KernelTransport, options: { clock: KernelClock; artifactsDir: string }) {
 		this.transport = transport;
@@ -381,6 +382,10 @@ export class KernelManager {
 		return this.lastRestoredNames;
 	}
 
+	restoredSkipped(): ReadonlyArray<{ readonly name: string; readonly reason: string }> {
+		return this.lastRestoredSkipped;
+	}
+
 	/**
 	 * SLICE-4 additive: user-initiated kernel kill (the tool's busy-restart
 	 * path). Kills the transport and resets the started flag so the next
@@ -389,6 +394,7 @@ export class KernelManager {
 	async kill(): Promise<void> {
 		this.started = false;
 		this.lastRestoredNames = [];
+		this.lastRestoredSkipped = [];
 		const killResult = this.transport.kill();
 		if (killResult instanceof Promise) await killResult.catch(() => undefined);
 	}
@@ -491,7 +497,10 @@ export class KernelManager {
 			throw new KernelUnresponsiveError(tail);
 		}
 		if (onProgress !== undefined) onProgress("restoring");
-		this.lastRestoredNames = await this.transport.restoreSnapshot();
+		const restored = await this.transport.restoreSnapshot();
+		this.lastRestoredNames = Array.from(restored);
+		const skippedFromRestored = (restored as unknown as { skipped?: Array<{ name: string; reason: string }> }).skipped;
+		this.lastRestoredSkipped = Array.isArray(skippedFromRestored) ? skippedFromRestored : [];
 		if (onProgress !== undefined) onProgress("preparing");
 		await this.transport.bootstrap();
 		this.started = true;
