@@ -417,17 +417,19 @@ export function createRlmExtension(
 
 		// on('session_start'): restore and announce revived names
 		api.on("session_start", async (event: unknown) => {
-			// Resolve artifactsDir from the session event (structural)
-			const sessionEvent = event as { sessionDir?: string };
+			// Resolve artifactsDir from the session event (POST-SESSION-ISOLATION-1)
+			const sessionEvent = event as { sessionDir?: string; sessionId?: string };
 			if (typeof sessionEvent?.sessionDir === "string") {
 				artifactsDir = sessionEvent.sessionDir;
+			} else if (typeof sessionEvent?.sessionId === "string" && sessionEvent.sessionId.trim() !== "") {
+				artifactsDir = join(process.cwd(), ".omp", "artifacts", sessionEvent.sessionId.trim());
 			} else {
 				artifactsDir = join(process.cwd(), ".omp", "artifacts");
 			}
 
-			// Injected custom kernel (e.g. tests) or existing snapshot on disk: restore and announce revival
+			// Restore and announce revival only when an actual snapshot exists in the resolved artifactsDir
 			const hasSnapshot = fs.existsSync(join(artifactsDir, "kernel-state.dill"));
-			if (options?.createKernel !== undefined || hasSnapshot) {
+			if (hasSnapshot) {
 				try {
 					const k = await ensureKernel();
 					await k.ensureStarted();
