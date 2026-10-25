@@ -208,6 +208,45 @@ class TestRlmDillResilientRestore(unittest.TestCase):
             f"ACTUAL message: {str(raised)[:200]}"
         )
 
+    def test_post_bootstrap_ipython_1_missing_ipython_fails_fast(self):
+        """
+        POST-BOOTSTRAP-IPYTHON-1: bootstrap must not report readiness, and must not skip the preload silently, when
+        IPython or its display module cannot be imported; the failure names ipykernel.
+
+        FOUR-CRITERIA TEST VALIDITY GATE:
+          [x] C1 VALID: cites POST-BOOTSTRAP-IPYTHON-1 (contracts/rlm_dill_resilient_restore.contract.py)
+          [x] C2 VALUABLE: a bootstrap that swallows the ImportError reports success and fails this test
+          [x] C3 NON-DUPLICATIVE: the rlm-required test covers a different module
+          [x] C4 NOT FUTURE-EDIT: bounds a path bootstrap performs today
+        Risk tier: Medium - a silently degraded kernel lacks the display primitives the requirement promises.
+        """
+        names = ("IPython", "IPython.display")
+        saved = {name: sys.modules.get(name, _MISSING) for name in names}
+        for name in names:
+            sys.modules[name] = None  # makes `import <name>` raise ImportError
+        try:
+            raised = None
+            try:
+                rlm_kernel_runner._bootstrap()
+            except ImportError as exc:
+                raised = exc
+        finally:
+            for name, module in saved.items():
+                if module is _MISSING:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+        assert raised is not None, (
+            "POST-BOOTSTRAP-IPYTHON-1 violation: _bootstrap reported success although IPython is not importable\n"
+            "EXPECTED: an ImportError (bootstrap fails fast)\n"
+            "ACTUAL: no exception raised\n"
+            "GUIDANCE: a required base module that is absent is a readiness failure, never a silent skip"
+        )
+        assert "ipykernel" in str(raised), (
+            "POST-BOOTSTRAP-IPYTHON-1 violation: the readiness failure does not name ipykernel\n"
+            f"ACTUAL message: {str(raised)[:200]}"
+        )
+
     def test_post_name_filter_1_ip3_snapshot_write_excludes_every_shell_builtin_end_to_end(self):
         """
         FOUR-CRITERIA TEST VALIDITY GATE:
