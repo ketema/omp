@@ -33,7 +33,9 @@
         "FORBIDDEN-CROSS-SESSION-BLEED-1",
         "IP-5",
         "POST-QUARANTINE-INSPECT-1",
-        "IP-6"
+        "IP-6",
+        "POST-TOOL-SESSION-BINDING-1",
+        "ERRORS-TOOL-SESSION-CHANGED-1"
       ],
       "negative_constraints": [
         "REQ-RLM-REHYDRATE-001",
@@ -62,7 +64,9 @@
         "ERRORS-SESSION-SWITCH-DISPOSE-1",
         "POST-TRANS-SKIPPED-WIRE-PROPAGATION-1",
         "FORBIDDEN-CROSS-SESSION-BLEED-1",
-        "IP-5"
+        "IP-5",
+        "POST-TOOL-SESSION-BINDING-1",
+        "ERRORS-TOOL-SESSION-CHANGED-1"
       ],
       "clauses_deferred": [
         "POST-QUARANTINE-INSPECT-1",
@@ -76,7 +80,7 @@
         "SLICE-1"
       ],
       "issue": "TODO",
-      "pivot_note": "Kernel-state directory is exactly SessionManager.resolveOwnArtifactsDir() (own session file dir, awaited past the background copy into that file); no owned dir -> fresh mkdtemp isolated state; kernel construction gated on resolved dir; typed pre-transition flush. CORRECTION: the GREEN_COMPLETE claimed at e3f85186aa was FALSE (parent-reproduced A->B bleed for adopted no-file sessions); repaired by 39fcd7f/573e850 (accessor), 7d73739/96369bf (no-owned-dir isolation + own-copy readiness), db48c7a/f70cf3f (resolution gate). GREEN_COMPLETE here means local RED->GREEN evidence only: not AUDITED, not human-accepted, and required CI is red on pre-existing native/coding-agent jobs."
+      "pivot_note": "Kernel-state dir is exactly SessionManager.resolveOwnArtifactsDir() (own session-file dir, awaited past the background copy into that file); no owned dir -> fresh mkdtemp isolated state; kernel construction gated on the resolved dir; typed pre-transition flush; each ipython invocation is bound at entry to its kernel and aborts visibly if that kernel is replaced (POST-TOOL-SESSION-BINDING-1). CORRECTIONS: (1) GREEN_COMPLETE at e3f85186aa was FALSE (adopted no-file A->B bleed); repaired 39fcd7f..f70cf3f. (2) d2504a9 parked tool-call/switch atomicity as a policy choice; that was wrong - it is a live REQ-RLM-REHYDRATE-003 leak path - repaired d1cc30a (RED) / fdc5a32 (GREEN). GREEN_COMPLETE means local RED->GREEN evidence only: not audited, not human-accepted. packages/rlm is NOT in any scripts/ci-test-ts.ts bucket, so GitHub CI never runs the RLM suite; specs that import the real SessionManager need the host native addon and could not be run in the final local environment."
     },
     {
       "id": "SLICE-3",
@@ -101,10 +105,12 @@
     "Verify SLICE-1 resilient restore and builtin filtering passes before moving to SLICE-2 host session directory partitioning.",
     "Verify SLICE-2 guarantees empty state on fresh sessions before running SLICE-3 quarantine inspection.",
     "STATUS NOTICE (PARKED - NOT COMPLETED, NOT HUMAN ACCEPTED):",
-    "1. SEQ-8: Manifest SEQ-8 specifies automated legacy quarantine invocation on session bootstrap. quarantine_inspector.py is a standalone forensic utility only. Automated bootstrap invocation remains PARKED and unexecuted pending explicit human disposition; no legacy operations were run.",
-    "2. Persistence/restore policy for sessions WITHOUT a session file (in-memory, adopted subagents): needs new intent. Meanwhile such sessions get fresh isolated mkdtemp state each lifecycle event and never read or write another session's files (POST-SESSION-NO-OWNED-DIR-ISOLATION-1); returning to the same no-file session within a process does not restore its prior state.",
-    "3. Tool-call/transition atomicity: a tool call racing a session switch issues ensureStarted and execute as separate kernel resolutions, so its execute step can land on the next session's kernel. Construction is gated (GATE-1) but serialising transitions behind in-flight calls, or binding a call to its starting kernel, is a new behavior needing a decision. Host fork paths gate on #assertIdleForSnapshot only when requireIdleFor is set.",
-    "4. Host surfaces lacking SessionManager.resolveOwnArtifactsDir() (older hosts) get fresh isolated state with an observable warning; there is no compatibility path that trusts getArtifactsDir()."
+    "1. SEQ-8: automated legacy quarantine on session bootstrap. quarantine_inspector.py is a standalone forensic utility only; no legacy operations were run. Pending explicit human disposition.",
+    "2. Persistence/restore POLICY for sessions WITHOUT a session file (in-memory, adopted subagents) needs new intent. Safe behaviour is in force meanwhile: fresh isolated mkdtemp state per lifecycle event, never another session's files (POST-SESSION-NO-OWNED-DIR-ISOLATION-1); returning to the same no-file session does not restore its prior state.",
+    "3. Older hosts lacking SessionManager.resolveOwnArtifactsDir() get fresh isolated state plus an observable warning; no path trusts getArtifactsDir().",
+    "RESOLVED (was parked in d2504a9): tool-call/transition atomicity - see POST-TOOL-SESSION-BINDING-1 / ERRORS-TOOL-SESSION-CHANGED-1.",
+    "ENVIRONMENT / CI COVERAGE (record for human): packages/rlm is absent from every scripts/ci-test-ts.ts package bucket; real-SessionManager RLM specs (session_transition, session_isolation, host_session) need the host's pi_natives addon and failed to LOAD (not assert) in the final local run because the unauthorised addon symlink was removed.",
+    "RESIDUES left untouched for human disposition: worktree-root kernel-state.dill (dated before the resolution gate; never loaded); gitignored .omp/artifacts/isolated-* dirs created by the contracted no-owned-dir fallback during local runs."
   ],
   "forgotten_invariants": [
     "REQ-RLM-REHYDRATE-001",
