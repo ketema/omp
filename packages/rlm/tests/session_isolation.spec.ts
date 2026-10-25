@@ -45,7 +45,7 @@ function makeKernelPort(
 			calls.push({ kind: "ensureStarted", detail: "" });
 			started = true;
 		},
-		async execute(code) {
+		async execute(code: string) {
 			calls.push({ kind: "execute", detail: code });
 			return {
 				status: "ok" as const,
@@ -312,6 +312,109 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 		}
 	});
 
+	test("POST-SESSION-ISOLATION-1: adopted parent artifact manager partitions child session under child sessionId (Comment 4369713118)", async () => {
+		/**
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites clause POST-SESSION-ISOLATION-1
+		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (Comment 4369713118)
+		 *   [✓] C3 NON-DUPLICATIVE: asserts adopted parent manager root is partitioned by child sessionId
+		 *   [✓] C4 NOT FUTURE-EDIT: exercises adopted manager resolution path
+		 */
+		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-adopted-");
+		try {
+			const parentArtifactsDir = join(tempRoot, "parent-session-artifacts");
+			fs.mkdirSync(parentArtifactsDir, { recursive: true });
+
+			const kernel = makeKernelPort();
+			const { api, registered } = makeApi();
+			const factory = createRlmExtension({ createKernel: () => kernel.port });
+			await factory(api as never);
+
+			const startHandler = registered.handlers.get("session_start")?.[0];
+			expect(startHandler).toBeDefined();
+
+			// Subagent scenario: sessionManager.getArtifactsDir() returns parentArtifactsDir (adopted),
+			// but sessionManager.getSessionId() returns distinct child-subagent id
+			const childSessionId = "child-subagent-42";
+			const childCtx = {
+				cwd: tempRoot,
+				sessionManager: {
+					getArtifactsDir: () => parentArtifactsDir,
+					getSessionId: () => childSessionId,
+				},
+			};
+
+			await startHandler!({ type: "session_start" }, childCtx);
+
+			const tool = registered.tools[0];
+			expect(tool).toBeDefined();
+
+			// Pre-populate a fake kernel-state.dill in parent root
+			fs.writeFileSync(join(parentArtifactsDir, "kernel-state.dill"), "PARENT_STATE");
+
+			// Trigger execution
+			await tool.execute("call-child", { code: "1+1" }, undefined, undefined, childCtx);
+
+			// Child session MUST partition into childSessionId subdirectory, NEVER share parent root directly
+			const childExpectedDir = join(parentArtifactsDir, childSessionId);
+			expect(fs.existsSync(childExpectedDir)).toBe(true);
+		} finally {
+			fs.rmSync(tempRoot, { recursive: true, force: true });
+		}
+	});
+
+	test("POST-SESSION-ISOLATION-1: session_branch and session_before_branch lifecycle binds fork/branch transitions (Comment 4369713122 / 4369713144)", async () => {
+		/**
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites clause POST-SESSION-ISOLATION-1
+		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (Comments 4369713122, 4369713144)
+		 *   [✓] C3 NON-DUPLICATIVE: asserts session_branch and session_before_branch event binding and disposal
+		 *   [✓] C4 NOT FUTURE-EDIT: exercises branch lifecycle event family
+		 */
+		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-branch-");
+		try {
+			const branchDirA = join(tempRoot, "branch-A");
+			const branchDirB = join(tempRoot, "branch-B");
+			fs.mkdirSync(branchDirA, { recursive: true });
+			fs.mkdirSync(branchDirB, { recursive: true });
+
+			const kernelA = makeKernelPort({ restoredNames: ["branch_a_var"] });
+			const kernelB = makeKernelPort({ restoredNames: ["branch_b_var"] });
+			let createCallCount = 0;
+
+			const { api, registered } = makeApi();
+			const factory = createRlmExtension({
+				createKernel() {
+					createCallCount++;
+					return createCallCount === 1 ? kernelA.port : kernelB.port;
+				},
+			});
+			await factory(api as never);
+
+			// Verify session_branch and session_before_branch handlers are registered
+			expect(registered.handlers.get("session_branch")?.length).toBeGreaterThan(0);
+			expect(registered.handlers.get("session_before_branch")?.length).toBeGreaterThan(0);
+
+			const startHandler = registered.handlers.get("session_start")?.[0];
+			await startHandler!(
+				{ type: "session_start" },
+				{ cwd: tempRoot, sessionManager: { getArtifactsDir: () => branchDirA, getSessionId: () => "branch-A" } },
+			);
+
+			// Trigger session_branch
+			const branchHandler = registered.handlers.get("session_branch")?.[0];
+			await branchHandler!(
+				{ type: "session_branch", reason: "fork", previousSessionFile: "/path/to/A" },
+				{ cwd: tempRoot, sessionManager: { getArtifactsDir: () => branchDirB, getSessionId: () => "branch-B" } },
+			);
+
+			// Kernel A must be disposed on branch transition
+			expect(kernelA.wasDisposed()).toBe(true);
+		} finally {
+			fs.rmSync(tempRoot, { recursive: true, force: true });
+		}
+	});
+
 	test("POST-SESSION-FALLBACK-ISOLATION-1: distinct sessions under frozen clock allocate unique isolated directories without collision", async () => {
 		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-frozen-clock-");
 		const originalNow = Date.now;
@@ -416,7 +519,8 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			expect(warnings.length).toBeGreaterThan(0);
 			expect(
 				warnings.some(
-					w => isMessagePayload(w.payload) && (w.payload.content ?? "").includes("disk full on snapshot save"),
+					w =>
+						isMessagePayload(w.payload) && (w.payload.content ?? "").includes("disk full on snapshot save"),
 				),
 			).toBe(true);
 		} finally {
@@ -440,7 +544,7 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			fs.mkdirSync(sessionDir, { recursive: true });
 			fs.writeFileSync(join(sessionDir, "kernel-state.dill"), "SNAPSHOT_ON_DISK");
 
-			let stdoutCb: ((chunk: string) => void) | null = null;
+			let emitStdout: (chunk: string) => void = () => {};
 			const stdinWrittenLines: string[] = [];
 
 			const proc: RlmTransportProcess = {
@@ -450,8 +554,8 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 					},
 					end() {},
 				},
-				onStdout(cb) {
-					stdoutCb = cb;
+				onStdout(cb: (chunk: string) => void) {
+					emitStdout = cb;
 				},
 				onStderr() {},
 				kill() {},
@@ -483,7 +587,7 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 
 			const startPromise = transport.start();
 			await new Promise(r => setTimeout(r, 0));
-			stdoutCb?.('{"type": "ready", "protocol": 1}\n');
+			emitStdout('{"type": "ready", "protocol": 1}\n');
 			await startPromise;
 
 			const manager = new KernelManager(transport, {
@@ -504,13 +608,13 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 				restoredNames: ["good_df", "valid_var"],
 				skipped: [{ name: "corrupted_fn", reason: "UnpicklingError: invalid opcode", type: "UnpicklingError" }],
 			};
-			stdoutCb?.(`${JSON.stringify(wireFrame)}\n`);
+			emitStdout(`${JSON.stringify(wireFrame)}\n`);
 
 			await new Promise(r => setTimeout(r, 5));
 			const bootOpLine = stdinWrittenLines.find(l => l.includes('"bootstrap"'));
 			expect(bootOpLine).toBeDefined();
 			const bootOp = JSON.parse(bootOpLine!) as { id: string };
-			stdoutCb?.(`${JSON.stringify({ type: "result", id: bootOp.id, stdout: "", stderr: "" })}\n`);
+			emitStdout(`${JSON.stringify({ type: "result", id: bootOp.id, stdout: "", stderr: "" })}\n`);
 
 			await ensureStartedPromise;
 
@@ -545,8 +649,10 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			fs.mkdirSync(sessionADir, { recursive: true });
 			fs.mkdirSync(sessionBDir, { recursive: true });
 
-			// Use explicitly configured existing interpreter when available, otherwise fall back to normal isolated bootstrap
-			const existingPython = join(process.env.HOME ?? "/Users/ketema", ".omp/agent/kernel-venv/bin/python");
+			const existingPython = join(
+				process.env.HOME ?? "/Users/ketema",
+				".omp/agent/kernel-venv/bin/python",
+			);
 			const configuredPython = fs.existsSync(existingPython) ? existingPython : undefined;
 
 			const flags: Record<string, string> = {
@@ -556,7 +662,6 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 				flags.RLM_KERNEL_PYTHON = configuredPython;
 			}
 
-			// Initialize extension via TRUE DEFAULT PATH: NO createKernel hook!
 			const { api, registered } = makeApi({ flags });
 			const factory = createRlmExtension();
 			await factory(api as never);
@@ -587,7 +692,6 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			const startHandler = registered.handlers.get("session_start")?.[0];
 			expect(startHandler).toBeDefined();
 
-			// Seed step: start seed session and discover resolved Python executable through the actual tool
 			await startHandler!({ type: "session_start" }, ctx("seed", seedDir));
 			const tool = registered.tools[0];
 			expect(tool).toBeDefined();
@@ -606,7 +710,6 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			const resolvedPython = match![1].trim();
 			expect(fs.existsSync(resolvedPython)).toBe(true);
 
-			// Use the discovered real interpreter to generate synthetic snapshot in Session A
 			const fixtureScript = `
 import dill, lzma, sys
 class Broken:
@@ -619,12 +722,10 @@ with lzma.open(sys.argv[1], 'wb') as f:
 			const pyProc = Bun.spawnSync([resolvedPython, "-c", fixtureScript, dillPath]);
 			expect(pyProc.exitCode).toBe(0);
 
-			// Real session_switch to Session A: exercises real adapter, transport, manager, and revival
 			const switchHandler = registered.handlers.get("session_switch")?.[0];
 			expect(switchHandler).toBeDefined();
 			await switchHandler!({ type: "session_switch", reason: "resume" }, ctx("A", sessionADir));
 
-			// Verify revival notice includes healthy restored variable and bad_fixture skipped warning
 			const revivalMessages = registered.sentMessages.filter(
 				m => isMessagePayload(m.payload) && m.payload.customType === "rlm-revival",
 			);
@@ -635,7 +736,6 @@ with lzma.open(sys.argv[1], 'wb') as f:
 			expect(revivalContent).toContain("healthy_fixture");
 			expect(revivalContent).toContain("bad_fixture");
 
-			// Execute cell in Session A: verify healthy_fixture is 42
 			const resA = await tool.execute(
 				"call-a",
 				{ code: "print(healthy_fixture)" },
@@ -646,7 +746,6 @@ with lzma.open(sys.argv[1], 'wb') as f:
 			expect(resA.isError ?? false).toBe(false);
 			expect(resA.content[0].text).toContain("42");
 
-			// Switch to clean Session B: verify zero state leakage across real session boundary
 			await switchHandler!({ type: "session_switch", reason: "new" }, ctx("B", sessionBDir));
 
 			const resB = await tool.execute(

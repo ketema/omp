@@ -7,7 +7,7 @@
  *
  * Traceability:
  *   REQ-RLM-REHYDRATE-001 (Resilient Restore: skipped variables in telemetry)
- *   REQ-RLM-REHYDRATE-003 (State Isolation: fallback to dedicated isolated dir, no cross-session bleed)
+ *   REQ-RLM-REHYDRATE-003 (State Isolation: fallback to dedicated isolated dir, no cross-session bleed, adopted manager identity separation, pre-switch flush)
  *   REQ-RLM-REHYDRATE-004 (Quarantine / Fallback: isolate unpartitioned legacy root)
  *
  * The implementation does NOT import from this file; tests import both.
@@ -110,7 +110,7 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
   "POST-SESSION-ISOLATION-1": {
     id: "POST-SESSION-ISOLATION-1",
     method: "test",
-    description: "RLM Extension resolves artifactsDir partitioned by session context (sessionDir or sessionId) so fresh unlinked sessions do not load snapshots from prior sessions, and handles session_switch events to dispose outgoing kernels and re-resolve isolated artifactsDir for new/fork/resume sessions",
+    description: "RLM Extension resolves artifactsDir partitioned by session context (sessionDir or sessionId) ensuring adopted parent managers partition child session identity and handles session_switch/session_branch events to dispose outgoing kernels and re-resolve isolated artifactsDir for new/fork/resume/branch sessions",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
   },
   "POST-SESSION-FALLBACK-ISOLATION-1": {

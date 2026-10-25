@@ -20,6 +20,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import dill
 
@@ -137,6 +138,30 @@ class TestQuarantineInspector(unittest.TestCase):
         assert report.total_variables == 1
         assert report.recoverable_count == 1
         assert report.unpicklable_count == 0
+
+    def test_post_quarantine_inspect_1_gzip_recovery_without_lzma_module(self):
+        """
+        FOUR-CRITERIA TEST VALIDITY GATE:
+          [✓] C1 VALID: cites clause POST-QUARANTINE-INSPECT-1
+          [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (Comment 4369713135)
+          [✓] C3 NON-DUPLICATIVE: simulates environment lacking _lzma and asserts gzip recovery succeeds
+          [✓] C4 NOT FUTURE-EDIT: exercises quarantine_inspector lazy codec policy without installing packages
+        """
+        container = {
+            "gzip_data_only": dill.dumps({"survives": True}),
+        }
+        with gzip.open(self.source_gzip, "wb") as f:
+            dill.dump(container, f)
+
+        # Simulate Python environment lacking _lzma / lzma
+        with patch.dict(sys.modules, {"lzma": None, "_lzma": None}):
+            report = quarantine_inspector.quarantine_and_inspect(
+                source_path=self.source_gzip,
+                quarantine_root=self.quarantine_dir,
+            )
+            assert report.total_variables == 1
+            assert report.recoverable_count == 1
+            assert report.unpicklable_count == 0
 
     def test_post_quarantine_inspect_1_syntax_error_and_exception_resilience(self):
         """
