@@ -137,6 +137,52 @@ class TestQuarantineInspector(unittest.TestCase):
         assert report.recoverable_count == 1
         assert report.unpicklable_count == 0
 
+    def test_post_quarantine_inspect_1_syntax_error_and_exception_resilience(self):
+        """
+        FOUR-CRITERIA TEST VALIDITY GATE:
+          [✓] C1 VALID: cites clause POST-QUARANTINE-INSPECT-1
+          [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (reproduces Comment 4366356336)
+          [✓] C3 NON-DUPLICATIVE: tests SyntaxError and sibling preservation in quarantine inspection
+          [✓] C4 NOT FUTURE-EDIT: exercises quarantine_inspector exception handling
+
+        CONTRACT TRACEABILITY:
+        - Contract: CONTRACT_QUARANTINE_INSPECTOR["POST-QUARANTINE-INSPECT-1"]
+        - Enforces: POST-QUARANTINE-INSPECT-1 (Comment 4366356336 resilience fix)
+        - Category: functional / error resilience
+        """
+        class _SyntaxErrorStateObj:
+            def __init__(self):
+                self.val = 42
+
+            def __setstate__(self, state):
+                raise SyntaxError("invalid syntax encountered during dynamic module reload")
+
+        # ARRANGE: Snapshot containing 1 SyntaxError variable and 1 healthy variable
+        container = {
+            "syntax_err_var": dill.dumps(_SyntaxErrorStateObj()),
+            "healthy_var": dill.dumps({"healthy": "sibling_data"}),
+        }
+        with lzma.open(self.source_lzma, "wb") as f:
+            dill.dump(container, f)
+
+        # ACT: Execute quarantine inspection
+        report = quarantine_inspector.quarantine_and_inspect(
+            source_path=self.source_lzma,
+            quarantine_root=self.quarantine_dir,
+        )
+
+        # ASSERT: Must not abort; must record skipped SyntaxError variable and healthy sibling
+        assert report.total_variables == 2, f"Expected 2, got {report.total_variables}"
+        assert report.recoverable_count == 1, f"Expected 1 recoverable, got {report.recoverable_count}"
+        assert report.unpicklable_count == 1, f"Expected 1 unpicklable, got {report.unpicklable_count}"
+
+        var_map = {v.name: v for v in report.variables}
+        assert "syntax_err_var" in var_map, "syntax_err_var must be reported in manifest"
+        assert var_map["syntax_err_var"].status == "unpicklable", "syntax_err_var must be unpicklable"
+        assert "SyntaxError" in (var_map["syntax_err_var"].error or ""), "error must describe SyntaxError"
+        assert "healthy_var" in var_map, "healthy_var sibling must be inspected and preserved"
+        assert var_map["healthy_var"].status == "recoverable", "healthy_var sibling must be recoverable"
+
 
 if __name__ == "__main__":
     unittest.main()

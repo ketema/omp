@@ -97,7 +97,7 @@ CONTRACT_QUARANTINE_INSPECTOR: Final[dict[str, Clause]] = {
     "POST-QUARANTINE-INSPECT-1": Clause(
         id="POST-QUARANTINE-INSPECT-1",
         method="test",
-        description="QuarantineInspector archives legacy snapshot to quarantine directory and outputs a JSON manifest detailing recoverable vs unpicklable variables without data loss",
+        description="QuarantineInspector archives legacy snapshot to quarantine directory and outputs a JSON manifest detailing recoverable vs unpicklable variables without data loss, continuing past per-variable exceptions (including SyntaxError and other deserialization exceptions) without aborting sibling inspection",
         requirement_ids=("REQ-RLM-REHYDRATE-004",),
     ),
     "FORBIDDEN-UNARCHIVED-DELETE-1": Clause(
