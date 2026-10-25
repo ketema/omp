@@ -193,6 +193,17 @@ export async function loadPuppeteerInWorker(safeDir: string): Promise<typeof Pup
 	return loaded;
 }
 
+/** The debugger websocket a `browserURL` advertises, or undefined when it cannot be read (failure-path diagnostics only). */
+async function advertisedDebuggerEndpoint(browserURL: string): Promise<string | undefined> {
+	try {
+		const response = await fetch(new URL("/json/version", browserURL), { signal: AbortSignal.timeout(2_000) });
+		const body: unknown = await response.json();
+		return isRecord(body) && typeof body.webSocketDebuggerUrl === "string" ? body.webSocketDebuggerUrl : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Normalize transport event rejections before they cross browser or worker boundaries. */
 export async function connectPuppeteer(puppeteer: typeof Puppeteer, options: ConnectOptions): Promise<Browser> {
 	try {
@@ -204,7 +215,9 @@ export async function connectPuppeteer(puppeteer: typeof Puppeteer, options: Con
 			!(error instanceof Error) && isRecord(error) && typeof error.message === "string"
 				? new Error(error.message, { cause: error })
 				: toError(error);
-		const endpoint = options.browserWSEndpoint;
+		const endpoint =
+			options.browserWSEndpoint ??
+			(options.browserURL !== undefined ? await advertisedDebuggerEndpoint(options.browserURL) : undefined);
 		if (endpoint !== undefined && !normalized.message.includes(endpoint)) {
 			// Always name the endpoint that refused, whichever shape the runtime rejected with.
 			throw new Error(`WebSocket connection to '${endpoint}' failed: ${normalized.message}`, { cause: normalized });

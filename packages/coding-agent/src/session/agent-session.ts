@@ -10121,8 +10121,7 @@ export class AgentSession implements SettingsScope {
 		this.#assertVibeSessionTransitionAllowed("move the session");
 		const previousSessionFile = this.sessionFile;
 		// POST-SESSION-MOVE-1: extensions flush into the directory that is about to move, and may veto the move.
-		const relocates =
-			targetSessionDir !== undefined || path.resolve(newCwd) !== path.resolve(this.sessionManager.getCwd());
+		const relocates = this.sessionManager.moveWouldRelocate(newCwd, targetSessionDir);
 		if (relocates && this.#extensionRunner?.hasHandlers("session_before_switch")) {
 			const result = (await this.#extensionRunner.emit({ type: "session_before_switch", reason: "move" })) as
 				| SessionBeforeSwitchResult

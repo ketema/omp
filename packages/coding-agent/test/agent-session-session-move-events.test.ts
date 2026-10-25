@@ -177,9 +177,12 @@ describe("POST-SESSION-MOVE-1: the host announces a session relocation with reas
 		sessionManager.appendMessage(userTurn("hello"));
 		await sessionManager.flush();
 		const { session, observed } = await harness({ sessionManager, cwd: tempDir.path() });
+		const before = sessionManager.getSessionFile();
 
-		await session.moveSession(tempDir.path());
+		// Same cwd AND the session's current directory: moveTo itself is a no-op, so nothing is announced.
+		await session.moveSession(tempDir.path(), sessionManager.getSessionDir());
 
+		expect(sessionManager.getSessionFile()).toBe(before);
 		expect(observed, "POST-SESSION-MOVE-1 violation: a no-op move was announced").toEqual([]);
 	});
 

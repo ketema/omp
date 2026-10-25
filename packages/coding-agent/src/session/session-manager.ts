@@ -2469,8 +2469,17 @@ export class SessionManager {
 		return { oldSessionFile, newSessionFile: this.#sessionFile };
 	}
 
-	/** Move the session to a new working directory. */
-	async moveTo(newCwd: string, targetSessionDir?: string): Promise<void> {
+	/** Where moving to `newCwd` / `targetSessionDir` would put the session, and whether the session is already there. */
+	#planMove(
+		newCwd: string,
+		targetSessionDir?: string,
+	): {
+		resolvedCwd: string;
+		resolvedTargetDir: string | undefined;
+		nextSessionDir: string;
+		expectedSessionFile: string | undefined;
+		alreadyThere: boolean;
+	} {
 		const resolvedCwd = path.resolve(newCwd);
 		const resolvedTargetDir = targetSessionDir ? path.resolve(targetSessionDir) : undefined;
 		const managedRoot = resolveManagedSessionRoot(this.#sessionDir, this.#cwd);
@@ -2482,12 +2491,26 @@ export class SessionManager {
 		const expectedSessionFile = this.#sessionFile
 			? path.join(nextSessionDir, path.basename(this.#sessionFile))
 			: undefined;
-		if (
+		const alreadyThere =
 			resolvedCwd === path.resolve(this.#cwd) &&
 			!this.#fallbackRuntimeOnly &&
 			(!resolvedTargetDir || resolvedTargetDir === path.resolve(this.#sessionDir)) &&
-			(!expectedSessionFile || path.resolve(this.#sessionFile!) === path.resolve(expectedSessionFile))
-		) {
+			(!expectedSessionFile || path.resolve(this.#sessionFile!) === path.resolve(expectedSessionFile));
+		return { resolvedCwd, resolvedTargetDir, nextSessionDir, expectedSessionFile, alreadyThere };
+	}
+
+	/** POST-SESSION-MOVE-1: whether {@link moveTo} with these arguments would relocate the session (false: already there). */
+	moveWouldRelocate(newCwd: string, targetSessionDir?: string): boolean {
+		return !this.#planMove(newCwd, targetSessionDir).alreadyThere;
+	}
+
+	/** Move the session to a new working directory. */
+	async moveTo(newCwd: string, targetSessionDir?: string): Promise<void> {
+		const { resolvedCwd, nextSessionDir, expectedSessionFile, alreadyThere } = this.#planMove(
+			newCwd,
+			targetSessionDir,
+		);
+		if (alreadyThere) {
 			return;
 		}
 
