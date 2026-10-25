@@ -173,6 +173,12 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
     description: "RLM Extension SHALL NOT auto-restore kernel-state.dill from a shared unpartitioned directory when a session has an explicit session identifier",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
   },
+  "POST-SESSION-NO-SIDE-EFFECT-1": {
+    id: "POST-SESSION-NO-SIDE-EFFECT-1",
+    method: "test",
+    description: "Timing refinement of POST-SESSION-NO-OWNED-DIR-ISOLATION-1 / POST-SESSION-FALLBACK-ISOLATION-1; the isolation guarantee is unchanged (nothing restored, no shared directory, no other session's files). A lifecycle event (session_start, session_switch, session_branch) for a session with no owned artifacts directory creates NO filesystem entry and sends NO message into the host transcript: the host loads this extension in every unrestricted session, including in-memory ones that never use ipython. The fallback isolated directory is allocated, and its single rlm-warning emitted, only when a kernel is first constructed for that session - exactly once per session, not once per cell. A session that never constructs a kernel leaves the host transcript and filesystem untouched",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
   "POST-TOOL-SESSION-BINDING-1": {
     id: "POST-TOOL-SESSION-BINDING-1",
     method: "test",

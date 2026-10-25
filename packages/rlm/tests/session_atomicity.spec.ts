@@ -49,13 +49,19 @@ interface ToolRecord {
 	) => Promise<ToolResult>;
 }
 
+interface SentMessage {
+	readonly customType?: string;
+	readonly content?: string;
+}
+
 interface Registry {
 	readonly handlers: Map<string, Handler[]>;
 	readonly tools: ToolRecord[];
+	readonly messages: SentMessage[];
 }
 
 function makeRegistry(flags: Record<string, string | boolean> = {}) {
-	const registry: Registry = { handlers: new Map(), tools: [] };
+	const registry: Registry = { handlers: new Map(), tools: [], messages: [] };
 	const api = {
 		registerTool(tool: ToolRecord) {
 			registry.tools.push(tool);
@@ -70,7 +76,13 @@ function makeRegistry(flags: Record<string, string | boolean> = {}) {
 		getFlag(name: string) {
 			return flags[name];
 		},
-		sendMessage() {},
+		sendMessage(payload: unknown) {
+			const record = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
+			registry.messages.push({
+				customType: typeof record.customType === "string" ? record.customType : undefined,
+				content: typeof record.content === "string" ? record.content : undefined,
+			});
+		},
 	};
 	return { api, registry };
 }
@@ -512,4 +524,88 @@ describe("POST-TOOL-SESSION-BINDING-1 / ERRORS-TOOL-SESSION-CHANGED-1: a cell st
 			await emit(registry, "session_shutdown", {}, sessionB);
 		}
 	}, 240_000);
+});
+
+describe("POST-SESSION-NO-SIDE-EFFECT-1: a session without an owned directory leaves the host untouched until a kernel exists", () => {
+	interface NoOwnedWiring {
+		readonly registry: Registry;
+		readonly records: PortRecord[];
+		readonly dirs: string[];
+	}
+
+	async function wire(): Promise<NoOwnedWiring> {
+		const records: PortRecord[] = [];
+		const dirs: string[] = [];
+		const { api, registry } = makeRegistry();
+		await createRlmExtension({
+			createKernel(_config, artifactsDir) {
+				const { port, record } = makePort(`S${records.length + 1}`, {});
+				records.push(record);
+				dirs.push(artifactsDir);
+				return port;
+			},
+		})(api as never);
+		return { registry, records, dirs };
+	}
+
+	const ownsNothing = (cwd: string) => ({ cwd, sessionManager: { resolveOwnArtifactsDir: async () => null } });
+	const predatesAccessor = (cwd: string) => ({ cwd, sessionManager: {} });
+	const warningsOf = (w: NoOwnedWiring) => w.registry.messages.filter(m => m.customType === "rlm-warning");
+	const isolatedRoot = (cwd: string) => join(cwd, ".omp", "artifacts", "isolated-");
+
+	test("session_start / session_switch / session_branch create no directory and send no transcript message", async () => {
+		const dir = caseDir("no-side-effect-lifecycle");
+		const w = await wire();
+		for (const type of ["session_start", "session_switch", "session_branch"]) {
+			await emit(w.registry, type, { reason: "new" }, ownsNothing(dir));
+		}
+		expect(
+			w.registry.messages,
+			"POST-SESSION-NO-SIDE-EFFECT-1 violation: a lifecycle event for a session that never used ipython wrote to the host transcript",
+		).toEqual([]);
+		expect(
+			fs.existsSync(join(dir, ".omp")),
+			"POST-SESSION-NO-SIDE-EFFECT-1 violation: a lifecycle event created a directory in the user's project",
+		).toBe(false);
+		expect(w.records.length).toBe(0);
+	});
+
+	test("the isolated directory is allocated and announced once per session, when the kernel is first constructed", async () => {
+		const dir = caseDir("no-side-effect-first-use");
+		const w = await wire();
+		const realTool = w.registry.tools[0];
+		await emit(w.registry, "session_start", {}, ownsNothing(dir));
+
+		expect((await realTool.execute("c1", { code: "a = 1" }, undefined, undefined, toolCtx())).isError ?? false).toBe(
+			false,
+		);
+		expect((await realTool.execute("c2", { code: "b = 2" }, undefined, undefined, toolCtx())).isError ?? false).toBe(
+			false,
+		);
+		expect(w.dirs.length, "one kernel per session").toBe(1);
+		expect(w.dirs[0].startsWith(isolatedRoot(dir))).toBe(true);
+		expect(warningsOf(w).length, "exactly one announcement for the session, not one per cell").toBe(1);
+		expect(warningsOf(w)[0].content ?? "").toContain(w.dirs[0]);
+
+		// A new no-file session gets its OWN directory and its own single announcement; nothing is shared.
+		await emit(w.registry, "session_switch", { reason: "new" }, ownsNothing(dir));
+		await realTool.execute("c3", { code: "c = 3" }, undefined, undefined, toolCtx());
+		expect(w.dirs.length).toBe(2);
+		expect(w.dirs[1]).not.toBe(w.dirs[0]);
+		expect(w.dirs[1].startsWith(isolatedRoot(dir))).toBe(true);
+		expect(warningsOf(w).length).toBe(2);
+	});
+
+	test("a host surface without resolveOwnArtifactsDir is silent at lifecycle and warns (naming the missing accessor) at first kernel use", async () => {
+		const dir = caseDir("no-side-effect-old-host");
+		const w = await wire();
+		await emit(w.registry, "session_start", {}, predatesAccessor(dir));
+		expect(w.registry.messages).toEqual([]);
+		expect(fs.existsSync(join(dir, ".omp"))).toBe(false);
+
+		await w.registry.tools[0].execute("c1", { code: "x = 1" }, undefined, undefined, toolCtx());
+		expect(warningsOf(w).length).toBe(1);
+		expect(warningsOf(w)[0].content ?? "").toContain("resolveOwnArtifactsDir");
+		expect(w.dirs[0].startsWith(isolatedRoot(dir))).toBe(true);
+	});
 });
