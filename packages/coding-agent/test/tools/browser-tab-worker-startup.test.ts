@@ -902,9 +902,16 @@ describe("browser tabs whose renderer crashed", () => {
 				expect(String(failure)).toContain("its page reloaded");
 				await releaseTab(name, { kill: false });
 				const watcher = await browser.browser.target().createCDPSession();
-				const { targetInfos } = await watcher.send("Target.getTargets");
+				// Closing a page completes in the browser after releaseTab returns: re-query (each query is a real CDP round
+				// trip) until the target is gone, bounded by attempts. A page that never closes still fails here.
+				const openTargetIds = async (): Promise<string[]> =>
+					(await watcher.send("Target.getTargets")).targetInfos.map(info => info.targetId);
+				let targetIds = await openTargetIds();
+				for (let attempt = 0; attempt < 200 && targetIds.includes(targetId); attempt++) {
+					targetIds = await openTargetIds();
+				}
 				await watcher.detach();
-				expect(targetInfos.map(info => info.targetId)).not.toContain(targetId);
+				expect(targetIds).not.toContain(targetId);
 			} finally {
 				await releaseTab(name, { kill: true });
 				await releaseBrowser(browser, { kill: true });
