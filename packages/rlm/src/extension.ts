@@ -453,8 +453,28 @@ export function createRlmExtension(
 		api.on("session_before_switch", handlePreTransitionFlush);
 		api.on("session_before_branch", handlePreTransitionFlush);
 
+		// POST-SESSION-FALLBACK-ISOLATION-1: a dedicated atomically unique (mkdtemp) directory, announced by an
+		// observable warning naming it. It starts empty, so nothing is ever restored into it.
+		const allocateIsolatedFallback = (cwd: string, reason: string): string => {
+			const artifactsRoot = join(cwd, ".omp", "artifacts");
+			fs.mkdirSync(artifactsRoot, { recursive: true });
+			const fallbackDir = fs.mkdtempSync(join(artifactsRoot, `isolated-${Date.now()}-`));
+			api.sendMessage(
+				{
+					role: "custom",
+					customType: "rlm-warning",
+					content: `Warning: ${reason}. Starting with fresh isolated state; no snapshot restored. Fallback isolated directory assigned: ${fallbackDir}`,
+					display: false,
+					attribution: "agent",
+					timestamp: Date.now(),
+				},
+				{ deliverAs: "nextTurn" },
+			);
+			return fallbackDir;
+		};
+
 		// Handle session start, session switches, and branches (for /new, /fork, /resume, /branch)
-		const handleSessionInit = async (event: unknown, ctx?: unknown) => {
+		const handleSessionInit = async (_event: unknown, ctx?: unknown) => {
 			// Save and dispose outgoing kernel if present to prevent cross-session leakage (Comment 4366356325)
 			if (kernel !== null) {
 				try {
@@ -492,81 +512,28 @@ export function createRlmExtension(
 				}
 			}
 
-			// POST-SESSION-OWNED-DIR-1 / F2 / F6: resolve the session-owned directory.
-			// Host convention: artifactsDirectoryFor(sessionFile) = sessionFile without ".jsonl".
-			// When getSessionFile() is available, it is the authoritative identity of this session's own artifacts,
-			// even when an adopted parent ArtifactManager makes sessionManager.getArtifactsDir() return the parent's.
+			// POST-SESSION-OWNED-DIR-1 / POST-SESSION-READINESS-1: the kernel-state directory is exactly what
+			// the host's typed sessionManager.resolveOwnArtifactsDir() returns: the CURRENT session file's own
+			// directory, resolved only after the host's background artifact copy into that file has settled.
+			// getArtifactsDir()/getArtifactManager() are never consulted: under adoption they name the parent's.
 			const sessionCtx = ctx as
-				| {
-						cwd?: string;
-						sessionManager?: {
-							getSessionFile?: () => string | undefined;
-							getArtifactsDir?: () => string | null;
-							getSessionId?: () => string;
-							getArtifactManager?: () => { dir?: string; listFiles?: () => Promise<string[]> } | null;
-						};
-				  }
+				| { cwd?: string; sessionManager?: { resolveOwnArtifactsDir?: () => Promise<string | null> } }
 				| undefined;
-			const sessionEvent = event as { sessionDir?: string; sessionId?: string; cwd?: string } | undefined;
-
-			const effectiveCwd = sessionCtx?.cwd ?? sessionEvent?.cwd ?? process.cwd();
-			const rawSessionFile = sessionCtx?.sessionManager?.getSessionFile?.();
-			const ownedFromSessionFile =
-				typeof rawSessionFile === "string" && rawSessionFile.endsWith(".jsonl")
-					? rawSessionFile.slice(0, -".jsonl".length)
-					: undefined;
-
-			const managerArtifactsDir = sessionCtx?.sessionManager?.getArtifactsDir?.();
-			const sessionId = sessionCtx?.sessionManager?.getSessionId?.() ?? sessionEvent?.sessionId;
-
-			if (ownedFromSessionFile !== undefined && ownedFromSessionFile.trim() !== "") {
-				artifactsDir = ownedFromSessionFile;
-			} else if (typeof managerArtifactsDir === "string" && managerArtifactsDir.trim() !== "") {
-				// Non-file session or test fixture that provides getArtifactsDir() directly.
-				// PARKED (unestablished intent): adopted session with no session file.
-				artifactsDir = managerArtifactsDir;
-			} else if (typeof sessionEvent?.sessionDir === "string" && sessionEvent.sessionDir.trim() !== "") {
-				artifactsDir = sessionEvent.sessionDir;
-			} else if (typeof sessionId === "string" && sessionId.trim() !== "") {
-				artifactsDir = join(effectiveCwd, ".omp", "artifacts", sessionId.trim());
+			const effectiveCwd = sessionCtx?.cwd ?? process.cwd();
+			const sessionManager = sessionCtx?.sessionManager;
+			let ownDir: string | null = null;
+			let noOwnedDirReason: string;
+			if (sessionManager === undefined) {
+				noOwnedDirReason = "No session context supplied";
+			} else if (typeof sessionManager.resolveOwnArtifactsDir !== "function") {
+				noOwnedDirReason =
+					"Session-owned artifacts directory cannot be established: host SessionManager lacks resolveOwnArtifactsDir()";
 			} else {
-				// POST-SESSION-FALLBACK-ISOLATION-1: REQ-003 line 143
-				// Missing session identifier falls back to a dedicated atomically unique directory, NEVER bare root
-				const artifactsRoot = join(effectiveCwd, ".omp", "artifacts");
-				fs.mkdirSync(artifactsRoot, { recursive: true });
-				const fallbackDir = fs.mkdtempSync(join(artifactsRoot, `isolated-${Date.now()}-`));
-				artifactsDir = fallbackDir;
-
-				api.sendMessage(
-					{
-						role: "custom",
-						customType: "rlm-warning",
-						content: `Warning: Session ID missing or invalid. Fallback isolated directory assigned: ${artifactsDir}`,
-						display: false,
-						attribution: "agent",
-						timestamp: Date.now(),
-					},
-					{ deliverAs: "nextTurn" },
-				);
+				ownDir = await sessionManager.resolveOwnArtifactsDir();
+				noOwnedDirReason = "Session has no session file, so it owns no artifacts directory";
 			}
-
-			// POST-SESSION-READINESS-1: await the incoming session's artifact manager readiness
-			// (which settles when any background copy finishes) before probing snapshot existence.
-			// Applied ONLY when the artifact manager's dir matches the resolved session-owned dir.
-			// PARKED: adopted managers expose only parent readiness, not child's.
-			const incomingArtifactManager = sessionCtx?.sessionManager?.getArtifactManager?.();
-			if (
-				incomingArtifactManager &&
-				typeof incomingArtifactManager.dir === "string" &&
-				incomingArtifactManager.dir === artifactsDir &&
-				typeof incomingArtifactManager.listFiles === "function"
-			) {
-				try {
-					await incomingArtifactManager.listFiles();
-				} catch {
-					// Readiness wait is best-effort; snapshot probe proceeds below
-				}
-			}
+			// POST-SESSION-NO-OWNED-DIR-ISOLATION-1: no owned directory -> fresh isolated state, never a shared root.
+			artifactsDir = ownDir ?? allocateIsolatedFallback(effectiveCwd, noOwnedDirReason);
 			const hasSnapshot = fs.existsSync(join(artifactsDir, "kernel-state.dill"));
 			if (hasSnapshot) {
 				try {
