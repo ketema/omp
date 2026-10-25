@@ -44,6 +44,8 @@ BASE_BOOTSTRAP_MODULES: Final[frozenset[str]] = frozenset({
     "IPython.display",
 })
 
+# THE single authority (CL11-C) for the file-handle guard's values, shared with contracts/quarantine_inspector.contract.py
+# (which references this file through DEPENDS_ON and CROSS_INV-1 and declares no set of its own).
 # Names that reconstruct a file handle (and so open a path) when a serialized variable is rebuilt
 FILE_HANDLE_RECONSTRUCTORS: Final[frozenset[str]] = frozenset({
     "_create_filehandle",
@@ -255,6 +257,12 @@ CONTRACT_RLM_DILL_RESILIENT_RESTORE: Final[dict[str, Clause]] = {
         method="test",
         description="Restoring a snapshot SHALL NOT create, open, truncate or write any path named inside the snapshot",
         requirement_ids=("REQ-RLM-REHYDRATE-002",),
+    ),
+    "CROSS_INV-1": Clause(
+        id="CROSS_INV-1",
+        method="test",
+        description="The runner's restore and the quarantine inspector refuse exactly the same file-handle reconstructors: the set FILE_HANDLE_RECONSTRUCTORS declared in contracts/rlm_dill_resilient_restore.contract.py is the single authority, and a reconstructor added to it is refused by both consumers or the cross-invariant is violated. Participants: contracts/rlm_dill_resilient_restore.contract.py, contracts/quarantine_inspector.contract.py. The same CROSS_INV-1 appears in both",
+        requirement_ids=("REQ-RLM-REHYDRATE-002", "REQ-RLM-REHYDRATE-004"),
     ),
     "IP-1": Clause(
         id="IP-1",

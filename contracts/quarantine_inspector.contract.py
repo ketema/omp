@@ -23,12 +23,14 @@ from typing import Final, Literal
 DEFAULT_QUARANTINE_DIRNAME: Final[str] = ".omp/quarantine"
 REPORT_FILENAME: Final[str] = "quarantine_manifest.json"
 
-# Names that reconstruct a file handle (and so open a path) when a serialized variable is rebuilt, and the text an
-# inspection finding about such a variable carries
-FILE_HANDLE_RECONSTRUCTORS: Final[frozenset[str]] = frozenset({
-    "_create_filehandle",
-})
-HANDLE_REASON_MARKER: Final[str] = "file handle"
+# Linkage to the single authority for the file-handle guard (CL11-C). This contract declares NO reconstructor set and
+# no reason marker of its own: POST-QNOOPEN-1, ERRORS-QHANDLECONTAINER-1 and CROSS_INV-1 are stated against
+# FILE_HANDLE_RECONSTRUCTORS and HANDLE_REASON_MARKER in contracts/rlm_dill_resilient_restore.contract.py.
+# DEPENDS_ON is a reference map, not a clause: it declares no verification method.
+DEPENDS_ON: Final[dict[str, str]] = {
+    "file_handle_guard": "contracts/rlm_dill_resilient_restore.contract.py::POST-NOOPEN-1",
+    "cross_invariant": "contracts/rlm_dill_resilient_restore.contract.py::CROSS_INV-1",
+}
 
 # =============================================================================
 # Artifact 2: Domain Exception Classes
@@ -124,6 +126,12 @@ CONTRACT_QUARANTINE_INSPECTOR: Final[dict[str, Clause]] = {
         method="test",
         description="When the snapshot's CONTAINER itself references a file-handle reconstructor, QuarantineInspector raises UnsafeReconstructionError naming a file handle after archiving the source copy and before deserializing anything; it opens no path named inside the snapshot",
         requirement_ids=("REQ-RLM-REHYDRATE-004",),
+    ),
+    "CROSS_INV-1": Clause(
+        id="CROSS_INV-1",
+        method="test",
+        description="The runner's restore and the quarantine inspector refuse exactly the same file-handle reconstructors: the set FILE_HANDLE_RECONSTRUCTORS declared in contracts/rlm_dill_resilient_restore.contract.py is the single authority, and a reconstructor added to it is refused by both consumers or the cross-invariant is violated. Participants: contracts/rlm_dill_resilient_restore.contract.py, contracts/quarantine_inspector.contract.py. The same CROSS_INV-1 appears in both",
+        requirement_ids=("REQ-RLM-REHYDRATE-002", "REQ-RLM-REHYDRATE-004"),
     ),
     "IP-6": Clause(
         id="IP-6",
