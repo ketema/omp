@@ -878,79 +878,8 @@ export class KernelManager {
 			const pythonVersion = await (this.transport.pythonVersion?.() ?? Promise.resolve(""));
 			if (!canWrite()) return;
 
-			const manifest: KernelSnapshotManifest = {
-				version: SNAPSHOT_MANIFEST_VERSION,
-				savedNames: filteredNames,
-				skipped: writeResult.skipped,
-				bytes: writeResult.bytes,
-				...(writeResult.uncompressedBytes !== undefined
-					? { uncompressedBytes: writeResult.uncompressedBytes }
-					: {}),
-				...(writeResult.compressedBytes !== undefined ? { compressedBytes: writeResult.compressedBytes } : {}),
-				...(writeResult.compression !== undefined ? { compression: writeResult.compression } : {}),
-				...(writeResult.compressionRatio !== undefined ? { compressionRatio: writeResult.compressionRatio } : {}),
-				...(writeResult.compressionDurationMs !== undefined
-					? { compressionDurationMs: writeResult.compressionDurationMs }
-					: {}),
-				pythonVersion,
-				timestamp: utcIsoTimestamp(this.clock),
-			};
-
-			// Payload staging: write to a temp dir INSIDE artifactsDir, then rename within the same filesystem
-			// (V4/F3: a cross-filesystem temp location silently degrades to non-atomic copy; a same-dir rename is
-			// atomic on POSIX). FORBIDDEN-KM-1: a crash mid-write leaves the prior artifacts intact.
-			const payloadFn = this.transport.writeSnapshotPayload;
-			const payloadDest = join(this.artifactsDir, SNAPSHOT_PAYLOAD_FILE);
-			const manifestDest = join(this.artifactsDir, SNAPSHOT_MANIFEST_FILE);
-			const suffix = `${this.clock.now()}-${Math.random().toString(36).slice(2, 10)}`;
-			const tempDir =
-				typeof payloadFn === "function" ? join(this.artifactsDir, `.kernel-snapshot-tmp-${suffix}`) : undefined;
-			const manifestTmp = `${manifestDest}.tmp-${suffix}`;
-			const rollbackLink = `${payloadDest}.rollback-${suffix}`;
-			try {
-				if (tempDir !== undefined && typeof payloadFn === "function") {
-					fs.mkdirSync(this.artifactsDir, { recursive: true });
-					this.artifactsDirSeen = true;
-					fs.mkdirSync(tempDir, { recursive: true });
-					await payloadFn.call(this.transport, tempDir);
-					if (!canWrite()) return;
-				}
-
-				// Commit, synchronous (no await between the two replacements): V5/F4 the manifest is staged as a
-				// temp file beside its destination and renamed (a torn manifest makes the prior snapshot unreadable
-				// per INV-KM-2). The prior payload stays reachable through a hard link until the manifest has
-				// committed, so a failed commit restores the previous generation exactly.
-				fs.writeFileSync(manifestTmp, JSON.stringify(manifest));
-				let payloadReplaced = false;
-				let hadPriorPayload = false;
-				try {
-					if (tempDir !== undefined) {
-						if (fs.existsSync(payloadDest)) {
-							fs.linkSync(payloadDest, rollbackLink);
-							hadPriorPayload = true;
-						}
-						fs.renameSync(join(tempDir, SNAPSHOT_PAYLOAD_FILE), payloadDest);
-						payloadReplaced = true;
-					}
-					fs.renameSync(manifestTmp, manifestDest);
-				} catch (error) {
-					if (payloadReplaced) {
-						if (hadPriorPayload) fs.renameSync(rollbackLink, payloadDest);
-						else fs.rmSync(payloadDest, { force: true });
-					}
-					throw error;
-				}
-			} finally {
-				// Staging leftovers never affect the committed generation.
-				for (const leftover of [tempDir, manifestTmp, rollbackLink]) {
-					if (leftover === undefined) continue;
-					try {
-						fs.rmSync(leftover, { recursive: true, force: true });
-					} catch {
-						// cleanup failure never affects the committed generation
-					}
-				}
-			}
+			const manifest = this.buildSnapshotManifest(filteredNames, writeResult, pythonVersion);
+			await this.commitSnapshot(manifest, canWrite);
 		};
 		// The chain tail carries this snapshot; a cell submitted meanwhile
 		// serializes AFTER it (chain discipline preserved)
@@ -963,6 +892,88 @@ export class KernelManager {
 			() => undefined,
 		);
 		await next;
+	}
+
+	/** POST-KM-SNAPSHOT-PAIR-1: the manifest records the saved names, only the telemetry the provider reported, and the kernel's Python version. */
+	private buildSnapshotManifest(
+		savedNames: readonly string[],
+		written: KernelSnapshotWriteResult,
+		pythonVersion: string,
+	): KernelSnapshotManifest {
+		return {
+			version: SNAPSHOT_MANIFEST_VERSION,
+			savedNames,
+			skipped: written.skipped,
+			bytes: written.bytes,
+			...(written.uncompressedBytes !== undefined ? { uncompressedBytes: written.uncompressedBytes } : {}),
+			...(written.compressedBytes !== undefined ? { compressedBytes: written.compressedBytes } : {}),
+			...(written.compression !== undefined ? { compression: written.compression } : {}),
+			...(written.compressionRatio !== undefined ? { compressionRatio: written.compressionRatio } : {}),
+			...(written.compressionDurationMs !== undefined
+				? { compressionDurationMs: written.compressionDurationMs }
+				: {}),
+			pythonVersion,
+			timestamp: utcIsoTimestamp(this.clock),
+		};
+	}
+
+	/**
+	 * POST-KM-SNAPSHOT-PAIR-1 / POST-STAGE-1: the single commit authority. The provider's payload is moved into a temp
+	 * dir inside the live directory, then both artifacts are replaced synchronously with a rollback link to the prior
+	 * payload (V4/F3/V5/F4: same-filesystem renames are atomic; a torn manifest would make the prior snapshot
+	 * unreadable per INV-KM-2). Re-checked immediately before every filesystem write; leftovers never affect the
+	 * committed generation.
+	 */
+	private async commitSnapshot(manifest: KernelSnapshotManifest, canWrite: () => boolean): Promise<void> {
+		const payloadFn = this.transport.writeSnapshotPayload;
+		const payloadDest = join(this.artifactsDir, SNAPSHOT_PAYLOAD_FILE);
+		const manifestDest = join(this.artifactsDir, SNAPSHOT_MANIFEST_FILE);
+		const suffix = `${this.clock.now()}-${Math.random().toString(36).slice(2, 10)}`;
+		const tempDir =
+			typeof payloadFn === "function" ? join(this.artifactsDir, `.kernel-snapshot-tmp-${suffix}`) : undefined;
+		const manifestTmp = `${manifestDest}.tmp-${suffix}`;
+		const rollbackLink = `${payloadDest}.rollback-${suffix}`;
+		try {
+			if (tempDir !== undefined && typeof payloadFn === "function") {
+				fs.mkdirSync(this.artifactsDir, { recursive: true });
+				this.artifactsDirSeen = true;
+				fs.mkdirSync(tempDir, { recursive: true });
+				await payloadFn.call(this.transport, tempDir);
+				if (!canWrite()) return;
+			}
+
+			// Commit, synchronous (no await between the two replacements). The prior payload stays reachable through a
+			// hard link until the manifest has committed, so a failed commit restores the previous generation exactly.
+			fs.writeFileSync(manifestTmp, JSON.stringify(manifest));
+			let payloadReplaced = false;
+			let hadPriorPayload = false;
+			try {
+				if (tempDir !== undefined) {
+					if (fs.existsSync(payloadDest)) {
+						fs.linkSync(payloadDest, rollbackLink);
+						hadPriorPayload = true;
+					}
+					fs.renameSync(join(tempDir, SNAPSHOT_PAYLOAD_FILE), payloadDest);
+					payloadReplaced = true;
+				}
+				fs.renameSync(manifestTmp, manifestDest);
+			} catch (error) {
+				if (payloadReplaced) {
+					if (hadPriorPayload) fs.renameSync(rollbackLink, payloadDest);
+					else fs.rmSync(payloadDest, { force: true });
+				}
+				throw error;
+			}
+		} finally {
+			for (const leftover of [tempDir, manifestTmp, rollbackLink]) {
+				if (leftover === undefined) continue;
+				try {
+					fs.rmSync(leftover, { recursive: true, force: true });
+				} catch {
+					// cleanup failure never affects the committed generation
+				}
+			}
+		}
 	}
 
 	/**
