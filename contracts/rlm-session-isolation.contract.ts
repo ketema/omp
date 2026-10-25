@@ -173,6 +173,18 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
     description: "RLM Extension SHALL NOT auto-restore kernel-state.dill from a shared unpartitioned directory when a session has an explicit session identifier",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
   },
+  "POST-TOOL-SESSION-BINDING-1": {
+    id: "POST-TOOL-SESSION-BINDING-1",
+    method: "test",
+    description: "Each ipython tool invocation is bound, at entry and before any await, to the kernel current at that instant (an invocation entered while a session transition is in flight belongs to the incoming session and binds to its kernel once resolved). Every kernel call of that invocation - ensureStarted, execute, the busy-retry execute, and kill - targets exactly that kernel object, and is made only while that kernel is still the extension's current kernel. PERMITTED OUTCOMES, exhaustive: (O1) the cell runs on its bound kernel and returns that kernel's result; (O2) the bound kernel was replaced, disposed or shut down before the call is made: the call is NOT made, the cell code reaches NO kernel, and the tool returns the ERRORS-TOOL-SESSION-CHANGED-1 abort; (O3) the switch occurs while the cell is already running: the cell is left to finish or be bounded by the existing kernel dispose, on its own kernel, and its output is returned to its own invocation, never re-dispatched. FORBIDDEN: any cell code executing on a kernel other than the one bound at entry; any per-call global mutable slot; any lock that makes a session transition wait for a running cell",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "ERRORS-TOOL-SESSION-CHANGED-1": {
+    id: "ERRORS-TOOL-SESSION-CHANGED-1",
+    method: "test",
+    description: "When POST-TOOL-SESSION-BINDING-1 outcome O2 occurs the tool does not throw: it returns isError true with details.status 'aborted' and text stating that the session changed and the cell was not executed. The abort is synthesised by the extension's bound kernel port (typed RlmSessionChangedError), never by probing private fields. The abort makes no kernel call, and a later invocation binds to the current session's kernel and runs normally. A session transition never waits for a running cell (no deadlock)",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
   "IP-5": {
     id: "IP-5",
     method: "test",
