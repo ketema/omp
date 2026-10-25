@@ -406,6 +406,13 @@ class TestGuardAlignsWithTheContracts(unittest.TestCase):
         assert rlm_kernel_runner.FILE_HANDLE_RECONSTRUCTORS == quarantine_inspector.FILE_HANDLE_RECONSTRUCTORS, (
             "the runner and the inspector must refuse the same reconstructors"
         )
+        assert (
+            rlm_kernel_runner.UNSAFE_RECONSTRUCTION_ERROR_TYPE == _restore_contract.UNSAFE_RECONSTRUCTION_ERROR_TYPE
+        ), (
+            "POST-NOOPEN-1 violation: the error type a refused variable carries differs from the contract\n"
+            f"EXPECTED: {_restore_contract.UNSAFE_RECONSTRUCTION_ERROR_TYPE!r}\n"
+            f"ACTUAL: {getattr(rlm_kernel_runner, 'UNSAFE_RECONSTRUCTION_ERROR_TYPE', '<undeclared>')!r}"
+        )
 
     def test_every_reconstructor_in_the_pinned_dill_that_opens_a_path_is_declared(self) -> None:
         """

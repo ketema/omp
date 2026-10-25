@@ -83,6 +83,10 @@ describe("file-handle guard through the real bundled runner", () => {
 				revival?.content ?? "",
 				"POST-NOOPEN-1 violation: the refused handle is not reported as skipped\nEXPECTED: a notice naming 'fh'",
 			).toContain("fh");
+			expect(
+				revival?.content ?? "",
+				"IP-2 / POST-RESTORE-TELEMETRY-1 violation: the host notice dropped the reason a variable was skipped\nEXPECTED: the notice says the skipped variable is a file handle, so an operator can tell a refused handle from a corrupt blob\nACTUAL: names only",
+			).toContain("file handle");
 			const state = await reader.run("print('healthy=' + str(healthy) + ' fh_bound=' + str('fh' in globals()))");
 			expect(state, "POST-NOOPEN-1 violation: healthy variable not recovered, or the handle was bound").toContain(
 				"healthy=41 fh_bound=False",

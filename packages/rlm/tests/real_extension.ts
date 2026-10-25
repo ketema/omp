@@ -35,7 +35,11 @@ export interface RealSession {
 	run(code: string): Promise<string>;
 }
 
-export async function openRealSession(root: string, initialDir: string): Promise<RealSession> {
+export async function openRealSession(
+	root: string,
+	initialDir: string,
+	options?: Parameters<typeof createRlmExtension>[0],
+): Promise<RealSession> {
 	const flags: Record<string, string> = { OMP_RLM_AGENT_DIR: join(root, "agent") };
 	if (process.env.RLM_TEST_PYTHON) flags.RLM_KERNEL_PYTHON = process.env.RLM_TEST_PYTHON;
 	const handlers = new Map<string, Handler[]>();
@@ -58,7 +62,7 @@ export async function openRealSession(root: string, initialDir: string): Promise
 		},
 	};
 	const toolCtx = { hasUI: false, setWorkingMessage() {}, ui: { select: async () => undefined } };
-	await createRlmExtension()(api as never);
+	await createRlmExtension(options)(api as never);
 	const emit = async (type: string, event: object = {}, dir: string = initialDir) => {
 		const ctx = { cwd: root, sessionManager: { resolveOwnArtifactsDir: async () => dir } };
 		for (const handler of handlers.get(type) ?? []) await handler({ type, ...event }, ctx);
