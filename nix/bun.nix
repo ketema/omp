@@ -668,6 +668,7 @@
   "@oh-my-pi/pi-metaharness" = copyPathToStore ../packages/metaharness;
   "@oh-my-pi/pi-mnemopi" = copyPathToStore ../packages/mnemopi;
   "@oh-my-pi/pi-natives" = copyPathToStore ../packages/natives;
+  "@oh-my-pi/pi-rlm" = copyPathToStore ../packages/rlm;
   "@oh-my-pi/pi-tui" = copyPathToStore ../packages/tui;
   "@oh-my-pi/pi-utils" = copyPathToStore ../packages/utils;
   "@oh-my-pi/pi-wire" = copyPathToStore ../packages/wire;
