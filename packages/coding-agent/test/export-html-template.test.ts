@@ -183,7 +183,33 @@ describe("HTML export template", () => {
 		expect(await Bun.file(staleAssetPath).exists()).toBe(false);
 
 		const packDir = path.join(tempRoot, "production-package");
-		await Bun.write(path.join(packDir, "package.json"), Bun.file(path.join(packageDir, "package.json")));
+		// `bun pm pack` resolves `catalog:` and `workspace:` specifiers against the workspace it runs in; this pack dir is a
+		// bare temp directory, so give it the concrete versions those specifiers stand for.
+		const repoRootDir = path.resolve(packageDir, "../..");
+		const rootManifest = (await Bun.file(path.join(repoRootDir, "package.json")).json()) as {
+			workspaces: { catalog: Record<string, string> };
+		};
+		const workspaceVersions = new Map<string, string>();
+		for (const entry of await fs.promises.readdir(path.join(repoRootDir, "packages"), { withFileTypes: true })) {
+			if (!entry.isDirectory()) continue;
+			const manifestFile = Bun.file(path.join(repoRootDir, "packages", entry.name, "package.json"));
+			if (!(await manifestFile.exists())) continue;
+			const parsed = (await manifestFile.json()) as { name?: string; version?: string };
+			if (parsed.name && parsed.version) workspaceVersions.set(parsed.name, parsed.version);
+		}
+		const packManifest = (await Bun.file(path.join(packageDir, "package.json")).json()) as Record<string, unknown>;
+		for (const section of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+			const deps = packManifest[section] as Record<string, string> | undefined;
+			if (!deps) continue;
+			for (const [name, spec] of Object.entries(deps)) {
+				if (spec === "catalog:" || spec === "catalog:default") {
+					deps[name] = rootManifest.workspaces.catalog[name] ?? spec;
+				} else if (spec.startsWith("workspace:")) {
+					deps[name] = workspaceVersions.get(name) ?? spec;
+				}
+			}
+		}
+		await Bun.write(path.join(packDir, "package.json"), JSON.stringify(packManifest, null, 2));
 		await Bun.write(path.join(packDir, "bun.lock"), Bun.file(path.resolve(packageDir, "../../bun.lock")));
 		for (const entry of await fs.promises.readdir(productionBundleDir)) {
 			await Bun.write(path.join(packDir, "dist", entry), Bun.file(path.join(productionBundleDir, entry)));

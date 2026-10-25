@@ -198,12 +198,18 @@ export async function connectPuppeteer(puppeteer: typeof Puppeteer, options: Con
 	try {
 		return await puppeteer.connect(options);
 	} catch (error) {
-		// The WebSocket transports can reject with ErrorEvent rather than Error.
-		// Its message includes the actual debugger endpoint and handshake failure.
-		if (!(error instanceof Error) && isRecord(error) && typeof error.message === "string") {
-			throw new Error(error.message, { cause: error });
+		// The WebSocket transports reject with an ErrorEvent on some runtimes (its message names the debugger
+		// endpoint and handshake failure) and with a plain Error ("Unexpected server response: 404") on others.
+		const normalized =
+			!(error instanceof Error) && isRecord(error) && typeof error.message === "string"
+				? new Error(error.message, { cause: error })
+				: toError(error);
+		const endpoint = options.browserWSEndpoint;
+		if (endpoint !== undefined && !normalized.message.includes(endpoint)) {
+			// Always name the endpoint that refused, whichever shape the runtime rejected with.
+			throw new Error(`WebSocket connection to '${endpoint}' failed: ${normalized.message}`, { cause: normalized });
 		}
-		throw toError(error);
+		throw normalized;
 	}
 }
 
