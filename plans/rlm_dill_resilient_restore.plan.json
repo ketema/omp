@@ -60,7 +60,7 @@
       "status": "GREEN_COMPLETE",
       "depends_on": ["SLICE-1"],
       "issue": "TODO",
-      "pivot_note": "Host extension and SessionManager partition kernel artifacts by session ID, handle session_switch, provide isolated fallback dirs, and propagate unpicklable skipped records."
+      "pivot_note": "Host extension and SessionManager partition kernel artifacts by session ID, handle session_switch, provide atomic isolated fallback dirs, and propagate unpicklable skipped records."
     },
     {
       "id": "SLICE-3",
@@ -81,7 +81,7 @@
   "pivot_guidance": [
     "Verify SLICE-1 resilient restore and builtin filtering passes before moving to SLICE-2 host session directory partitioning.",
     "Verify SLICE-2 guarantees empty state on fresh sessions before running SLICE-3 quarantine inspection.",
-    "SEQ-8 legacy quarantine is implemented via standalone Python utility quarantine_inspector.py. Automatic runtime extension bootstrap invocation is parked per scope disposition."
+    "STATUS NOTICE (SEQ-8): Manifest SEQ-8 specifies automated legacy quarantine invocation on session bootstrap. Currently quarantine_inspector.py operates as an approved standalone forensic utility. Automated bootstrap invocation remains PARKED and unexecuted pending explicit human disposition and approval."
   ],
   "forgotten_invariants": [
     "REQ-RLM-REHYDRATE-001",
