@@ -1,11 +1,13 @@
 /**
  * RLM Session Artifacts Isolation Contract — Specification Authority for SLICE-2.
  *
- * Defines the behavioral contract for session-partitioned persistent kernel state
- * and preventing cross-session snapshot leakage.
+ * Defines the behavioral contract for session-partitioned persistent kernel state,
+ * isolated fallback directories, disposal error boundaries, and wire-to-manager
+ * telemetry propagation.
  *
  * Traceability:
- *   REQ-RLM-REHYDRATE-003 (State Isolation: no cross-session state bleeding)
+ *   REQ-RLM-REHYDRATE-001 (Resilient Restore: skipped variables in telemetry)
+ *   REQ-RLM-REHYDRATE-003 (State Isolation: fallback to dedicated isolated dir, no cross-session bleed)
  *   REQ-RLM-REHYDRATE-004 (Quarantine / Fallback: isolate unpartitioned legacy root)
  *
  * The implementation does NOT import from this file; tests import both.
@@ -38,6 +40,13 @@ export class SharedRootBleedError extends SessionIsolationContractError {
   }
 }
 
+export class SessionSwitchDisposalError extends SessionIsolationContractError {
+  constructor(cause: unknown) {
+    super(`ERRORS-SESSION-SWITCH-DISPOSE-1 violation: failed to cleanly dispose outgoing kernel: ${String(cause)}`);
+    this.name = "SessionSwitchDisposalError";
+  }
+}
+
 // =============================================================================
 // Artifact 3: Immutable Typed Records
 // =============================================================================
@@ -47,7 +56,7 @@ export interface SessionResolutionResult {
   readonly sessionDir?: string;
   readonly artifactsDir: string;
   readonly isPartitioned: boolean;
-  readonly quarantinedLegacy: boolean;
+  readonly isIsolatedFallback: boolean;
 }
 
 // =============================================================================
@@ -58,8 +67,9 @@ export interface SessionResolutionResult {
  * Validates that the resolved artifacts directory is strictly partitioned
  * and not a bare unpartitioned workspace root.
  *
- * POST-SESSION-ISOLATION-1:
- * When sessionId or sessionDir is provided, artifactsDir MUST be partitioned.
+ * POST-SESSION-ISOLATION-1 / POST-SESSION-FALLBACK-ISOLATION-1:
+ * - When sessionId or sessionDir is provided, artifactsDir MUST be partitioned.
+ * - When missing, artifactsDir MUST be an isolated subfolder, never the root .omp/artifacts.
  */
 export function validateSessionArtifactsDir(
   artifactsDir: string,
@@ -69,7 +79,13 @@ export function validateSessionArtifactsDir(
     throw new SessionIsolationContractError("POST-SESSION-ISOLATION-1 violation: artifactsDir cannot be empty");
   }
 
-  // If sessionId or sessionDir is explicitly provided, artifactsDir must reflect that scope
+  const effectiveCwd = sessionContext?.cwd ?? "";
+  const bareRoot = effectiveCwd ? `${effectiveCwd}/.omp/artifacts` : ".omp/artifacts";
+
+  if (artifactsDir === bareRoot) {
+    throw new SharedRootBleedError(artifactsDir);
+  }
+
   if (sessionContext?.sessionDir) {
     if (artifactsDir !== sessionContext.sessionDir && !artifactsDir.startsWith(sessionContext.sessionDir)) {
       throw new SharedRootBleedError(artifactsDir);
@@ -100,6 +116,24 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
     method: "test",
     description: "RLM Extension resolves artifactsDir partitioned by session context (sessionDir or sessionId) so fresh unlinked sessions do not load snapshots from prior sessions, and handles session_switch events to dispose outgoing kernels and re-resolve isolated artifactsDir for new/fork/resume sessions",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "POST-SESSION-FALLBACK-ISOLATION-1": {
+    id: "POST-SESSION-FALLBACK-ISOLATION-1",
+    method: "test",
+    description: "When session ID or sessionDir is missing or invalid, RLM Extension SHALL fallback to a dedicated isolated timestamped directory and emit a warning, never the bare unpartitioned root",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "ERRORS-SESSION-SWITCH-DISPOSE-1": {
+    id: "ERRORS-SESSION-SWITCH-DISPOSE-1",
+    method: "test",
+    description: "When outgoing kernel disposal fails during session switch, RLM Extension surfaces an observable warning and diagnostic rather than silently dropping the failure",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "POST-TRANS-SKIPPED-WIRE-PROPAGATION-1": {
+    id: "POST-TRANS-SKIPPED-WIRE-PROPAGATION-1",
+    method: "test",
+    description: "KernelTransport stdio wire result frames carrying skipped unpicklable variable records must parse and propagate faithfully into KernelManager and revival notice without synthetic stubbing",
+    requirement_ids: ["REQ-RLM-REHYDRATE-001"],
   },
   "FORBIDDEN-CROSS-SESSION-BLEED-1": {
     id: "FORBIDDEN-CROSS-SESSION-BLEED-1",
