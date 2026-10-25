@@ -116,7 +116,13 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
   "POST-SESSION-OWNED-DIR-1": {
     id: "POST-SESSION-OWNED-DIR-1",
     method: "test",
-    description: "When the host session exposes a session file (.jsonl), the kernel-state directory is exactly that file path without the .jsonl suffix (the session-owned artifacts directory), never the directory returned by getArtifactsDir() when an adopted parent artifact manager makes the two differ; independent parent/child identities never share kernel-state files. No substring or identifier heuristic is used. PARKED (unestablished intent): adopted session without a session file",
+    description: "The kernel-state directory of a session is exactly the directory returned by the host's typed sessionManager.resolveOwnArtifactsDir() (POST-SM-OWN-ARTIFACTS-READY-1). sessionManager.getArtifactsDir(), getArtifactManager(), getSessionFile() string manipulation, and event payload fields are never identity sources, so an adopted parent artifact manager can never make two sessions share kernel-state files. No substring or identifier heuristic is used",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "POST-SM-OWN-ARTIFACTS-READY-1": {
+    id: "POST-SM-OWN-ARTIFACTS-READY-1",
+    method: "test",
+    description: "SessionManager.resolveOwnArtifactsDir(): Promise<string | null> (also on ReadonlySessionManager) resolves the directory owned by the CURRENT session file (the session file path without .jsonl), and only after any background artifact copy whose destination is that same session file has settled. It ignores an adopted artifact manager (never returns an adopted parent's directory) and resolves null when the session has no session file. getArtifactsDir(), adoptArtifactManager(), getArtifactManager(), non-kernel artifact sharing and the copy layout are unchanged",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
   },
   "POST-SESSION-PREFLUSH-1": {
@@ -128,13 +134,25 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
   "POST-SESSION-READINESS-1": {
     id: "POST-SESSION-READINESS-1",
     method: "test",
-    description: "Before probing for and restoring an incoming session's snapshot, the extension awaits the incoming artifact manager's public listFiles() (which awaits the host's pending background artifact copy) whenever that manager's dir is the resolved session-owned dir, so a linked fork's copied kernel-state is never missed. PARKED: adopted managers expose only the parent's readiness, so a child's own pending copy is not observable",
+    description: "The extension probes for, restores, and lets a kernel read or write an incoming session's kernel-state only after that session's resolveOwnArtifactsDir() has resolved, i.e. after the host's background artifact copy into the session's OWN session file has settled; a linked fork/branch's copied kernel-state is therefore never missed or raced. A pending copy for a different session file is never awaited",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
   },
   "POST-SESSION-FALLBACK-ISOLATION-1": {
     id: "POST-SESSION-FALLBACK-ISOLATION-1",
     method: "test",
-    description: "When session ID or sessionDir is missing or invalid, RLM Extension SHALL allocate a dedicated atomically unique directory (mkdtemp with timestamp prefix) and emit an observable warning, guaranteeing zero collision between concurrent or frozen-clock sessions",
+    description: "Every fallback isolated directory is a dedicated atomically unique directory (mkdtemp with timestamp prefix under <cwd>/.omp/artifacts) announced by an observable rlm-warning naming it, guaranteeing zero collision between concurrent or frozen-clock sessions",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "POST-SESSION-NO-OWNED-DIR-ISOLATION-1": {
+    id: "POST-SESSION-NO-OWNED-DIR-ISOLATION-1",
+    method: "test",
+    description: "When no session-owned directory can be established (resolveOwnArtifactsDir() resolves null because the session has no session file; the host sessionManager lacks resolveOwnArtifactsDir; no context is supplied; or a kernel is first used before any lifecycle event resolved a directory), the extension starts the session with fresh isolated state in a POST-SESSION-FALLBACK-ISOLATION-1 directory and restores nothing. It never uses getArtifactsDir() / an adopted parent root, a cwd-relative shared path, or any other session's files. PARKED (needs new intent): persistence/restore policy for sessions without a session file",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "POST-SESSION-RESOLUTION-GATE-1": {
+    id: "POST-SESSION-RESOLUTION-GATE-1",
+    method: "test",
+    description: "No kernel is ever constructed against a stale (previous session's) or unresolved directory: kernel construction awaits any in-flight session transition's directory resolution, a transition awaits any in-flight kernel construction before disposing the outgoing kernel, at most one kernel is constructed per resolution, and the injected createKernel receives the resolved artifactsDir",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
   },
   "ERRORS-SESSION-SWITCH-DISPOSE-1": {
