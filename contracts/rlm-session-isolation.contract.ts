@@ -98,7 +98,7 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
   "POST-SESSION-ISOLATION-1": {
     id: "POST-SESSION-ISOLATION-1",
     method: "test",
-    description: "RLM Extension resolves artifactsDir partitioned by session context (sessionDir or sessionId) so fresh unlinked sessions do not load snapshots from prior sessions",
+    description: "RLM Extension resolves artifactsDir partitioned by session context (sessionDir or sessionId) so fresh unlinked sessions do not load snapshots from prior sessions, and handles session_switch events to dispose outgoing kernels and re-resolve isolated artifactsDir for new/fork/resume sessions",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
   },
   "FORBIDDEN-CROSS-SESSION-BLEED-1": {

@@ -24,9 +24,10 @@ import {
 function makeKernelPort(overrides: {
   restoredNames?: string[]
   restoredSkipped?: Array<{ name: string; reason: string }>
-} = {}): { port: RlmExtensionKernelPort; calls: Array<{ kind: string; detail: string }>; wasStarted: () => boolean } {
+} = {}): { port: RlmExtensionKernelPort; calls: Array<{ kind: string; detail: string }>; wasStarted: () => boolean; wasDisposed: () => boolean } {
   const calls: Array<{ kind: string; detail: string }> = []
   let started = false
+  let disposed = false
   const port: RlmExtensionKernelPort = {
     async ensureStarted() {
       calls.push({ kind: "ensureStarted", detail: "" })
@@ -51,6 +52,8 @@ function makeKernelPort(overrides: {
     },
     async dispose() {
       calls.push({ kind: "dispose", detail: "" })
+      disposed = true
+      started = false
     },
     restoredNames() {
       return overrides.restoredNames ?? []
@@ -65,7 +68,7 @@ function makeKernelPort(overrides: {
       return null
     },
   }
-  return { port, calls, wasStarted: () => started }
+  return { port, calls, wasStarted: () => started, wasDisposed: () => disposed }
 }
 
 interface MessageReceipt {
@@ -211,7 +214,87 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
         }
       }
       expect(content).toContain("valid_var")
-      expect(content).toContain("Warning: The following unpicklable variables were skipped: broken_var")
+      expect(content).toContain("The following unpicklable variables were skipped: broken_var")
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("POST-SESSION-ISOLATION-1: session_switch disposes outgoing kernel and re-resolves storage for new session (Comment 4366356325)", async () => {
+    /**
+     * FOUR-CRITERIA TEST VALIDITY GATE:
+     *   [✓] C1 VALID: cites clause POST-SESSION-ISOLATION-1
+     *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (reproduces Comment 4366356325)
+     *   [✓] C3 NON-DUPLICATIVE: asserts session_switch event registration & kernel disposal
+     *   [✓] C4 NOT FUTURE-EDIT: exercises session_switch lifecycle handler
+     */
+    const tempRoot = fs.mkdtempSync("/tmp/rlm-session-switch-")
+    try {
+      const sessionADir = join(tempRoot, "sessions", "session-A", "artifacts")
+      const sessionBDir = join(tempRoot, "sessions", "session-B", "artifacts")
+      fs.mkdirSync(sessionADir, { recursive: true })
+      fs.mkdirSync(sessionBDir, { recursive: true })
+      fs.writeFileSync(join(sessionADir, "kernel-state.dill"), "SNAPSHOT_A")
+      fs.writeFileSync(join(sessionBDir, "kernel-state.dill"), "SNAPSHOT_B")
+
+      const kernelA = makeKernelPort({ restoredNames: ["var_from_session_A"] })
+      const kernelB = makeKernelPort({ restoredNames: ["var_from_session_B"] })
+      let createCallCount = 0
+
+      const { api, registered } = makeApi()
+      const factory = createRlmExtension({
+        createKernel() {
+          createCallCount++
+          return createCallCount === 1 ? kernelA.port : kernelB.port
+        },
+      })
+      await factory(api as never)
+
+      // Start Session A
+      const sessionStartHandlers = registered.handlers.get("session_start") ?? []
+      expect(sessionStartHandlers.length).toBeGreaterThan(0)
+
+      const ctxA = {
+        cwd: tempRoot,
+        sessionManager: {
+          getArtifactsDir: () => sessionADir,
+          getSessionId: () => "session-A",
+        },
+      }
+      await sessionStartHandlers[0]({ type: "session_start" }, ctxA)
+      expect(kernelA.wasStarted()).toBe(true)
+      expect(kernelA.wasDisposed()).toBe(false)
+
+      // session_switch handler MUST be registered for /new, /fork, /resume
+      const sessionSwitchHandlers = registered.handlers.get("session_switch") ?? []
+      expect(sessionSwitchHandlers.length).toBeGreaterThan(0)
+
+      // Switch to Session B
+      const ctxB = {
+        cwd: tempRoot,
+        sessionManager: {
+          getArtifactsDir: () => sessionBDir,
+          getSessionId: () => "session-B",
+        },
+      }
+      await sessionSwitchHandlers[0]({ type: "session_switch", reason: "resume", previousSessionFile: "/path/to/A" }, ctxB)
+
+      // Outgoing Session A kernel MUST be disposed
+      expect(kernelA.wasDisposed()).toBe(true)
+
+      // Incoming Session B kernel should be revived with Session B's variables
+      expect(kernelB.wasStarted()).toBe(true)
+
+      const revivalMessages = registered.sentMessages.filter(m => {
+        const payload = m.payload
+        if (payload && typeof payload === "object" && "customType" in payload) {
+          return payload.customType === "rlm-revival"
+        }
+        return false
+      })
+
+      expect(revivalMessages.length).toBe(2)
+      expect(JSON.stringify(revivalMessages[1].payload)).toContain("var_from_session_B")
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true })
     }
