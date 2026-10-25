@@ -567,15 +567,11 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			const sessionADir = sessionA.ownDir;
 			fs.mkdirSync(sessionADir, { recursive: true });
 
-			const existingPython = join(process.env.HOME ?? "/Users/ketema", ".omp/agent/kernel-venv/bin/python");
-			const configuredPython = fs.existsSync(existingPython) ? existingPython : undefined;
-
 			const flags: Record<string, string> = {
 				OMP_RLM_AGENT_DIR: join(tempRoot, "agent"),
 			};
-			if (configuredPython) {
-				flags.RLM_KERNEL_PYTHON = configuredPython;
-			}
+			// RLM_TEST_PYTHON: an existing interpreter with dill + rlm; unset means the managed kernel venv is bootstrapped.
+			if (process.env.RLM_TEST_PYTHON) flags.RLM_KERNEL_PYTHON = process.env.RLM_TEST_PYTHON;
 
 			const { api, registered } = makeApi({ flags });
 			const factory = createRlmExtension();

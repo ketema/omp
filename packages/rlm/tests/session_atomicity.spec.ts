@@ -458,8 +458,8 @@ describe("POST-TOOL-SESSION-BINDING-1 / ERRORS-TOOL-SESSION-CHANGED-1: a cell st
 	test("REAL kernel: a genuinely running cell survives a switch on its own process; the incoming session shares neither its state nor its process", async () => {
 		const dir = caseDir("real-running-cell");
 		const flags: Record<string, string> = { OMP_RLM_AGENT_DIR: join(dir, "agent") };
-		const existingPython = join(process.env.HOME ?? "/Users/ketema", ".omp/agent/kernel-venv/bin/python");
-		if (fs.existsSync(existingPython)) flags.RLM_KERNEL_PYTHON = existingPython;
+		// RLM_TEST_PYTHON: an existing interpreter with dill + rlm; unset means the managed kernel venv is bootstrapped.
+		if (process.env.RLM_TEST_PYTHON) flags.RLM_KERNEL_PYTHON = process.env.RLM_TEST_PYTHON;
 		const { api, registry } = makeRegistry(flags);
 		await createRlmExtension()(api as never);
 		const sessionA = hostCtx(dir, join(dir, "sessions", "A"));

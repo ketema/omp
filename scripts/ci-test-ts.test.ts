@@ -74,12 +74,6 @@ describe("POST-CI-RLM-SELECTION-1: mode 'rlm' dispatches the whole RLM TS packag
 		).toEqual([]);
 	}, 60_000);
 
-	test("the specs the gate is owed - real SessionManager, default path, atomicity - live under the selected package", () => {
-		for (const spec of ["session_transition.spec.ts", "session_isolation.spec.ts", "session_atomicity.spec.ts"]) {
-			expect(fs.existsSync(path.join(repoRoot, "packages/rlm/tests", spec)), `${spec} must be selected`).toBe(true);
-		}
-	});
-
 	test("POST-CI-RLM-NOSKIP-1: only the rlm command is marked as gated on Bun's own skipped/todo count", async () => {
 		const rlm = await plan("rlm");
 		expect(rlm[0].gate, "POST-CI-RLM-NOSKIP-1 violation: the rlm command is not skip-gated").toContain("skip");

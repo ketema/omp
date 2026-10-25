@@ -152,9 +152,9 @@ function makePort(options: { names?: string[]; flush?: () => Promise<void> } = {
 }
 
 function realKernelFlags(root: string): Record<string, string> {
-	const existingPython = join(process.env.HOME ?? "/Users/ketema", ".omp/agent/kernel-venv/bin/python");
 	const flags: Record<string, string> = { OMP_RLM_AGENT_DIR: join(root, "agent") };
-	if (fs.existsSync(existingPython)) flags.RLM_KERNEL_PYTHON = existingPython;
+	// RLM_TEST_PYTHON: an existing interpreter with dill + rlm; unset means the managed kernel venv is bootstrapped.
+	if (process.env.RLM_TEST_PYTHON) flags.RLM_KERNEL_PYTHON = process.env.RLM_TEST_PYTHON;
 	return flags;
 }
 
