@@ -40,6 +40,8 @@ BASE_BOOTSTRAP_MODULES: Final[frozenset[str]] = frozenset({
     "rlm",
     "json",
     "pathlib",
+    "IPython",
+    "IPython.display",
 })
 
 # =============================================================================
@@ -169,6 +171,12 @@ CONTRACT_RLM_DILL_RESILIENT_RESTORE: Final[dict[str, Clause]] = {
         id="POST-BOOTSTRAP-RLM-REQUIRED-1",
         method="test",
         description="KernelRunner._bootstrap fails fast when the rlm runtime package cannot be imported: it raises an ImportError naming 'rlm-runtime' (never reports readiness without it). rlm is a required member of BASE_BOOTSTRAP_MODULES, so an explicit interpreter override that lacks the runtime is a readiness failure, not a silently degraded kernel",
+        requirement_ids=("REQ-RLM-REHYDRATE-008",),
+    ),
+    "POST-BOOTSTRAP-IPYTHON-1": Clause(
+        id="POST-BOOTSTRAP-IPYTHON-1",
+        method="test",
+        description="KernelRunner._bootstrap fails fast when IPython or its display module cannot be imported: it raises an ImportError naming 'ipykernel' (never reports readiness without them, never skips the preload silently). The promised runtime is an IPython kernel (rlm-runtime depends on ipykernel) and requirement 008 promises interactive display primitives at bootstrap, so IPython and IPython.display are required members of BASE_BOOTSTRAP_MODULES; an explicit interpreter override that lacks them is a readiness failure, not a silently degraded kernel",
         requirement_ids=("REQ-RLM-REHYDRATE-008",),
     ),
     "INV-RESTORE-PURITY-1": Clause(
