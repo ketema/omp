@@ -1259,3 +1259,87 @@ test("FORBIDDEN-KM-6: abort-grace callback must not settle a later execution in 
     "untouched by cell 1's stale grace callback",
   ).toBe("KernelExecuteTimeoutError")
 })
+
+// ---------------------------------------------------------------------------
+// POST-KM-START-SINGLEFLIGHT-1 / POST-SESSION-PREFLUSH-BOUNDED-1
+// (contracts/rlm-session-isolation.contract.ts)
+// ---------------------------------------------------------------------------
+
+test("POST-KM-START-SINGLEFLIGHT-1: concurrent ensureStarted calls share one start", async () => {
+  let release: () => void = () => {}
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const transport = makeTransport({ start: () => hold })
+  const manager = new KernelManager(transport, { clock: makeClock(), artifactsDir: artifactsDir() })
+  const first = manager.ensureStarted()
+  const second = manager.ensureStarted()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  release()
+  await Promise.all([first, second])
+  const count = (kind: string) => transport.calls.filter(c => c.kind === kind).length
+  expect(count("start"), "POST-KM-START-SINGLEFLIGHT-1 violation: the transport was started more than once").toBe(1)
+  expect(count("restoreSnapshot"), "POST-KM-START-SINGLEFLIGHT-1 violation: restore ran more than once").toBe(1)
+  expect(count("bootstrap"), "POST-KM-START-SINGLEFLIGHT-1 violation: bootstrap ran more than once").toBe(1)
+})
+
+test("POST-KM-START-SINGLEFLIGHT-1: a failed shared start rejects every concurrent caller and a later call may retry", async () => {
+  let attempt = 0
+  const transport = makeTransport({
+    start: async () => {
+      attempt += 1
+      await new Promise(resolve => setTimeout(resolve, 0))
+      if (attempt === 1) throw new Error("spawn failed")
+    },
+  })
+  const manager = new KernelManager(transport, { clock: makeClock(), artifactsDir: artifactsDir() })
+  const outcomes = await Promise.allSettled([manager.ensureStarted(), manager.ensureStarted()])
+  expect(outcomes.map(o => o.status)).toEqual(["rejected", "rejected"])
+  expect(transport.calls.filter(c => c.kind === "start").length).toBe(1)
+  await manager.ensureStarted()
+  expect(transport.calls.filter(c => c.kind === "start").length).toBe(2)
+})
+
+test("POST-SESSION-PREFLUSH-BOUNDED-1: flushSnapshot settles within SNAPSHOT_DISPOSE_TIMEOUT_MS when the serializer hangs", async () => {
+  const clock = makeClock()
+  const transport = makeTransport({ snapshotNames: () => new Promise<string[]>(() => {}) })
+  const manager = new KernelManager(transport, { clock, artifactsDir: artifactsDir() })
+  await manager.execute("x = 1")
+  const outcome = manager.flushSnapshot().then(
+    () => "resolved" as const,
+    (error: unknown) => error,
+  )
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + 100)
+  const settled = await Promise.race([outcome, new Promise<string>(resolve => setTimeout(() => resolve("still-pending"), 500))])
+  expect(settled, "POST-SESSION-PREFLUSH-BOUNDED-1 violation: flushSnapshot never settled on a hung serializer").not.toBe("still-pending")
+  expect(settled instanceof Error ? settled.name : String(settled)).toBe("SnapshotFlushTimeoutError")
+})
+
+test("POST-SESSION-PREFLUSH-BOUNDED-1: snapshot work abandoned by the flush timeout never commits afterwards", async () => {
+  const clock = makeClock()
+  const dir = artifactsDir()
+  let release: () => void = () => {}
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const transport = makeTransport({
+    writeSnapshot: async () => {
+      await hold
+      return { bytes: 10, skipped: [] }
+    },
+    writeSnapshotPayload: async tempDir => {
+      fs.writeFileSync(`${tempDir}/kernel-state.dill`, "PAYLOAD")
+    },
+  })
+  const manager = new KernelManager(transport, { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  const outcome = manager.flushSnapshot().catch((error: unknown) => error)
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + 100)
+  await Promise.race([outcome, new Promise(resolve => setTimeout(resolve, 500))])
+  release()
+  await new Promise(resolve => setTimeout(resolve, 100))
+  expect(
+    fs.existsSync(`${dir}/kernel-state.dill`),
+    "POST-SESSION-PREFLUSH-BOUNDED-1 violation: an abandoned snapshot committed its payload after the timeout",
+  ).toBe(false)
+  expect(
+    fs.existsSync(`${dir}/kernel-state.json`),
+    "POST-SESSION-PREFLUSH-BOUNDED-1 violation: an abandoned snapshot committed its manifest after the timeout",
+  ).toBe(false)
+})

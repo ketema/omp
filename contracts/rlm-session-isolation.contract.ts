@@ -227,6 +227,18 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
     description: "When resolving the incoming session's artifacts directory rejects, the outgoing session's directory is never reused: the extension forgets it before resolving, the error still propagates to the host (not swallowed), and the next kernel use allocates a fresh isolated directory with its single observable rlm-warning. Fail closed, never fail open onto the previous session's state",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
   },
+  "POST-KM-START-SINGLEFLIGHT-1": {
+    id: "POST-KM-START-SINGLEFLIGHT-1",
+    method: "test",
+    description: "KernelManager.ensureStarted is single-flight: concurrent callers (a tool invocation and a revival, say) share ONE start - the transport is started, restored and bootstrapped exactly once, never twice - and all of them settle together. If that start fails every concurrent caller rejects with the same readiness error and a later call may start afresh. Covers Copilot comment 4369992537",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "POST-SESSION-PREFLUSH-BOUNDED-1": {
+    id: "POST-SESSION-PREFLUSH-BOUNDED-1",
+    method: "test",
+    description: "Refines POST-SESSION-PREFLUSH-1: KernelManager.flushSnapshot settles within SNAPSHOT_DISPOSE_TIMEOUT_MS even if the kernel or serializer hangs, rejecting with the typed SnapshotFlushTimeoutError (the extension already surfaces any rejection as an observable rlm-warning and the transition proceeds). Snapshot work abandoned by that timeout never commits afterwards: it writes neither the payload nor the manifest into the artifacts directory, so it cannot race the host's artifact copy of the same directory. Covers Copilot comments 4369849292, 4370038281 and 4369909562",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
   "IP-5": {
     id: "IP-5",
     method: "test",
