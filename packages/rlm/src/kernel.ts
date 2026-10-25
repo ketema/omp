@@ -838,8 +838,13 @@ export class KernelManager {
 		// C5: snapshots run through the serialization chain — a snapshot cell
 		// concurrent with an active cell races kernel state (prime-agent
 		// enqueues snapshot cells; same discipline here)
+		// POST-KM-NO-RESURRECT-1: re-checked immediately before every filesystem write, not only at request time -
+		// the host may delete the directory (or the flush bound may abandon this work) while the kernel serializes.
+		const canWrite = (): boolean =>
+			token?.abandoned !== true && !(this.artifactsDirSeen && !fs.existsSync(this.artifactsDir));
 		// POST-KM-SNAPSHOT-SERIAL-1: a thunk, started by the chain only after every earlier entry settled.
 		const run = async (): Promise<void> => {
+			if (!canWrite()) return;
 			// Gather all names from the kernel
 			const allNames = await this.transport.snapshotNames();
 
@@ -850,6 +855,7 @@ export class KernelManager {
 			// Write snapshot (serialization in kernel process); C2/F-174: the
 			// byte cap flows through the seam — the writer is TOLD the budget
 			const writeResult = await this.transport.writeSnapshot(filteredNames, SNAPSHOT_MAX_BYTES);
+			if (!canWrite()) return;
 
 			// Atomic payload write: write to a temp dir INSIDE artifactsDir,
 			// then rename within the same filesystem (V4/F3: a cross-filesystem
@@ -867,7 +873,7 @@ export class KernelManager {
 					this.artifactsDirSeen = true;
 					fs.mkdirSync(tempDir, { recursive: true });
 					await payloadFn(tempDir);
-					if (token?.abandoned === true) return;
+					if (!canWrite()) return;
 
 					// Same-filesystem rename: atomic
 					const payloadSrc = join(tempDir, SNAPSHOT_PAYLOAD_FILE);
@@ -886,7 +892,7 @@ export class KernelManager {
 			// C6: the manifest's pythonVersion comes from the kernel when the
 			// transport can report it (prime-agent writes sys.version)
 			const pythonVersion = await (this.transport.pythonVersion?.() ?? Promise.resolve(""));
-			if (token?.abandoned === true) return;
+			if (!canWrite()) return;
 
 			// V5/F4: the manifest gets the same atomicity guarantee as the
 			// payload — temp file in artifactsDir + rename (a torn manifest
