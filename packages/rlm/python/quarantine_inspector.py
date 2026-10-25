@@ -28,7 +28,7 @@ REPORT_FILENAME = "quarantine_manifest.json"
 
 # The file-handle guard is SHARED with the kernel runner (CROSS_INV-1): one scanner, one reconstructor set, declared in
 # rlm_pickle_guard.py beside this file. The runner loads the same file from its own directory.
-from rlm_pickle_guard import (  # noqa: E402
+from rlm_pickle_guard import (
     FILE_HANDLE_RECONSTRUCTORS,  # noqa: F401  re-exported for the alignment tests
     container_references_file_handle_reconstructor,
     references_file_handle_reconstructor,
