@@ -17,7 +17,9 @@
         "IP-1",
         "IP-2",
         "IP-3",
-        "IP-4"
+        "IP-4",
+        "INV-RESTORE-PURITY-1",
+        "FORBIDDEN-RESTORE-ABORT-1"
       ],
       "clauses_deferred": [
         "POST-SESSION-ISOLATION-1",
@@ -88,7 +90,8 @@
       "id": "SLICE-3",
       "clauses_in_scope": [
         "POST-QUARANTINE-INSPECT-1",
-        "IP-6"
+        "IP-6",
+        "FORBIDDEN-UNARCHIVED-DELETE-1"
       ],
       "clauses_deferred": [],
       "negative_constraints": [
