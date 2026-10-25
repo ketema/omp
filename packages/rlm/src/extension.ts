@@ -40,8 +40,13 @@ type MutableKernelConfig = {
 
 /** The kernel port exposed to the extension, adding compaction and teardown lifecycle. */
 export interface RlmExtensionKernelPort extends RlmToolKernelPort {
-	/** POST-SESSION-MOVE-2: `snapshotInto` relocates the kernel to the session's new owned directory before its final snapshot. */
-	dispose(options?: { readonly snapshotInto?: string }): Promise<void>;
+	dispose(): Promise<void>;
+	/**
+	 * POST-SESSION-MOVE-3: the session this kernel serves now owns `dir`. Later snapshots (including the one flushed
+	 * here, bounded and serialized behind any running cell) are written there, never into the superseded directory.
+	 * Rejects when the flush cannot settle; the kernel stays live either way.
+	 */
+	retarget(dir: string): Promise<void>;
 	onCompactionComplete(): Promise<void>;
 	flushSnapshot(): Promise<void>;
 	compactionNotice(): string | null;
@@ -121,9 +126,13 @@ export class KernelManagerAdapter implements RlmExtensionKernelPort {
 		await (this.manager as unknown as { kill(): Promise<void> }).kill();
 	}
 
-	async dispose(options?: { readonly snapshotInto?: string }): Promise<void> {
-		if (options?.snapshotInto !== undefined) this.manager.relocate(options.snapshotInto);
+	async dispose(): Promise<void> {
 		await this.manager.dispose({ snapshot: true });
+	}
+
+	async retarget(dir: string): Promise<void> {
+		this.manager.relocate(dir);
+		await this.manager.flushSnapshot();
 	}
 
 	async flushSnapshot(): Promise<void> {
@@ -564,14 +573,14 @@ export function createRlmExtension(
 		api.on("session_before_branch", handlePreTransitionFlush);
 
 		// Save and dispose the outgoing kernel to prevent cross-session leakage (Comment 4366356325)
-		const disposeOutgoingKernel = async (options?: { readonly snapshotInto?: string }): Promise<void> => {
+		const disposeOutgoingKernel = async (): Promise<void> => {
 			const outgoing = kernel;
 			if (outgoing === null) return;
 			// POST-TOOL-SESSION-BINDING-1: relinquish ownership BEFORE the awaited dispose, so every later call
 			// from a cell bound to this kernel fails closed instead of reaching the incoming session.
 			kernel = null;
 			try {
-				await outgoing.dispose(options);
+				await outgoing.dispose();
 				// Check for observable teardown failure notices from KernelManager
 				const teardownNotice = outgoing.takeTeardownNotice?.();
 				if (teardownNotice) {
@@ -601,6 +610,30 @@ export function createRlmExtension(
 					{ deliverAs: "nextTurn" },
 				);
 			}
+		};
+
+		// POST-SESSION-MOVE-3: retarget the live kernel to the session's new owned directory. Returns whether a live
+		// kernel was retargeted (false: none was live, so the ordinary restore applies). A flush that cannot settle is
+		// surfaced, never silent; the kernel stays live and later snapshots land in the new directory.
+		const retargetLiveKernel = async (dir: string): Promise<boolean> => {
+			const live = kernel;
+			if (live === null) return false;
+			try {
+				await live.retarget(dir);
+			} catch (err) {
+				api.sendMessage(
+					{
+						role: "custom",
+						customType: "rlm-warning",
+						content: `Warning: Snapshot flush after the session move failed: ${err instanceof Error ? err.message : String(err)}`,
+						display: true,
+						attribution: "agent",
+						timestamp: Date.now(),
+					},
+					{ deliverAs: "nextTurn" },
+				);
+			}
+			return true;
 		};
 
 		// POST-SESSION-OWNED-DIR-1 / POST-SESSION-READINESS-1: the kernel-state directory is exactly what
@@ -639,6 +672,7 @@ export function createRlmExtension(
 			// The outgoing kernel's final snapshot must land in the session's NEW owned directory, after that copy has
 			// settled, so the namespace executed since its last snapshot is not lost to the older copied one.
 			const relocating = (event as { reason?: string } | undefined)?.reason === "move";
+			let retargeted = false;
 			const resolution = (async (): Promise<IncomingArtifacts | null> => {
 				// POST-SESSION-RESOLUTION-GATE-1: a construction already in flight targets the outgoing
 				// session; let it finish so it is disposed below instead of surviving into this session.
@@ -666,9 +700,15 @@ export function createRlmExtension(
 					if (relocating && isCurrent()) await disposeOutgoingKernel();
 					throw err;
 				}
-				// A relocation superseded by a newer transition neither disposes nor snapshots: the newest owns both.
+				// POST-SESSION-MOVE-3: a relocation keeps the SAME kernel (the same logical session): it is retargeted to
+				// the new owned directory and its live namespace flushed there. A relocation superseded by a newer
+				// transition neither retargets nor flushes: the newest owns both.
 				if (relocating && isCurrent()) {
-					await disposeOutgoingKernel(resolved.kind === "resolved" ? { snapshotInto: resolved.dir } : undefined);
+					if (resolved.kind === "resolved") {
+						retargeted = await retargetLiveKernel(resolved.dir);
+					} else {
+						await disposeOutgoingKernel();
+					}
 				}
 				// POST-SESSION-TRANSITION-GEN-1: a stale completion never publishes its directory.
 				if (isCurrent()) incoming = resolved;
@@ -686,7 +726,9 @@ export function createRlmExtension(
 			if (!isCurrent() || pendingResolution !== null || resolvedIncoming === null) return;
 			// An unallocated (unowned) session has nothing to restore: it starts fresh and isolated.
 			const hasSnapshot =
-				resolvedIncoming.kind === "resolved" && fs.existsSync(join(resolvedIncoming.dir, "kernel-state.dill"));
+				!retargeted &&
+				resolvedIncoming.kind === "resolved" &&
+				fs.existsSync(join(resolvedIncoming.dir, "kernel-state.dill"));
 			if (hasSnapshot) {
 				try {
 					const k = await ensureKernel();
