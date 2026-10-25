@@ -110,7 +110,25 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
   "POST-SESSION-ISOLATION-1": {
     id: "POST-SESSION-ISOLATION-1",
     method: "test",
-    description: "RLM Extension resolves artifactsDir partitioned by session context (sessionDir or sessionId) ensuring adopted parent managers partition child session identity and handles session_switch/session_branch events to dispose outgoing kernels and re-resolve isolated artifactsDir for new/fork/resume/branch sessions",
+    description: "RLM Extension re-resolves the incoming session's artifactsDir and disposes the outgoing kernel on session_start, session_switch and session_branch, so fresh unlinked sessions do not load snapshots from prior sessions",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "POST-SESSION-OWNED-DIR-1": {
+    id: "POST-SESSION-OWNED-DIR-1",
+    method: "test",
+    description: "When the host session exposes a session file (.jsonl), the kernel-state directory is exactly that file path without the .jsonl suffix (the session-owned artifacts directory), never the directory returned by getArtifactsDir() when an adopted parent artifact manager makes the two differ; independent parent/child identities never share kernel-state files. No substring or identifier heuristic is used. PARKED (unestablished intent): adopted session without a session file",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "POST-SESSION-PREFLUSH-1": {
+    id: "POST-SESSION-PREFLUSH-1",
+    method: "test",
+    description: "On session_before_switch and session_before_branch the extension flushes the live kernel snapshot through the typed RlmExtensionKernelPort.flushSnapshot boundary (KernelManager.flushSnapshot) BEFORE the host copies artifacts, never disposes the kernel on these cancellable hooks, never cancels the transition, leaves the outgoing kernel usable if the transition is vetoed, and surfaces a flush failure as an observable rlm-warning",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "POST-SESSION-READINESS-1": {
+    id: "POST-SESSION-READINESS-1",
+    method: "test",
+    description: "Before probing for and restoring an incoming session's snapshot, the extension awaits the incoming artifact manager's public listFiles() (which awaits the host's pending background artifact copy) whenever that manager's dir is the resolved session-owned dir, so a linked fork's copied kernel-state is never missed. PARKED: adopted managers expose only the parent's readiness, so a child's own pending copy is not observable",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
   },
   "POST-SESSION-FALLBACK-ISOLATION-1": {
