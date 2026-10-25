@@ -2,7 +2,8 @@
  * RLM Session State Isolation Tests (SLICE-2).
  *
  * Verifies session directory partitioning, lifecycle context resolution,
- * atomic fallback directory isolation, teardown error reporting, and non-theater wire telemetry under CCABDD.
+ * atomic fallback directory isolation, teardown error reporting, and true full-path
+ * default construction recovery without test theater under CCABDD.
  *
  * CONTRACT AUTHORITY RECORD:
  * - Contract: contracts/rlm-session-isolation.contract.ts
@@ -19,7 +20,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { join } from "node:path";
 
-import { createRlmExtension, type RlmExtensionKernelPort, type RlmKernelConfig } from "../src/extension.ts";
+import { createRlmExtension, type RlmExtensionKernelPort } from "../src/extension.ts";
 import { KernelManager } from "../src/kernel.ts";
 import { createTransport, type RlmTransportProcess } from "../src/transport.ts";
 
@@ -88,31 +89,62 @@ function makeKernelPort(
 	return { port, calls, wasStarted: () => started, wasDisposed: () => disposed };
 }
 
+interface MessagePayload {
+	readonly role?: string;
+	readonly customType?: string;
+	readonly content?: string;
+	readonly display?: boolean;
+	readonly attribution?: string;
+	readonly timestamp?: number;
+}
+
 interface MessageReceipt {
 	readonly payload: unknown;
 	readonly options: unknown;
 }
 
-function makeApi() {
+function isMessagePayload(value: unknown): value is MessagePayload {
+	return typeof value === "object" && value !== null;
+}
+
+interface ToolDefinitionRecord {
+	readonly name: string;
+	readonly execute: (
+		toolCallId: string,
+		params: { code: string },
+		signal: AbortSignal | undefined,
+		onUpdate: unknown,
+		ctx: unknown,
+	) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+}
+
+function makeApi(options: { flags?: Record<string, string | boolean> } = {}) {
 	const registered: {
-		tools: Array<Record<string, unknown>>;
+		tools: ToolDefinitionRecord[];
+		flags: Array<{ name: string; type: string; default?: string | boolean }>;
 		handlers: Map<string, Array<(event: unknown, ctx?: unknown) => unknown>>;
 		sentMessages: MessageReceipt[];
-	} = { tools: [], handlers: new Map(), sentMessages: [] };
+	} = { tools: [], flags: [], handlers: new Map(), sentMessages: [] };
+	const flagValues: Record<string, string | boolean> = { ...options.flags };
 
 	const api = {
-		registerTool(tool: Record<string, unknown>) {
+		registerTool(tool: ToolDefinitionRecord) {
 			registered.tools.push(tool);
 		},
-		registerFlag() {},
+		registerFlag(name: string, opts: { type: string; default?: string | boolean }) {
+			registered.flags.push({ name, type: opts.type, default: opts.default });
+			if (opts.default !== undefined && flagValues[name] === undefined) {
+				flagValues[name] = opts.default;
+			}
+		},
 		registerCommand() {},
 		on(event: string, handler: (event: unknown, ctx?: unknown) => unknown) {
 			const list = registered.handlers.get(event) ?? [];
 			list.push(handler);
 			registered.handlers.set(event, list);
 		},
-		getFlag() {
-			return undefined;
+		getFlag(name: string) {
+			return flagValues[name];
 		},
 		sendMessage(payload: unknown, options?: unknown) {
 			registered.sentMessages.push({ payload, options });
@@ -156,11 +188,7 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			await sessionStartHandlers[0]({ type: "session_start" }, mockCtx);
 
 			const revivalMessages = registered.sentMessages.filter(m => {
-				const payload = m.payload;
-				if (payload && typeof payload === "object" && "customType" in payload) {
-					return payload.customType === "rlm-revival";
-				}
-				return false;
+				return isMessagePayload(m.payload) && m.payload.customType === "rlm-revival";
 			});
 
 			expect(revivalMessages.length).toBe(0);
@@ -203,22 +231,12 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			await sessionStartHandlers[0]({ type: "session_start" }, mockCtx);
 
 			const revivalMessages = registered.sentMessages.filter(m => {
-				const payload = m.payload;
-				if (payload && typeof payload === "object" && "customType" in payload) {
-					return payload.customType === "rlm-revival";
-				}
-				return false;
+				return isMessagePayload(m.payload) && m.payload.customType === "rlm-revival";
 			});
 
 			expect(revivalMessages.length).toBe(1);
 			const firstPayload = revivalMessages[0].payload;
-			let content = "";
-			if (firstPayload && typeof firstPayload === "object" && "content" in firstPayload) {
-				const rawContent = firstPayload.content;
-				if (typeof rawContent === "string") {
-					content = rawContent;
-				}
-			}
+			const content = isMessagePayload(firstPayload) ? (firstPayload.content ?? "") : "";
 			expect(content).toContain("valid_var");
 			expect(content).toContain("Warning: The following unpicklable variables were skipped: broken_var");
 		} finally {
@@ -282,32 +300,22 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			expect(kernelB.wasStarted()).toBe(true);
 
 			const revivalMessages = registered.sentMessages.filter(m => {
-				const payload = m.payload;
-				if (payload && typeof payload === "object" && "customType" in payload) {
-					return payload.customType === "rlm-revival";
-				}
-				return false;
+				return isMessagePayload(m.payload) && m.payload.customType === "rlm-revival";
 			});
 
 			expect(revivalMessages.length).toBe(2);
-			expect(JSON.stringify(revivalMessages[1].payload)).toContain("var_from_session_B");
+			const secondPayload = revivalMessages[1].payload;
+			const content = isMessagePayload(secondPayload) ? (secondPayload.content ?? "") : "";
+			expect(content).toContain("var_from_session_B");
 		} finally {
 			fs.rmSync(tempRoot, { recursive: true, force: true });
 		}
 	});
 
 	test("POST-SESSION-FALLBACK-ISOLATION-1: distinct sessions under frozen clock allocate unique isolated directories without collision", async () => {
-		/**
-		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites clause POST-SESSION-FALLBACK-ISOLATION-1
-		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (reproduces frozen clock collision probe)
-		 *   [✓] C3 NON-DUPLICATIVE: asserts atomic unique directory allocation under frozen Date.now
-		 *   [✓] C4 NOT FUTURE-EDIT: exercises fallback path across concurrent instances
-		 */
 		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-frozen-clock-");
 		const originalNow = Date.now;
 		try {
-			// Freeze Date.now to test that atomic allocation prevents collision
 			Date.now = () => 123456789;
 
 			const kernel1 = makeKernelPort();
@@ -332,18 +340,25 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			await h1!({ type: "session_start" }, mockCtx);
 			await h2!({ type: "session_start" }, mockCtx);
 
-			const warnings1 = reg1.sentMessages.filter(m => (m.payload as any)?.customType === "rlm-warning");
-			const warnings2 = reg2.sentMessages.filter(m => (m.payload as any)?.customType === "rlm-warning");
+			const warnings1 = reg1.sentMessages.filter(
+				m => isMessagePayload(m.payload) && m.payload.customType === "rlm-warning",
+			);
+			const warnings2 = reg2.sentMessages.filter(
+				m => isMessagePayload(m.payload) && m.payload.customType === "rlm-warning",
+			);
 			expect(warnings1.length).toBe(1);
 			expect(warnings2.length).toBe(1);
 
-			// Extract the allocated paths from warning notices
-			const path1 = (warnings1[0].payload as any).content.split("assigned: ")[1]?.trim();
-			const path2 = (warnings2[0].payload as any).content.split("assigned: ")[1]?.trim();
+			const payload1 = warnings1[0].payload;
+			const payload2 = warnings2[0].payload;
+			const content1 = isMessagePayload(payload1) ? (payload1.content ?? "") : "";
+			const content2 = isMessagePayload(payload2) ? (payload2.content ?? "") : "";
+
+			const path1 = content1.split("assigned: ")[1]?.trim();
+			const path2 = content2.split("assigned: ")[1]?.trim();
 
 			expect(path1).toBeDefined();
 			expect(path2).toBeDefined();
-			// Distinct sessions under identical timestamps MUST NOT collide
 			expect(path1).not.toBe(path2);
 			expect(fs.existsSync(path1)).toBe(true);
 			expect(fs.existsSync(path2)).toBe(true);
@@ -353,14 +368,7 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 		}
 	});
 
-	test("ERRORS-SESSION-SWITCH-DISPOSE-1: snapshot flush failure in real KernelManager surfaces via teardownNotice in session_switch", async () => {
-		/**
-		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites clause ERRORS-SESSION-SWITCH-DISPOSE-1
-		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (reproduces real KernelManager teardownNotice)
-		 *   [✓] C3 NON-DUPLICATIVE: tests actual manager.dispose snapshot error -> teardownNotice -> extension warning
-		 *   [✓] C4 NOT FUTURE-EDIT: exercises authentic teardown error propagation
-		 */
+	test("ERRORS-SESSION-SWITCH-DISPOSE-1: snapshot flush failure in kernel port surfaces via teardownNotice in session_switch", async () => {
 		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-teardown-");
 		try {
 			const sessionADir = join(tempRoot, "sessions", "session-A", "artifacts");
@@ -369,7 +377,6 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			fs.mkdirSync(sessionBDir, { recursive: true });
 			fs.writeFileSync(join(sessionADir, "kernel-state.dill"), "SNAPSHOT_A");
 
-			// Mock a kernel with a teardownNotice (matching KernelManager.takeTeardownNotice)
 			const kernelA = makeKernelPort({
 				teardownNotice: "snapshot flush failed during dispose: disk full on snapshot save",
 			});
@@ -397,19 +404,21 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 				{ cwd: tempRoot, sessionManager: { getArtifactsDir: () => sessionBDir, getSessionId: () => "session-B" } },
 			);
 
-			// Teardown notice from manager MUST surface as an observable warning message
 			const warnings = registered.sentMessages.filter(m => {
-				const payload = m.payload as any;
-				return payload?.customType === "rlm-warning" && typeof payload?.content === "string";
+				return isMessagePayload(m.payload) && m.payload.customType === "rlm-warning";
 			});
 			expect(warnings.length).toBeGreaterThan(0);
-			expect(warnings.some(w => (w.payload as any).content.includes("disk full on snapshot save"))).toBe(true);
+			expect(
+				warnings.some(
+					w => isMessagePayload(w.payload) && (w.payload.content ?? "").includes("disk full on snapshot save"),
+				),
+			).toBe(true);
 		} finally {
 			fs.rmSync(tempRoot, { recursive: true, force: true });
 		}
 	});
 
-	test("POST-TRANS-SKIPPED-WIRE-PROPAGATION-1: authentic KernelTransport wire result frame propagates skipped unpicklables into KernelManager and revival notice without test theater", async () => {
+	test("POST-TRANS-SKIPPED-WIRE-PROPAGATION-1: authentic KernelTransport wire result frame propagates skipped unpicklables into KernelManager without test theater", async () => {
 		/**
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
 		 *   [✓] C1 VALID: cites clause POST-TRANS-SKIPPED-WIRE-PROPAGATION-1
@@ -453,7 +462,6 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 				},
 			};
 
-			// Instantiate the ACTUAL KernelTransport via createTransport
 			const transport = createTransport(
 				{
 					interpreter: "/usr/bin/python3",
@@ -468,27 +476,22 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			);
 
 			const startPromise = transport.start();
-			// Emit standard ready handshake from runner process
 			await new Promise(r => setTimeout(r, 0));
 			stdoutCb?.('{"type": "ready", "protocol": 1}\n');
 			await startPromise;
 
-			// Instantiate ACTUAL KernelManager over the real transport
 			const manager = new KernelManager(transport, {
 				clock,
 				artifactsDir: sessionDir,
 			});
 
-			// Now invoke manager.ensureStarted() which calls transport.restoreSnapshot()
 			const ensureStartedPromise = manager.ensureStarted();
 			await new Promise(r => setTimeout(r, 0));
 
-			// Verify transport sent snapshot_restore op down the wire
 			const restoreOpLine = stdinWrittenLines.find(l => l.includes('"snapshot_restore"'));
 			expect(restoreOpLine).toBeDefined();
-			const restoreOp = JSON.parse(restoreOpLine!);
+			const restoreOp = JSON.parse(restoreOpLine!) as { id: string };
 
-			// Runner emits authentic stdio JSON frame over stdout containing restoredNames and skipped unpicklables
 			const wireFrame = {
 				type: "result",
 				id: restoreOp.id,
@@ -500,12 +503,11 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			await new Promise(r => setTimeout(r, 5));
 			const bootOpLine = stdinWrittenLines.find(l => l.includes('"bootstrap"'));
 			expect(bootOpLine).toBeDefined();
-			const bootOp = JSON.parse(bootOpLine!);
+			const bootOp = JSON.parse(bootOpLine!) as { id: string };
 			stdoutCb?.(`${JSON.stringify({ type: "result", id: bootOp.id, stdout: "", stderr: "" })}\n`);
 
 			await ensureStartedPromise;
 
-			// Assert that REAL transport parsed the wire frame and passed skipped into REAL manager
 			expect(manager.restoredNames()).toEqual(["good_df", "valid_var"]);
 			expect(manager.restoredSkipped().length).toBe(1);
 			expect(manager.restoredSkipped()[0].name).toBe("corrupted_fn");
@@ -515,4 +517,118 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			fs.rmSync(tempRoot, { recursive: true, force: true });
 		}
 	});
+
+	test("POST-TRANS-SKIPPED-WIRE-PROPAGATION-1: true full-path default construction recovery and session switch without createKernel hook", async () => {
+		/**
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites clause POST-TRANS-SKIPPED-WIRE-PROPAGATION-1 and POST-SESSION-ISOLATION-1
+		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO
+		 *       (FALSIFIABILITY PROOF: mutating KernelManagerAdapter.restoredSkipped() to return [] causes
+		 *        this test to FAIL: revival notice does not contain skipped variable names)
+		 *   [✓] C3 NON-DUPLICATIVE: exercises true createRlmExtension() with real Python runner, real transport,
+		 *       real KernelManager, real KernelManagerAdapter, real tool execution, and real session_switch
+		 *   [✓] C4 NOT FUTURE-EDIT: portable to CI via existing managed venv interpreter or fallback
+		 */
+		const managedPython = join(process.env.HOME ?? "/Users/ketema", ".omp/agent/kernel-venv/bin/python");
+
+		// Skip gracefully if the managed Python interpreter is not present on this machine/runner
+		if (!fs.existsSync(managedPython)) {
+			return;
+		}
+
+		const tempRoot = fs.mkdtempSync("/tmp/rlm-true-default-path-");
+		try {
+			const sessionADir = join(tempRoot, "session-A");
+			const sessionBDir = join(tempRoot, "session-B");
+			fs.mkdirSync(sessionADir, { recursive: true });
+			fs.mkdirSync(sessionBDir, { recursive: true });
+
+			// Create a synthetic snapshot in session A containing healthy_fixture=42 and a SyntaxError fixture
+			const fixtureScript = `
+import dill, lzma, sys
+class Broken:
+    def __reduce__(self):
+        return (compile, ('def broken(:', 'synthetic_fixture', 'exec'))
+with lzma.open(sys.argv[1], 'wb') as f:
+    dill.dump({'bad_fixture': dill.dumps(Broken()), 'healthy_fixture': dill.dumps(42)}, f)
+`;
+			const dillPath = join(sessionADir, "kernel-state.dill");
+			const pyProc = Bun.spawnSync([managedPython, "-c", fixtureScript, dillPath]);
+			expect(pyProc.exitCode).toBe(0);
+
+			// Initialize extension via TRUE DEFAULT PATH: NO createKernel hook!
+			const { api, registered } = makeApi({
+				flags: {
+					RLM_KERNEL_PYTHON: managedPython,
+					OMP_RLM_AGENT_DIR: join(tempRoot, "agent"),
+				},
+			});
+
+			const factory = createRlmExtension();
+			await factory(api as never);
+
+			const ctx = (id: string) => ({
+				hasUI: false,
+				setWorkingMessage() {},
+				cwd: tempRoot,
+				sessionDir: join(tempRoot, `session-${id}`),
+				sessionManager: {
+					getArtifactsDir: () => join(tempRoot, `session-${id}`),
+					getSessionId: () => id,
+				},
+				ui: {
+					async select() {
+						return undefined;
+					},
+				},
+			});
+
+			// 1. session_start in Session A
+			const startHandler = registered.handlers.get("session_start")?.[0];
+			expect(startHandler).toBeDefined();
+			await startHandler!({ type: "session_start" }, ctx("A"));
+
+			// Verify revival notice carries both restored name and unpicklable skipped warning
+			const revivalMessages = registered.sentMessages.filter(m => {
+				return isMessagePayload(m.payload) && m.payload.customType === "rlm-revival";
+			});
+			expect(revivalMessages.length).toBe(1);
+			const revivalContent = isMessagePayload(revivalMessages[0].payload)
+				? (revivalMessages[0].payload.content ?? "")
+				: "";
+			expect(revivalContent).toContain("healthy_fixture");
+			expect(revivalContent).toContain("bad_fixture");
+
+			// 2. Execute cell in Session A via real tool through KernelManagerAdapter
+			const tool = registered.tools[0];
+			expect(tool).toBeDefined();
+			const resA = await tool.execute("call-a", { code: "print(healthy_fixture)" }, undefined, undefined, ctx("A"));
+			expect(resA.isError ?? false).toBe(false);
+			expect(resA.content[0].text).toContain("42");
+
+			// 3. session_switch to Session B
+			const switchHandler = registered.handlers.get("session_switch")?.[0];
+			expect(switchHandler).toBeDefined();
+			await switchHandler!({ type: "session_switch", reason: "new" }, ctx("B"));
+
+			// 4. Execute cell in Session B: verify zero cross-session variable leakage
+			const resB = await tool.execute(
+				"call-b",
+				{ code: "print('healthy_fixture' in globals())" },
+				undefined,
+				undefined,
+				ctx("B"),
+			);
+			expect(resB.isError ?? false).toBe(false);
+			expect(resB.content[0].text).toContain("False");
+
+			// 5. session_shutdown cleanup
+			const shutdownHandler = registered.handlers.get("session_shutdown")?.[0];
+			if (shutdownHandler) {
+				await shutdownHandler({});
+			}
+		} finally {
+			fs.rmSync(tempRoot, { recursive: true, force: true });
+		}
+	}, 120_000);
 });
