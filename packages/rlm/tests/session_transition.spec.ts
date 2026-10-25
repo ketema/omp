@@ -1,26 +1,34 @@
 /**
- * RLM session-transition tests (SLICE-2) — typed host-lifecycle harness.
+ * RLM session-transition tests (SLICE-2) — real host-session lifecycle.
  *
  * CONTRACT AUTHORITY RECORD:
  * - Contract: contracts/rlm-session-isolation.contract.ts
  * - Clauses covered:
- *     POST-SESSION-PREFLUSH-1   typed flush boundary before the host copies artifacts; veto-safe; failure observable
- *     POST-SESSION-OWNED-DIR-1  session-owned directory from the session file, no substring heuristic
- *     POST-SESSION-READINESS-1  await the host's pending artifact copy before probing the incoming snapshot
+ *     POST-SESSION-PREFLUSH-1               typed flush boundary before the host copies artifacts; veto-safe; failure observable
+ *     POST-SESSION-OWNED-DIR-1              kernel-state dir is exactly sessionManager.resolveOwnArtifactsDir()
+ *     POST-SESSION-READINESS-1              the session's OWN background artifact copy settles before restore
+ *     POST-SESSION-NO-OWNED-DIR-ISOLATION-1 no owned dir -> fresh isolated state, never an adopted/shared root
  *
- * COVERAGE LIMITS (stated, not hidden):
- * - The host here is a TYPED FIXTURE reproducing the lifecycle ORDER and the session-manager shapes of
- *   packages/coding-agent (before hook awaited -> artifacts copied -> after event). The real SessionManager /
- *   ArtifactManager cannot be imported locally because @oh-my-pi/pi-natives has no darwin-arm64 addon in this
- *   worktree. Real-host integration is therefore NOT verified by these tests.
- * - The kernel is a fake port in the fixture tests; the real KernelManager/runner path is covered separately.
+ * Every session is a REAL coding-agent SessionManager; forks/branches go through the real
+ * SessionManager.createBranchedSession + copySessionArtifacts provider, in the host's order
+ * (before-hook awaited -> branch/copy -> after-event). Kernel ports are injected doubles in the
+ * fixture tests; the real KernelManager / Python runner path is exercised where marked "real".
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { join } from "node:path";
 
 import { createRlmExtension, type RlmExtensionKernelPort } from "../src/extension.ts";
+import {
+	adoptedInMemorySession,
+	adoptedPersistedSession,
+	type HostContext,
+	hostContext,
+	isolateAgentDir,
+	persistedSession,
+	writeSnapshot,
+} from "./host_session.ts";
 
 type Handler = (event: unknown, ctx?: unknown) => unknown;
 
@@ -43,26 +51,6 @@ interface Registry {
 	readonly handlers: Map<string, Handler[]>;
 	readonly messages: MessagePayload[];
 	readonly tools: ToolRecord[];
-}
-
-interface ArtifactManagerShape {
-	readonly dir: string;
-	listFiles(): Promise<string[]>;
-}
-
-interface SessionManagerShape {
-	getSessionFile?: () => string | undefined;
-	getArtifactsDir?: () => string | null;
-	getSessionId?: () => string;
-	getArtifactManager?: () => ArtifactManagerShape | null;
-}
-
-interface HostContext {
-	readonly cwd: string;
-	readonly sessionManager: SessionManagerShape;
-	readonly hasUI: boolean;
-	setWorkingMessage(): void;
-	readonly ui: { select(): Promise<undefined> };
 }
 
 function asMessagePayload(value: unknown): MessagePayload {
@@ -99,7 +87,7 @@ function makeRegistry(flags: Record<string, string | boolean> = {}) {
 	return { api, registry };
 }
 
-async function emit(registry: Registry, type: string, event: object, ctx: HostContext): Promise<unknown[]> {
+async function emit(registry: Registry, type: string, event: object, ctx: unknown): Promise<unknown[]> {
 	const results: unknown[] = [];
 	for (const handler of registry.handlers.get(type) ?? []) {
 		results.push(await handler({ type, ...event }, ctx));
@@ -107,20 +95,13 @@ async function emit(registry: Registry, type: string, event: object, ctx: HostCo
 	return results;
 }
 
-function hostContext(root: string, sessionManager: SessionManagerShape): HostContext {
-	return {
-		cwd: root,
-		sessionManager,
-		hasUI: false,
-		setWorkingMessage() {},
-		ui: { async select() {} },
-	};
+function messagesOf(registry: Registry, customType: string): MessagePayload[] {
+	return registry.messages.filter(m => m.customType === customType);
 }
 
-/** A non-adopted session: getArtifactsDir() IS the session-owned dir (artifactsDirectoryFor(sessionFile)). */
-function ownedSession(sessionFile: string, id: string): SessionManagerShape {
-	const owned = sessionFile.slice(0, -".jsonl".length);
-	return { getSessionFile: () => sessionFile, getArtifactsDir: () => owned, getSessionId: () => id };
+/** The directory a fallback warning announces (`... assigned: <dir>`), or undefined. */
+function assignedDir(message: MessagePayload): string | undefined {
+	return /assigned: (.+)$/.exec(message.content ?? "")?.[1]?.trim();
 }
 
 type FlushablePort = RlmExtensionKernelPort & { flushSnapshot(): Promise<void> };
@@ -170,335 +151,324 @@ function makePort(options: { names?: string[]; flush?: () => Promise<void> } = {
 	return { port, state };
 }
 
-function scratch(prefix: string): string {
-	return fs.mkdtempSync(join("/tmp", prefix));
+function realKernelFlags(root: string): Record<string, string> {
+	const existingPython = join(process.env.HOME ?? "/Users/ketema", ".omp/agent/kernel-venv/bin/python");
+	const flags: Record<string, string> = { OMP_RLM_AGENT_DIR: join(root, "agent") };
+	if (fs.existsSync(existingPython)) flags.RLM_KERNEL_PYTHON = existingPython;
+	return flags;
+}
+
+let root = "";
+let restoreAgentDir: () => void = () => {};
+let caseCounter = 0;
+
+beforeAll(() => {
+	root = fs.mkdtempSync(join("/tmp", "rlm-session-transition-"));
+	restoreAgentDir = isolateAgentDir(root);
+});
+
+afterAll(() => {
+	restoreAgentDir();
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+/** A fresh per-test root inside the suite root (agent dir stays isolated for the whole suite). */
+function caseRoot(label: string): string {
+	caseCounter++;
+	const dir = join(root, `${caseCounter}-${label}`);
+	fs.mkdirSync(dir, { recursive: true });
+	return dir;
 }
 
 describe("POST-SESSION-PREFLUSH-1: typed pre-transition flush boundary", () => {
-	test("flush runs through the typed port BEFORE the host copies artifacts, and the kernel is not disposed on the cancellable hook", async () => {
-		const root = scratch("rlm-preflush-order-");
-		try {
-			const sessionsDir = join(root, "sessions");
-			const dirA = join(sessionsDir, "A");
-			const dirB = join(sessionsDir, "B");
-			fs.mkdirSync(dirA, { recursive: true });
-			fs.writeFileSync(join(dirA, "kernel-state.dill"), "SEED");
+	test("flush runs through the typed port BEFORE the real host copies artifacts, and the kernel is not disposed on the cancellable hook", async () => {
+		const dir = caseRoot("preflush-order");
+		const a = await persistedSession(dir, "A");
+		writeSnapshot(a.ownDir, "SEED");
 
-			const kernelA = makePort({
-				names: ["a_var"],
-				flush: async () => {
-					fs.writeFileSync(join(dirA, "kernel-state.dill"), "FLUSHED");
-				},
-			});
-			const kernelB = makePort({ names: ["a_var"] });
-			let created = 0;
-			const { api, registry } = makeRegistry();
-			await createRlmExtension({
-				createKernel() {
-					created++;
-					return created === 1 ? kernelA.port : kernelB.port;
-				},
-			})(api as never);
+		const kernelA = makePort({
+			names: ["a_var"],
+			flush: async () => {
+				fs.writeFileSync(join(a.ownDir, "kernel-state.dill"), "FLUSHED");
+			},
+		});
+		const kernelB = makePort({ names: ["a_var"] });
+		let created = 0;
+		const { api, registry } = makeRegistry();
+		await createRlmExtension({
+			createKernel() {
+				created++;
+				return created === 1 ? kernelA.port : kernelB.port;
+			},
+		})(api as never);
 
-			const ctxA = hostContext(root, ownedSession(join(sessionsDir, "A.jsonl"), "A"));
-			const ctxB = hostContext(root, ownedSession(join(sessionsDir, "B.jsonl"), "B"));
-			await emit(registry, "session_start", {}, ctxA);
+		const ctx = hostContext(dir, a.sm);
+		await emit(registry, "session_start", {}, ctx);
 
-			// Host order (agent-session.ts #branchIntoNewSession): before hook awaited -> copy -> after event.
-			await emit(registry, "session_before_branch", { reason: "fork", entryId: "e1" }, ctxA);
-			const disposedAtCopy = kernelA.state.disposed;
-			fs.cpSync(dirA, dirB, { recursive: true });
-			await emit(registry, "session_branch", { reason: "fork", previousSessionFile: "A.jsonl" }, ctxB);
+		// Host order (agent-session.ts #branchIntoNewSession): before hook awaited -> branch/copy -> after event.
+		await emit(registry, "session_before_branch", { reason: "fork", entryId: a.leafId }, ctx);
+		const disposedAtCopy = kernelA.state.disposed;
+		a.sm.createBranchedSession(a.leafId, { copyArtifacts: true });
+		await emit(registry, "session_branch", { reason: "fork", previousSessionFile: `${a.ownDir}.jsonl` }, ctx);
 
-			expect(kernelA.state.flushCalls).toBe(1);
-			expect(disposedAtCopy).toBe(false);
-			expect(fs.readFileSync(join(dirB, "kernel-state.dill"), "utf8")).toBe("FLUSHED");
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
+		const branchedDir = await a.sm.resolveOwnArtifactsDir();
+		expect(kernelA.state.flushCalls).toBe(1);
+		expect(disposedAtCopy).toBe(false);
+		expect(branchedDir).not.toBe(a.ownDir);
+		expect(fs.readFileSync(join(branchedDir ?? "", "kernel-state.dill"), "utf8")).toBe("FLUSHED");
+		await a.sm.close();
 	});
 
 	test("a failed flush is observable, never cancels the transition, and leaves the vetoed outgoing kernel usable", async () => {
-		const root = scratch("rlm-preflush-fail-");
-		try {
-			const sessionsDir = join(root, "sessions");
-			const dirA = join(sessionsDir, "A");
-			fs.mkdirSync(dirA, { recursive: true });
-			fs.writeFileSync(join(dirA, "kernel-state.dill"), "SEED");
+		const dir = caseRoot("preflush-fail");
+		const a = await persistedSession(dir, "A");
+		writeSnapshot(a.ownDir, "SEED");
 
-			const kernelA = makePort({
-				flush: async () => {
-					throw new Error("disk full during pre-transition flush");
-				},
-			});
-			const { api, registry } = makeRegistry();
-			await createRlmExtension({ createKernel: () => kernelA.port })(api as never);
-			const ctxA = hostContext(root, ownedSession(join(sessionsDir, "A.jsonl"), "A"));
-			await emit(registry, "session_start", {}, ctxA);
+		const kernelA = makePort({
+			flush: async () => {
+				throw new Error("disk full during pre-transition flush");
+			},
+		});
+		const { api, registry } = makeRegistry();
+		await createRlmExtension({ createKernel: () => kernelA.port })(api as never);
+		const ctx = hostContext(dir, a.sm);
+		await emit(registry, "session_start", {}, ctx);
 
-			// The host vetoes (or the transition otherwise never completes): no after-event follows.
-			const results = await emit(registry, "session_before_switch", { reason: "new" }, ctxA);
+		// The host vetoes (or the transition otherwise never completes): no after-event follows.
+		const results = await emit(registry, "session_before_switch", { reason: "new" }, ctx);
 
-			const cancelled = results.some(r => typeof r === "object" && r !== null && "cancel" in r);
-			expect(cancelled).toBe(false);
-			expect(kernelA.state.disposed).toBe(false);
-			const warnings = registry.messages.filter(m => m.customType === "rlm-warning");
-			expect(warnings.some(w => (w.content ?? "").includes("disk full during pre-transition flush"))).toBe(true);
+		const cancelled = results.some(r => typeof r === "object" && r !== null && "cancel" in r);
+		expect(cancelled).toBe(false);
+		expect(kernelA.state.disposed).toBe(false);
+		const warnings = messagesOf(registry, "rlm-warning");
+		expect(warnings.some(w => (w.content ?? "").includes("disk full during pre-transition flush"))).toBe(true);
 
-			const res = await registry.tools[0].execute("c1", { code: "1+1" }, undefined, undefined, ctxA);
-			expect(res.isError ?? false).toBe(false);
-			expect(kernelA.state.executes).toEqual(["1+1"]);
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
+		const res = await registry.tools[0].execute("c1", { code: "1+1" }, undefined, undefined, ctx);
+		expect(res.isError ?? false).toBe(false);
+		expect(kernelA.state.executes).toEqual(["1+1"]);
+		await a.sm.close();
 	});
 });
 
 describe("POST-SESSION-PREFLUSH-1: real KernelManager / runner flush ordering and veto safety", () => {
-	test("real KernelManager.flushSnapshot commits live execution state before the host copies artifacts on fork", async () => {
-		const root = scratch("rlm-real-flush-order-");
+	test("real KernelManager.flushSnapshot commits live execution state before the real host copies artifacts on fork", async () => {
+		const dir = caseRoot("real-flush-order");
 		let shutdown: (() => Promise<unknown>) | null = null;
+		const a = await persistedSession(dir, "A");
 		try {
-			const existingPython = join(process.env.HOME ?? "/Users/ketema", ".omp/agent/kernel-venv/bin/python");
-			const flags: Record<string, string> = { OMP_RLM_AGENT_DIR: join(root, "agent") };
-			if (fs.existsSync(existingPython)) flags.RLM_KERNEL_PYTHON = existingPython;
-
-			const { api, registry } = makeRegistry(flags);
+			const { api, registry } = makeRegistry(realKernelFlags(dir));
 			await createRlmExtension()(api as never);
-			shutdown = async () => {
-				await emit(
-					registry,
-					"session_shutdown",
-					{},
-					hostContext(root, ownedSession(join(root, "shutdown.jsonl"), "s")),
-				);
-			};
+			const ctx = hostContext(dir, a.sm);
+			shutdown = () => emit(registry, "session_shutdown", {}, ctx);
 
-			const sessionsDir = join(root, "sessions");
-			const dirA = join(sessionsDir, "A");
-			const dirB = join(sessionsDir, "B");
-			fs.mkdirSync(dirA, { recursive: true });
-			fs.mkdirSync(dirB, { recursive: true });
-			const ctxA = hostContext(root, ownedSession(join(sessionsDir, "A.jsonl"), "A"));
-			const ctxB = hostContext(root, ownedSession(join(sessionsDir, "B.jsonl"), "B"));
-
-			await emit(registry, "session_start", {}, ctxA);
+			await emit(registry, "session_start", {}, ctx);
 			const tool = registry.tools[0];
 			// Execute cell; within SNAPSHOT_DEBOUNCE_MS no snapshot has been written yet.
-			const runRes = await tool.execute("c1", { code: "pre_fork_answer = 6 * 7" }, undefined, undefined, ctxA);
+			const runRes = await tool.execute("c1", { code: "pre_fork_answer = 6 * 7" }, undefined, undefined, ctx);
 			expect(runRes.isError ?? false).toBe(false);
 
-			// Before-branch flushes immediately via KernelManager.flushSnapshot() before copy.
-			await emit(registry, "session_before_branch", { reason: "fork", entryId: "e1" }, ctxA);
-			expect(fs.existsSync(join(dirA, "kernel-state.dill"))).toBe(true);
+			// Before-branch flushes immediately via KernelManager.flushSnapshot() before the copy.
+			await emit(registry, "session_before_branch", { reason: "fork", entryId: a.leafId }, ctx);
+			expect(fs.existsSync(join(a.ownDir, "kernel-state.dill"))).toBe(true);
 
-			// Host copies session A's directory into session B.
-			fs.cpSync(dirA, dirB, { recursive: true });
-			await emit(registry, "session_branch", { reason: "fork", previousSessionFile: "A.jsonl" }, ctxB);
+			// Real host fork: background copy of A's artifacts into the branched session.
+			a.sm.createBranchedSession(a.leafId, { copyArtifacts: true });
+			await emit(registry, "session_branch", { reason: "fork", previousSessionFile: `${a.ownDir}.jsonl` }, ctx);
 
-			// Session B restored from the copy: variable must be live.
-			const probe = await tool.execute("c2", { code: "print(pre_fork_answer)" }, undefined, undefined, ctxB);
+			// The branched session restored from the copy: variable must be live.
+			const probe = await tool.execute("c2", { code: "print(pre_fork_answer)" }, undefined, undefined, ctx);
 			expect(probe.isError ?? false).toBe(false);
 			expect(probe.content[0].text).toContain("42");
 		} finally {
 			if (shutdown) await shutdown();
-			fs.rmSync(root, { recursive: true, force: true });
+			await a.sm.close();
 		}
 	}, 180_000);
 
 	test("vetoed transition leaves real outgoing kernel usable with preserved state", async () => {
-		const root = scratch("rlm-real-veto-");
+		const dir = caseRoot("real-veto");
 		let shutdown: (() => Promise<unknown>) | null = null;
+		const a = await persistedSession(dir, "A");
 		try {
-			const existingPython = join(process.env.HOME ?? "/Users/ketema", ".omp/agent/kernel-venv/bin/python");
-			const flags: Record<string, string> = { OMP_RLM_AGENT_DIR: join(root, "agent") };
-			if (fs.existsSync(existingPython)) flags.RLM_KERNEL_PYTHON = existingPython;
-
-			const { api, registry } = makeRegistry(flags);
+			const { api, registry } = makeRegistry(realKernelFlags(dir));
 			await createRlmExtension()(api as never);
-			shutdown = async () => {
-				await emit(
-					registry,
-					"session_shutdown",
-					{},
-					hostContext(root, ownedSession(join(root, "shutdown.jsonl"), "s")),
-				);
-			};
+			const ctx = hostContext(dir, a.sm);
+			shutdown = () => emit(registry, "session_shutdown", {}, ctx);
 
-			const sessionsDir = join(root, "sessions");
-			const dirA = join(sessionsDir, "A");
-			fs.mkdirSync(dirA, { recursive: true });
-			const ctxA = hostContext(root, ownedSession(join(sessionsDir, "A.jsonl"), "A"));
-
-			await emit(registry, "session_start", {}, ctxA);
+			await emit(registry, "session_start", {}, ctx);
 			const tool = registry.tools[0];
-			await tool.execute("c1", { code: "state_token = 'veto_survivor'" }, undefined, undefined, ctxA);
+			await tool.execute("c1", { code: "state_token = 'veto_survivor'" }, undefined, undefined, ctx);
 
 			// A before-hook fires, transition is vetoed (e.g. user aborts or another hook cancels): no after-event.
-			await emit(registry, "session_before_switch", { reason: "fork" }, ctxA);
+			await emit(registry, "session_before_switch", { reason: "fork" }, ctx);
 
 			// The outgoing session remains in turn: subsequent execution still has state_token.
-			const probe = await tool.execute("c2", { code: "print(state_token)" }, undefined, undefined, ctxA);
+			const probe = await tool.execute("c2", { code: "print(state_token)" }, undefined, undefined, ctx);
 			expect(probe.isError ?? false).toBe(false);
 			expect(probe.content[0].text).toContain("veto_survivor");
 		} finally {
 			if (shutdown) await shutdown();
-			fs.rmSync(root, { recursive: true, force: true });
+			await a.sm.close();
 		}
 	}, 180_000);
 });
 
-describe("POST-SESSION-OWNED-DIR-1: exact session-owned directory resolution", () => {
-	test("adopted child session uses its own session-owned directory derived from getSessionFile(), not an ad-hoc subdirectory under the parent root", async () => {
-		const root = scratch("rlm-owned-adopted-");
-		try {
-			const parentArtifactsDir = join(root, "parent-artifacts-root");
-			const childOwnedDir = join(root, "sessions", "child-42");
-			fs.mkdirSync(parentArtifactsDir, { recursive: true });
-			fs.mkdirSync(childOwnedDir, { recursive: true });
-			// Pre-populate child-owned directory with the child's own prior snapshot.
-			fs.writeFileSync(join(childOwnedDir, "kernel-state.dill"), "CHILD_OWNED_SNAPSHOT");
-			// Pre-populate parent root with parent state (must NOT be loaded by child).
-			fs.writeFileSync(join(parentArtifactsDir, "kernel-state.dill"), "PARENT_SNAPSHOT");
+describe("POST-SESSION-OWNED-DIR-1 / POST-SESSION-READINESS-1: real session-owned directory and own-copy readiness", () => {
+	test("an adopted child with its own session file uses its OWN directory: the adopted parent's snapshot is never loaded", async () => {
+		const dir = caseRoot("owned-adopted");
+		const parent = await persistedSession(dir, "parent");
+		writeSnapshot(parent.ownDir, "PARENT_SNAPSHOT");
+		const child = await adoptedPersistedSession(dir, "child", parent.sm);
+		expect(child.sm.getArtifactsDir()).toBe(parent.ownDir);
 
-			const childKernel = makePort({ names: ["child_var"] });
-			const { api, registry } = makeRegistry();
-			await createRlmExtension({ createKernel: () => childKernel.port })(api as never);
+		const kernel = makePort({ names: ["parent_var"] });
+		const { api, registry } = makeRegistry();
+		await createRlmExtension({ createKernel: () => kernel.port })(api as never);
+		await emit(registry, "session_start", {}, hostContext(dir, child.sm));
 
-			// Subagent scenario: sessionManager.getArtifactsDir() returns parentArtifactsDir (adopted),
-			// but sessionManager.getSessionFile() returns the child's own session file.
-			const childSessionManager: SessionManagerShape = {
-				getSessionFile: () => join(root, "sessions", "child-42.jsonl"),
-				getArtifactsDir: () => parentArtifactsDir,
-				getSessionId: () => "child-42",
-			};
-			const ctx = hostContext(root, childSessionManager);
-			await emit(registry, "session_start", {}, ctx);
-
-			const revivals = registry.messages.filter(m => m.customType === "rlm-revival");
-			// The child's owned directory had a snapshot, so revival must fire for child_var.
-			expect(revivals.length).toBe(1);
-			expect(revivals[0].content ?? "").toContain("child_var");
-
-			// Verify that an ad-hoc child subdirectory under the parent was NOT synthesized.
-			expect(fs.existsSync(join(parentArtifactsDir, "child-42"))).toBe(false);
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
+		expect(
+			messagesOf(registry, "rlm-revival").length,
+			"POST-SESSION-OWNED-DIR-1 violation: the child restored from the adopted parent's directory",
+		).toBe(0);
+		expect(fs.readFileSync(join(parent.ownDir, "kernel-state.dill"), "utf8")).toBe("PARENT_SNAPSHOT");
+		await child.sm.close();
+		await parent.sm.close();
 	});
 
-	test("no substring heuristic: a parent directory whose name contains the child sessionId is not mistreated as an owned match", async () => {
-		const root = scratch("rlm-owned-substring-");
-		try {
-			// Parent directory path contains "child" as a SUBSTRING (e.g. /path/to/childhood-parent/artifacts)
-			const parentArtifactsDir = join(root, "childhood-parent-artifacts");
-			const childOwnedDir = join(root, "sessions", "child");
-			fs.mkdirSync(parentArtifactsDir, { recursive: true });
-			fs.mkdirSync(childOwnedDir, { recursive: true });
-			fs.writeFileSync(join(childOwnedDir, "kernel-state.dill"), "CHILD_OWNED_DATA");
+	test("an adopted child's OWN background fork copy is awaited before its copied snapshot is probed and restored", async () => {
+		const dir = caseRoot("readiness-adopted-fork");
+		const parent = await persistedSession(dir, "parent");
+		const child = await adoptedPersistedSession(dir, "child", parent.sm);
+		writeSnapshot(child.ownDir, "CHILD_SNAPSHOT");
 
-			const kernel = makePort({ names: ["exact_child_var"] });
-			const { api, registry } = makeRegistry();
-			await createRlmExtension({ createKernel: () => kernel.port })(api as never);
+		const kernel = makePort({ names: ["child_var"] });
+		const { api, registry } = makeRegistry();
+		await createRlmExtension({ createKernel: () => kernel.port })(api as never);
+		const ctx = hostContext(dir, child.sm);
 
-			const childSessionManager: SessionManagerShape = {
-				getSessionFile: () => join(root, "sessions", "child.jsonl"),
-				getArtifactsDir: () => parentArtifactsDir,
-				getSessionId: () => "child",
-			};
-			const ctx = hostContext(root, childSessionManager);
-			await emit(registry, "session_start", {}, ctx);
+		// Real host branch: the copy into the branched child's own directory runs in the background,
+		// and the adopted manager's readiness (parent's) says nothing about it.
+		child.sm.createBranchedSession(child.leafId, { copyArtifacts: true });
+		await emit(registry, "session_branch", { reason: "branch", previousSessionFile: `${child.ownDir}.jsonl` }, ctx);
 
-			const revivals = registry.messages.filter(m => m.customType === "rlm-revival");
-			expect(revivals.length).toBe(1);
-			expect(revivals[0].content ?? "").toContain("exact_child_var");
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
+		const revivals = messagesOf(registry, "rlm-revival");
+		expect(
+			revivals.length,
+			"POST-SESSION-READINESS-1 violation: probed the branched child's directory before its own background copy settled",
+		).toBe(1);
+		expect(revivals[0].content ?? "").toContain("child_var");
+		expect(fs.existsSync(join(parent.ownDir, "kernel-state.dill"))).toBe(false);
+		await child.sm.close();
+		await parent.sm.close();
 	});
 });
 
-describe("POST-SESSION-READINESS-1: pending artifact copy readiness barrier", () => {
-	test("extension awaits the incoming artifact manager's public listFiles() before probing snapshot existence", async () => {
-		const root = scratch("rlm-readiness-wait-");
-		try {
-			const sessionsDir = join(root, "sessions");
-			const dirB = join(sessionsDir, "B");
-			fs.mkdirSync(sessionsDir, { recursive: true });
+describe("POST-SESSION-NO-OWNED-DIR-ISOLATION-1: no session-owned directory -> fresh isolated state", () => {
+	test("adopted in-memory sessions A and B sharing a parent root never restore the parent's state and get distinct isolated dirs", async () => {
+		const dir = caseRoot("no-file-adopted");
+		const parent = await persistedSession(dir, "parent");
+		writeSnapshot(parent.ownDir, "PARENT_SNAPSHOT");
+		const a = adoptedInMemorySession(dir, parent.sm);
+		const b = adoptedInMemorySession(dir, parent.sm);
+		expect(a.getArtifactsDir()).toBe(parent.ownDir);
+		expect(b.getArtifactsDir()).toBe(parent.ownDir);
+		expect(a.getSessionId()).not.toBe(b.getSessionId());
 
-			// Simulate a background artifact copy: the file does NOT exist when session_start fires,
-			// but lands when listFiles() resolves.
-			let listFilesCalled = false;
-			const fakeArtifactManager: ArtifactManagerShape = {
-				dir: dirB,
-				async listFiles() {
-					listFilesCalled = true;
-					await new Promise(r => setTimeout(r, 20));
-					fs.mkdirSync(dirB, { recursive: true });
-					fs.writeFileSync(join(dirB, "kernel-state.dill"), "COPIED_IN_BACKGROUND");
-					return ["kernel-state.dill"];
-				},
-			};
+		const kernel = makePort({ names: ["parent_var"] });
+		const { api, registry } = makeRegistry();
+		await createRlmExtension({ createKernel: () => kernel.port })(api as never);
 
-			const kernel = makePort({ names: ["copied_var"] });
-			const { api, registry } = makeRegistry();
-			await createRlmExtension({ createKernel: () => kernel.port })(api as never);
+		await emit(registry, "session_start", {}, hostContext(dir, a));
+		await emit(registry, "session_switch", { reason: "new", previousSessionFile: undefined }, hostContext(dir, b));
 
-			const sessionManager: SessionManagerShape = {
-				getSessionFile: () => join(sessionsDir, "B.jsonl"),
-				getArtifactsDir: () => dirB,
-				getSessionId: () => "B",
-				getArtifactManager: () => fakeArtifactManager,
-			};
-			const ctx = hostContext(root, sessionManager);
-			await emit(registry, "session_start", {}, ctx);
-
-			expect(listFilesCalled).toBe(true);
-			const revivals = registry.messages.filter(m => m.customType === "rlm-revival");
-			expect(revivals.length).toBe(1);
-			expect(revivals[0].content ?? "").toContain("copied_var");
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
+		expect(
+			messagesOf(registry, "rlm-revival").length,
+			"POST-SESSION-NO-OWNED-DIR-ISOLATION-1 violation: a session without a session file restored the adopted parent root's snapshot",
+		).toBe(0);
+		const isolated = messagesOf(registry, "rlm-warning").map(assignedDir);
+		expect(isolated.length).toBe(2);
+		const [dirA, dirB] = isolated;
+		expect(dirA).toBeDefined();
+		expect(dirB).toBeDefined();
+		expect(dirA).not.toBe(dirB);
+		expect(dirA).not.toBe(parent.ownDir);
+		expect(dirB).not.toBe(parent.ownDir);
+		expect(dirA?.startsWith(join(dir, "project", ".omp", "artifacts", "isolated-"))).toBe(true);
+		expect(dirB?.startsWith(join(dir, "project", ".omp", "artifacts", "isolated-"))).toBe(true);
+		await a.close();
+		await b.close();
+		await parent.sm.close();
 	});
 
-	test("negative: an adopted artifact manager whose dir is the parent's is NOT awaited for a child session (PARKED)", async () => {
-		const root = scratch("rlm-readiness-adopted-");
+	test("real: adopted in-memory session B never sees adopted in-memory session A's variable, and the parent root is never written", async () => {
+		const dir = caseRoot("no-file-adopted-real");
+		let shutdown: (() => Promise<unknown>) | null = null;
+		const parent = await persistedSession(dir, "parent");
+		const a = adoptedInMemorySession(dir, parent.sm);
+		const b = adoptedInMemorySession(dir, parent.sm);
 		try {
-			const parentDir = join(root, "parent-root");
-			const childDir = join(root, "sessions", "child");
-			fs.mkdirSync(parentDir, { recursive: true });
-			fs.mkdirSync(childDir, { recursive: true });
-			fs.writeFileSync(join(childDir, "kernel-state.dill"), "CHILD_STATE");
+			const { api, registry } = makeRegistry(realKernelFlags(dir));
+			await createRlmExtension()(api as never);
+			const ctxA: HostContext = hostContext(dir, a);
+			const ctxB: HostContext = hostContext(dir, b);
+			shutdown = () => emit(registry, "session_shutdown", {}, ctxB);
+			const tool = registry.tools[0];
 
-			let parentListFilesCalled = false;
-			const parentArtifactManager: ArtifactManagerShape = {
-				dir: parentDir, // does NOT match childDir
-				async listFiles() {
-					parentListFilesCalled = true;
-					return [];
-				},
-			};
+			await emit(registry, "session_start", {}, ctxA);
+			const setA = await tool.execute("a1", { code: "bleed_marker = 41" }, undefined, undefined, ctxA);
+			expect(setA.isError ?? false).toBe(false);
 
-			const kernel = makePort({ names: ["child_var"] });
-			const { api, registry } = makeRegistry();
-			await createRlmExtension({ createKernel: () => kernel.port })(api as never);
+			await emit(registry, "session_before_switch", { reason: "new" }, ctxA);
+			await emit(registry, "session_switch", { reason: "new", previousSessionFile: undefined }, ctxB);
 
-			const childSessionManager: SessionManagerShape = {
-				getSessionFile: () => join(root, "sessions", "child.jsonl"),
-				getArtifactsDir: () => parentDir,
-				getSessionId: () => "child",
-				getArtifactManager: () => parentArtifactManager,
-			};
-			const ctx = hostContext(root, childSessionManager);
-			await emit(registry, "session_start", {}, ctx);
-
-			// Since parentArtifactManager.dir !== childDir, the extension must NOT wait on parent's readiness
-			expect(parentListFilesCalled).toBe(false);
-			const revivals = registry.messages.filter(m => m.customType === "rlm-revival");
-			expect(revivals.length).toBe(1);
+			const probeB = await tool.execute(
+				"b1",
+				{ code: "print('bleed_marker' in globals())" },
+				undefined,
+				undefined,
+				ctxB,
+			);
+			expect(probeB.isError ?? false).toBe(false);
+			expect(
+				probeB.content[0].text,
+				"POST-SESSION-NO-OWNED-DIR-ISOLATION-1 violation: session B restored session A's variable",
+			).toContain("False");
+			expect(
+				fs.existsSync(join(parent.ownDir, "kernel-state.dill")),
+				"POST-SESSION-NO-OWNED-DIR-ISOLATION-1 violation: kernel state was written into the adopted parent's directory",
+			).toBe(false);
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
+			if (shutdown) await shutdown();
+			await a.close();
+			await b.close();
+			await parent.sm.close();
 		}
+	}, 180_000);
+
+	test("a host sessionManager without resolveOwnArtifactsDir gets fresh isolated state; getArtifactsDir()/getSessionFile() are never trusted", async () => {
+		const dir = caseRoot("no-accessor");
+		const sessionFile = join(dir, "sessions", "legacy.jsonl");
+		const fileDerivedDir = join(dir, "sessions", "legacy");
+		writeSnapshot(fileDerivedDir, "LEGACY_HOST_SNAPSHOT");
+		// A host surface that predates the ownership/readiness accessor.
+		const legacySessionManager = {
+			getSessionFile: () => sessionFile,
+			getArtifactsDir: () => fileDerivedDir,
+			getSessionId: () => "legacy",
+		};
+
+		const kernel = makePort({ names: ["legacy_var"] });
+		const { api, registry } = makeRegistry();
+		await createRlmExtension({ createKernel: () => kernel.port })(api as never);
+		await emit(registry, "session_start", {}, { cwd: join(dir, "project"), sessionManager: legacySessionManager });
+
+		expect(
+			messagesOf(registry, "rlm-revival").length,
+			"POST-SESSION-NO-OWNED-DIR-ISOLATION-1 violation: restored without an established owned directory and copy readiness",
+		).toBe(0);
+		const warnings = messagesOf(registry, "rlm-warning");
+		expect(warnings.length).toBe(1);
+		expect(warnings[0].content ?? "").toContain("resolveOwnArtifactsDir");
+		expect(assignedDir(warnings[0])?.startsWith(join(dir, "project", ".omp", "artifacts", "isolated-"))).toBe(true);
 	});
 });

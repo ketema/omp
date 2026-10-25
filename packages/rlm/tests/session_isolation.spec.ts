@@ -8,21 +8,44 @@
  * CONTRACT AUTHORITY RECORD:
  * - Contract: contracts/rlm-session-isolation.contract.ts
  * - Clauses covered:
- *     POST-SESSION-ISOLATION-1: Resolves artifactsDir partitioned by session context
- *     POST-SESSION-FALLBACK-ISOLATION-1: Missing session identifier falls back to isolated atomic dir
+ *     POST-SESSION-ISOLATION-1: Resolves artifactsDir from the real session's own directory
+ *     POST-SESSION-FALLBACK-ISOLATION-1: Missing session context falls back to isolated atomic dir
  *     ERRORS-SESSION-SWITCH-DISPOSE-1: Emits observable warning on outgoing kernel teardownNotice/disposal failure
  *     POST-TRANS-SKIPPED-WIRE-PROPAGATION-1: Authentic KernelTransport stdio wire frames propagate skipped unpicklables
  *     FORBIDDEN-CROSS-SESSION-BLEED-1: Prohibits loading snapshots from shared root
  *     IP-5: Delivers partitioned artifactsDir to kernel initialization
+ *
+ * Session identity comes from REAL coding-agent SessionManager instances (./host_session.ts);
+ * no test hand-writes getArtifactsDir()/getSessionFile() getters.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { join } from "node:path";
 
 import { createRlmExtension, type RlmExtensionKernelPort } from "../src/extension.ts";
 import { KernelManager } from "../src/kernel.ts";
 import { createTransport, type RlmTransportProcess } from "../src/transport.ts";
+import {
+	adoptedPersistedSession,
+	hostContext,
+	isolateAgentDir,
+	persistedSession,
+	writeSnapshot,
+} from "./host_session.ts";
+
+let suiteRoot = "";
+let restoreAgentDir: () => void = () => {};
+
+beforeAll(() => {
+	suiteRoot = fs.mkdtempSync("/tmp/rlm-session-iso-suite-");
+	restoreAgentDir = isolateAgentDir(suiteRoot);
+});
+
+afterAll(() => {
+	restoreAgentDir();
+	fs.rmSync(suiteRoot, { recursive: true, force: true });
+});
 
 function makeKernelPort(
 	overrides: {
@@ -157,267 +180,167 @@ function makeApi(options: { flags?: Record<string, string | boolean> } = {}) {
 }
 
 describe("SLICE-2: Session Artifacts Isolation", () => {
-	test("POST-SESSION-ISOLATION-1: fresh session with sessionManager.getArtifactsDir() partitions artifactsDir and does NOT bleed shared root snapshot (F2/F6)", async () => {
-		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-iso-");
+	test("POST-SESSION-ISOLATION-1 / FORBIDDEN-CROSS-SESSION-BLEED-1: a fresh real session never restores a shared unpartitioned root snapshot (F2/F6)", async () => {
+		const tempRoot = fs.mkdtempSync(join(suiteRoot, "fresh-"));
+		const session = await persistedSession(tempRoot, "alpha");
 		try {
-			const sharedRoot = join(tempRoot, ".omp", "artifacts");
-			fs.mkdirSync(sharedRoot, { recursive: true });
-			fs.writeFileSync(join(sharedRoot, "kernel-state.dill"), "STALE_PRIOR_SESSION_DATA");
-
+			// A stale snapshot in the shared, unpartitioned <cwd>/.omp/artifacts root.
+			writeSnapshot(join(tempRoot, "project", ".omp", "artifacts"), "STALE_PRIOR_SESSION_DATA");
 			const kernel = makeKernelPort({ restoredNames: ["stale_leaked_var"] });
-
 			const { api, registered } = makeApi();
-			const factory = createRlmExtension({
-				createKernel() {
-					return kernel.port;
-				},
-			});
-			await factory(api as never);
+			await createRlmExtension({ createKernel: () => kernel.port })(api as never);
 
-			const sessionStartHandlers = registered.handlers.get("session_start") ?? [];
-			expect(sessionStartHandlers.length).toBeGreaterThan(0);
+			await registered.handlers.get("session_start")![0](
+				{ type: "session_start" },
+				hostContext(tempRoot, session.sm),
+			);
 
-			const sessionArtifactsDir = join(tempRoot, "sessions", "session-alpha", "artifacts");
-			fs.mkdirSync(sessionArtifactsDir, { recursive: true });
-
-			const mockCtx = {
-				cwd: tempRoot,
-				sessionManager: {
-					getArtifactsDir: () => sessionArtifactsDir,
-					getSessionId: () => "session-alpha",
-				},
-			};
-
-			await sessionStartHandlers[0]({ type: "session_start" }, mockCtx);
-
-			const revivalMessages = registered.sentMessages.filter(m => {
-				return isMessagePayload(m.payload) && m.payload.customType === "rlm-revival";
-			});
-
-			expect(revivalMessages.length).toBe(0);
+			const revivals = registered.sentMessages.filter(
+				m => isMessagePayload(m.payload) && m.payload.customType === "rlm-revival",
+			);
+			expect(revivals.length, "FORBIDDEN-CROSS-SESSION-BLEED-1 violation: restored the shared root snapshot").toBe(
+				0,
+			);
 		} finally {
-			fs.rmSync(tempRoot, { recursive: true, force: true });
+			await session.sm.close();
 		}
 	});
 
-	test("POST-SESSION-ISOLATION-1: session with snapshot in partitioned directory revives and surfaces skipped warnings (F5)", async () => {
-		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-iso-dir-");
+	test("POST-SESSION-ISOLATION-1: a real session with a snapshot in its own directory revives and surfaces skipped warnings (F5)", async () => {
+		const tempRoot = fs.mkdtempSync(join(suiteRoot, "revive-"));
+		const session = await persistedSession(tempRoot, "beta");
 		try {
-			const sessionArtifactsDir = join(tempRoot, "sessions", "session-beta", "artifacts");
-			fs.mkdirSync(sessionArtifactsDir, { recursive: true });
-			fs.writeFileSync(join(sessionArtifactsDir, "kernel-state.dill"), "VALID_SESSION_SNAPSHOT");
-
+			writeSnapshot(session.ownDir, "VALID_SESSION_SNAPSHOT");
 			const kernel = makeKernelPort({
 				restoredNames: ["valid_var"],
 				restoredSkipped: [{ name: "broken_var", reason: "missing module" }],
 			});
-
 			const { api, registered } = makeApi();
-			const factory = createRlmExtension({
-				createKernel() {
-					return kernel.port;
-				},
-			});
-			await factory(api as never);
+			await createRlmExtension({ createKernel: () => kernel.port })(api as never);
 
-			const sessionStartHandlers = registered.handlers.get("session_start") ?? [];
-			expect(sessionStartHandlers.length).toBeGreaterThan(0);
+			await registered.handlers.get("session_start")![0](
+				{ type: "session_start" },
+				hostContext(tempRoot, session.sm),
+			);
 
-			const mockCtx = {
-				cwd: tempRoot,
-				sessionManager: {
-					getArtifactsDir: () => sessionArtifactsDir,
-					getSessionId: () => "session-beta",
-				},
-			};
-
-			await sessionStartHandlers[0]({ type: "session_start" }, mockCtx);
-
-			const revivalMessages = registered.sentMessages.filter(m => {
-				return isMessagePayload(m.payload) && m.payload.customType === "rlm-revival";
-			});
-
-			expect(revivalMessages.length).toBe(1);
-			const firstPayload = revivalMessages[0].payload;
-			const content = isMessagePayload(firstPayload) ? (firstPayload.content ?? "") : "";
+			const revivals = registered.sentMessages.filter(
+				m => isMessagePayload(m.payload) && m.payload.customType === "rlm-revival",
+			);
+			expect(revivals.length).toBe(1);
+			const content = isMessagePayload(revivals[0].payload) ? (revivals[0].payload.content ?? "") : "";
 			expect(content).toContain("valid_var");
 			expect(content).toContain("Warning: The following unpicklable variables were skipped: broken_var");
 		} finally {
-			fs.rmSync(tempRoot, { recursive: true, force: true });
+			await session.sm.close();
 		}
 	});
 
-	test("POST-SESSION-ISOLATION-1: session_switch disposes outgoing kernel and re-resolves storage for new session (Comment 4366356325)", async () => {
-		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-switch-");
+	test("POST-SESSION-ISOLATION-1: session_switch disposes the outgoing kernel and re-resolves storage for the new real session (Comment 4366356325)", async () => {
+		const tempRoot = fs.mkdtempSync(join(suiteRoot, "switch-"));
+		const a = await persistedSession(tempRoot, "A");
+		const b = await persistedSession(tempRoot, "B");
 		try {
-			const sessionADir = join(tempRoot, "sessions", "session-A", "artifacts");
-			const sessionBDir = join(tempRoot, "sessions", "session-B", "artifacts");
-			fs.mkdirSync(sessionADir, { recursive: true });
-			fs.mkdirSync(sessionBDir, { recursive: true });
-			fs.writeFileSync(join(sessionADir, "kernel-state.dill"), "SNAPSHOT_A");
-			fs.writeFileSync(join(sessionBDir, "kernel-state.dill"), "SNAPSHOT_B");
-
+			writeSnapshot(a.ownDir, "SNAPSHOT_A");
+			writeSnapshot(b.ownDir, "SNAPSHOT_B");
 			const kernelA = makeKernelPort({ restoredNames: ["var_from_session_A"] });
 			const kernelB = makeKernelPort({ restoredNames: ["var_from_session_B"] });
 			let createCallCount = 0;
-
 			const { api, registered } = makeApi();
-			const factory = createRlmExtension({
+			await createRlmExtension({
 				createKernel() {
 					createCallCount++;
 					return createCallCount === 1 ? kernelA.port : kernelB.port;
 				},
-			});
-			await factory(api as never);
+			})(api as never);
 
-			const sessionStartHandlers = registered.handlers.get("session_start") ?? [];
-			expect(sessionStartHandlers.length).toBeGreaterThan(0);
-
-			const ctxA = {
-				cwd: tempRoot,
-				sessionManager: {
-					getArtifactsDir: () => sessionADir,
-					getSessionId: () => "session-A",
-				},
-			};
-			await sessionStartHandlers[0]({ type: "session_start" }, ctxA);
+			await registered.handlers.get("session_start")![0]({ type: "session_start" }, hostContext(tempRoot, a.sm));
 			expect(kernelA.wasStarted()).toBe(true);
 			expect(kernelA.wasDisposed()).toBe(false);
 
-			const sessionSwitchHandlers = registered.handlers.get("session_switch") ?? [];
-			expect(sessionSwitchHandlers.length).toBeGreaterThan(0);
-
-			const ctxB = {
-				cwd: tempRoot,
-				sessionManager: {
-					getArtifactsDir: () => sessionBDir,
-					getSessionId: () => "session-B",
-				},
-			};
-			await sessionSwitchHandlers[0](
-				{ type: "session_switch", reason: "resume", previousSessionFile: "/path/to/A" },
-				ctxB,
+			await registered.handlers.get("session_switch")![0](
+				{ type: "session_switch", reason: "resume", previousSessionFile: `${a.ownDir}.jsonl` },
+				hostContext(tempRoot, b.sm),
 			);
 
 			expect(kernelA.wasDisposed()).toBe(true);
 			expect(kernelB.wasStarted()).toBe(true);
-
-			const revivalMessages = registered.sentMessages.filter(m => {
-				return isMessagePayload(m.payload) && m.payload.customType === "rlm-revival";
-			});
-
-			expect(revivalMessages.length).toBe(2);
-			const secondPayload = revivalMessages[1].payload;
-			const content = isMessagePayload(secondPayload) ? (secondPayload.content ?? "") : "";
+			const revivals = registered.sentMessages.filter(
+				m => isMessagePayload(m.payload) && m.payload.customType === "rlm-revival",
+			);
+			expect(revivals.length).toBe(2);
+			const content = isMessagePayload(revivals[1].payload) ? (revivals[1].payload.content ?? "") : "";
 			expect(content).toContain("var_from_session_B");
 		} finally {
-			fs.rmSync(tempRoot, { recursive: true, force: true });
+			await a.sm.close();
+			await b.sm.close();
 		}
 	});
 
-	test("POST-SESSION-ISOLATION-1: adopted parent artifact manager partitions child session under child sessionId (Comment 4369713118)", async () => {
+	test("POST-SESSION-ISOLATION-1: a real subagent that adopted its parent's artifact manager never restores the parent's snapshot (Comment 4369713118)", async () => {
 		/**
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites clause POST-SESSION-ISOLATION-1
-		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (Comment 4369713118)
-		 *   [✓] C3 NON-DUPLICATIVE: asserts adopted parent manager root is partitioned by child sessionId
-		 *   [✓] C4 NOT FUTURE-EDIT: exercises adopted manager resolution path
+		 *   [✓] C1 VALID: cites POST-SESSION-ISOLATION-1 / POST-SESSION-OWNED-DIR-1
+		 *   [✓] C2 VALUABLE: the parent root HAS a snapshot and the child's own dir has NONE, so any
+		 *       resolution through getArtifactsDir() (the adopted parent root) produces a revival and fails.
+		 *   [✓] C3 NON-DUPLICATIVE: real SessionManager.adoptArtifactManager subagent shape
+		 *   [✓] C4 NOT FUTURE-EDIT: exercises real adoption, not a hand-written getter
 		 */
-		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-adopted-");
+		const tempRoot = fs.mkdtempSync(join(suiteRoot, "adopted-"));
+		const parent = await persistedSession(tempRoot, "parent");
+		const child = await adoptedPersistedSession(tempRoot, "child", parent.sm);
 		try {
-			const parentArtifactsDir = join(tempRoot, "parent-session-artifacts");
-			fs.mkdirSync(parentArtifactsDir, { recursive: true });
-
-			const kernel = makeKernelPort();
+			writeSnapshot(parent.ownDir, "PARENT_STATE");
+			expect(child.sm.getArtifactsDir()).toBe(parent.ownDir);
+			const kernel = makeKernelPort({ restoredNames: ["parent_var"] });
 			const { api, registered } = makeApi();
-			const factory = createRlmExtension({ createKernel: () => kernel.port });
-			await factory(api as never);
+			await createRlmExtension({ createKernel: () => kernel.port })(api as never);
 
-			const startHandler = registered.handlers.get("session_start")?.[0];
-			expect(startHandler).toBeDefined();
+			await registered.handlers.get("session_start")![0]({ type: "session_start" }, hostContext(tempRoot, child.sm));
 
-			// Subagent scenario: sessionManager.getArtifactsDir() returns parentArtifactsDir (adopted),
-			// but the subagent has its own sessionFile (task/executor.ts: sessionFile).
-			const childSessionId = "child-subagent-42";
-			const childSessionFile = join(tempRoot, "sessions", `${childSessionId}.jsonl`);
-			const childOwnedDir = join(tempRoot, "sessions", childSessionId);
-			fs.mkdirSync(childOwnedDir, { recursive: true });
-			fs.writeFileSync(join(childOwnedDir, "kernel-state.dill"), "CHILD_STATE");
-			const childCtx = {
-				cwd: tempRoot,
-				sessionManager: {
-					getSessionFile: () => childSessionFile,
-					getArtifactsDir: () => parentArtifactsDir,
-					getSessionId: () => childSessionId,
-				},
-			};
-			await startHandler!({ type: "session_start" }, childCtx);
-
-			const tool = registered.tools[0];
-			expect(tool).toBeDefined();
-
-			// Pre-populate a fake kernel-state.dill in parent root
-			fs.writeFileSync(join(parentArtifactsDir, "kernel-state.dill"), "PARENT_STATE");
-
-			// Trigger execution
-			await tool.execute("call-child", { code: "1+1" }, undefined, undefined, childCtx);
-			// Child session MUST resolve to its own session-owned directory, NEVER share parent root
-			expect(fs.existsSync(childOwnedDir)).toBe(true);
+			const revivals = registered.sentMessages.filter(
+				m => isMessagePayload(m.payload) && m.payload.customType === "rlm-revival",
+			);
+			expect(revivals.length, "POST-SESSION-ISOLATION-1 violation: subagent restored its parent's snapshot").toBe(0);
 		} finally {
-			fs.rmSync(tempRoot, { recursive: true, force: true });
+			await child.sm.close();
+			await parent.sm.close();
 		}
 	});
 
-	test("POST-SESSION-ISOLATION-1: session_branch and session_before_branch lifecycle binds fork/branch transitions (Comment 4369713122 / 4369713144)", async () => {
-		/**
-		 * FOUR-CRITERIA TEST VALIDITY GATE:
-		 *   [✓] C1 VALID: cites clause POST-SESSION-ISOLATION-1
-		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (Comments 4369713122, 4369713144)
-		 *   [✓] C3 NON-DUPLICATIVE: asserts session_branch and session_before_branch event binding and disposal
-		 *   [✓] C4 NOT FUTURE-EDIT: exercises branch lifecycle event family
-		 */
-		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-branch-");
+	test("POST-SESSION-ISOLATION-1: session_before_branch / session_branch bind real branch transitions and dispose the outgoing kernel (Comment 4369713122 / 4369713144)", async () => {
+		const tempRoot = fs.mkdtempSync(join(suiteRoot, "branch-"));
+		const a = await persistedSession(tempRoot, "A");
 		try {
-			const branchDirA = join(tempRoot, "branch-A");
-			const branchDirB = join(tempRoot, "branch-B");
-			fs.mkdirSync(branchDirA, { recursive: true });
-			fs.mkdirSync(branchDirB, { recursive: true });
-			fs.writeFileSync(join(branchDirA, "kernel-state.dill"), "SNAPSHOT_A");
-
+			writeSnapshot(a.ownDir, "SNAPSHOT_A");
 			const kernelA = makeKernelPort({ restoredNames: ["branch_a_var"] });
 			const kernelB = makeKernelPort({ restoredNames: ["branch_b_var"] });
 			let createCallCount = 0;
-
 			const { api, registered } = makeApi();
-			const factory = createRlmExtension({
+			await createRlmExtension({
 				createKernel() {
 					createCallCount++;
 					return createCallCount === 1 ? kernelA.port : kernelB.port;
 				},
-			});
-			await factory(api as never);
-
-			// Verify session_branch and session_before_branch handlers are registered
+			})(api as never);
 			expect(registered.handlers.get("session_branch")?.length).toBeGreaterThan(0);
 			expect(registered.handlers.get("session_before_branch")?.length).toBeGreaterThan(0);
 
-			const startHandler = registered.handlers.get("session_start")?.[0];
-			await startHandler!(
-				{ type: "session_start" },
-				{ cwd: tempRoot, sessionManager: { getArtifactsDir: () => branchDirA, getSessionId: () => "branch-A" } },
+			const ctx = hostContext(tempRoot, a.sm);
+			await registered.handlers.get("session_start")![0]({ type: "session_start" }, ctx);
+			await registered.handlers.get("session_before_branch")![0](
+				{ type: "session_before_branch", reason: "branch", entryId: a.leafId },
+				ctx,
+			);
+			a.sm.createBranchedSession(a.leafId, { copyArtifacts: true });
+			await registered.handlers.get("session_branch")![0](
+				{ type: "session_branch", reason: "branch", previousSessionFile: `${a.ownDir}.jsonl` },
+				ctx,
 			);
 
-			// Trigger session_branch
-			const branchHandler = registered.handlers.get("session_branch")?.[0];
-			await branchHandler!(
-				{ type: "session_branch", reason: "fork", previousSessionFile: "/path/to/A" },
-				{ cwd: tempRoot, sessionManager: { getArtifactsDir: () => branchDirB, getSessionId: () => "branch-B" } },
-			);
-
-			// Kernel A must be disposed on branch transition
 			expect(kernelA.wasDisposed()).toBe(true);
+			expect(kernelB.wasStarted(), "the branched session must restore its copied snapshot").toBe(true);
 		} finally {
-			fs.rmSync(tempRoot, { recursive: true, force: true });
+			await a.sm.close();
 		}
 	});
 
@@ -478,58 +401,42 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 	});
 
 	test("ERRORS-SESSION-SWITCH-DISPOSE-1: snapshot flush failure in kernel port surfaces via teardownNotice in session_switch", async () => {
-		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-teardown-");
+		const tempRoot = fs.mkdtempSync(join(suiteRoot, "teardown-"));
+		const a = await persistedSession(tempRoot, "A");
+		const b = await persistedSession(tempRoot, "B");
 		try {
-			const sessionADir = join(tempRoot, "sessions", "session-A", "artifacts");
-			const sessionBDir = join(tempRoot, "sessions", "session-B", "artifacts");
-			fs.mkdirSync(sessionADir, { recursive: true });
-			fs.mkdirSync(sessionBDir, { recursive: true });
-			fs.writeFileSync(join(sessionADir, "kernel-state.dill"), "SNAPSHOT_A");
-
+			writeSnapshot(a.ownDir, "SNAPSHOT_A");
 			const kernelA = makeKernelPort({
 				teardownNotice: "snapshot flush failed during dispose: disk full on snapshot save",
 			});
 			const kernelB = makeKernelPort();
 			let createCallCount = 0;
-
 			const { api, registered } = makeApi();
-			const factory = createRlmExtension({
+			await createRlmExtension({
 				createKernel() {
 					createCallCount++;
 					return createCallCount === 1 ? kernelA.port : kernelB.port;
 				},
-			});
-			await factory(api as never);
+			})(api as never);
 
-			const sessionStartHandlers = registered.handlers.get("session_start") ?? [];
-			await sessionStartHandlers[0](
-				{ type: "session_start" },
-				{
-					cwd: tempRoot,
-					sessionManager: { getArtifactsDir: () => sessionADir, getSessionId: () => "session-A" },
-				},
+			await registered.handlers.get("session_start")![0]({ type: "session_start" }, hostContext(tempRoot, a.sm));
+			await registered.handlers.get("session_switch")![0](
+				{ type: "session_switch", reason: "new", previousSessionFile: `${a.ownDir}.jsonl` },
+				hostContext(tempRoot, b.sm),
 			);
 
-			const sessionSwitchHandlers = registered.handlers.get("session_switch") ?? [];
-			await sessionSwitchHandlers[0](
-				{ type: "session_switch", reason: "new" },
-				{
-					cwd: tempRoot,
-					sessionManager: { getArtifactsDir: () => sessionBDir, getSessionId: () => "session-B" },
-				},
+			const warnings = registered.sentMessages.filter(
+				m => isMessagePayload(m.payload) && m.payload.customType === "rlm-warning",
 			);
-
-			const warnings = registered.sentMessages.filter(m => {
-				return isMessagePayload(m.payload) && m.payload.customType === "rlm-warning";
-			});
-			expect(warnings.length).toBeGreaterThan(0);
 			expect(
 				warnings.some(
 					w => isMessagePayload(w.payload) && (w.payload.content ?? "").includes("disk full on snapshot save"),
 				),
+				"ERRORS-SESSION-SWITCH-DISPOSE-1 violation: the teardown notice was not surfaced",
 			).toBe(true);
 		} finally {
-			fs.rmSync(tempRoot, { recursive: true, force: true });
+			await a.sm.close();
+			await b.sm.close();
 		}
 	});
 
@@ -644,15 +551,14 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 		 *       real KernelManager, real KernelManagerAdapter, real tool execution, and real session_switch
 		 *   [✓] C4 NOT FUTURE-EDIT: portable to CI via existing managed venv or isolated bootstrap
 		 */
-		const tempRoot = fs.mkdtempSync("/tmp/rlm-true-default-path-");
+		const tempRoot = fs.mkdtempSync(join(suiteRoot, "true-default-path-"));
 		let shutdownFn: (() => Promise<unknown>) | null = null;
+		const seed = await persistedSession(tempRoot, "seed");
+		const sessionA = await persistedSession(tempRoot, "A");
+		const sessionB = await persistedSession(tempRoot, "B");
 		try {
-			const seedDir = join(tempRoot, "session-seed");
-			const sessionADir = join(tempRoot, "session-A");
-			const sessionBDir = join(tempRoot, "session-B");
-			fs.mkdirSync(seedDir, { recursive: true });
+			const sessionADir = sessionA.ownDir;
 			fs.mkdirSync(sessionADir, { recursive: true });
-			fs.mkdirSync(sessionBDir, { recursive: true });
 
 			const existingPython = join(process.env.HOME ?? "/Users/ketema", ".omp/agent/kernel-venv/bin/python");
 			const configuredPython = fs.existsSync(existingPython) ? existingPython : undefined;
@@ -675,26 +581,13 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 				}
 			};
 
-			const ctx = (id: string, dir: string) => ({
-				hasUI: false,
-				setWorkingMessage() {},
-				cwd: tempRoot,
-				sessionDir: dir,
-				sessionManager: {
-					getArtifactsDir: () => dir,
-					getSessionId: () => id,
-				},
-				ui: {
-					async select() {
-						return undefined;
-					},
-				},
-			});
+			const sessions = { seed: seed.sm, A: sessionA.sm, B: sessionB.sm };
+			const ctx = (id: keyof typeof sessions) => hostContext(tempRoot, sessions[id]);
 
 			const startHandler = registered.handlers.get("session_start")?.[0];
 			expect(startHandler).toBeDefined();
 
-			await startHandler!({ type: "session_start" }, ctx("seed", seedDir));
+			await startHandler!({ type: "session_start" }, ctx("seed"));
 			const tool = registered.tools[0];
 			expect(tool).toBeDefined();
 
@@ -703,7 +596,7 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 				{ code: "import sys; print('RLM_TEST_PYTHON=' + sys.executable)" },
 				undefined,
 				undefined,
-				ctx("seed", seedDir),
+				ctx("seed"),
 			);
 			expect(seedResult.isError ?? false).toBe(false);
 
@@ -726,7 +619,7 @@ with lzma.open(sys.argv[1], 'wb') as f:
 
 			const switchHandler = registered.handlers.get("session_switch")?.[0];
 			expect(switchHandler).toBeDefined();
-			await switchHandler!({ type: "session_switch", reason: "resume" }, ctx("A", sessionADir));
+			await switchHandler!({ type: "session_switch", reason: "resume" }, ctx("A"));
 
 			const revivalMessages = registered.sentMessages.filter(
 				m => isMessagePayload(m.payload) && m.payload.customType === "rlm-revival",
@@ -738,24 +631,18 @@ with lzma.open(sys.argv[1], 'wb') as f:
 			expect(revivalContent).toContain("healthy_fixture");
 			expect(revivalContent).toContain("bad_fixture");
 
-			const resA = await tool.execute(
-				"call-a",
-				{ code: "print(healthy_fixture)" },
-				undefined,
-				undefined,
-				ctx("A", sessionADir),
-			);
+			const resA = await tool.execute("call-a", { code: "print(healthy_fixture)" }, undefined, undefined, ctx("A"));
 			expect(resA.isError ?? false).toBe(false);
 			expect(resA.content[0].text).toContain("42");
 
-			await switchHandler!({ type: "session_switch", reason: "new" }, ctx("B", sessionBDir));
+			await switchHandler!({ type: "session_switch", reason: "new" }, ctx("B"));
 
 			const resB = await tool.execute(
 				"call-b",
 				{ code: "print('healthy_fixture' in globals())" },
 				undefined,
 				undefined,
-				ctx("B", sessionBDir),
+				ctx("B"),
 			);
 			expect(resB.isError ?? false).toBe(false);
 			expect(resB.content[0].text).toContain("False");
@@ -763,7 +650,9 @@ with lzma.open(sys.argv[1], 'wb') as f:
 			if (shutdownFn) {
 				await shutdownFn();
 			}
-			fs.rmSync(tempRoot, { recursive: true, force: true });
+			await seed.sm.close();
+			await sessionA.sm.close();
+			await sessionB.sm.close();
 		}
 	}, 180_000);
 });
