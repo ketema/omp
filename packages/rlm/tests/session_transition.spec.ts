@@ -472,3 +472,119 @@ describe("POST-SESSION-NO-OWNED-DIR-ISOLATION-1: no session-owned directory -> f
 		expect(assignedDir(warnings[0])?.startsWith(join(dir, "project", ".omp", "artifacts", "isolated-"))).toBe(true);
 	});
 });
+
+describe("POST-SESSION-RESOLUTION-GATE-1: no kernel is constructed against an unresolved or stale directory", () => {
+	function recordingKernels() {
+		const created: Array<{ dir: string; state: PortState }> = [];
+		const createKernel = (_config: unknown, artifactsDir: string) => {
+			const { port, state } = makePort({ names: ["restored_var"] });
+			created.push({ dir: artifactsDir, state });
+			return port;
+		};
+		return { created, createKernel };
+	}
+
+	test("a kernel first used before any lifecycle event is built in an isolated fallback dir, never a cwd-relative shared path", async () => {
+		const dir = caseRoot("gate-no-lifecycle");
+		const cwd = join(dir, "process-cwd");
+		fs.mkdirSync(cwd, { recursive: true });
+		const previousCwd = process.cwd();
+		process.chdir(cwd);
+		try {
+			const { created, createKernel } = recordingKernels();
+			const { api, registry } = makeRegistry();
+			await createRlmExtension({ createKernel })(api as never);
+
+			const res = await registry.tools[0].execute("c1", { code: "1+1" }, undefined, undefined, undefined);
+			expect(res.isError ?? false).toBe(false);
+
+			expect(created.length).toBe(1);
+			const kernelDir = created[0].dir;
+			expect(
+				typeof kernelDir === "string" &&
+					kernelDir.startsWith(join(fs.realpathSync(cwd), ".omp", "artifacts", "isolated-")),
+				`POST-SESSION-RESOLUTION-GATE-1 violation: kernel built against an unresolved directory (${String(kernelDir)})`,
+			).toBe(true);
+			const warnings = messagesOf(registry, "rlm-warning");
+			expect(warnings.length).toBe(1);
+			expect(assignedDir(warnings[0])).toBe(kernelDir);
+		} finally {
+			process.chdir(previousCwd);
+		}
+	});
+
+	test("kernel use during an in-flight branch waits for the incoming session's resolution and builds exactly one kernel there", async () => {
+		const dir = caseRoot("gate-in-flight-branch");
+		const a = await persistedSession(dir, "A");
+		// A has a snapshot on disk but no live kernel, so the branch has nothing to dispose.
+		writeSnapshot(a.ownDir, "A_SNAPSHOT");
+		const { created, createKernel } = recordingKernels();
+		const { api, registry } = makeRegistry();
+		await createRlmExtension({ createKernel })(api as never);
+		const ctx = hostContext(dir, a.sm);
+
+		a.sm.createBranchedSession(a.leafId, { copyArtifacts: true });
+		// The host fires the after-event; a tool call lands while the handler is still resolving.
+		const branching = emit(
+			registry,
+			"session_branch",
+			{ reason: "fork", previousSessionFile: `${a.ownDir}.jsonl` },
+			ctx,
+		);
+		const executing = registry.tools[0].execute("c1", { code: "x = 1" }, undefined, undefined, ctx);
+		await Promise.all([branching, executing]);
+
+		const branchedDir = await a.sm.resolveOwnArtifactsDir();
+		expect(
+			created.map(c => c.dir),
+			"POST-SESSION-RESOLUTION-GATE-1 violation: a kernel was built against the previous session's directory, or more than once",
+		).toEqual([branchedDir ?? "missing"]);
+		expect(created[0].state.executes).toEqual(["x = 1"]);
+		await a.sm.close();
+	});
+
+	test("a transition awaits an in-flight kernel construction and disposes it before resolving the next session", async () => {
+		const dir = caseRoot("gate-back-to-back");
+		const a = await persistedSession(dir, "A");
+		const b = await persistedSession(dir, "B");
+		const c = await persistedSession(dir, "C");
+		const { created, createKernel } = recordingKernels();
+		const { api, registry } = makeRegistry();
+		await createRlmExtension({ createKernel })(api as never);
+		await emit(registry, "session_start", {}, hostContext(dir, a.sm));
+
+		const toB = emit(
+			registry,
+			"session_switch",
+			{ reason: "new", previousSessionFile: undefined },
+			hostContext(dir, b.sm),
+		);
+		const execB = registry.tools[0].execute("b1", { code: "in_b = 1" }, undefined, undefined, hostContext(dir, b.sm));
+		const toC = emit(
+			registry,
+			"session_switch",
+			{ reason: "new", previousSessionFile: undefined },
+			hostContext(dir, c.sm),
+		);
+		await Promise.all([toB, execB, toC]);
+		const execC = await registry.tools[0].execute(
+			"c1",
+			{ code: "in_c = 1" },
+			undefined,
+			undefined,
+			hostContext(dir, c.sm),
+		);
+		expect(execC.isError ?? false).toBe(false);
+
+		expect(
+			created.map(k => k.dir),
+			"POST-SESSION-RESOLUTION-GATE-1 violation: kernels must be built for B then C, each against its own directory",
+		).toEqual([b.ownDir, c.ownDir]);
+		expect(created[0].state.executes).toEqual(["in_b = 1"]);
+		expect(created[0].state.disposed, "the in-flight B kernel must be disposed by the switch to C").toBe(true);
+		expect(created[1].state.executes).toEqual(["in_c = 1"]);
+		await a.sm.close();
+		await b.sm.close();
+		await c.sm.close();
+	});
+});
