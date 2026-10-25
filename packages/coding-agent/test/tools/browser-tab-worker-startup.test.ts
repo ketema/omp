@@ -632,10 +632,13 @@ describe("browser tabs whose renderer crashed", () => {
 		async () => {
 			let requests = 0;
 			const started = Promise.withResolvers<void>();
+			const ended = Promise.withResolvers<void>();
 			const server = Bun.serve({
 				port: 0,
 				fetch: request => {
-					if (new URL(request.url).pathname === "/started") started.resolve();
+					const pathname = new URL(request.url).pathname;
+					if (pathname === "/started") started.resolve();
+					else if (pathname === "/ended") ended.resolve();
 					else requests++;
 					return new Response("ok");
 				},
@@ -660,18 +663,23 @@ describe("browser tabs whose renderer crashed", () => {
 					globalThis.Worker = RealWorker;
 				}
 				expect(getTab(name)).toMatchObject({ worker: { mode: "inline" } });
+				// The run holds a long `wait` and reports to this server when its code ENDS (the `finally`). A cancelled
+				// run's wait rejects as soon as it is cancelled, so its code ends at once; a run left going stays in the
+				// wait and never reports. The observation is an event, not an elapsed-time margin: the only clock is the
+				// bound on how long to wait for an event that is not coming, which cannot fail a passing run.
 				const run = runInTab(name, {
-					code: `await fetch("http://127.0.0.1:${server.port}/started"); await wait(6_000); await fetch("http://127.0.0.1:${server.port}/after-crash");`,
+					code: `await fetch("http://127.0.0.1:${server.port}/started"); try { await wait(60_000); await fetch("http://127.0.0.1:${server.port}/after-crash"); } finally { await fetch("http://127.0.0.1:${server.port}/ended"); }`,
 					timeoutMs: 10_000,
 					session,
 				}).catch((error: unknown) => error);
 				await started.promise;
 				await crashRenderer(browser, url);
 				expect(String(await run)).toContain("the tab could not be reattached and was closed");
-				// A run left going reaches the second fetch six seconds after it started; nothing marks that it did not.
-				// The margin is wide on purpose: the crash must be detected and the run cancelled well inside it even on a
-				// loaded CI runner (a 2s margin raced renderer-crash handling there and flaked).
-				await Bun.sleep(6_500);
+				const outcome = await Promise.race([
+					ended.promise.then(() => "code ended"),
+					Bun.sleep(15_000).then(() => "code still running"),
+				]);
+				expect(outcome).toBe("code ended");
 				expect(requests).toBe(0);
 			} finally {
 				await releaseTab(name, { kill: true });
