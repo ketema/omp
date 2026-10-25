@@ -229,6 +229,8 @@ export class KernelManager {
 	private readonly transport: KernelTransport;
 	private readonly clock: KernelClock;
 	private readonly artifactsDir: string;
+	/** POST-KM-NO-RESURRECT-1: the directory existed at construction or a snapshot already wrote into it. */
+	private artifactsDirSeen: boolean;
 
 	private started = false;
 	private disposed = false;
@@ -268,6 +270,7 @@ export class KernelManager {
 		this.transport = transport;
 		this.clock = options.clock;
 		this.artifactsDir = options.artifactsDir;
+		this.artifactsDirSeen = fs.existsSync(options.artifactsDir);
 
 		// POST-KM-3/FORBIDDEN-KM-2: accept output only for the active execution id
 		this.transport.onOutput((event: KernelOutputEvent) => {
@@ -829,6 +832,9 @@ export class KernelManager {
 	 * SNAPSHOT_ALWAYS_SKIP → writeSnapshot → atomic payload write → manifest.
 	 */
 	private async runSnapshot(token?: { abandoned: boolean }): Promise<void> {
+		// POST-KM-NO-RESURRECT-1: the host removed a directory we had used (e.g. /delete drops the session's
+		// artifacts before the switch that disposes this kernel): skip, never re-create it.
+		if (this.artifactsDirSeen && !fs.existsSync(this.artifactsDir)) return;
 		// C5: snapshots run through the serialization chain — a snapshot cell
 		// concurrent with an active cell races kernel state (prime-agent
 		// enqueues snapshot cells; same discipline here)
@@ -857,6 +863,7 @@ export class KernelManager {
 				);
 				try {
 					fs.mkdirSync(this.artifactsDir, { recursive: true });
+					this.artifactsDirSeen = true;
 					fs.mkdirSync(tempDir, { recursive: true });
 					await payloadFn(tempDir);
 					if (token?.abandoned === true) return;
