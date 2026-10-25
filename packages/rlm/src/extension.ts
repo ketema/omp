@@ -336,6 +336,10 @@ export function createRlmExtension(
 		// in-flight kernel construction. A kernel is only ever built against a resolved directory.
 		let pendingResolution: Promise<void> | null = null;
 		let kernelConstruction: Promise<RlmExtensionKernelPort> | null = null;
+		// POST-SESSION-TRANSITION-GEN-1 / POST-SESSION-SHUTDOWN-RACE-1: every lifecycle transition takes a
+		// generation at entry; a transition that is no longer the latest (a newer one began, or shutdown
+		// invalidated it) never publishes a directory, restores, or constructs a kernel.
+		let generation = 0;
 
 		// POST-SESSION-FALLBACK-ISOLATION-1: a dedicated atomically unique (mkdtemp) directory, announced by an
 		// observable warning naming it. It starts empty, so nothing is ever restored into it.
@@ -363,6 +367,8 @@ export function createRlmExtension(
 			if (kernelConstruction === null) {
 				const resolutionAtStart = pendingResolution;
 				const construction = (async (): Promise<RlmExtensionKernelPort> => {
+					// Wait for the resolution in flight at entry only: a newer transition waits for THIS construction
+					// (to dispose it), so waiting on it here would deadlock.
 					if (resolutionAtStart !== null) await resolutionAtStart;
 					// POST-SESSION-NO-OWNED-DIR-ISOLATION-1 / NO-SIDE-EFFECT-1: an unowned session (or first use before
 					// any lifecycle event) allocates its fresh isolated directory - and announces it - only now.
@@ -621,13 +627,36 @@ export function createRlmExtension(
 
 		// Handle session start, session switches, and branches (for /new, /fork, /resume, /branch)
 		const handleSessionInit = async (_event: unknown, ctx?: unknown) => {
+			const myGeneration = ++generation;
+			const isCurrent = (): boolean => myGeneration === generation;
 			const resolution = (async (): Promise<void> => {
 				// POST-SESSION-RESOLUTION-GATE-1: a construction already in flight targets the outgoing
 				// session; let it finish so it is disposed below instead of surviving into this session.
 				// Its failure is delivered to the caller that requested the kernel, so it is not re-raised here.
 				if (kernelConstruction !== null) await kernelConstruction.catch(() => undefined);
+				// A newer transition (or shutdown) already owns the extension state: do not touch it.
+				if (!isCurrent()) return;
 				await disposeOutgoingKernel();
-				incoming = await resolveIncomingArtifactsDir(ctx);
+				if (!isCurrent()) return;
+				// ERRORS-SESSION-RESOLUTION-FAILED-1: forget the outgoing directory before resolving, so a failed
+				// or abandoned resolution can never leave it selectable by the next kernel.
+				incoming = null;
+				let resolved: IncomingArtifacts;
+				try {
+					resolved = await resolveIncomingArtifactsDir(ctx);
+				} catch (err) {
+					if (isCurrent()) {
+						const sessionCtx = ctx as { cwd?: string } | undefined;
+						incoming = {
+							kind: "unallocated",
+							cwd: sessionCtx?.cwd ?? process.cwd(),
+							reason: `Incoming session artifacts directory could not be resolved (${err instanceof Error ? err.name : "error"})`,
+						};
+					}
+					throw err;
+				}
+				// POST-SESSION-TRANSITION-GEN-1: a stale completion never publishes its directory.
+				if (isCurrent()) incoming = resolved;
 			})();
 			pendingResolution = resolution;
 			try {
@@ -635,9 +664,10 @@ export function createRlmExtension(
 			} finally {
 				if (pendingResolution === resolution) pendingResolution = null;
 			}
-			// A newer transition started while this one resolved; it owns the incoming session's restore.
+			// A newer transition started while this one resolved (or shutdown invalidated it); it owns the
+			// incoming session's restore.
 			const resolvedIncoming = incoming;
-			if (pendingResolution !== null || resolvedIncoming === null) return;
+			if (!isCurrent() || pendingResolution !== null || resolvedIncoming === null) return;
 			// An unallocated (unowned) session has nothing to restore: it starts fresh and isolated.
 			const hasSnapshot =
 				resolvedIncoming.kind === "resolved" && fs.existsSync(join(resolvedIncoming.dir, "kernel-state.dill"));
@@ -680,6 +710,9 @@ export function createRlmExtension(
 
 		// on('session_shutdown'): dispose kernel
 		api.on("session_shutdown", async () => {
+			// POST-SESSION-SHUTDOWN-RACE-1: invalidate every in-flight transition (a pending resolution never
+			// constructs a kernel once it settles). Shutdown does not wait for a possibly stuck resolution.
+			generation++;
 			// Never orphan a kernel whose construction is still in flight (its failure surfaces to its requester).
 			if (kernelConstruction !== null) await kernelConstruction.catch(() => undefined);
 			const outgoing = kernel;
