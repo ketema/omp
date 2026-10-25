@@ -160,14 +160,14 @@ class TestRlmDillResilientRestore(unittest.TestCase):
 
         # ASSERT: good_var must be restored in user_ns
         assert "good_var" in self.ns, (
-            "POST-RESTORE-SKIP-1 violation: valid variable 'good_var' was not restored to user_ns\n"
+            "IP-1 / POST-RESTORE-SKIP-1 violation: valid variable 'good_var' was not injected into user_ns\n"
             "Contract: CONTRACT_RLM_DILL_RESILIENT_RESTORE['POST-RESTORE-SKIP-1']\n"
             "EXPECTED: 'good_var' in user_ns\n"
             f"ACTUAL: user_ns keys: {list(self.ns.keys())}\n"
             "GUIDANCE: Deserialization of valid variables must succeed even when sibling variables fail"
         )
         assert self.ns["good_var"] == 12345, (
-            f"POST-RESTORE-SKIP-1 violation: 'good_var' value mismatch: expected 12345, got {self.ns.get('good_var')}"
+            f"IP-1 / POST-RESTORE-SKIP-1 violation: 'good_var' value mismatch: expected 12345, got {self.ns.get('good_var')}"
         )
 
         # ASSERT: broken_var must NOT be in user_ns
