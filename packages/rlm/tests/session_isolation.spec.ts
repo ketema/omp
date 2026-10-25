@@ -395,13 +395,19 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			const sessionStartHandlers = registered.handlers.get("session_start") ?? [];
 			await sessionStartHandlers[0](
 				{ type: "session_start" },
-				{ cwd: tempRoot, sessionManager: { getArtifactsDir: () => sessionADir, getSessionId: () => "session-A" } },
+				{
+					cwd: tempRoot,
+					sessionManager: { getArtifactsDir: () => sessionADir, getSessionId: () => "session-A" },
+				},
 			);
 
 			const sessionSwitchHandlers = registered.handlers.get("session_switch") ?? [];
 			await sessionSwitchHandlers[0](
 				{ type: "session_switch", reason: "new" },
-				{ cwd: tempRoot, sessionManager: { getArtifactsDir: () => sessionBDir, getSessionId: () => "session-B" } },
+				{
+					cwd: tempRoot,
+					sessionManager: { getArtifactsDir: () => sessionBDir, getSessionId: () => "session-B" },
+				},
 			);
 
 			const warnings = registered.sentMessages.filter(m => {
@@ -527,53 +533,48 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 		 *        this test to FAIL: revival notice does not contain skipped variable names)
 		 *   [✓] C3 NON-DUPLICATIVE: exercises true createRlmExtension() with real Python runner, real transport,
 		 *       real KernelManager, real KernelManagerAdapter, real tool execution, and real session_switch
-		 *   [✓] C4 NOT FUTURE-EDIT: portable to CI via existing managed venv interpreter or fallback
+		 *   [✓] C4 NOT FUTURE-EDIT: portable to CI via existing managed venv or isolated bootstrap
 		 */
-		const managedPython = join(process.env.HOME ?? "/Users/ketema", ".omp/agent/kernel-venv/bin/python");
-
-		// Skip gracefully if the managed Python interpreter is not present on this machine/runner
-		if (!fs.existsSync(managedPython)) {
-			return;
-		}
-
 		const tempRoot = fs.mkdtempSync("/tmp/rlm-true-default-path-");
+		let shutdownFn: (() => Promise<unknown>) | null = null;
 		try {
+			const seedDir = join(tempRoot, "session-seed");
 			const sessionADir = join(tempRoot, "session-A");
 			const sessionBDir = join(tempRoot, "session-B");
+			fs.mkdirSync(seedDir, { recursive: true });
 			fs.mkdirSync(sessionADir, { recursive: true });
 			fs.mkdirSync(sessionBDir, { recursive: true });
 
-			// Create a synthetic snapshot in session A containing healthy_fixture=42 and a SyntaxError fixture
-			const fixtureScript = `
-import dill, lzma, sys
-class Broken:
-    def __reduce__(self):
-        return (compile, ('def broken(:', 'synthetic_fixture', 'exec'))
-with lzma.open(sys.argv[1], 'wb') as f:
-    dill.dump({'bad_fixture': dill.dumps(Broken()), 'healthy_fixture': dill.dumps(42)}, f)
-`;
-			const dillPath = join(sessionADir, "kernel-state.dill");
-			const pyProc = Bun.spawnSync([managedPython, "-c", fixtureScript, dillPath]);
-			expect(pyProc.exitCode).toBe(0);
+			// Use explicitly configured existing interpreter when available, otherwise fall back to normal isolated bootstrap
+			const existingPython = join(process.env.HOME ?? "/Users/ketema", ".omp/agent/kernel-venv/bin/python");
+			const configuredPython = fs.existsSync(existingPython) ? existingPython : undefined;
+
+			const flags: Record<string, string> = {
+				OMP_RLM_AGENT_DIR: join(tempRoot, "agent"),
+			};
+			if (configuredPython) {
+				flags.RLM_KERNEL_PYTHON = configuredPython;
+			}
 
 			// Initialize extension via TRUE DEFAULT PATH: NO createKernel hook!
-			const { api, registered } = makeApi({
-				flags: {
-					RLM_KERNEL_PYTHON: managedPython,
-					OMP_RLM_AGENT_DIR: join(tempRoot, "agent"),
-				},
-			});
-
+			const { api, registered } = makeApi({ flags });
 			const factory = createRlmExtension();
 			await factory(api as never);
 
-			const ctx = (id: string) => ({
+			shutdownFn = async () => {
+				const handler = registered.handlers.get("session_shutdown")?.[0];
+				if (handler) {
+					await handler({});
+				}
+			};
+
+			const ctx = (id: string, dir: string) => ({
 				hasUI: false,
 				setWorkingMessage() {},
 				cwd: tempRoot,
-				sessionDir: join(tempRoot, `session-${id}`),
+				sessionDir: dir,
 				sessionManager: {
-					getArtifactsDir: () => join(tempRoot, `session-${id}`),
+					getArtifactsDir: () => dir,
 					getSessionId: () => id,
 				},
 				ui: {
@@ -583,15 +584,50 @@ with lzma.open(sys.argv[1], 'wb') as f:
 				},
 			});
 
-			// 1. session_start in Session A
 			const startHandler = registered.handlers.get("session_start")?.[0];
 			expect(startHandler).toBeDefined();
-			await startHandler!({ type: "session_start" }, ctx("A"));
 
-			// Verify revival notice carries both restored name and unpicklable skipped warning
-			const revivalMessages = registered.sentMessages.filter(m => {
-				return isMessagePayload(m.payload) && m.payload.customType === "rlm-revival";
-			});
+			// Seed step: start seed session and discover resolved Python executable through the actual tool
+			await startHandler!({ type: "session_start" }, ctx("seed", seedDir));
+			const tool = registered.tools[0];
+			expect(tool).toBeDefined();
+
+			const seedResult = await tool.execute(
+				"seed-1",
+				{ code: "import sys; print('RLM_TEST_PYTHON=' + sys.executable)" },
+				undefined,
+				undefined,
+				ctx("seed", seedDir),
+			);
+			expect(seedResult.isError ?? false).toBe(false);
+
+			const match = /RLM_TEST_PYTHON=(.+)/.exec(seedResult.content[0]?.text ?? "");
+			expect(match).toBeDefined();
+			const resolvedPython = match![1].trim();
+			expect(fs.existsSync(resolvedPython)).toBe(true);
+
+			// Use the discovered real interpreter to generate synthetic snapshot in Session A
+			const fixtureScript = `
+import dill, lzma, sys
+class Broken:
+    def __reduce__(self):
+        return (compile, ('def broken(:', 'synthetic_fixture', 'exec'))
+with lzma.open(sys.argv[1], 'wb') as f:
+    dill.dump({'bad_fixture': dill.dumps(Broken()), 'healthy_fixture': dill.dumps(42)}, f)
+`;
+			const dillPath = join(sessionADir, "kernel-state.dill");
+			const pyProc = Bun.spawnSync([resolvedPython, "-c", fixtureScript, dillPath]);
+			expect(pyProc.exitCode).toBe(0);
+
+			// Real session_switch to Session A: exercises real adapter, transport, manager, and revival
+			const switchHandler = registered.handlers.get("session_switch")?.[0];
+			expect(switchHandler).toBeDefined();
+			await switchHandler!({ type: "session_switch", reason: "resume" }, ctx("A", sessionADir));
+
+			// Verify revival notice includes healthy restored variable and bad_fixture skipped warning
+			const revivalMessages = registered.sentMessages.filter(
+				m => isMessagePayload(m.payload) && m.payload.customType === "rlm-revival",
+			);
 			expect(revivalMessages.length).toBe(1);
 			const revivalContent = isMessagePayload(revivalMessages[0].payload)
 				? (revivalMessages[0].payload.content ?? "")
@@ -599,36 +635,34 @@ with lzma.open(sys.argv[1], 'wb') as f:
 			expect(revivalContent).toContain("healthy_fixture");
 			expect(revivalContent).toContain("bad_fixture");
 
-			// 2. Execute cell in Session A via real tool through KernelManagerAdapter
-			const tool = registered.tools[0];
-			expect(tool).toBeDefined();
-			const resA = await tool.execute("call-a", { code: "print(healthy_fixture)" }, undefined, undefined, ctx("A"));
+			// Execute cell in Session A: verify healthy_fixture is 42
+			const resA = await tool.execute(
+				"call-a",
+				{ code: "print(healthy_fixture)" },
+				undefined,
+				undefined,
+				ctx("A", sessionADir),
+			);
 			expect(resA.isError ?? false).toBe(false);
 			expect(resA.content[0].text).toContain("42");
 
-			// 3. session_switch to Session B
-			const switchHandler = registered.handlers.get("session_switch")?.[0];
-			expect(switchHandler).toBeDefined();
-			await switchHandler!({ type: "session_switch", reason: "new" }, ctx("B"));
+			// Switch to clean Session B: verify zero state leakage across real session boundary
+			await switchHandler!({ type: "session_switch", reason: "new" }, ctx("B", sessionBDir));
 
-			// 4. Execute cell in Session B: verify zero cross-session variable leakage
 			const resB = await tool.execute(
 				"call-b",
 				{ code: "print('healthy_fixture' in globals())" },
 				undefined,
 				undefined,
-				ctx("B"),
+				ctx("B", sessionBDir),
 			);
 			expect(resB.isError ?? false).toBe(false);
 			expect(resB.content[0].text).toContain("False");
-
-			// 5. session_shutdown cleanup
-			const shutdownHandler = registered.handlers.get("session_shutdown")?.[0];
-			if (shutdownHandler) {
-				await shutdownHandler({});
-			}
 		} finally {
+			if (shutdownFn) {
+				await shutdownFn();
+			}
 			fs.rmSync(tempRoot, { recursive: true, force: true });
 		}
-	}, 120_000);
+	}, 180_000);
 });
