@@ -3,6 +3,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { skippedOrTodoCount } from "./ci-bun-summary";
 
 type Mode =
 	| "all"
@@ -14,7 +15,9 @@ type Mode =
 	| "coding-agent-ui"
 	| "coding-agent-runtime"
 	| "coding-agent-native"
-	| "coding-agent-heavy";
+	| "coding-agent-heavy"
+	| "rlm"
+	| "rlm-python";
 
 type CodingAgentBucket = "singleton" | "ui" | "runtime" | "native";
 
@@ -25,6 +28,8 @@ interface TestCommand {
 	command: string[];
 	/** `bun test --parallel` width this chunk wants when it has the machine to itself. */
 	parallel?: number;
+	/** POST-CI-RLM-NOSKIP-1: fail when Bun's own run summary reports any skipped or todo test. */
+	failOnSkip?: boolean;
 }
 
 type CodingAgentTestPartition = Record<CodingAgentBucket, string[]>;
@@ -54,6 +59,8 @@ const validModes: Record<Mode, true> = {
 	"local-ts": true,
 	workspace: true,
 	native: true,
+	rlm: true,
+	"rlm-python": true,
 	"coding-agent-singleton": true,
 	"coding-agent-ui": true,
 	"coding-agent-runtime": true,
@@ -222,6 +229,38 @@ function rustTestCommand(): TestCommand {
 	};
 }
 
+// packages/rlm is deliberately NOT in a shared bucket: its specs mutate process-global state
+// (agent dir, cwd), spawn real Python kernels, and need both the native addon (real SessionManager)
+// and `uv` on PATH. Run it as one unfiltered `bun test` at width 1 so every spec under
+// packages/rlm/tests is selected and none can race another (POST-CI-RLM-SELECTION-1).
+function rlmTestCommand(options: { extraArgs?: string[] } = {}): TestCommand {
+	// POST-CI-RLM-NOSKIP-1: judged from Bun's actual run summary, not spec source text.
+	return { ...workspaceTestCommand("packages/rlm", 1, options), failOnSkip: true };
+}
+
+// The RLM Python recovery/quarantine suite, run through the rlm-runtime uv project: `--locked`
+// makes lock drift a failure, and `--group test` brings the pinned test-only deps (dill, numpy).
+// Not part of `all`/`local-ts`: it provisions an environment from the network. ci_run_tests.py
+// fails on zero tests or any skip.
+function rlmPythonTestCommand(): TestCommand {
+	return {
+		label: "packages/rlm/python (pinned uv env)",
+		cwd: ".",
+		command: [
+			"uv",
+			"run",
+			"--locked",
+			"--no-progress",
+			"--project",
+			"packages/rlm/python/rlm-runtime",
+			"--group",
+			"test",
+			"python",
+			"packages/rlm/python/ci_run_tests.py",
+		],
+	};
+}
+
 async function collectTestsUnder(root: string, baseDir: string): Promise<string[]> {
 	const entries = await fs.readdir(root, { withFileTypes: true });
 	const files: string[] = [];
@@ -328,6 +367,10 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 			return fastWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 8));
 		case "native":
 			return nativeAndIntegrationPackages.map(pkg => workspaceTestCommand(pkg, 4));
+		case "rlm":
+			return [rlmTestCommand()];
+		case "rlm-python":
+			return [rlmPythonTestCommand()];
 		case "coding-agent-singleton":
 			return await codingAgentTestCommands("singleton");
 		case "coding-agent-ui":
@@ -347,6 +390,7 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 			return [
 				...(await commandsForMode("workspace")),
 				...(await commandsForMode("native")),
+				...(await commandsForMode("rlm")),
 				...(await commandsForMode("coding-agent-heavy")),
 			];
 		// `local-ts` is the full local TypeScript run that root `bun run test:ts`
@@ -358,6 +402,7 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 			return [
 				...fastWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 8, { extraArgs: onlyFailuresArgs })),
 				...nativeAndIntegrationPackages.map(pkg => workspaceTestCommand(pkg, 4, { extraArgs: onlyFailuresArgs })),
+				rlmTestCommand({ extraArgs: onlyFailuresArgs }),
 				...localOnlyWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 4, { extraArgs: onlyFailuresArgs })),
 				...(await commandsForMode("coding-agent-heavy")),
 			];
@@ -397,11 +442,28 @@ function isScrubbedEnvVar(key: string): boolean {
 	return /_(API_KEY|OAUTH_TOKEN)$/.test(key) || key.includes("BEARER_TOKEN");
 }
 
+// Copies a child's output stream to `sink` while keeping it for the skip gate (POST-CI-RLM-NOSKIP-1).
+async function teeStream(
+	stream: ReadableStream<Uint8Array>,
+	sink: { write(chunk: Uint8Array): unknown },
+	captured: { text: string },
+): Promise<void> {
+	const decoder = new TextDecoder();
+	for await (const chunk of stream) {
+		sink.write(chunk);
+		captured.text += decoder.decode(chunk, { stream: true });
+	}
+	captured.text += decoder.decode();
+}
+
 async function runTestCommand(testCommand: TestCommand): Promise<void> {
 	const cwd = path.join(repoRoot, testCommand.cwd);
 	const renderedCommand = testCommand.command.map(shellQuote).join(" ");
 	console.log(`\n==> ${testCommand.label}`);
 	console.log(`$ ${renderedCommand}`);
+	if (testCommand.failOnSkip === true) {
+		console.log("gate: fails on any skipped or todo test reported by bun's run summary");
+	}
 
 	if (isDryRun) {
 		return;
@@ -409,12 +471,20 @@ async function runTestCommand(testCommand: TestCommand): Promise<void> {
 
 	const env = buildChildEnv();
 	for (let attempt = 1; ; attempt++) {
+		const gated = testCommand.failOnSkip === true;
 		const proc = Bun.spawn(testCommand.command, {
 			cwd,
 			env,
-			stdout: "inherit",
-			stderr: "inherit",
+			stdout: gated ? "pipe" : "inherit",
+			stderr: gated ? "pipe" : "inherit",
 		});
+		const captured = { text: "" };
+		const pumps = gated
+			? [
+					teeStream(proc.stdout as ReadableStream<Uint8Array>, process.stdout, captured),
+					teeStream(proc.stderr as ReadableStream<Uint8Array>, process.stderr, captured),
+				]
+			: [];
 		// Watchdog, mirroring the parallel path: record that *we* killed the child,
 		// otherwise the resulting 137 is indistinguishable from an OOM kill.
 		let timedOut = false;
@@ -428,7 +498,14 @@ async function runTestCommand(testCommand: TestCommand): Promise<void> {
 		}, chunkTimeoutMs());
 		const exitCode = await proc.exited;
 		clearTimeout(killTimer);
+		await Promise.all(pumps);
 		if (exitCode === 0) {
+			const skipped = gated ? skippedOrTodoCount(captured.text) : 0;
+			if (skipped > 0) {
+				throw new Error(
+					`${testCommand.label} reported ${skipped} skipped or todo test(s); POST-CI-RLM-NOSKIP-1 forbids them: ${renderedCommand}`,
+				);
+			}
 			return;
 		}
 		if (!timedOut && BUN_CRASH_EXITS[exitCode] && attempt < MAX_CHUNK_ATTEMPTS) {
@@ -909,10 +986,20 @@ async function runTestCommandsInParallel(commands: TestCommand[], concurrency: n
 			stderrDrain.cancel();
 			await drains;
 		}
+		const combined = `${stdout.text}${stderr.text}`;
+		let finalExit = exitCode;
+		let gateNote = "";
+		if (exitCode === 0 && testCommand.failOnSkip === true) {
+			const skipped = skippedOrTodoCount(combined);
+			if (skipped > 0) {
+				finalExit = 1;
+				gateNote = `\n[gate] ${skipped} skipped or todo test(s) reported; POST-CI-RLM-NOSKIP-1 forbids them\n`;
+			}
+		}
 		return {
-			exitCode,
+			exitCode: finalExit,
 			timedOut,
-			output: `${stdout.text}${stderr.text}${timedOut ? `\n${stuckTree}[watchdog] chunk exceeded ${Math.round(chunkTimeoutMs() / 1000)}s; killed with SIGKILL (OMP_TEST_CHUNK_TIMEOUT to change)\n` : ""}`,
+			output: `${combined}${gateNote}${timedOut ? `\n${stuckTree}[watchdog] chunk exceeded ${Math.round(chunkTimeoutMs() / 1000)}s; killed with SIGKILL (OMP_TEST_CHUNK_TIMEOUT to change)\n` : ""}`,
 		};
 	}
 

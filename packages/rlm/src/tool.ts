@@ -48,6 +48,20 @@ export class RlmRuntimeMissingError extends RlmToolContractError {
 	}
 }
 
+/**
+ * ERRORS-TOOL-SESSION-CHANGED-1 / POST-TOOL-SESSION-BINDING-1: raised by a bound kernel port when the kernel an
+ * invocation was bound to at entry has since been replaced, disposed or shut down. The tool turns it into a
+ * visible abort; cell code is never dispatched to any other kernel.
+ */
+export class RlmSessionChangedError extends RlmToolContractError {
+	constructor() {
+		super(
+			"The session changed before this cell could run; the cell was not executed. Re-issue it in the current session if it is still needed.",
+		);
+		this.name = "RlmSessionChangedError";
+	}
+}
+
 // =============================================================================
 // Structural types
 // =============================================================================
@@ -59,6 +73,12 @@ export interface RlmToolKernelPort {
 	kill(): Promise<void>;
 	dispose(): Promise<void>;
 	restoredNames(): readonly string[];
+	/**
+	 * POST-TOOL-SESSION-BINDING-1: captures the kernel current NOW and returns a port bound to it. Every call on
+	 * the returned port targets that kernel, or rejects with {@link RlmSessionChangedError} once it is replaced.
+	 * Optional: a port without it is used as-is (single-kernel callers).
+	 */
+	acquire?(): Promise<RlmToolKernelPort>;
 }
 
 /** Result from a kernel execution, as seen by the tool. */
@@ -254,17 +274,20 @@ export function createRlmToolDefinition(options: RlmToolDefinitionOptions): {
 			};
 
 			try {
+				// POST-TOOL-SESSION-BINDING-1: bind this invocation to the kernel current at entry.
+				const bound = await bindToEntryKernel(kernel);
+
 				// First invocation: ensure kernel started with working messages
 				if (firstInvocation) {
 					firstInvocation = false;
-					await kernel.ensureStarted(phase => setWorking(phaseToMessage(phase)));
+					await bound.ensureStarted(phase => setWorking(phaseToMessage(phase)));
 				}
 
 				// Execute the cell — busy-kernel choice loop
 				let result: KernelExecutionResult;
 				while (true) {
 					try {
-						result = (await kernel.execute(params.code)) as KernelExecutionResult;
+						result = (await bound.execute(params.code)) as KernelExecutionResult;
 						break;
 					} catch (error: unknown) {
 						// Check if this is a KernelBusyAfterInterruptError
@@ -273,21 +296,7 @@ export function createRlmToolDefinition(options: RlmToolDefinitionOptions): {
 
 							// Busy path: if no UI, auto-cancel
 							if (!ctx.hasUI) {
-								return {
-									content: [
-										{
-											type: "text",
-											text: assembleText("", "", "", busyError.message, false),
-										},
-									],
-									details: {
-										durationMs: 0,
-										status: "aborted",
-										errorEname: undefined,
-										kernelRestarted: undefined,
-									},
-									isError: true,
-								};
+								return abortedResult(busyError.message);
 							}
 
 							// UI available: show choice dialog
@@ -303,27 +312,13 @@ export function createRlmToolDefinition(options: RlmToolDefinitionOptions): {
 
 							if (choice === TOOL_BUSY_CHOICES[1]) {
 								// "Kill kernel and restart" → kill, set restart flag, retry
-								await kernel.kill();
+								await bound.kill();
 								toolKernelRestarted = true;
 								continue;
 							}
 
 							// User cancelled / no selection → aborted
-							return {
-								content: [
-									{
-										type: "text",
-										text: assembleText("", "", "", "Execution cancelled", false),
-									},
-								],
-								details: {
-									durationMs: 0,
-									status: "aborted",
-									errorEname: undefined,
-									kernelRestarted: undefined,
-								},
-								isError: true,
-							};
+							return abortedResult("Execution cancelled");
 						}
 						throw error;
 					}
@@ -337,13 +332,8 @@ export function createRlmToolDefinition(options: RlmToolDefinitionOptions): {
 				let text = assembleText(result.stdout, result.stderr, result.result, result.traceback, kernelRestarted);
 
 				// ERRORS-TOOL-1: runtime-missing detection
-				if (
-					result.status === "error" &&
-					result.errorEname === "ModuleNotFoundError" &&
-					result.traceback?.includes("No module named 'rlm'")
-				) {
-					const runtimeError = new RlmRuntimeMissingError(buildKernelGuidance());
-					text = runtimeError.message;
+				if (isRuntimeMissing(result)) {
+					text = new RlmRuntimeMissingError(buildKernelGuidance()).message;
 				}
 
 				const status: "ok" | "error" | "aborted" = result.status;
@@ -359,6 +349,9 @@ export function createRlmToolDefinition(options: RlmToolDefinitionOptions): {
 					},
 					isError,
 				};
+			} catch (error: unknown) {
+				// ERRORS-TOOL-SESSION-CHANGED-1: visible abort, never a throw, never a re-dispatch.
+				return abortedBySessionChange(error);
 			} finally {
 				if (hasWorkingMessage) {
 					setWorking(undefined);
@@ -378,4 +371,39 @@ export function createRlmToolDefinition(options: RlmToolDefinitionOptions): {
 			}
 		},
 	};
+}
+
+type RlmToolExecuteResult = {
+	content: { type: "text"; text: string }[];
+	details: RlmToolResultDetails;
+	isError: boolean;
+};
+
+/** A tool result that reports an aborted, not-executed invocation visibly (never a throw). */
+function abortedResult(message: string): RlmToolExecuteResult {
+	return {
+		content: [{ type: "text", text: assembleText("", "", "", message, false) }],
+		details: { durationMs: 0, status: "aborted", errorEname: undefined, kernelRestarted: undefined },
+		isError: true,
+	};
+}
+
+/** POST-TOOL-SESSION-BINDING-1: the port this invocation is bound to, captured at entry (a port without `acquire` is used as-is). */
+async function bindToEntryKernel(kernel: RlmToolKernelPort): Promise<RlmToolKernelPort> {
+	return kernel.acquire !== undefined ? await kernel.acquire() : kernel;
+}
+
+/** ERRORS-TOOL-SESSION-CHANGED-1: a session change becomes a visible abort; any other error is rethrown untouched. */
+function abortedBySessionChange(error: unknown): RlmToolExecuteResult {
+	if (error instanceof RlmSessionChangedError) return abortedResult(error.message);
+	throw error;
+}
+
+/** ERRORS-TOOL-1: the cell failed because the rlm runtime package is not importable in the kernel. */
+function isRuntimeMissing(result: KernelExecutionResult): boolean {
+	return (
+		result.status === "error" &&
+		result.errorEname === "ModuleNotFoundError" &&
+		result.traceback?.includes("No module named 'rlm'") === true
+	);
 }

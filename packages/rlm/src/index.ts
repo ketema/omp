@@ -19,6 +19,7 @@ export {
 export {
 	type CreateRlmExtensionOptions,
 	createRlmExtension,
+	KernelManagerAdapter,
 	type RlmExtensionKernelPort,
 	type RlmKernelConfig,
 } from "./extension";

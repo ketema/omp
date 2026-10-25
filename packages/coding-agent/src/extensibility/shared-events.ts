@@ -34,8 +34,8 @@ export interface SessionStartEvent {
 /** Fired before switching to another session (can be cancelled) */
 export interface SessionBeforeSwitchEvent {
 	type: "session_before_switch";
-	/** Reason for the switch */
-	reason: "new" | "resume" | "fork";
+	/** Reason for the switch; "move" is the active session being relocated (/move, or a persistence move-off to a sibling file) */
+	reason: "new" | "resume" | "fork" | "move";
 	/** Session file we're switching to (only for "resume") */
 	targetSessionFile?: string;
 }
@@ -43,8 +43,8 @@ export interface SessionBeforeSwitchEvent {
 /** Fired after switching to another session */
 export interface SessionSwitchEvent {
 	type: "session_switch";
-	/** Reason for the switch */
-	reason: "new" | "resume" | "fork";
+	/** Reason for the switch; "move" is the active session being relocated (/move, or a persistence move-off to a sibling file) */
+	reason: "new" | "resume" | "fork" | "move";
 	/** Session file we came from */
 	previousSessionFile: string | undefined;
 }

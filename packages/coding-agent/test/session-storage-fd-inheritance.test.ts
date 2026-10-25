@@ -17,6 +17,7 @@
  * covered on every platform by `packages/utils/test/fs-open.test.ts`.
  */
 import { afterAll, expect, test } from "bun:test";
+import { dlopen, FFIType } from "bun:ffi";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
@@ -54,6 +55,14 @@ test.skipIf(process.platform !== "linux")("bash tool children never inherit sess
 
 	const control = path.join(root, "control.jsonl");
 	const controlFd = fs.openSync(control, "a");
+	// Newer Bun releases open descriptors close-on-exec; the control must be inheritable on every runtime or it proves
+	// nothing, so clear FD_CLOEXEC explicitly (F_SETFD = 2, flags = 0).
+	const libc = dlopen("libc.so.6", { fcntl: { args: [FFIType.i32, FFIType.i32, FFIType.i32], returns: FFIType.i32 } });
+	try {
+		expect(libc.symbols.fcntl(controlFd, 2, 0), "fcntl(F_SETFD, 0) must succeed").toBe(0);
+	} finally {
+		libc.close();
+	}
 
 	let output = "";
 	try {

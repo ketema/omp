@@ -8,6 +8,15 @@ dependencies = [
   "nest-asyncio",
 ]
 
+# Test-only dependencies of the sibling Python suites in packages/rlm/python (dill snapshots; numpy
+# round-trip fixtures). A PEP 735 group is not part of the published wheel; `uv run --locked --group test`
+# resolves it from uv.lock, so CI installs exactly the pinned set.
+[dependency-groups]
+test = [
+  "dill",
+  "numpy",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

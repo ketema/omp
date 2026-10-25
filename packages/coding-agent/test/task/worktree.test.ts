@@ -29,6 +29,14 @@ async function runGit(repo: string, args: string[]): Promise<string> {
 		stderr: "pipe",
 		stdout: "pipe",
 		windowsHide: true,
+		// Nested repositories (submodules relocated by detachGitDir) inherit no repo-local identity; a CI runner has no global one.
+		env: {
+			...process.env,
+			GIT_AUTHOR_NAME: "Test User",
+			GIT_AUTHOR_EMAIL: "test@example.com",
+			GIT_COMMITTER_NAME: "Test User",
+			GIT_COMMITTER_EMAIL: "test@example.com",
+		},
 	});
 	const [stdout, stderr, exitCode] = await Promise.all([
 		new Response(proc.stdout).text(),

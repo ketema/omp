@@ -193,17 +193,41 @@ export async function loadPuppeteerInWorker(safeDir: string): Promise<typeof Pup
 	return loaded;
 }
 
+/** How long failure-path diagnostics wait for a browser's `/json/version` before giving up on naming its endpoint. */
+const DEBUGGER_ENDPOINT_PROBE_TIMEOUT_MS = 2_000;
+
+/** The debugger websocket a `browserURL` advertises, or undefined when it cannot be read (failure-path diagnostics only). */
+async function advertisedDebuggerEndpoint(browserURL: string): Promise<string | undefined> {
+	try {
+		const response = await fetch(new URL("/json/version", browserURL), {
+			signal: AbortSignal.timeout(DEBUGGER_ENDPOINT_PROBE_TIMEOUT_MS),
+		});
+		const body: unknown = await response.json();
+		return isRecord(body) && typeof body.webSocketDebuggerUrl === "string" ? body.webSocketDebuggerUrl : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Normalize transport event rejections before they cross browser or worker boundaries. */
 export async function connectPuppeteer(puppeteer: typeof Puppeteer, options: ConnectOptions): Promise<Browser> {
 	try {
 		return await puppeteer.connect(options);
 	} catch (error) {
-		// The WebSocket transports can reject with ErrorEvent rather than Error.
-		// Its message includes the actual debugger endpoint and handshake failure.
-		if (!(error instanceof Error) && isRecord(error) && typeof error.message === "string") {
-			throw new Error(error.message, { cause: error });
+		// The WebSocket transports reject with an ErrorEvent on some runtimes (its message names the debugger
+		// endpoint and handshake failure) and with a plain Error ("Unexpected server response: 404") on others.
+		const normalized =
+			!(error instanceof Error) && isRecord(error) && typeof error.message === "string"
+				? new Error(error.message, { cause: error })
+				: toError(error);
+		const endpoint =
+			options.browserWSEndpoint ??
+			(options.browserURL !== undefined ? await advertisedDebuggerEndpoint(options.browserURL) : undefined);
+		if (endpoint !== undefined && !normalized.message.includes(endpoint)) {
+			// Always name the endpoint that refused, whichever shape the runtime rejected with.
+			throw new Error(`WebSocket connection to '${endpoint}' failed: ${normalized.message}`, { cause: normalized });
 		}
-		throw toError(error);
+		throw normalized;
 	}
 }
 

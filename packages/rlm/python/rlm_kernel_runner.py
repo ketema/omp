@@ -253,6 +253,50 @@ class SnapshotConfigurationError(RlmSnapshotCompressionError):
     pass
 
 
+# =============================================================================
+# File-handle guard (POST-NOHANDLE-1, POST-NOOPEN-1, ERRORS-HANDLECONTAINER-1, FORBIDDEN-HANDLEOPEN-1)
+# =============================================================================
+#
+# The scanner and the reconstructor set live in rlm_pickle_guard.py, shared with the quarantine inspector (CROSS_INV-1).
+# The runner is spawned as `python <runner path>`, so the guard is loaded from THIS file's own directory: the embedded
+# assets extract it beside the runner. A missing guard stops the runner at start with an error naming the file; there
+# is no unguarded fallback (CL9).
+
+
+def _load_pickle_guard():
+    """Return the rlm_pickle_guard module, loaded from beside this runner (reusing an already-imported one)."""
+    loaded = sys.modules.get("rlm_pickle_guard")
+    if loaded is not None:
+        return loaded
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rlm_pickle_guard.py")
+    spec = importlib.util.spec_from_file_location("rlm_pickle_guard", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"rlm_pickle_guard.py cannot be loaded from {path}; the file-handle guard is required")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["rlm_pickle_guard"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_pickle_guard = _load_pickle_guard()
+FILE_HANDLE_RECONSTRUCTORS = _pickle_guard.FILE_HANDLE_RECONSTRUCTORS
+references_file_handle_reconstructor = _pickle_guard.references_file_handle_reconstructor
+
+# The error type a refused variable carries in the restore's skipped telemetry.
+UNSAFE_RECONSTRUCTION_ERROR_TYPE = "UnsafeReconstructionError"
+
+
+def _refuse_handle_container(path: str, codec: str) -> None:
+    """ERRORS-HANDLECONTAINER-1: reject a snapshot whose CONTAINER references a file-handle reconstructor, before loading it."""
+    if _pickle_guard.container_references_file_handle_reconstructor(path, codec):
+        raise CorruptSnapshotError(
+            "Snapshot container references a file handle; refused before any path was opened "
+            "(a file handle cannot be restored without reopening its path)"
+        )
+
+
 class _CountingWriter(io.RawIOBase):
     """Transparent stream wrapper that counts exact uncompressed bytes written by dill.dump without buffering in RAM."""
 
@@ -304,13 +348,24 @@ def _detect_codec(data: bytes) -> str:
     raise UnsupportedCodecError(f"Unrecognized magic header: [{header_hex}]")
 
 
+# Shell builtins and interactive wrappers that SHALL NOT be serialized into user state (POST-NAME-FILTER-1)
+_EXCLUDED_SNAPSHOT_NAMES: frozenset[str] = frozenset({
+    "In",
+    "Out",
+    "get_ipython",
+    "exit",
+    "quit",
+    "open",  # IPython _modified_open wrapper
+})
+
+
 def _snapshot_names() -> list[str]:
-    """Return sorted list of user-defined variable names eligible for snapshotting."""
+    """Return sorted list of user-defined variable names eligible for snapshotting (POST-NAME-FILTER-1)."""
     ns = _get_ns()
     # Filter out private / builtin variables
     return sorted([
         k for k in ns.keys()
-        if not k.startswith("_") and k not in ("In", "Out", "get_ipython", "exit", "quit")
+        if not k.startswith("_") and k not in _EXCLUDED_SNAPSHOT_NAMES
     ])
 
 
@@ -424,6 +479,16 @@ def _snapshot_write(
         val = ns[name]
         try:
             blob = dill.dumps(val)
+            # POST-NOHANDLE-1: a live or closed file handle (also nested in a container or object) is never carried; a
+            # handle cannot be rebuilt without reopening its path, which would truncate a write-mode file.
+            if references_file_handle_reconstructor(blob):
+                skipped.append(
+                    {
+                        "name": name,
+                        "reason": "contains a file handle; a file handle cannot be restored without reopening its path",
+                    }
+                )
+                continue
             # Size ceiling validation per serialized variable
             if len(blob) > max_bytes:
                 skipped.append({"name": name, "reason": "exceeds snapshot size cap"})
@@ -621,13 +686,16 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
                 raise UnsupportedCodecError(
                     f"LZMA decompression unsupported on this Python build (missing _lzma): {exc}"
                 ) from exc
+            _refuse_handle_container(path, codec)
             with lzma.open(path, "rb") as fh:
                 payload = dill.load(fh)
         elif codec == "gzip":
             import gzip
+            _refuse_handle_container(path, codec)
             with gzip.open(path, "rb") as fh:
                 payload = dill.load(fh)
         else:
+            _refuse_handle_container(path, codec)
             with open(path, "rb") as fh:
                 payload = dill.load(fh)
     except Exception as exc:
@@ -644,13 +712,29 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
     # deserialization executes __setstate__ / reducer callables during dill.loads, so
     # transactional heap rollback for custom reducer side effects requires a process fork).
     temp_restored = {}
+    skipped_restores = []
     for name, blob in payload.items():
         if not isinstance(name, str):
             raise CorruptSnapshotError(f"Invalid non-string variable name in snapshot payload: {name!r}")
         try:
+            if references_file_handle_reconstructor(blob):
+                # POST-NOOPEN-1: refused BEFORE deserialization, so no path is opened (dill reopens a handle's path,
+                # truncating a write-mode file, before it applies the closed flag). Siblings still restore.
+                skipped_restores.append({
+                    "name": name,
+                    "reason": "unsafe: the serialized variable reconstructs a file handle; "
+                    "refused before any path was opened",
+                    "error_type": UNSAFE_RECONSTRUCTION_ERROR_TYPE,
+                })
+                continue
             temp_restored[name] = dill.loads(blob)
         except Exception as exc:
-            raise CorruptSnapshotError(f"Failed to unpickle variable '{name}': {exc}") from exc
+            # POST-RESTORE-SKIP-1: Resilient restore skips unpicklable variable instead of aborting
+            skipped_restores.append({
+                "name": name,
+                "reason": f"unpicklable ({type(exc).__name__}: {exc})",
+                "error_type": type(exc).__name__,
+            })
 
     # Validate and sort restored names BEFORE mutating active user namespace
     try:
@@ -658,11 +742,14 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
     except Exception as exc:
         raise CorruptSnapshotError(f"Failed to order restored variable names: {exc}") from exc
 
-    # Commit atomically to user namespace only after all variables and names are validated
+    # Commit atomically to user namespace only after all variables and names are validated (INV-RESTORE-PURITY-1)
     ns = _get_ns()
     ns.update(temp_restored)
 
-    return {"restoredNames": restored_names}
+    return {
+        "restoredNames": restored_names,
+        "skipped": skipped_restores,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -671,12 +758,29 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
 
 
 def _bootstrap() -> None:
-    """Execute the runtime bootstrap: import the runtime package; verify dill."""
+    """Execute the runtime bootstrap: import base primitives; pre-freeze snapshot codec (POST-BOOTSTRAP-PRIMITIVES-1)."""
     # Verify dill is importable
     import dill  # noqa: F401
 
-    # Import the runtime package
-    import rlm  # noqa: F401
+    # POST-BOOTSTRAP-RLM-REQUIRED-1: the runtime package is required; never report readiness without it.
+    try:
+        import rlm  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            "rlm-runtime is not installed in this IPython kernel; install it into the kernel interpreter"
+        ) from exc
+
+    # Pre-load base interactive and standard library primitives into sys.modules (POST-BOOTSTRAP-PRIMITIVES-1)
+    import json  # noqa: F401
+    import pathlib  # noqa: F401
+    # POST-BOOTSTRAP-IPYTHON-1: the promised runtime is an IPython kernel; never report readiness without it.
+    try:
+        import IPython  # noqa: F401
+        import IPython.display  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            "IPython is not installed in this IPython kernel (ipykernel); install ipykernel into the kernel interpreter"
+        ) from exc
 
     # Pre-freeze the snapshot compression codec (FORBIDDEN-4).
     _freeze_snapshot_codec()
@@ -749,6 +853,7 @@ def _handle_op(op: dict) -> None:
                 "type": "result",
                 "id": op_id,
                 "restoredNames": res["restoredNames"],
+                "skipped": res.get("skipped", []),
             })
         except Exception as exc:
             _emit({

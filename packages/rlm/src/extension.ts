@@ -11,6 +11,7 @@ import { bootstrapManagedVenv, buildKernelEnv } from "./bootstrap";
 import { EMBEDDED_RUNTIME_SOURCES, ensureExtractedAssets } from "./embedded_assets";
 import type { KernelClock, KernelExecutionResult, KernelTransport } from "./kernel";
 import { KernelManager } from "./kernel";
+import { RlmSessionLifecycle } from "./session_lifecycle";
 import { createRlmToolDefinition, type RlmToolKernelPort, type RlmToolKernelResult } from "./tool";
 import { createTransport } from "./transport";
 // =============================================================================
@@ -33,10 +34,20 @@ type MutableKernelConfig = {
 	-readonly [K in keyof RlmKernelConfig]: RlmKernelConfig[K];
 };
 
-/** The kernel port exposed to the extension, adding compaction lifecycle. */
+/** The kernel port exposed to the extension, adding compaction and teardown lifecycle. */
 export interface RlmExtensionKernelPort extends RlmToolKernelPort {
+	dispose(): Promise<void>;
+	/**
+	 * POST-SESSION-MOVE-3: the session this kernel serves now owns `dir`. Later snapshots (including the one flushed
+	 * here, bounded and serialized behind any running cell) are written there, never into the superseded directory.
+	 * Rejects when the flush cannot settle; the kernel stays live either way.
+	 */
+	retarget(dir: string): Promise<void>;
 	onCompactionComplete(): Promise<void>;
+	flushSnapshot(): Promise<void>;
 	compactionNotice(): string | null;
+	restoredSkipped?(): ReadonlyArray<{ readonly name: string; readonly reason: string }>;
+	takeTeardownNotice?(): string | null;
 }
 
 // =============================================================================
@@ -72,7 +83,7 @@ interface StructuralExtensionAPI {
 // Kernel adapter — wraps KernelManager to satisfy RlmExtensionKernelPort
 // =============================================================================
 
-class KernelManagerAdapter implements RlmExtensionKernelPort {
+export class KernelManagerAdapter implements RlmExtensionKernelPort {
 	private readonly manager: KernelManager;
 	private readonly transport: KernelTransport;
 	private _restoredNames: readonly string[] = [];
@@ -115,8 +126,25 @@ class KernelManagerAdapter implements RlmExtensionKernelPort {
 		await this.manager.dispose({ snapshot: true });
 	}
 
+	async retarget(dir: string): Promise<void> {
+		this.manager.relocate(dir);
+		await this.manager.flushSnapshot();
+	}
+
+	async flushSnapshot(): Promise<void> {
+		await this.manager.flushSnapshot();
+	}
+
+	takeTeardownNotice(): string | null {
+		return this.manager.takeTeardownNotice();
+	}
+
 	restoredNames(): readonly string[] {
-		return this._restoredNames;
+		return this.manager.restoredNames();
+	}
+
+	restoredSkipped(): ReadonlyArray<{ readonly name: string; readonly reason: string }> {
+		return this.manager.restoredSkipped();
 	}
 
 	async onCompactionComplete(): Promise<void> {
@@ -288,68 +316,60 @@ async function createDefaultKernel(config: RlmKernelConfig, artifactsDir: string
 // =============================================================================
 
 export interface CreateRlmExtensionOptions {
-	readonly createKernel?: (config: RlmKernelConfig) => RlmExtensionKernelPort;
+	/** Test seam: builds the kernel port for the RESOLVED session artifacts directory (POST-SESSION-RESOLUTION-GATE-1). */
+	readonly createKernel?: (config: RlmKernelConfig, artifactsDir: string) => RlmExtensionKernelPort;
 }
 
 /**
  * Creates the RLM extension factory. Registers the tool, flags, commands,
- * and lifecycle hooks into the omp extension API.
+ * and lifecycle hooks into the omp extension API. Which kernel serves the current session, and what each lifecycle
+ * event does to it, is RlmSessionLifecycle's job (session_lifecycle.ts).
  */
 export function createRlmExtension(
 	options?: CreateRlmExtensionOptions,
 ): (api: StructuralExtensionAPI) => Promise<void> {
 	return async (api: StructuralExtensionAPI): Promise<void> => {
-		let kernel: RlmExtensionKernelPort | null = null;
-		let artifactsDir = "";
-
-		// Lazy kernel construction — deferred until first use
-		const ensureKernel = async (): Promise<RlmExtensionKernelPort> => {
-			if (kernel !== null) return kernel;
-
-			const config = resolveConfigFromFlags(api);
-			// artifactsDir is resolved at session start time
-			if (options?.createKernel !== undefined) {
-				kernel = options.createKernel(config);
-			} else {
-				kernel = await createDefaultKernel(config, artifactsDir);
-			}
-			return kernel;
-		};
+		const notify = (customType: string, content: string, display: boolean): void =>
+			api.sendMessage(
+				{ role: "custom", customType, content, display, attribution: "agent", timestamp: Date.now() },
+				{ deliverAs: "nextTurn" },
+			);
+		const lifecycle = new RlmSessionLifecycle({
+			notify,
+			buildKernel(dir) {
+				const config = resolveConfigFromFlags(api);
+				return options?.createKernel !== undefined
+					? options.createKernel(config, dir)
+					: createDefaultKernel(config, dir);
+			},
+		});
 
 		// registerTool: exactly ONE tool, the ipython tool
 		const toolDef = createRlmToolDefinition({
 			kernel: {
 				ensureStarted(onProgress?: (phase: "starting" | "restoring" | "preparing") => void) {
-					return ensureKernel().then(k => k.ensureStarted(onProgress));
+					return lifecycle.ensureKernel().then(k => k.ensureStarted(onProgress));
 				},
 				execute(code: string) {
-					return ensureKernel().then(k => k.execute(code));
+					return lifecycle.ensureKernel().then(k => k.execute(code));
 				},
 				kill() {
-					return ensureKernel().then(k => k.kill());
+					return lifecycle.ensureKernel().then(k => k.kill());
 				},
 				dispose() {
-					return ensureKernel().then(k => k.dispose());
+					return lifecycle.ensureKernel().then(k => k.dispose());
 				},
-				restoredNames() {
-					if (kernel === null) return [];
-					return kernel.restoredNames();
-				},
+				restoredNames: () => lifecycle.restoredNames(),
+				// Captured synchronously when a kernel exists, so the binding is the kernel current at entry.
+				acquire: () => lifecycle.acquire(),
 			},
-			onRevival: (names: readonly string[]) => {
-				// SEQ-KM-5: revival notice enumerating restored names via api.sendMessage
-				api.sendMessage(
-					{
-						role: "custom",
-						customType: "rlm-revival",
-						content: `IPython state restored. The following names are available again: ${names.join(", ")}`,
-						display: true,
-						attribution: "agent",
-						timestamp: Date.now(),
-					},
-					{ deliverAs: "nextTurn" },
-				);
-			},
+			// SEQ-KM-5: revival notice enumerating restored names
+			onRevival: (names: readonly string[]) =>
+				notify(
+					"rlm-revival",
+					`IPython state restored. The following names are available again: ${names.join(", ")}`,
+					true,
+				),
 		});
 
 		// Register tool with exactly the required keys (FORBIDDEN-TOOL-1)
@@ -381,13 +401,7 @@ export function createRlmExtension(
 					throw new Error("rlm-max-depth requires a non-negative integer argument");
 				}
 				const parsed = Number(trimmed);
-				if (Number.isNaN(parsed)) {
-					throw new Error(`rlm-max-depth argument must be a non-negative integer, got: ${trimmed}`);
-				}
-				if (!Number.isInteger(parsed)) {
-					throw new Error(`rlm-max-depth argument must be a non-negative integer, got: ${trimmed}`);
-				}
-				if (parsed < 0) {
+				if (Number.isNaN(parsed) || !Number.isInteger(parsed) || parsed < 0) {
 					throw new Error(`rlm-max-depth argument must be a non-negative integer, got: ${trimmed}`);
 				}
 				// Valid: accept '0' and positive integers
@@ -395,68 +409,13 @@ export function createRlmExtension(
 			},
 		});
 
-		// on('auto_compaction_end', handler): SEQ-KM-5 compaction notice
-		api.on("auto_compaction_end", async () => {
-			const k = await ensureKernel();
-			await k.onCompactionComplete();
-			const notice = k.compactionNotice();
-			if (notice !== null) {
-				api.sendMessage(
-					{
-						role: "custom",
-						customType: "rlm-compaction",
-						content: notice,
-						display: false,
-						attribution: "agent",
-						timestamp: Date.now(),
-					},
-					{ deliverAs: "nextTurn" },
-				);
-			}
-		});
-
-		// on('session_start'): restore and announce revived names
-		api.on("session_start", async (event: unknown) => {
-			// Resolve artifactsDir from the session event (structural)
-			const sessionEvent = event as { sessionDir?: string };
-			if (typeof sessionEvent?.sessionDir === "string") {
-				artifactsDir = sessionEvent.sessionDir;
-			} else {
-				artifactsDir = join(process.cwd(), ".omp", "artifacts");
-			}
-
-			// Injected custom kernel (e.g. tests) or existing snapshot on disk: restore and announce revival
-			const hasSnapshot = fs.existsSync(join(artifactsDir, "kernel-state.dill"));
-			if (options?.createKernel !== undefined || hasSnapshot) {
-				try {
-					const k = await ensureKernel();
-					await k.ensureStarted();
-					const names = k.restoredNames();
-					if (names.length > 0) {
-						api.sendMessage(
-							{
-								role: "custom",
-								customType: "rlm-revival",
-								content: `IPython state restored. The following names are available again: ${names.join(", ")}`,
-								display: true,
-								attribution: "agent",
-								timestamp: Date.now(),
-							},
-							{ deliverAs: "nextTurn" },
-						);
-					}
-				} catch {
-					// Non-fatal on session_start: lazy start will retry on first explicit tool invocation
-				}
-			}
-		});
-
-		// on('session_shutdown'): dispose kernel
-		api.on("session_shutdown", async () => {
-			if (kernel !== null) {
-				await kernel.dispose();
-				kernel = null;
-			}
-		});
+		// Lifecycle hooks
+		api.on("auto_compaction_end", () => lifecycle.onCompactionComplete());
+		api.on("session_before_switch", () => lifecycle.preTransitionFlush());
+		api.on("session_before_branch", () => lifecycle.preTransitionFlush());
+		api.on("session_start", (event, ctx) => lifecycle.handleSessionInit(event, ctx));
+		api.on("session_switch", (event, ctx) => lifecycle.handleSessionInit(event, ctx));
+		api.on("session_branch", (event, ctx) => lifecycle.handleSessionInit(event, ctx));
+		api.on("session_shutdown", () => lifecycle.shutdown());
 	};
 }

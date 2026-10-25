@@ -7,7 +7,8 @@
  * alignment — Contract-Implementation Independence).
  */
 
-import { join } from "node:path";
+import * as fs from "node:fs";
+import { dirname, join } from "node:path";
 import type { Subprocess } from "bun";
 import type {
 	KernelOutputEvent,
@@ -15,6 +16,9 @@ import type {
 	KernelTransport,
 	KernelTransportExecuteResult,
 } from "./kernel";
+
+/** POST-STAGE-1: the runner writes snapshots only into owned stages named with this prefix, beside the live directory. */
+const SNAPSHOT_STAGE_PREFIX = ".rlm-snapshot-stage-";
 
 // =============================================================================
 // Exceptions (redeclared; aligned with contract TRANS error shapes)
@@ -177,6 +181,15 @@ function boundedStderrTail(stderr: string): string {
 function isKnownFrameType(type: unknown): type is FrameType {
 	return typeof type === "string" && (TRANS_FRAMES as readonly string[]).includes(type);
 }
+
+/** POST-TRANS-4: the revived names in runner order, carrying the variables the runner skipped (empty when it reported none). */
+function restoredNamesResult<T>(
+	names: readonly string[],
+	skipped: readonly T[] | undefined,
+): string[] & { skipped: readonly T[] } {
+	return Object.assign([...names], { skipped: skipped ?? [] });
+}
+
 // =============================================================================
 // Default process wrapper (Bun.spawn)
 // =============================================================================
@@ -356,6 +369,10 @@ interface PendingOp<T> {
  */
 export class RlmTransport implements KernelTransport {
 	private readonly config: RlmTransportConfig;
+	/** Where the runner reads and writes `kernel-state.*`; starts as `config.artifactsDir`, retargeted on relocation. */
+	private snapshotDir: string;
+	/** POST-STAGE-1: the one owned stage this transport has created and not yet consumed or discarded. */
+	private snapshotStage: string | null = null;
 	private readonly clock: { now(): number; schedule(fn: () => void, ms: number): () => void };
 	private readonly spawnFn: (
 		cmd: string,
@@ -391,6 +408,7 @@ export class RlmTransport implements KernelTransport {
 		| null = null;
 	constructor(config: RlmTransportConfig, deps?: RlmTransportDeps) {
 		this.config = config;
+		this.snapshotDir = config.artifactsDir;
 		this.clock = deps?.clock ?? {
 			now: () => Date.now(),
 			schedule(fn: () => void, ms: number): () => void {
@@ -399,6 +417,11 @@ export class RlmTransport implements KernelTransport {
 			},
 		};
 		this.spawnFn = deps?.spawn ?? defaultSpawn;
+	}
+
+	/** POST-SESSION-MOVE-2: the session's owned directory changed; later snapshots and restores use `dir`. */
+	setArtifactsDir(dir: string): void {
+		this.snapshotDir = dir;
 	}
 
 	// ---- KernelTransport implementation ----
@@ -617,28 +640,85 @@ export class RlmTransport implements KernelTransport {
 		});
 	}
 
-	/** POST-TRANS-4: writeSnapshot → {bytes, skipped}. */
+	/**
+	 * POST-TRANS-4 / POST-STAGE-1: writeSnapshot → {bytes, skipped}. The runner writes ONLY into an owned stage beside
+	 * the live artifacts directory, never into it; KernelManager is the single authority that commits the stage.
+	 */
 	async writeSnapshot(_names: readonly string[], maxBytes: number): Promise<KernelSnapshotWriteResult> {
 		this.assertNotDisposed();
 		this.assertStarted();
 
 		const id = `snap-write-${this.opIdCounter++}`;
-		const payloadPath = join(this.config.artifactsDir, "kernel-state.dill");
-		const manifestPath = join(this.config.artifactsDir, "kernel-state.json");
+		const stage = this.createSnapshotStage();
+		const payloadPath = join(stage, "kernel-state.dill");
+		const manifestPath = join(stage, "kernel-state.json");
 
-		return new Promise<KernelSnapshotWriteResult>((resolve, reject) => {
-			this.pendingOps.set(id, {
-				resolve: (v: unknown) => resolve(v as KernelSnapshotWriteResult),
-				reject,
+		try {
+			return await new Promise<KernelSnapshotWriteResult>((resolve, reject) => {
+				this.pendingOps.set(id, {
+					resolve: (v: unknown) => resolve(v as KernelSnapshotWriteResult),
+					reject,
+				});
+				this.sendOp({
+					op: "snapshot_write",
+					id,
+					path: payloadPath,
+					manifestPath,
+					maxBytes,
+				});
 			});
-			this.sendOp({
-				op: "snapshot_write",
-				id,
-				path: payloadPath,
-				manifestPath,
-				maxBytes,
-			});
-		});
+		} catch (error) {
+			this.discardSnapshotStage();
+			throw error;
+		}
+	}
+
+	/**
+	 * POST-STAGE-1: moves the staged payload (and the runner's manifest) into `dir`, which the caller owns, and consumes
+	 * the stage. It never touches the live artifacts directory itself: the caller decides when and where to commit.
+	 */
+	async writeSnapshotPayload(dir: string): Promise<void> {
+		const stage = this.snapshotStage;
+		if (stage === null) {
+			throw new RlmTransportContractError("POST-STAGE-1 violation: there is no staged snapshot to move");
+		}
+		try {
+			for (const name of ["kernel-state.dill", "kernel-state.json"]) {
+				const staged = join(stage, name);
+				if (!fs.existsSync(staged)) continue;
+				fs.chmodSync(staged, 0o600);
+				fs.renameSync(staged, join(dir, name));
+			}
+		} finally {
+			this.discardSnapshotStage();
+		}
+	}
+
+	/** POST-STAGE-1: removes the stage this transport created - and only that one. */
+	discardSnapshotStage(): void {
+		const stage = this.snapshotStage;
+		if (stage === null) return;
+		this.snapshotStage = null;
+		try {
+			fs.rmSync(stage, { recursive: true, force: true });
+		} catch {
+			// An owned stage that cannot be removed never affects the committed generation.
+		}
+	}
+
+	/** POST-STAGE-1: a 0700 same-filesystem sibling of the live directory; the live directory and its ancestors are never created. */
+	private createSnapshotStage(): string {
+		this.discardSnapshotStage();
+		const parent = dirname(this.snapshotDir);
+		if (!fs.existsSync(parent)) {
+			throw new RlmTransportContractError(
+				`POST-STAGE-1 violation: cannot stage a snapshot; the parent of the live artifacts directory does not exist: ${parent}`,
+			);
+		}
+		const stage = fs.mkdtempSync(join(parent, SNAPSHOT_STAGE_PREFIX));
+		fs.chmodSync(stage, 0o700);
+		this.snapshotStage = stage;
+		return stage;
 	}
 
 	/** POST-TRANS-4: restoreSnapshot → revived names in runner order. */
@@ -647,8 +727,8 @@ export class RlmTransport implements KernelTransport {
 		this.assertStarted();
 
 		const id = `snap-restore-${this.opIdCounter++}`;
-		const payloadPath = join(this.config.artifactsDir, "kernel-state.dill");
-		const manifestPath = join(this.config.artifactsDir, "kernel-state.json");
+		const payloadPath = join(this.snapshotDir, "kernel-state.dill");
+		const manifestPath = join(this.snapshotDir, "kernel-state.json");
 
 		return new Promise<string[]>((resolve, reject) => {
 			this.pendingOps.set(id, {
@@ -697,6 +777,7 @@ export class RlmTransport implements KernelTransport {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.started = false;
+		this.discardSnapshotStage();
 
 		if (this.process !== null) {
 			// Try graceful shutdown
@@ -861,7 +942,7 @@ export class RlmTransport implements KernelTransport {
 					if (frame.names !== undefined) {
 						op.resolve(frame.names);
 					} else if (frame.restoredNames !== undefined) {
-						op.resolve(frame.restoredNames);
+						op.resolve(restoredNamesResult(frame.restoredNames, frame.skipped));
 					} else if (frame.bytes !== undefined) {
 						op.resolve({
 							bytes: frame.bytes,

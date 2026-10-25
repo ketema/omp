@@ -1,9 +1,16 @@
 /**
- * RED PHASE — RLM transport implementation tests (SLICE-4, TRANS-* clauses).
+ * RLM transport implementation tests (SLICE-4, TRANS-* clauses).
  *
- * Targets the IMPLEMENTATION artifact packages/rlm/src/transport.ts, not the
- * contract. At RED time the module does not exist; every test fails with a
- * module-resolution error.
+ * Targets the IMPLEMENTATION artifact packages/rlm/src/transport.ts.
+ *
+ * GATE 5 CLASSIFICATION OF THE DOUBLES USED HERE (CL13):
+ * - makeFakeProcess is an adversarial WIRE INPUT fixture. It feeds scripted stdout frames and exit events to the real
+ *   transport and records what the transport writes; it does NOT stand in for a provider's behavior and emulates none.
+ *   The frames it feeds are judged against the closed protocol vocabulary (TRANS_FRAMES, TRANS-V2) and include the
+ *   negative frames: malformed JSON and an unknown frame type (ERRORS-TRANS-3), a stale id (INV-TRANS-1), a missing
+ *   readiness frame (ERRORS-TRANS-2) and a spawn failure (ERRORS-TRANS-1). Its real-process companion is the LIVE tier below.
+ * - makeScriptedTransport (kernel_transport_double.ts) IS a behavioral substitute for this transport in the manager and
+ *   extension specs. Its parity with the real transport is pinned by "KernelTransport double parity" below.
  *
  * Added by the 2026-08-16 constitutional-refactor re-assessment: REQ-RLM-0019
  * assigned the real kernel spawn to SLICE-4 (requirements -> contracts ->
@@ -56,6 +63,8 @@ import {
   RlmTransport,
   type RlmTransportProcess,
 } from "../src/transport.ts"
+import { makeScriptedTransport } from "./kernel_transport_double.ts"
+import { scriptedRunnerTransport } from "./scripted_runner_transport.ts"
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -412,6 +421,99 @@ describe("transport wire protocol", () => {
     await pending
     expect(resolved).toBe(true)
   })
+
+  test("POST-SESSION-MOVE-2 / POST-STAGE-1: after setArtifactsDir the runner stages beside the NEW directory and restores from it", async () => {
+    // The runner writes where the host tells it to. A relocation that only retargets the manager would still stage
+    // beside the construction-time directory; the live directories themselves must never be named in a write op.
+    const root = fs.mkdtempSync("/tmp/rlm-wire-stage-")
+    try {
+      const liveA = join(root, "a", "artifacts")
+      const liveB = join(root, "b", "artifacts")
+      fs.mkdirSync(join(root, "a"), { recursive: true })
+      fs.mkdirSync(join(root, "b"), { recursive: true })
+      const fake = makeFakeProcess()
+      const transport = createTransport({ ...CONFIG, artifactsDir: liveA }, { clock: makeClock(), spawn: fake.spawnFactory })
+      await startReady(fake, transport)
+
+      const sentOp = (name: string) =>
+        fake.state.stdinLines.map(line => JSON.parse(line) as { op: string; id: string; path?: string; manifestPath?: string }).filter(op => op.op === name)
+
+      void transport.writeSnapshot(["x"], 1024).catch(() => undefined)
+      await Bun.sleep(0)
+      const first = sentOp("snapshot_write")[0]
+      expect(first.path?.startsWith(join(root, "a", ".rlm-snapshot-stage-")), "POST-STAGE-1 violation: the write op does not name a stage beside the live directory").toBe(true)
+      expect(first.path?.startsWith(liveA), "POST-STAGE-1 violation: the write op names the live directory").toBe(false)
+
+      transport.setArtifactsDir(liveB)
+      void transport.writeSnapshot(["x"], 1024).catch(() => undefined)
+      void transport.restoreSnapshot().catch(() => undefined)
+      await Bun.sleep(0)
+
+      const second = sentOp("snapshot_write")[1]
+      expect(
+        second.path?.startsWith(join(root, "b", ".rlm-snapshot-stage-")),
+        "POST-SESSION-MOVE-2 violation: a relocated transport still stages beside the old directory",
+      ).toBe(true)
+      expect(second.manifestPath?.startsWith(join(root, "b", ".rlm-snapshot-stage-"))).toBe(true)
+      expect(sentOp("snapshot_restore")[0].path).toBe(join(liveB, "kernel-state.dill"))
+      transport.discardSnapshotStage()
+      expect(fs.readdirSync(join(root, "b")).filter(name => name.startsWith(".rlm-snapshot-stage-"))).toEqual([])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("KernelTransport double parity (CL13)", () => {
+  test("the double has every KernelTransport member the real transport has; optional members appear only when scripted", () => {
+    // Risk tier: MEDIUM — a member the double lacks makes the manager specs exercise a shape the real transport does
+    // not have (the drift that left port doubles without `retarget`).
+    // The KernelTransport interface (src/kernel.ts), mirrored here: required members, then members it marks optional.
+    const requiredMembers = [
+      "start",
+      "execute",
+      "interrupt",
+      "kill",
+      "onOutput",
+      "snapshotNames",
+      "writeSnapshot",
+      "restoreSnapshot",
+      "bootstrap",
+      "isBusy",
+      "alive",
+      "dispose",
+    ]
+    const optionalOnInterface = new Set([
+      "shutdown",
+      "writeSnapshotPayload",
+      "discardSnapshotStage",
+      "pythonVersion",
+      "setArtifactsDir",
+    ])
+    const real = createTransport(CONFIG) as unknown as Record<string, unknown>
+    const absentOnReal = [...requiredMembers, ...optionalOnInterface].filter(name => typeof real[name] !== "function")
+    // `shutdown` is the one interface member the real transport does not implement (it shuts the runner down inside
+    // dispose()); the double exposes it only when scripted.
+    expect(
+      absentOnReal.filter(name => name !== "shutdown"),
+      "CL13 violation: the mirrored interface names members the real transport does not have",
+    ).toEqual([])
+    const plain = makeScriptedTransport() as unknown as Record<string, unknown>
+    const missingRequired = requiredMembers.filter(name => typeof plain[name] !== "function")
+    expect(missingRequired, `CL13 violation: the double lacks KernelTransport members: ${missingRequired.join(", ")}`).toEqual([])
+    const scripted = makeScriptedTransport({
+      writeSnapshotPayload: async () => undefined,
+      pythonVersion: async () => "3.11.0",
+      setArtifactsDir: () => undefined,
+      discardSnapshotStage: () => undefined,
+      shutdown: () => undefined,
+    }) as unknown as Record<string, unknown>
+    const missingOptional = [...optionalOnInterface].filter(name => typeof scripted[name] !== "function")
+    expect(missingOptional, `CL13 violation: scripting does not surface ${missingOptional.join(", ")}`).toEqual([])
+    for (const name of optionalOnInterface) {
+      expect(typeof plain[name], `optional member ${name} must be absent until scripted`).toBe("undefined")
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -636,6 +738,9 @@ time.sleep(30)`,
       const names = await first.snapshotNames()
       expect(names).toContain("x")
       const write = await first.writeSnapshot(names.filter(n => n === "x"), 256 * 1024 * 1024)
+      // POST-STAGE-1: the transport only stages; committing into the live directory is KernelManager's job.
+      // Commit the way the manager does so the revival below reads a live pair.
+      await first.writeSnapshotPayload(artifacts)
       expect(write.bytes).toBeGreaterThan(0)
       await first.dispose()
 
@@ -655,6 +760,92 @@ time.sleep(30)`,
       }
     }
   }, 120_000)
+
+  test("KernelTransport double parity live: the double's observable results have the real transport's shapes (CL13)", async () => {
+    // Risk tier: MEDIUM — the manager specs trust the double; this pins it to what the real runner returns.
+    const artifacts = join(workRoot, "art-parity")
+    fs.mkdirSync(artifacts, { recursive: true })
+    const real = createTransport(liveConfig(artifacts))
+    const double = makeScriptedTransport()
+    const shapeOf = (value: unknown): string =>
+      Array.isArray(value) ? "array" : value === null ? "null" : typeof value
+    try {
+      await real.start()
+      await double.start()
+      const realExec = await real.execute("p1", "kept = 1\nprint('hi')")
+      const doubleExec = await double.execute("p1", "print('hi')")
+      for (const key of ["code", "stdout", "stderr", "result"] as const) {
+        expect(
+          shapeOf((doubleExec as Record<string, unknown>)[key]),
+          `CL13 violation: the double's execute result field '${key}' differs in shape from the real transport's`,
+        ).toBe(shapeOf((realExec as Record<string, unknown>)[key]))
+      }
+      expect(shapeOf(await double.snapshotNames())).toBe(shapeOf(await real.snapshotNames()))
+      const realWrite = await real.writeSnapshot(["kept"], 256 * 1024 * 1024)
+      const doubleWrite = await double.writeSnapshot(["kept"], 256 * 1024 * 1024)
+      expect(shapeOf(doubleWrite.bytes), "CL13 violation: write result 'bytes' shape").toBe(shapeOf(realWrite.bytes))
+      expect(shapeOf(doubleWrite.skipped), "CL13 violation: write result 'skipped' shape").toBe(shapeOf(realWrite.skipped))
+      await real.writeSnapshotPayload(artifacts)
+      expect(shapeOf(await double.restoreSnapshot()), "CL13 violation: restore result shape").toBe(
+        shapeOf(await real.restoreSnapshot()),
+      )
+      expect(typeof double.alive()).toBe(typeof real.alive())
+      expect(typeof double.isBusy()).toBe(typeof real.isBusy())
+    } finally {
+      await real.dispose()
+      await double.dispose()
+    }
+  }, 60_000)
+
+  test("scripted runner transport parity live: after setArtifactsDir a snapshot lands in the NEW directory only and restores from it (CL13)", async () => {
+    // Risk tier: HIGH — the move specs trust this double to relocate state the way the real transport does.
+    type Relocatable = {
+      start(): Promise<void> | void
+      execute(id: string, code: string): Promise<unknown>
+      snapshotNames(): Promise<string[]>
+      writeSnapshot(names: string[], maxBytes: number): Promise<unknown>
+      writeSnapshotPayload?(dir: string): Promise<void>
+      setArtifactsDir?(dir: string): void
+      restoreSnapshot(): Promise<string[]>
+      dispose(): Promise<void> | void
+    }
+    const observe = async (label: string, make: (dir: string) => Relocatable) => {
+      const oldDir = join(workRoot, `art-reloc-${label}-old`)
+      const newDir = join(workRoot, `art-reloc-${label}-new`)
+      fs.mkdirSync(oldDir, { recursive: true })
+      fs.mkdirSync(newDir, { recursive: true })
+      const first = make(oldDir)
+      const second = make(oldDir)
+      try {
+        await first.start()
+        first.setArtifactsDir?.(newDir)
+        await first.execute("e1", "x=7")
+        await first.writeSnapshot((await first.snapshotNames()).filter(name => name === "x"), 256 * 1024 * 1024)
+        // POST-STAGE-1: the real transport only stages; committing is the manager's job (the double writes itself).
+        await first.writeSnapshotPayload?.(newDir)
+        await first.dispose()
+        await second.start()
+        second.setArtifactsDir?.(newDir)
+        const restored = await second.restoreSnapshot()
+        return {
+          newHasPayload: fs.existsSync(join(newDir, "kernel-state.dill")),
+          oldHasPayload: fs.existsSync(join(oldDir, "kernel-state.dill")),
+          restoredX: restored.includes("x"),
+        }
+      } finally {
+        await first.dispose()
+        await second.dispose()
+      }
+    }
+    const real = await observe("real", dir => createTransport(liveConfig(dir)))
+    const scripted = await observe("scripted", dir => scriptedRunnerTransport(dir))
+    expect(real, "precondition: the REAL transport relocates a snapshot").toEqual({
+      newHasPayload: true,
+      oldHasPayload: false,
+      restoredX: true,
+    })
+    expect(scripted, "CL13 violation: the scripted runner transport relocates differently from the real transport").toEqual(real)
+  }, 90_000)
 
   test("POST-TRANS-5 live: the runtime bootstrap succeeds in the managed venv", async () => {
     // Risk tier: HIGH — the bootstrap cell is the runtime admission gate;
@@ -705,6 +896,8 @@ time.sleep(30)`,
 
       // Write compressed snapshot
       const writeResult = await first.writeSnapshot(names, 256 * 1024 * 1024)
+      // POST-STAGE-1: stage, then commit into the live directory as KernelManager does.
+      await first.writeSnapshotPayload(artifacts)
       expect(writeResult.bytes).toBeGreaterThan(0)
       expect(writeResult.compression).toBe("lzma")
       // Narrow via explicit guard rather than a non-null assertion: compressedBytes

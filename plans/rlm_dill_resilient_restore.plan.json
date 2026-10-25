@@ -1,0 +1,194 @@
+{
+  "schema_version": "1.0",
+  "feature_name": "rlm_dill_resilient_restore_and_session_isolation",
+  "manifest_path": "requirements/REQUIREMENT_MANIFEST_RLM_DILL_REHYDRATION.md",
+  "manifest_hash": "sha256:19542ad5ff42a84c4ce7061809bc779f3073feec6f057c3f81901ca7abc56d5e",
+  "created": "2026-10-23",
+  "last_updated": "2026-10-25",
+  "status": "ACTIVE",
+  "slices": [
+    {
+      "id": "SLICE-1",
+      "clauses_in_scope": [
+        "POST-RESTORE-SKIP-1",
+        "POST-RESTORE-TELEMETRY-1",
+        "POST-NAME-FILTER-1",
+        "POST-BOOTSTRAP-PRIMITIVES-1",
+        "IP-1",
+        "IP-2",
+        "IP-3",
+        "IP-4",
+        "INV-RESTORE-PURITY-1",
+        "FORBIDDEN-RESTORE-ABORT-1",
+        "POST-NOHANDLE-1",
+        "POST-NOOPEN-1",
+        "ERRORS-HANDLECONTAINER-1",
+        "FORBIDDEN-HANDLEOPEN-1",
+        "CROSS_INV-1"
+      ],
+      "clauses_deferred": [
+        "POST-SESSION-ISOLATION-1",
+        "POST-SESSION-OWNED-DIR-1",
+        "POST-SM-OWN-ARTIFACTS-READY-1",
+        "POST-SESSION-PREFLUSH-1",
+        "POST-SESSION-READINESS-1",
+        "POST-SESSION-FALLBACK-ISOLATION-1",
+        "POST-SESSION-NO-OWNED-DIR-ISOLATION-1",
+        "POST-SESSION-RESOLUTION-GATE-1",
+        "ERRORS-SESSION-SWITCH-DISPOSE-1",
+        "POST-TRANS-SKIPPED-WIRE-PROPAGATION-1",
+        "FORBIDDEN-CROSS-SESSION-BLEED-1",
+        "IP-5",
+        "POST-QUARANTINE-INSPECT-1",
+        "IP-6",
+        "POST-TOOL-SESSION-BINDING-1",
+        "ERRORS-TOOL-SESSION-CHANGED-1",
+        "POST-SESSION-NO-SIDE-EFFECT-1"
+      ],
+      "negative_constraints": [
+        "REQ-RLM-REHYDRATE-001",
+        "REQ-RLM-REHYDRATE-002",
+        "REQ-RLM-REHYDRATE-005",
+        "REQ-RLM-REHYDRATE-006",
+        "REQ-RLM-REHYDRATE-007",
+        "REQ-RLM-REHYDRATE-008"
+      ],
+      "status": "GREEN_COMPLETE",
+      "depends_on": [],
+      "issue": "TODO",
+      "pivot_note": "KernelRunner restores valid variables while skipping unpicklables, filters shell builtins, and initializes base primitives."
+    },
+    {
+      "id": "SLICE-2",
+      "clauses_in_scope": [
+        "POST-SESSION-ISOLATION-1",
+        "POST-SESSION-OWNED-DIR-1",
+        "POST-SM-OWN-ARTIFACTS-READY-1",
+        "POST-SESSION-PREFLUSH-1",
+        "POST-SESSION-READINESS-1",
+        "POST-SESSION-FALLBACK-ISOLATION-1",
+        "POST-SESSION-NO-OWNED-DIR-ISOLATION-1",
+        "POST-SESSION-RESOLUTION-GATE-1",
+        "ERRORS-SESSION-SWITCH-DISPOSE-1",
+        "POST-TRANS-SKIPPED-WIRE-PROPAGATION-1",
+        "FORBIDDEN-CROSS-SESSION-BLEED-1",
+        "IP-5",
+        "POST-TOOL-SESSION-BINDING-1",
+        "ERRORS-TOOL-SESSION-CHANGED-1",
+        "POST-SESSION-NO-SIDE-EFFECT-1"
+      ],
+      "clauses_deferred": [
+        "POST-QUARANTINE-INSPECT-1",
+        "IP-6"
+      ],
+      "negative_constraints": [
+        "REQ-RLM-REHYDRATE-003"
+      ],
+      "status": "GREEN_COMPLETE",
+      "depends_on": [
+        "SLICE-1"
+      ],
+      "issue": "TODO",
+      "pivot_note": "Kernel-state dir is exactly SessionManager.resolveOwnArtifactsDir() (own session-file dir, awaited past the background copy into that file); no owned dir -> fresh mkdtemp isolated state; kernel construction gated on the resolved dir; typed pre-transition flush; each ipython invocation is bound at entry to its kernel and aborts visibly if that kernel is replaced (POST-TOOL-SESSION-BINDING-1). CORRECTIONS: (1) GREEN_COMPLETE at e3f85186aa was FALSE (adopted no-file A->B bleed); repaired 39fcd7f..f70cf3f. (2) d2504a9 parked tool-call/switch atomicity as a policy choice; that was wrong - it is a live REQ-RLM-REHYDRATE-003 leak path - repaired d1cc30a (RED) / fdc5a32 (GREEN). GREEN_COMPLETE means local RED->GREEN evidence only: not audited, not human-accepted. Until a2b12ab packages/rlm was in no scripts/ci-test-ts.ts bucket, so GitHub CI never ran the RLM suite; a dedicated 'Test RLM (TS + Python)' job now exists (SLICE-4) but its execution is not yet evidenced here. Specs that import the real SessionManager need the host native addon (the dedicated job provides the real linux-x64 artifact) and could not be run in the local environment. (3) 96369bf's eager no-owned-dir fallback injected a transcript message and a stray .omp/artifacts/isolated-* dir into every in-memory host session (the host loads this extension in all unrestricted sessions) and turned CI job 'coding-agent runtime/session' red at d2504a9 (rpc-goal messageCount 1 vs 0); repaired lazily by 214eff5 (RED) / ac03b8f (GREEN). That job's recovery is UNVERIFIED locally (needs the host native addon); the next CI run is the discriminator."
+    },
+    {
+      "id": "SLICE-3",
+      "clauses_in_scope": [
+        "POST-QUARANTINE-INSPECT-1",
+        "IP-6",
+        "POST-QNOOPEN-1",
+        "ERRORS-QHANDLECONTAINER-1",
+        "CROSS_INV-1"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [
+        "REQ-RLM-REHYDRATE-004"
+      ],
+      "status": "GREEN_COMPLETE",
+      "depends_on": [
+        "SLICE-1",
+        "SLICE-2"
+      ],
+      "issue": "TODO",
+      "pivot_note": "Quarantine utility safely isolates legacy dill files and extracts recoverable variables without contaminating clean sessions, continuing past SyntaxError and deserialization exceptions with lazy lzma import."
+    },
+    {
+      "id": "SLICE-4",
+      "clauses_in_scope": [
+        "POST-CI-RLM-SELECTION-1"
+      ],
+      "clauses_deferred": [
+        "POST-CI-RLM-EXECUTION-1"
+      ],
+      "negative_constraints": [
+        "REQ-RLM-REHYDRATE-001",
+        "REQ-RLM-REHYDRATE-003"
+      ],
+      "status": "GREEN_COMPLETE",
+      "depends_on": [
+        "SLICE-1",
+        "SLICE-2",
+        "SLICE-3"
+      ],
+      "issue": "TODO",
+      "pivot_note": "RLM CI gate. POST-CI-RLM-SELECTION-1 is GREEN_COMPLETE locally only: RED 500b79e, GREEN a2b12ab; scripts/ci-test-ts.test.ts drives the script's real --dry-run dispatch (6/6; four compiling mutations each caught). POST-CI-RLM-EXECUTION-1 (method: execution) is DEFERRED and NOT evidenced by this plan: it is satisfied only by the real GitHub Actions job log of 'Test RLM (TS + Python)' on the PR head (needs native_addons; non-zero executed counts, zero skip/fail, real-SessionManager files executed rather than failing to load). No run result is recorded here; the observed run is reported separately by URL."
+    },
+    {
+      "id": "SLICE-5",
+      "clauses_in_scope": [
+        "POST-SESSION-TRANSITION-GEN-1",
+        "POST-SESSION-SHUTDOWN-RACE-1",
+        "ERRORS-SESSION-RESOLUTION-FAILED-1",
+        "POST-KM-START-SINGLEFLIGHT-1",
+        "POST-SESSION-PREFLUSH-BOUNDED-1",
+        "POST-KM-NO-RESURRECT-1",
+        "POST-SESSION-MOVE-1",
+        "POST-BOOTSTRAP-RLM-REQUIRED-1",
+        "POST-BOOTSTRAP-IPYTHON-1",
+        "POST-CI-RLM-NOSKIP-1",
+        "POST-CI-NATIVE-ABI-1",
+        "POST-KM-SNAPSHOT-SERIAL-1",
+        "POST-KM-SNAPSHOT-PAIR-1",
+        "POST-SESSION-MOVE-2",
+        "POST-SESSION-MOVE-3",
+        "POST-STAGE-1"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [
+        "REQ-RLM-REHYDRATE-001",
+        "REQ-RLM-REHYDRATE-003",
+        "REQ-RLM-REHYDRATE-008"
+      ],
+      "status": "GREEN_COMPLETE",
+      "depends_on": [
+        "SLICE-1",
+        "SLICE-2",
+        "SLICE-3",
+        "SLICE-4"
+      ],
+      "issue": "TODO",
+      "pivot_note": "Copilot review repair (PR #44), released by Ketema's directive. Batches RED -> GREEN: A lifecycle generation/shutdown/resolution-failed 44f5c6a -> f9bf421 (regression repairs 7eca9d1 -> 73ca669); B kernel single-flight + bounded non-racing flush 4e33370 -> c36ec40; C bootstrap requires rlm c800b0e -> 8b81e9f; D CI no-skip gate judged from real Bun output faa68a9 -> dd36080; E1 kernel never resurrects a removed dir 39629a3 -> 11c1d79; E2 host announces a session relocation with reason 'move' 39b13e7 -> 49fb4f3 (moveWouldRelocate in 5fa85b0). The E2 RED was observed on GitHub run 40189908737 (host native addon; 3 tests failed, the 2 guards passed); the first generation-token change was caught by the native-backed session_transition spec on GitHub (run 40188968056) and repaired. Test-defect repairs unrelated to RLM semantics: 4eb685c, 035139d, 5fa85b0, 6672c6a (host double, git identity, Bun 1.4.4 pack/CLOEXEC/CDP endpoint, crash-cancel margin). Parent review of 5fa85b0 (snapshot boundary), each RED observed failing locally with natives-free tests before its GREEN: F1 serialization behind an active cell e4de06b -> f249032 (POST-KM-SNAPSHOT-SERIAL-1); F2 deletion and abandonment during in-flight work, re-checked before every write, 8191367 -> 1c73741 (POST-KM-NO-RESURRECT-1 tightened); F3 payload+manifest committed as one generation with rollback, async preparation before commit, 0136548 -> 1c42ff2 (POST-KM-SNAPSHOT-PAIR-1). Parent review of 6672c6a (persistence move-off ordering), RED observed failing locally natives-free (2 tests through the real extension, adapter and manager with only the Python process scripted): G move-off final snapshot lands in the session's new owned directory e8f8363 -> 480b0ac (POST-SESSION-MOVE-2; contract a1b444f, test seam c719ffe); a wire test pins the runner paths and fails on the pre-fix transport. POST-CI-RLM-EXECUTION-1 evidence for the code head 480b0ac is the real job log of run 40195766780 (244 TS pass, 0 fail, 32 Python, 0 skip/todo). Not claimed here: Copilot could not re-review the new heads (quota); comment 4366298454 (F13) is DISPUTED 0:4 and was not changed; the plan-file truncation writer is unidentified and the file is kept read-only (0444) as containment."
+    }
+  ],
+  "pivot_guidance": [
+    "Verify SLICE-1 resilient restore and builtin filtering passes before moving to SLICE-2 host session directory partitioning.",
+    "Verify SLICE-2 guarantees empty state on fresh sessions before running SLICE-3 quarantine inspection.",
+    "STATUS NOTICE (PARKED - NOT COMPLETED, NOT HUMAN ACCEPTED):",
+    "1. SEQ-8: automated legacy quarantine on session bootstrap. quarantine_inspector.py is a standalone forensic utility only; no legacy operations were run. Pending explicit human disposition.",
+    "2. Persistence/restore POLICY for sessions WITHOUT a session file (in-memory, adopted subagents) needs new intent. Safe behaviour is in force meanwhile: fresh isolated mkdtemp state per lifecycle event, never another session's files (POST-SESSION-NO-OWNED-DIR-ISOLATION-1); returning to the same no-file session does not restore its prior state.",
+    "3. Older hosts lacking SessionManager.resolveOwnArtifactsDir() get fresh isolated state plus an observable warning; no path trusts getArtifactsDir().",
+    "RESOLVED (was parked in d2504a9): tool-call/transition atomicity - see POST-TOOL-SESSION-BINDING-1 / ERRORS-TOOL-SESSION-CHANGED-1.",
+    "SEQ DISPOSITIONS (audit finding 15): manifest sequencing rows SEQ-1..SEQ-7 are carried by existing clauses (POST-RESTORE-SKIP-1, INV-RESTORE-PURITY-1, POST-RESTORE-TELEMETRY-1, IP-2, POST-NAME-FILTER-1, IP-3, POST-BOOTSTRAP-PRIMITIVES-1, IP-4, POST-SESSION-RESOLUTION-GATE-1, IP-5); plans/slice.queue.md lists each row with its carrying clause and evidence test. No SEQ clause is invented to satisfy a count. SEQ-8 stays parked above.",
+    "RESIDUES left untouched for human disposition: worktree-root kernel-state.dill (dated before the resolution gate; never loaded); gitignored .omp/artifacts/isolated-* dirs created by the contracted no-owned-dir fallback during local runs.",
+    "DISPOSITION FORBIDDEN-UNARCHIVED-DELETE-1 (verification method stays 'test'): no test is owed in this slice and it is claimed by no slice. The quarantine inspector has no operation that removes or truncates a source snapshot, so the only wrong implementation is one that ADDS such an operation; an assertion placed now to name the clause would assert the absence of a feature (future-edit theater, theater-detection C4). A test becomes owed, and is written RED first, in the batch that introduces any removal path.",
+    "ENVIRONMENT / CI COVERAGE (record for human): before a2b12ab packages/rlm was absent from every scripts/ci-test-ts.ts bucket. A dedicated job 'Test RLM (TS + Python)' (also added to release_gate) now selects the full packages/rlm TS suite and the locked-uv Python suite; it runs with the real linux-x64 native artifact and a job-local pinned uv 0.13.5. Its execution evidence is the GitHub job log only - not recorded in this plan. At fbcb2118d5 the whole CI run completed success (15 jobs success, 10 skipped by design); the four coding-agent/native-integration jobs once red on tests identical to base no longer fail."
+  ],
+  "forgotten_invariants": [
+    "REQ-RLM-REHYDRATE-001",
+    "REQ-RLM-REHYDRATE-002",
+    "REQ-RLM-REHYDRATE-003",
+    "REQ-RLM-REHYDRATE-004",
+    "REQ-RLM-REHYDRATE-007",
+    "REQ-RLM-REHYDRATE-008"
+  ]
+}

@@ -263,8 +263,8 @@ class TestRlmDillCompression(unittest.TestCase):
         self.assertEqual(manifest["uncompressedBytes"], direct_uncompressed_bytes)
         self.assertEqual(manifest["compressionDurationMs"], res["compressionDurationMs"])
 
-    def test_post_snap_restore_1_atomic_namespace_isolation(self):
-        """POST-RESTORE-1: Failed unpickling of any variable leaves active user_ns dictionary keys untouched (dictionary binding atomicity)."""
+    def test_post_snap_restore_1_resilient_namespace_isolation(self):
+        """POST-RESTORE-1, POST-RESTORE-SKIP-1: Failed unpickling of any variable skips that variable, preserves valid variables in user_ns, and reports skipped in telemetry without crashing."""
         ns = rlm_kernel_runner._get_ns()
         ns["original_var"] = "untouched"
 
@@ -276,14 +276,18 @@ class TestRlmDillCompression(unittest.TestCase):
         with open(self.snapshot_path, "wb") as f:
             dill.dump(corrupted_payload, f)
 
-        # Attempt restore
-        with self.assertRaises(CorruptSnapshotError):
-            rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+        # Under resilient restore, _snapshot_restore does NOT raise CorruptSnapshotError for individual variable blobs
+        result = rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
 
-        # Active namespace dictionary must NOT contain partial key assignments
+        # Active namespace dictionary contains the valid restored variable and leaves pre-existing state
         self.assertEqual(ns.get("original_var"), "untouched")
-        self.assertNotIn("good_var", ns)
+        self.assertEqual(ns.get("good_var"), "good")
         self.assertNotIn("bad_var", ns)
+
+        # Skipped telemetry records the corrupted variable
+        self.assertIn("skipped", result)
+        skipped_names = [s.get("name") if isinstance(s, dict) else s for s in result["skipped"]]
+        self.assertIn("bad_var", skipped_names)
 
     def test_errors_2_unsupported_header_fails_fast(self):
         """ERRORS-2: Unrecognized magic header raises UnsupportedCodecError directly."""

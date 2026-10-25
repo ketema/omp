@@ -57,14 +57,6 @@ import {
 // Doubles — injected at construction, scripted at construction
 // ---------------------------------------------------------------------------
 
-type TransportResult = {
-  code: number
-  stdout: string
-  stderr: string
-  result: string
-  traceback?: string
-  errorEname?: string
-}
 
 /** Injectable clock with a DETERMINISTIC scheduler: the manager schedules
  * all timers through clock.schedule, and tests advance virtual time. */
@@ -101,66 +93,9 @@ function makeClock() {
   return clock
 }
 
-import type { KernelSnapshotWriteResult } from "../src/kernel.ts"
-
-type TransportScript = {
-  start?: () => Promise<void> | void
-  execute?: (id: string, code: string, call: number) => Promise<TransportResult>
-  snapshotNames?: () => Promise<string[]>
-  writeSnapshot?: (names: string[], maxBytes: number) => Promise<KernelSnapshotWriteResult>
-  /** Snapshot payload write at the FS boundary: default writes to artifactsDir. */
-  writeSnapshotPayload?: (dir: string) => Promise<void>
-  restoreSnapshot?: () => Promise<string[]>
-  isBusy?: () => boolean
-}
-
-/** Fake transport: scripted AT CONSTRUCTION, records every call. */
-function makeTransport(script: TransportScript = {}) {
-  const calls: Array<{ kind: string; detail: string }> = []
-  const listeners: Array<(o: { id: string; stream: "stdout" | "stderr"; data: string }) => void> = []
-  let execCount = 0
-  const transport = {
-    calls,
-    emit(id: string, stream: "stdout" | "stderr", data: string) {
-      for (const l of listeners) l({ id, stream, data })
-    },
-    async start(): Promise<void> {
-      calls.push({ kind: "start", detail: "" })
-      await script.start?.()
-    },
-    async execute(id: string, code: string): Promise<TransportResult> {
-      execCount += 1
-      calls.push({ kind: "execute", detail: `${id}:${code}` })
-      const r = await script.execute?.(id, code, execCount)
-      return r ?? { code: 0, stdout: "", stderr: "", result: "" }
-    },
-    interrupt() { calls.push({ kind: "interrupt", detail: "" }) },
-    kill() { calls.push({ kind: "kill", detail: "" }) },
-    onOutput(cb: (o: { id: string; stream: "stdout" | "stderr"; data: string }) => void) {
-      listeners.push(cb)
-    },
-    async snapshotNames(): Promise<string[]> {
-      calls.push({ kind: "snapshotNames", detail: "" })
-      return await (script.snapshotNames?.() ?? Promise.resolve(["a", "b"]))
-    },
-    async writeSnapshot(names: string[], maxBytes: number): Promise<{ bytes: number; skipped: { name: string; reason: string }[] }> {
-      calls.push({ kind: "writeSnapshot", detail: names.join(",") })
-      return await (script.writeSnapshot?.(names, maxBytes) ?? Promise.resolve({ bytes: 10, skipped: [] }))
-    },
-    async restoreSnapshot(): Promise<string[]> {
-      calls.push({ kind: "restoreSnapshot", detail: "" })
-      return await (script.restoreSnapshot?.() ?? Promise.resolve(["a", "b"]))
-    },
-    async bootstrap(): Promise<void> { calls.push({ kind: "bootstrap", detail: "" }) },
-    isBusy(): boolean { return script.isBusy?.() ?? false },
-    ...(script.writeSnapshotPayload !== undefined
-      ? { writeSnapshotPayload: (dir: string): Promise<void> => script.writeSnapshotPayload?.(dir) ?? Promise.resolve() }
-      : {}),
-    alive(): boolean { return true },
-    async dispose(): Promise<void> { calls.push({ kind: "transportDispose", detail: "" }) },
-  }
-  return transport
-}
+// The scripted transport is shared (kernel_transport_double.ts): it is a behavioral substitute for the real transport,
+// so its parity with RlmTransport is pinned once, in transport.spec.ts.
+import { makeScriptedTransport as makeTransport, type TransportResult } from "./kernel_transport_double.ts"
 
 function artifactsDir(): string {
   return fs.mkdtempSync("/tmp/rlm-km-test-")
@@ -1259,3 +1194,357 @@ test("FORBIDDEN-KM-6: abort-grace callback must not settle a later execution in 
     "untouched by cell 1's stale grace callback",
   ).toBe("KernelExecuteTimeoutError")
 })
+
+// ---------------------------------------------------------------------------
+// POST-KM-START-SINGLEFLIGHT-1 / POST-SESSION-PREFLUSH-BOUNDED-1
+// (contracts/rlm-session-isolation.contract.ts)
+// ---------------------------------------------------------------------------
+
+test("POST-KM-START-SINGLEFLIGHT-1: concurrent ensureStarted calls share one start", async () => {
+  let release: () => void = () => {}
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const transport = makeTransport({ start: () => hold })
+  const manager = new KernelManager(transport, { clock: makeClock(), artifactsDir: artifactsDir() })
+  const first = manager.ensureStarted()
+  const second = manager.ensureStarted()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  release()
+  await Promise.all([first, second])
+  const count = (kind: string) => transport.calls.filter(c => c.kind === kind).length
+  expect(count("start"), "POST-KM-START-SINGLEFLIGHT-1 violation: the transport was started more than once").toBe(1)
+  expect(count("restoreSnapshot"), "POST-KM-START-SINGLEFLIGHT-1 violation: restore ran more than once").toBe(1)
+  expect(count("bootstrap"), "POST-KM-START-SINGLEFLIGHT-1 violation: bootstrap ran more than once").toBe(1)
+})
+
+test("POST-KM-START-SINGLEFLIGHT-1: a failed shared start rejects every concurrent caller and a later call may retry", async () => {
+  let attempt = 0
+  const transport = makeTransport({
+    start: async () => {
+      attempt += 1
+      await new Promise(resolve => setTimeout(resolve, 0))
+      if (attempt === 1) throw new Error("spawn failed")
+    },
+  })
+  const manager = new KernelManager(transport, { clock: makeClock(), artifactsDir: artifactsDir() })
+  const outcomes = await Promise.allSettled([manager.ensureStarted(), manager.ensureStarted()])
+  expect(outcomes.map(o => o.status)).toEqual(["rejected", "rejected"])
+  expect(transport.calls.filter(c => c.kind === "start").length).toBe(1)
+  await manager.ensureStarted()
+  expect(transport.calls.filter(c => c.kind === "start").length).toBe(2)
+})
+
+test("POST-SESSION-PREFLUSH-BOUNDED-1: flushSnapshot settles within SNAPSHOT_DISPOSE_TIMEOUT_MS when the serializer hangs", async () => {
+  const clock = makeClock()
+  const transport = makeTransport({ snapshotNames: () => new Promise<string[]>(() => {}) })
+  const manager = new KernelManager(transport, { clock, artifactsDir: artifactsDir() })
+  await manager.execute("x = 1")
+  const outcome = manager.flushSnapshot().then(
+    () => "resolved" as const,
+    (error: unknown) => error,
+  )
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + 100)
+  const settled = await Promise.race([outcome, new Promise<string>(resolve => setTimeout(() => resolve("still-pending"), 500))])
+  expect(settled, "POST-SESSION-PREFLUSH-BOUNDED-1 violation: flushSnapshot never settled on a hung serializer").not.toBe("still-pending")
+  expect(settled instanceof Error ? settled.name : String(settled)).toBe("SnapshotFlushTimeoutError")
+})
+
+test("POST-SESSION-PREFLUSH-BOUNDED-1: snapshot work abandoned by the flush timeout never commits afterwards", async () => {
+  const clock = makeClock()
+  const dir = artifactsDir()
+  let release: () => void = () => {}
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const transport = makeTransport({
+    writeSnapshot: async () => {
+      await hold
+      return { bytes: 10, skipped: [] }
+    },
+    writeSnapshotPayload: async tempDir => {
+      fs.writeFileSync(`${tempDir}/kernel-state.dill`, "PAYLOAD")
+    },
+  })
+  const manager = new KernelManager(transport, { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  const outcome = manager.flushSnapshot().catch((error: unknown) => error)
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + 100)
+  await Promise.race([outcome, new Promise(resolve => setTimeout(resolve, 500))])
+  release()
+  await new Promise(resolve => setTimeout(resolve, 100))
+  expect(
+    fs.existsSync(`${dir}/kernel-state.dill`),
+    "POST-SESSION-PREFLUSH-BOUNDED-1 violation: an abandoned snapshot committed its payload after the timeout",
+  ).toBe(false)
+  expect(
+    fs.existsSync(`${dir}/kernel-state.json`),
+    "POST-SESSION-PREFLUSH-BOUNDED-1 violation: an abandoned snapshot committed its manifest after the timeout",
+  ).toBe(false)
+})
+
+// ---------------------------------------------------------------------------
+// POST-KM-NO-RESURRECT-1 (contracts/rlm-session-isolation.contract.ts)
+// ---------------------------------------------------------------------------
+
+function payloadTransport() {
+  return makeTransport({
+    writeSnapshotPayload: async tempDir => {
+      fs.writeFileSync(`${tempDir}/kernel-state.dill`, "PAYLOAD")
+    },
+  })
+}
+test("POST-KM-NO-RESURRECT-1: a dispose-time snapshot never re-creates an artifacts directory the host removed", async () => {
+  const clock = makeClock()
+  const dir = artifactsDir()
+  const manager = new KernelManager(payloadTransport(), { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  fs.rmSync(dir, { recursive: true, force: true })
+  const done = manager.dispose({ snapshot: true })
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + DISPOSE_TIMEOUT_MS + 100)
+  await done
+  expect(
+    fs.existsSync(dir),
+    "POST-KM-NO-RESURRECT-1 violation: dispose re-created the artifacts directory the host had removed",
+  ).toBe(false)
+})
+
+test("POST-KM-NO-RESURRECT-1: a flush never re-creates a removed artifacts directory", async () => {
+  const clock = makeClock()
+  const dir = artifactsDir()
+  const manager = new KernelManager(payloadTransport(), { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  fs.rmSync(dir, { recursive: true, force: true })
+  await manager.flushSnapshot()
+  expect(
+    fs.existsSync(dir),
+    "POST-KM-NO-RESURRECT-1 violation: flushSnapshot re-created the artifacts directory the host had removed",
+  ).toBe(false)
+})
+
+test("POST-KM-NO-RESURRECT-1: a directory that never existed is still created by the first snapshot", async () => {
+  const clock = makeClock()
+  const dir = `${artifactsDir()}/fresh-session`
+  const manager = new KernelManager(
+    makeTransport({
+      writeSnapshotPayload: async tempDir => {
+        fs.writeFileSync(`${tempDir}/kernel-state.dill`, "PAYLOAD")
+      },
+    }),
+    { clock, artifactsDir: dir },
+  )
+  await manager.execute("x = 1")
+  await manager.flushSnapshot()
+  expect(fs.existsSync(`${dir}/kernel-state.dill`)).toBe(true)
+  expect(fs.existsSync(`${dir}/kernel-state.json`)).toBe(true)
+})
+
+// ---------------------------------------------------------------------------
+// POST-KM-SNAPSHOT-SERIAL-1 (contracts/rlm-session-isolation.contract.ts)
+// ---------------------------------------------------------------------------
+
+test("POST-KM-SNAPSHOT-SERIAL-1: a flush requested while a cell runs does not touch the kernel until that cell settles", async () => {
+  let releaseCell: () => void = () => {}
+  const cellHold = new Promise<void>(resolve => { releaseCell = resolve })
+  const transport = makeTransport({
+    execute: async (_id, code) => {
+      if (code === "slow = 1") await cellHold
+      return { code: 0, stdout: "", stderr: "", result: "" }
+    },
+  })
+  const manager = new KernelManager(transport, { clock: makeClock(), artifactsDir: artifactsDir() })
+  await manager.execute("warm = 1")
+  const cell = manager.execute("slow = 1")
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const flush = manager.flushSnapshot()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const namesWhileCellRuns = transport.calls.filter(c => c.kind === "snapshotNames").length
+  releaseCell()
+  await cell
+  await flush
+  expect(
+    namesWhileCellRuns,
+    "POST-KM-SNAPSHOT-SERIAL-1 violation: snapshotNames ran while an earlier cell was still active",
+  ).toBe(0)
+  expect(transport.calls.filter(c => c.kind === "snapshotNames").length).toBe(1)
+})
+
+test("POST-KM-NO-RESURRECT-1: a directory removed while the kernel is still serializing is not re-created when that work settles", async () => {
+  let release: () => void = () => {}
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const dir = artifactsDir()
+  const transport = makeTransport({
+    writeSnapshot: async () => {
+      await hold
+      return { bytes: 10, skipped: [] }
+    },
+    writeSnapshotPayload: async tempDir => {
+      fs.writeFileSync(`${tempDir}/kernel-state.dill`, "PAYLOAD")
+    },
+  })
+  const manager = new KernelManager(transport, { clock: makeClock(), artifactsDir: dir })
+  await manager.execute("x = 1")
+  const flush = manager.flushSnapshot().catch((error: unknown) => error)
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(transport.calls.some(c => c.kind === "writeSnapshot"), "precondition: serialization is in flight").toBe(true)
+  fs.rmSync(dir, { recursive: true, force: true }) // the host's /delete lands mid-snapshot
+  release()
+  await flush
+  expect(
+    fs.existsSync(dir),
+    "POST-KM-NO-RESURRECT-1 violation: a snapshot that began before the host removed the directory re-created it",
+  ).toBe(false)
+})
+
+test("POST-KM-NO-RESURRECT-1: a snapshot abandoned by the flush timeout never starts payload staging", async () => {
+  const clock = makeClock()
+  const dir = artifactsDir()
+  let release: () => void = () => {}
+  const hold = new Promise<void>(resolve => { release = resolve })
+  let stagingStarts = 0
+  const transport = makeTransport({
+    writeSnapshot: async () => {
+      await hold
+      return { bytes: 10, skipped: [] }
+    },
+    writeSnapshotPayload: async tempDir => {
+      stagingStarts += 1
+      fs.writeFileSync(`${tempDir}/kernel-state.dill`, "PAYLOAD")
+    },
+  })
+  const manager = new KernelManager(transport, { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  const outcome = manager.flushSnapshot().catch((error: unknown) => error)
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + 100)
+  await Promise.race([outcome, new Promise(resolve => setTimeout(resolve, 500))])
+  release()
+  await new Promise(resolve => setTimeout(resolve, 50))
+  expect(
+    stagingStarts,
+    "POST-KM-NO-RESURRECT-1 violation: abandoned snapshot work still created a staging area and wrote into it",
+  ).toBe(0)
+  expect(fs.readdirSync(dir).filter(name => name.startsWith(".kernel-snapshot-tmp-"))).toEqual([])
+})
+
+// ---------------------------------------------------------------------------
+// POST-KM-SNAPSHOT-PAIR-1 (contracts/rlm-session-isolation.contract.ts)
+// ---------------------------------------------------------------------------
+
+function pairTransport(extra: { pythonVersion?: () => Promise<string> } = {}) {
+  return makeTransport({
+    writeSnapshotPayload: async tempDir => {
+      fs.writeFileSync(`${tempDir}/kernel-state.dill`, "NEW-PAYLOAD")
+    },
+    ...extra,
+  })
+}
+
+function seedPriorPair(dir: string): void {
+  fs.writeFileSync(`${dir}/kernel-state.dill`, "OLD-PAYLOAD")
+  fs.writeFileSync(`${dir}/kernel-state.json`, JSON.stringify({ version: 1, savedNames: ["prior"] }))
+}
+
+test("POST-KM-SNAPSHOT-PAIR-1: a flush abandoned while the kernel's Python version is pending leaves the prior payload and manifest intact", async () => {
+  const clock = makeClock()
+  const dir = artifactsDir()
+  seedPriorPair(dir)
+  let release: () => void = () => {}
+  const hold = new Promise<string>(resolve => { release = () => resolve("3.11.0") })
+  const manager = new KernelManager(pairTransport({ pythonVersion: () => hold }), { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  const outcome = manager.flushSnapshot().catch((error: unknown) => error)
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + 100)
+  await Promise.race([outcome, new Promise(resolve => setTimeout(resolve, 500))])
+  release()
+  await new Promise(resolve => setTimeout(resolve, 50))
+  expect(
+    fs.readFileSync(`${dir}/kernel-state.dill`, "utf8"),
+    "POST-KM-SNAPSHOT-PAIR-1 violation: the payload was replaced although the snapshot was abandoned before its manifest could commit",
+  ).toBe("OLD-PAYLOAD")
+  expect(
+    (JSON.parse(fs.readFileSync(`${dir}/kernel-state.json`, "utf8")) as { savedNames: string[] }).savedNames,
+    "POST-KM-SNAPSHOT-PAIR-1 violation: the manifest no longer matches the payload beside it",
+  ).toEqual(["prior"])
+})
+
+test("POST-KM-SNAPSHOT-PAIR-1: a commit that cannot finish rolls the payload back to the prior generation", async () => {
+  const clock = makeClock()
+  const dir = artifactsDir()
+  fs.writeFileSync(`${dir}/kernel-state.dill`, "OLD-PAYLOAD")
+  // A non-empty directory squats on the manifest path, so replacing the manifest must fail.
+  fs.mkdirSync(`${dir}/kernel-state.json`)
+  fs.writeFileSync(`${dir}/kernel-state.json/keep`, "x")
+  const manager = new KernelManager(pairTransport(), { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  const outcome = await manager.flushSnapshot().then(
+    () => "committed" as const,
+    () => "failed" as const,
+  )
+  expect(outcome).toBe("failed")
+  expect(
+    fs.readFileSync(`${dir}/kernel-state.dill`, "utf8"),
+    "POST-KM-SNAPSHOT-PAIR-1 violation: a failed commit left the new payload beside the old manifest",
+  ).toBe("OLD-PAYLOAD")
+  expect(fs.readdirSync(dir).filter(name => name.includes(".rollback-"))).toEqual([])
+})
+
+test("POST-KM-SNAPSHOT-PAIR-1: a completed snapshot replaces payload and manifest together", async () => {
+  const clock = makeClock()
+  const dir = artifactsDir()
+  seedPriorPair(dir)
+  const manager = new KernelManager(pairTransport({ pythonVersion: async () => "3.11.0" }), { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  await manager.flushSnapshot()
+  expect(fs.readFileSync(`${dir}/kernel-state.dill`, "utf8")).toBe("NEW-PAYLOAD")
+  const manifest = JSON.parse(fs.readFileSync(`${dir}/kernel-state.json`, "utf8")) as { savedNames: string[]; pythonVersion: string }
+  expect(manifest.savedNames).toEqual(["a", "b"])
+  expect(manifest.pythonVersion).toBe("3.11.0")
+  expect(fs.readdirSync(dir).filter(name => name.includes(".rollback-"))).toEqual([])
+})
+
+// ---------------------------------------------------------------------------
+// ERRORS-SESSION-SWITCH-DISPOSE-1: the teardown diagnostic names the real cause
+// (contracts/rlm-session-isolation.contract.ts)
+// ---------------------------------------------------------------------------
+
+test("ERRORS-SESSION-SWITCH-DISPOSE-1: a dispose-time snapshot abandoned at its bound surfaces a notice naming the bound and the unsaved state", async () => {
+  const clock = makeClock()
+  const transport = makeTransport({ snapshotNames: () => new Promise<string[]>(() => {}) }) // the serializer never settles
+  const manager = new KernelManager(transport, { clock, artifactsDir: artifactsDir() })
+  await manager.execute("x = 1")
+  const done = manager.dispose({ snapshot: true })
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + DISPOSE_TIMEOUT_MS + 100)
+  await done
+  const notice = manager.takeTeardownNotice()
+  expect(
+    notice,
+    "ERRORS-SESSION-SWITCH-DISPOSE-1 violation: abandoning the dispose snapshot at its bound was not surfaced\nEXPECTED: a notice stating the snapshot did not settle within the bound\nACTUAL: no notice",
+  ).not.toBeNull()
+  expect(
+    notice,
+    "ERRORS-SESSION-SWITCH-DISPOSE-1 violation: the notice does not name the bound\nEXPECTED: it names 'did not settle within' and the bound in ms",
+  ).toContain(`did not settle within ${SNAPSHOT_DISPOSE_TIMEOUT_MS}ms`)
+})
+
+test("ERRORS-SESSION-SWITCH-DISPOSE-1: a snapshot abandoned at the dispose bound does not later overwrite the notice with a downstream transport error", async () => {
+  const clock = makeClock()
+  let failLate: (error: Error) => void = () => {}
+  const transport = makeTransport({
+    snapshotNames: () =>
+      new Promise<string[]>((_, reject) => {
+        failLate = reject
+      }),
+  })
+  const manager = new KernelManager(transport, { clock, artifactsDir: artifactsDir() })
+  await manager.execute("x = 1")
+  const done = manager.dispose({ snapshot: true })
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + DISPOSE_TIMEOUT_MS + 100)
+  await done
+  failLate(new Error("transport not started; call start() first")) // what the killed runner produces afterwards
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const notice = manager.takeTeardownNotice()
+  expect(
+    notice ?? "",
+    "ERRORS-SESSION-SWITCH-DISPOSE-1 violation: a downstream transport error replaced the cause of the abandoned snapshot\nEXPECTED: the notice keeps naming the bound\nACTUAL: " + String(notice),
+  ).toContain(`did not settle within ${SNAPSHOT_DISPOSE_TIMEOUT_MS}ms`)
+})
+

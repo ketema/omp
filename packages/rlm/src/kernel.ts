@@ -77,6 +77,16 @@ export class KernelPortsUnresolvedError extends RlmKernelContractError {
 	}
 }
 
+/** POST-SESSION-PREFLUSH-BOUNDED-1: a pre-transition flush did not settle within SNAPSHOT_DISPOSE_TIMEOUT_MS. */
+export class SnapshotFlushTimeoutError extends RlmKernelContractError {
+	constructor() {
+		super(
+			`Snapshot flush did not settle within ${SNAPSHOT_DISPOSE_TIMEOUT_MS}ms; the abandoned snapshot will not be committed`,
+		);
+		this.name = "SnapshotFlushTimeoutError";
+	}
+}
+
 export class ExecutionAbortedError extends RlmKernelContractError {
 	constructor() {
 		super("IPython execution aborted");
@@ -156,8 +166,12 @@ export interface KernelTransport {
 	snapshotNames(): Promise<string[]>;
 	writeSnapshot(names: readonly string[], maxBytes: number): Promise<KernelSnapshotWriteResult>;
 	writeSnapshotPayload?(dir: string): Promise<void>;
+	/** POST-STAGE-1: remove the stage the transport owns for the snapshot that just settled (committed, abandoned or failed). */
+	discardSnapshotStage?(): void;
 	/** C6: reports the kernel's Python version for the snapshot manifest. */
 	pythonVersion?(): Promise<string>;
+	/** POST-SESSION-MOVE-2: retarget the directory later snapshot writes and restores use (transports that write it themselves). */
+	setArtifactsDir?(dir: string): void;
 	restoreSnapshot(): Promise<string[]>;
 	bootstrap(): Promise<void> | void;
 	isBusy(): boolean;
@@ -185,15 +199,6 @@ function appendCapped(current: string, chunk: string): string {
 	return next.slice(0, MAX_OUTPUT_CHARS + markerLength);
 }
 
-/** V4/V5/F3/F4: atomic file write — temp file in the SAME directory as the
- * destination, then rename (POSIX same-filesystem rename is atomic). A
- * crash mid-write leaves the prior file intact and readable. */
-function atomicWriteFileSync(destPath: string, content: string): void {
-	const tempPath = `${destPath}.tmp-${process.pid}-${Date.now()}`;
-	fs.writeFileSync(tempPath, content);
-	fs.renameSync(tempPath, destPath);
-}
-
 /** C1/F-017: stderr tails quoted in errors are bounded to
  * STDERR_TAIL_CHARS (prime-agent slices the last 1024 at throw sites). */
 function boundedStderrTail(stderr: string): string {
@@ -218,7 +223,19 @@ function safeInterrupt(transport: KernelTransport): void {
 export class KernelManager {
 	private readonly transport: KernelTransport;
 	private readonly clock: KernelClock;
-	private readonly artifactsDir: string;
+	private artifactsDir: string;
+	/** POST-KM-NO-RESURRECT-1: the directory existed at construction or a snapshot already wrote into it. */
+	private artifactsDirSeen: boolean;
+
+	/**
+	 * POST-SESSION-MOVE-2: the session this kernel serves now owns `dir`. Later snapshots - including the final one at
+	 * dispose - are written there, never into the superseded directory. The new directory is NOT assumed to exist.
+	 */
+	relocate(dir: string): void {
+		this.artifactsDir = dir;
+		this.artifactsDirSeen = fs.existsSync(dir);
+		this.transport.setArtifactsDir?.(dir);
+	}
 
 	private started = false;
 	private disposed = false;
@@ -252,11 +269,13 @@ export class KernelManager {
 
 	// SLICE-4 additive: names restored by the last admission (for tool/extension)
 	private lastRestoredNames: readonly string[] = [];
+	private lastRestoredSkipped: ReadonlyArray<{ readonly name: string; readonly reason: string }> = [];
 
 	constructor(transport: KernelTransport, options: { clock: KernelClock; artifactsDir: string }) {
 		this.transport = transport;
 		this.clock = options.clock;
 		this.artifactsDir = options.artifactsDir;
+		this.artifactsDirSeen = fs.existsSync(options.artifactsDir);
 
 		// POST-KM-3/FORBIDDEN-KM-2: accept output only for the active execution id
 		this.transport.onOutput((event: KernelOutputEvent) => {
@@ -381,6 +400,10 @@ export class KernelManager {
 		return this.lastRestoredNames;
 	}
 
+	restoredSkipped(): ReadonlyArray<{ readonly name: string; readonly reason: string }> {
+		return this.lastRestoredSkipped;
+	}
+
 	/**
 	 * SLICE-4 additive: user-initiated kernel kill (the tool's busy-restart
 	 * path). Kills the transport and resets the started flag so the next
@@ -389,6 +412,7 @@ export class KernelManager {
 	async kill(): Promise<void> {
 		this.started = false;
 		this.lastRestoredNames = [];
+		this.lastRestoredSkipped = [];
 		const killResult = this.transport.kill();
 		if (killResult instanceof Promise) await killResult.catch(() => undefined);
 	}
@@ -414,16 +438,26 @@ export class KernelManager {
 		// bounded by SNAPSHOT_DISPOSE_TIMEOUT_MS so a hung kernel cannot
 		// deadlock teardown (prime-agent flushSnapshotForDispose shape)
 		if (options?.snapshot === true && this.started && this.transport.alive()) {
+			// ERRORS-SESSION-SWITCH-DISPOSE-1: work abandoned at the bound is named as such and never commits afterwards;
+			// whatever the killed provider reports later is a consequence, not the cause, and never replaces that notice.
+			const token = { abandoned: false };
+			let cancelBound: () => void = () => {};
 			await Promise.race([
-				this.runSnapshot().catch((error: unknown) => {
+				this.runSnapshot(token).catch((error: unknown) => {
+					if (token.abandoned) return;
 					// Snapshot failure at teardown is observable, not silent (F8):
 					// the durability loss is named; teardown proceeds
 					this.teardownNotice = `snapshot flush failed during dispose: ${String(error)}`;
 				}),
 				new Promise<void>(resolve => {
-					this.clock.schedule(() => resolve(), SNAPSHOT_DISPOSE_TIMEOUT_MS);
+					cancelBound = this.clock.schedule(() => {
+						token.abandoned = true;
+						this.teardownNotice = `snapshot flush did not settle within ${SNAPSHOT_DISPOSE_TIMEOUT_MS}ms and was abandoned; state executed since the last committed snapshot was not persisted`;
+						resolve();
+					}, SNAPSHOT_DISPOSE_TIMEOUT_MS);
 				}),
 			]);
+			cancelBound();
 		}
 
 		// INV-KM-LIFETIME-2: wait for in-flight executions with timeout
@@ -481,6 +515,20 @@ export class KernelManager {
 	 */
 	async ensureStarted(onProgress?: (phase: "starting" | "restoring" | "preparing") => void): Promise<void> {
 		if (this.started) return;
+		// POST-KM-START-SINGLEFLIGHT-1: concurrent callers share ONE start (spawn, restore, bootstrap).
+		if (this.startInFlight === null) {
+			const run: Promise<void> = this.startOnce(onProgress).finally(() => {
+				if (this.startInFlight === run) this.startInFlight = null;
+			});
+			this.startInFlight = run;
+		}
+		return this.startInFlight;
+	}
+
+	private startInFlight: Promise<void> | null = null;
+
+	private async startOnce(onProgress?: (phase: "starting" | "restoring" | "preparing") => void): Promise<void> {
+		if (this.started) return;
 		try {
 			if (onProgress !== undefined) onProgress("starting");
 			await this.transport.start();
@@ -491,7 +539,11 @@ export class KernelManager {
 			throw new KernelUnresponsiveError(tail);
 		}
 		if (onProgress !== undefined) onProgress("restoring");
-		this.lastRestoredNames = await this.transport.restoreSnapshot();
+		const restored = await this.transport.restoreSnapshot();
+		this.lastRestoredNames = Array.from(restored);
+		const skippedFromRestored = (restored as unknown as { skipped?: Array<{ name: string; reason: string }> })
+			.skipped;
+		this.lastRestoredSkipped = Array.isArray(skippedFromRestored) ? skippedFromRestored : [];
 		if (onProgress !== undefined) onProgress("preparing");
 		await this.transport.bootstrap();
 		this.started = true;
@@ -758,14 +810,56 @@ export class KernelManager {
 	}
 
 	/**
+	 * POST-SESSION-PREFLUSH-1: write the current snapshot NOW without disposing or restarting, so a host about to
+	 * copy this session's artifacts (fork/branch) sees the latest state, and a vetoed transition leaves the kernel
+	 * fully usable. Cancels the pending debounce (the flushed state supersedes it).
+	 *
+	 * No-op ONLY when there is nothing live to flush (never started, disposed, or process dead). A failing snapshot
+	 * REJECTS so the caller can surface it; it is never swallowed here.
+	 */
+	async flushSnapshot(): Promise<void> {
+		if (this.disposed || !this.started || !this.transport.alive()) return;
+		if (this.snapshotCancel !== null) {
+			this.snapshotCancel();
+			this.snapshotCancel = null;
+		}
+		// POST-SESSION-PREFLUSH-BOUNDED-1: bounded like the dispose flush; work abandoned by the timeout never
+		// commits, so it cannot race the host's copy of the artifacts directory.
+		const token = { abandoned: false };
+		const run = this.runSnapshot(token);
+		run.catch(() => undefined);
+		let cancelTimer: () => void = () => {};
+		const bound = new Promise<never>((_, reject) => {
+			cancelTimer = this.clock.schedule(() => {
+				token.abandoned = true;
+				reject(new SnapshotFlushTimeoutError());
+			}, SNAPSHOT_DISPOSE_TIMEOUT_MS);
+		});
+		try {
+			await Promise.race([run, bound]);
+		} finally {
+			cancelTimer();
+		}
+	}
+
+	/**
 	 * FORBIDDEN-KM-1/SEQ-KM-5: snapshot flow — snapshotNames → filter
 	 * SNAPSHOT_ALWAYS_SKIP → writeSnapshot → atomic payload write → manifest.
 	 */
-	private async runSnapshot(): Promise<void> {
+	private async runSnapshot(token?: { abandoned: boolean }): Promise<void> {
+		// POST-KM-NO-RESURRECT-1: the host removed a directory we had used (e.g. /delete drops the session's
+		// artifacts before the switch that disposes this kernel): skip, never re-create it.
+		if (this.artifactsDirSeen && !fs.existsSync(this.artifactsDir)) return;
 		// C5: snapshots run through the serialization chain — a snapshot cell
 		// concurrent with an active cell races kernel state (prime-agent
 		// enqueues snapshot cells; same discipline here)
-		const run = (async (): Promise<void> => {
+		// POST-KM-NO-RESURRECT-1: re-checked immediately before every filesystem write, not only at request time -
+		// the host may delete the directory (or the flush bound may abandon this work) while the kernel serializes.
+		const canWrite = (): boolean =>
+			token?.abandoned !== true && !(this.artifactsDirSeen && !fs.existsSync(this.artifactsDir));
+		// POST-KM-SNAPSHOT-SERIAL-1: a thunk, started by the chain only after every earlier entry settled.
+		const run = async (): Promise<void> => {
+			if (!canWrite()) return;
 			// Gather all names from the kernel
 			const allNames = await this.transport.snapshotNames();
 
@@ -776,75 +870,110 @@ export class KernelManager {
 			// Write snapshot (serialization in kernel process); C2/F-174: the
 			// byte cap flows through the seam — the writer is TOLD the budget
 			const writeResult = await this.transport.writeSnapshot(filteredNames, SNAPSHOT_MAX_BYTES);
+			if (!canWrite()) return;
 
-			// Atomic payload write: write to a temp dir INSIDE artifactsDir,
-			// then rename within the same filesystem (V4/F3: a cross-filesystem
-			// temp location silently degrades to non-atomic copy — same-dir
-			// rename is atomic on POSIX)
-			// FORBIDDEN-KM-1: crash mid-write must leave prior artifacts intact
-			const payloadFn = this.transport.writeSnapshotPayload;
-			if (typeof payloadFn === "function") {
-				const tempDir = join(
-					this.artifactsDir,
-					`.kernel-snapshot-tmp-${this.clock.now()}-${Math.random().toString(36).slice(2, 10)}`,
-				);
-				try {
-					fs.mkdirSync(this.artifactsDir, { recursive: true });
-					fs.mkdirSync(tempDir, { recursive: true });
-					await payloadFn(tempDir);
-
-					// Same-filesystem rename: atomic
-					const payloadSrc = join(tempDir, SNAPSHOT_PAYLOAD_FILE);
-					const payloadDest = join(this.artifactsDir, SNAPSHOT_PAYLOAD_FILE);
-					fs.renameSync(payloadSrc, payloadDest);
-				} finally {
-					// Clean up temp dir regardless of success/failure
-					try {
-						fs.rmSync(tempDir, { recursive: true, force: true });
-					} catch {
-						// temp cleanup failure never affects the committed payload
-					}
-				}
-			}
-
-			// C6: the manifest's pythonVersion comes from the kernel when the
-			// transport can report it (prime-agent writes sys.version)
+			// POST-KM-SNAPSHOT-PAIR-1: EVERY asynchronous preparation step completes before either artifact is
+			// replaced. C6: the manifest's pythonVersion comes from the kernel when the transport can report it
+			// (prime-agent writes sys.version); a hang here abandons the snapshot with the prior pair untouched.
 			const pythonVersion = await (this.transport.pythonVersion?.() ?? Promise.resolve(""));
+			if (!canWrite()) return;
 
-			// V5/F4: the manifest gets the same atomicity guarantee as the
-			// payload — temp file in artifactsDir + rename (a torn manifest
-			// makes the prior snapshot unreadable per INV-KM-2)
-			const manifest: KernelSnapshotManifest = {
-				version: SNAPSHOT_MANIFEST_VERSION,
-				savedNames: filteredNames,
-				skipped: writeResult.skipped,
-				bytes: writeResult.bytes,
-				...(writeResult.uncompressedBytes !== undefined
-					? { uncompressedBytes: writeResult.uncompressedBytes }
-					: {}),
-				...(writeResult.compressedBytes !== undefined ? { compressedBytes: writeResult.compressedBytes } : {}),
-				...(writeResult.compression !== undefined ? { compression: writeResult.compression } : {}),
-				...(writeResult.compressionRatio !== undefined ? { compressionRatio: writeResult.compressionRatio } : {}),
-				...(writeResult.compressionDurationMs !== undefined
-					? { compressionDurationMs: writeResult.compressionDurationMs }
-					: {}),
-				pythonVersion,
-				timestamp: utcIsoTimestamp(this.clock),
-			};
-			atomicWriteFileSync(join(this.artifactsDir, SNAPSHOT_MANIFEST_FILE), JSON.stringify(manifest));
-		})();
+			const manifest = this.buildSnapshotManifest(filteredNames, writeResult, pythonVersion);
+			await this.commitSnapshot(manifest, canWrite);
+		};
 		// The chain tail carries this snapshot; a cell submitted meanwhile
 		// serializes AFTER it (chain discipline preserved)
+		// POST-STAGE-1: whatever the outcome, the stage the provider wrote into is discarded once the work settled.
+		const runAndDiscard = (): Promise<void> => run().finally(() => this.transport.discardSnapshotStage?.());
 		const prev = this.chainTail;
-		const next = (prev ?? Promise.resolve()).then(
-			() => run,
-			() => run,
-		);
+		const next = (prev ?? Promise.resolve()).then(runAndDiscard, runAndDiscard);
 		this.chainTail = next.then(
 			() => undefined,
 			() => undefined,
 		);
 		await next;
+	}
+
+	/** POST-KM-SNAPSHOT-PAIR-1: the manifest records the saved names, only the telemetry the provider reported, and the kernel's Python version. */
+	private buildSnapshotManifest(
+		savedNames: readonly string[],
+		written: KernelSnapshotWriteResult,
+		pythonVersion: string,
+	): KernelSnapshotManifest {
+		return {
+			version: SNAPSHOT_MANIFEST_VERSION,
+			savedNames,
+			skipped: written.skipped,
+			bytes: written.bytes,
+			...(written.uncompressedBytes !== undefined ? { uncompressedBytes: written.uncompressedBytes } : {}),
+			...(written.compressedBytes !== undefined ? { compressedBytes: written.compressedBytes } : {}),
+			...(written.compression !== undefined ? { compression: written.compression } : {}),
+			...(written.compressionRatio !== undefined ? { compressionRatio: written.compressionRatio } : {}),
+			...(written.compressionDurationMs !== undefined
+				? { compressionDurationMs: written.compressionDurationMs }
+				: {}),
+			pythonVersion,
+			timestamp: utcIsoTimestamp(this.clock),
+		};
+	}
+
+	/**
+	 * POST-KM-SNAPSHOT-PAIR-1 / POST-STAGE-1: the single commit authority. The provider's payload is moved into a temp
+	 * dir inside the live directory, then both artifacts are replaced synchronously with a rollback link to the prior
+	 * payload (V4/F3/V5/F4: same-filesystem renames are atomic; a torn manifest would make the prior snapshot
+	 * unreadable per INV-KM-2). Re-checked immediately before every filesystem write; leftovers never affect the
+	 * committed generation.
+	 */
+	private async commitSnapshot(manifest: KernelSnapshotManifest, canWrite: () => boolean): Promise<void> {
+		const payloadFn = this.transport.writeSnapshotPayload;
+		const payloadDest = join(this.artifactsDir, SNAPSHOT_PAYLOAD_FILE);
+		const manifestDest = join(this.artifactsDir, SNAPSHOT_MANIFEST_FILE);
+		const suffix = `${this.clock.now()}-${Math.random().toString(36).slice(2, 10)}`;
+		const tempDir =
+			typeof payloadFn === "function" ? join(this.artifactsDir, `.kernel-snapshot-tmp-${suffix}`) : undefined;
+		const manifestTmp = `${manifestDest}.tmp-${suffix}`;
+		const rollbackLink = `${payloadDest}.rollback-${suffix}`;
+		try {
+			if (tempDir !== undefined && typeof payloadFn === "function") {
+				fs.mkdirSync(this.artifactsDir, { recursive: true });
+				this.artifactsDirSeen = true;
+				fs.mkdirSync(tempDir, { recursive: true });
+				await payloadFn.call(this.transport, tempDir);
+				if (!canWrite()) return;
+			}
+
+			// Commit, synchronous (no await between the two replacements). The prior payload stays reachable through a
+			// hard link until the manifest has committed, so a failed commit restores the previous generation exactly.
+			fs.writeFileSync(manifestTmp, JSON.stringify(manifest));
+			let payloadReplaced = false;
+			let hadPriorPayload = false;
+			try {
+				if (tempDir !== undefined) {
+					if (fs.existsSync(payloadDest)) {
+						fs.linkSync(payloadDest, rollbackLink);
+						hadPriorPayload = true;
+					}
+					fs.renameSync(join(tempDir, SNAPSHOT_PAYLOAD_FILE), payloadDest);
+					payloadReplaced = true;
+				}
+				fs.renameSync(manifestTmp, manifestDest);
+			} catch (error) {
+				if (payloadReplaced) {
+					if (hadPriorPayload) fs.renameSync(rollbackLink, payloadDest);
+					else fs.rmSync(payloadDest, { force: true });
+				}
+				throw error;
+			}
+		} finally {
+			for (const leftover of [tempDir, manifestTmp, rollbackLink]) {
+				if (leftover === undefined) continue;
+				try {
+					fs.rmSync(leftover, { recursive: true, force: true });
+				} catch {
+					// cleanup failure never affects the committed generation
+				}
+			}
+		}
 	}
 
 	/**
