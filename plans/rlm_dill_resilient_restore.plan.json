@@ -35,7 +35,8 @@
         "POST-QUARANTINE-INSPECT-1",
         "IP-6",
         "POST-TOOL-SESSION-BINDING-1",
-        "ERRORS-TOOL-SESSION-CHANGED-1"
+        "ERRORS-TOOL-SESSION-CHANGED-1",
+        "POST-SESSION-NO-SIDE-EFFECT-1"
       ],
       "negative_constraints": [
         "REQ-RLM-REHYDRATE-001",
@@ -66,7 +67,8 @@
         "FORBIDDEN-CROSS-SESSION-BLEED-1",
         "IP-5",
         "POST-TOOL-SESSION-BINDING-1",
-        "ERRORS-TOOL-SESSION-CHANGED-1"
+        "ERRORS-TOOL-SESSION-CHANGED-1",
+        "POST-SESSION-NO-SIDE-EFFECT-1"
       ],
       "clauses_deferred": [
         "POST-QUARANTINE-INSPECT-1",
@@ -80,7 +82,7 @@
         "SLICE-1"
       ],
       "issue": "TODO",
-      "pivot_note": "Kernel-state dir is exactly SessionManager.resolveOwnArtifactsDir() (own session-file dir, awaited past the background copy into that file); no owned dir -> fresh mkdtemp isolated state; kernel construction gated on the resolved dir; typed pre-transition flush; each ipython invocation is bound at entry to its kernel and aborts visibly if that kernel is replaced (POST-TOOL-SESSION-BINDING-1). CORRECTIONS: (1) GREEN_COMPLETE at e3f85186aa was FALSE (adopted no-file A->B bleed); repaired 39fcd7f..f70cf3f. (2) d2504a9 parked tool-call/switch atomicity as a policy choice; that was wrong - it is a live REQ-RLM-REHYDRATE-003 leak path - repaired d1cc30a (RED) / fdc5a32 (GREEN). GREEN_COMPLETE means local RED->GREEN evidence only: not audited, not human-accepted. packages/rlm is NOT in any scripts/ci-test-ts.ts bucket, so GitHub CI never runs the RLM suite; specs that import the real SessionManager need the host native addon and could not be run in the final local environment."
+      "pivot_note": "Kernel-state dir is exactly SessionManager.resolveOwnArtifactsDir() (own session-file dir, awaited past the background copy into that file); no owned dir -> fresh mkdtemp isolated state; kernel construction gated on the resolved dir; typed pre-transition flush; each ipython invocation is bound at entry to its kernel and aborts visibly if that kernel is replaced (POST-TOOL-SESSION-BINDING-1). CORRECTIONS: (1) GREEN_COMPLETE at e3f85186aa was FALSE (adopted no-file A->B bleed); repaired 39fcd7f..f70cf3f. (2) d2504a9 parked tool-call/switch atomicity as a policy choice; that was wrong - it is a live REQ-RLM-REHYDRATE-003 leak path - repaired d1cc30a (RED) / fdc5a32 (GREEN). GREEN_COMPLETE means local RED->GREEN evidence only: not audited, not human-accepted. packages/rlm is NOT in any scripts/ci-test-ts.ts bucket, so GitHub CI never runs the RLM suite; specs that import the real SessionManager need the host native addon and could not be run in the final local environment. (3) 96369bf's eager no-owned-dir fallback injected a transcript message and a stray .omp/artifacts/isolated-* dir into every in-memory host session (the host loads this extension in all unrestricted sessions) and turned CI job 'coding-agent runtime/session' red at d2504a9 (rpc-goal messageCount 1 vs 0); repaired lazily by 214eff5 (RED) / ac03b8f (GREEN). That job's recovery is UNVERIFIED locally (needs the host native addon); the next CI run is the discriminator."
     },
     {
       "id": "SLICE-3",
