@@ -303,7 +303,8 @@ async function createDefaultKernel(config: RlmKernelConfig, artifactsDir: string
 // =============================================================================
 
 export interface CreateRlmExtensionOptions {
-	readonly createKernel?: (config: RlmKernelConfig) => RlmExtensionKernelPort;
+	/** Test seam: builds the kernel port for the RESOLVED session artifacts directory (POST-SESSION-RESOLUTION-GATE-1). */
+	readonly createKernel?: (config: RlmKernelConfig, artifactsDir: string) => RlmExtensionKernelPort;
 }
 
 /**
@@ -315,20 +316,64 @@ export function createRlmExtension(
 ): (api: StructuralExtensionAPI) => Promise<void> {
 	return async (api: StructuralExtensionAPI): Promise<void> => {
 		let kernel: RlmExtensionKernelPort | null = null;
-		let artifactsDir = "";
+		// null until a lifecycle event resolves the session's directory (or first use allocates a fallback).
+		let artifactsDir: string | null = null;
+		// POST-SESSION-RESOLUTION-GATE-1: the in-flight transition's directory resolution, and the single
+		// in-flight kernel construction. A kernel is only ever built against a resolved directory.
+		let pendingResolution: Promise<void> | null = null;
+		let kernelConstruction: Promise<RlmExtensionKernelPort> | null = null;
 
-		// Lazy kernel construction — deferred until first use
+		// POST-SESSION-FALLBACK-ISOLATION-1: a dedicated atomically unique (mkdtemp) directory, announced by an
+		// observable warning naming it. It starts empty, so nothing is ever restored into it.
+		const allocateIsolatedFallback = (cwd: string, reason: string): string => {
+			const artifactsRoot = join(cwd, ".omp", "artifacts");
+			fs.mkdirSync(artifactsRoot, { recursive: true });
+			const fallbackDir = fs.mkdtempSync(join(artifactsRoot, `isolated-${Date.now()}-`));
+			api.sendMessage(
+				{
+					role: "custom",
+					customType: "rlm-warning",
+					content: `Warning: ${reason}. Starting with fresh isolated state; no snapshot restored. Fallback isolated directory assigned: ${fallbackDir}`,
+					display: false,
+					attribution: "agent",
+					timestamp: Date.now(),
+				},
+				{ deliverAs: "nextTurn" },
+			);
+			return fallbackDir;
+		};
+
+		// Lazy, single-flight kernel construction — deferred until first use, gated on directory resolution.
 		const ensureKernel = async (): Promise<RlmExtensionKernelPort> => {
 			if (kernel !== null) return kernel;
-
-			const config = resolveConfigFromFlags(api);
-			// artifactsDir is resolved at session start time
-			if (options?.createKernel !== undefined) {
-				kernel = options.createKernel(config);
-			} else {
-				kernel = await createDefaultKernel(config, artifactsDir);
+			if (kernelConstruction === null) {
+				const resolutionAtStart = pendingResolution;
+				const construction = (async (): Promise<RlmExtensionKernelPort> => {
+					if (resolutionAtStart !== null) await resolutionAtStart;
+					// POST-SESSION-NO-OWNED-DIR-ISOLATION-1: first use before any lifecycle event resolved a
+					// directory gets a fresh isolated directory, never a cwd-relative shared path.
+					const dir =
+						artifactsDir ??
+						allocateIsolatedFallback(
+							process.cwd(),
+							"No session lifecycle event resolved an artifacts directory before first kernel use",
+						);
+					artifactsDir = dir;
+					const config = resolveConfigFromFlags(api);
+					const created =
+						options?.createKernel !== undefined
+							? options.createKernel(config, dir)
+							: await createDefaultKernel(config, dir);
+					kernel = created;
+					return created;
+				})();
+				kernelConstruction = construction;
+				const clear = () => {
+					if (kernelConstruction === construction) kernelConstruction = null;
+				};
+				construction.then(clear, clear);
 			}
-			return kernel;
+			return kernelConstruction;
 		};
 
 		// registerTool: exactly ONE tool, the ipython tool
@@ -453,69 +498,49 @@ export function createRlmExtension(
 		api.on("session_before_switch", handlePreTransitionFlush);
 		api.on("session_before_branch", handlePreTransitionFlush);
 
-		// POST-SESSION-FALLBACK-ISOLATION-1: a dedicated atomically unique (mkdtemp) directory, announced by an
-		// observable warning naming it. It starts empty, so nothing is ever restored into it.
-		const allocateIsolatedFallback = (cwd: string, reason: string): string => {
-			const artifactsRoot = join(cwd, ".omp", "artifacts");
-			fs.mkdirSync(artifactsRoot, { recursive: true });
-			const fallbackDir = fs.mkdtempSync(join(artifactsRoot, `isolated-${Date.now()}-`));
-			api.sendMessage(
-				{
-					role: "custom",
-					customType: "rlm-warning",
-					content: `Warning: ${reason}. Starting with fresh isolated state; no snapshot restored. Fallback isolated directory assigned: ${fallbackDir}`,
-					display: false,
-					attribution: "agent",
-					timestamp: Date.now(),
-				},
-				{ deliverAs: "nextTurn" },
-			);
-			return fallbackDir;
-		};
-
-		// Handle session start, session switches, and branches (for /new, /fork, /resume, /branch)
-		const handleSessionInit = async (_event: unknown, ctx?: unknown) => {
-			// Save and dispose outgoing kernel if present to prevent cross-session leakage (Comment 4366356325)
-			if (kernel !== null) {
-				try {
-					await kernel.dispose();
-					// Check for observable teardown failure notices from KernelManager
-					const teardownNotice = kernel.takeTeardownNotice?.();
-					if (teardownNotice) {
-						api.sendMessage(
-							{
-								role: "custom",
-								customType: "rlm-warning",
-								content: `Warning: ${teardownNotice}`,
-								display: true,
-								attribution: "agent",
-								timestamp: Date.now(),
-							},
-							{ deliverAs: "nextTurn" },
-						);
-					}
-				} catch (err) {
-					// ERRORS-SESSION-SWITCH-DISPOSE-1: Surface observable diagnostic on flush failure
+		// Save and dispose the outgoing kernel to prevent cross-session leakage (Comment 4366356325)
+		const disposeOutgoingKernel = async (): Promise<void> => {
+			if (kernel === null) return;
+			try {
+				await kernel.dispose();
+				// Check for observable teardown failure notices from KernelManager
+				const teardownNotice = kernel.takeTeardownNotice?.();
+				if (teardownNotice) {
 					api.sendMessage(
 						{
 							role: "custom",
 							customType: "rlm-warning",
-							content: `Warning: Failed to cleanly dispose outgoing kernel during session switch: ${err instanceof Error ? err.message : String(err)}`,
+							content: `Warning: ${teardownNotice}`,
 							display: true,
 							attribution: "agent",
 							timestamp: Date.now(),
 						},
 						{ deliverAs: "nextTurn" },
 					);
-				} finally {
-					kernel = null;
 				}
+			} catch (err) {
+				// ERRORS-SESSION-SWITCH-DISPOSE-1: Surface observable diagnostic on flush failure
+				api.sendMessage(
+					{
+						role: "custom",
+						customType: "rlm-warning",
+						content: `Warning: Failed to cleanly dispose outgoing kernel during session switch: ${err instanceof Error ? err.message : String(err)}`,
+						display: true,
+						attribution: "agent",
+						timestamp: Date.now(),
+					},
+					{ deliverAs: "nextTurn" },
+				);
+			} finally {
+				kernel = null;
 			}
+		};
 
-			// POST-SESSION-OWNED-DIR-1 / POST-SESSION-READINESS-1: the kernel-state directory is exactly what
-			// the host's typed sessionManager.resolveOwnArtifactsDir() returns: the CURRENT session file's own
-			// directory, resolved only after the host's background artifact copy into that file has settled.
-			// getArtifactsDir()/getArtifactManager() are never consulted: under adoption they name the parent's.
+		// POST-SESSION-OWNED-DIR-1 / POST-SESSION-READINESS-1: the kernel-state directory is exactly what
+		// the host's typed sessionManager.resolveOwnArtifactsDir() returns: the CURRENT session file's own
+		// directory, resolved only after the host's background artifact copy into that file has settled.
+		// getArtifactsDir()/getArtifactManager() are never consulted: under adoption they name the parent's.
+		const resolveIncomingArtifactsDir = async (ctx: unknown): Promise<string> => {
 			const sessionCtx = ctx as
 				| { cwd?: string; sessionManager?: { resolveOwnArtifactsDir?: () => Promise<string | null> } }
 				| undefined;
@@ -533,7 +558,27 @@ export function createRlmExtension(
 				noOwnedDirReason = "Session has no session file, so it owns no artifacts directory";
 			}
 			// POST-SESSION-NO-OWNED-DIR-ISOLATION-1: no owned directory -> fresh isolated state, never a shared root.
-			artifactsDir = ownDir ?? allocateIsolatedFallback(effectiveCwd, noOwnedDirReason);
+			return ownDir ?? allocateIsolatedFallback(effectiveCwd, noOwnedDirReason);
+		};
+
+		// Handle session start, session switches, and branches (for /new, /fork, /resume, /branch)
+		const handleSessionInit = async (_event: unknown, ctx?: unknown) => {
+			const resolution = (async (): Promise<void> => {
+				// POST-SESSION-RESOLUTION-GATE-1: a construction already in flight targets the outgoing
+				// session; let it finish so it is disposed below instead of surviving into this session.
+				// Its failure is delivered to the caller that requested the kernel, so it is not re-raised here.
+				if (kernelConstruction !== null) await kernelConstruction.catch(() => undefined);
+				await disposeOutgoingKernel();
+				artifactsDir = await resolveIncomingArtifactsDir(ctx);
+			})();
+			pendingResolution = resolution;
+			try {
+				await resolution;
+			} finally {
+				if (pendingResolution === resolution) pendingResolution = null;
+			}
+			// A newer transition started while this one resolved; it owns the incoming session's restore.
+			if (pendingResolution !== null || artifactsDir === null) return;
 			const hasSnapshot = fs.existsSync(join(artifactsDir, "kernel-state.dill"));
 			if (hasSnapshot) {
 				try {
@@ -574,6 +619,8 @@ export function createRlmExtension(
 
 		// on('session_shutdown'): dispose kernel
 		api.on("session_shutdown", async () => {
+			// Never orphan a kernel whose construction is still in flight (its failure surfaces to its requester).
+			if (kernelConstruction !== null) await kernelConstruction.catch(() => undefined);
 			if (kernel !== null) {
 				await kernel.dispose();
 				kernel = null;

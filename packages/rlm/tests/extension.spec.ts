@@ -24,7 +24,7 @@
  * - options.createKernel(config) -> kernel port (injected double)
  */
 
-import { describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 
 import * as fs from "node:fs"
 import { join } from "node:path"
@@ -34,6 +34,27 @@ import {
   type RlmExtensionKernelPort,
   type RlmKernelConfig,
 } from "../src/extension.ts"
+
+// Kernels used before any lifecycle event get a fresh isolated directory under <process.cwd()>/.omp/artifacts
+// (POST-SESSION-NO-OWNED-DIR-ISOLATION-1). Run this file from a scratch cwd so none lands in the worktree.
+let scratchCwd = ""
+let previousCwd = ""
+beforeAll(() => {
+  previousCwd = process.cwd()
+  scratchCwd = fs.mkdtempSync("/tmp/rlm-extension-spec-cwd-")
+  process.chdir(scratchCwd)
+})
+afterAll(() => {
+  process.chdir(previousCwd)
+  fs.rmSync(scratchCwd, { recursive: true, force: true })
+})
+
+function sentOfType(registered: { sentMessages: Array<{ payload: unknown }> }, customType: string) {
+  return registered.sentMessages.filter(m => {
+    const payload = m.payload as { customType?: unknown } | null
+    return typeof payload === "object" && payload !== null && payload.customType === customType
+  })
+}
 
 // ---------------------------------------------------------------------------
 // Doubles — scripted AT CONSTRUCTION, injected AT CONSTRUCTION
@@ -238,8 +259,9 @@ describe("durability wiring", () => {
     const onSession = tool.onSession as (event: { reason: string }) => Promise<void> | void
     await onSession({ reason: "start" })
     expect(kernel.calls.some(c => c.kind === "ensureStarted")).toBe(true)
-    expect(registered.sentMessages.length).toBe(1)
-    const text = JSON.stringify(registered.sentMessages[0].payload)
+    const revivals = sentOfType(registered, "rlm-revival")
+    expect(revivals.length).toBe(1)
+    const text = JSON.stringify(revivals[0].payload)
     expect(text).toContain("df")
     expect(text).toContain("config")
   })
@@ -249,7 +271,7 @@ describe("durability wiring", () => {
     const { registered } = loadExtension({ kernel })
     const onSession = registered.tools[0].onSession as (event: { reason: string }) => Promise<void> | void
     await onSession({ reason: "start" })
-    expect(registered.sentMessages.length).toBe(0)
+    expect(sentOfType(registered, "rlm-revival").length).toBe(0)
   })
 
   test("session shutdown disposes the kernel", async () => {
@@ -271,8 +293,9 @@ describe("durability wiring", () => {
     expect(handlers.length).toBe(1)
     await handlers[0]({})
     expect(kernel.calls.some(c => c.kind === "onCompactionComplete")).toBe(true)
-    expect(registered.sentMessages.length).toBe(1)
-    expect(JSON.stringify(registered.sentMessages[0].payload)).toContain("surviving names")
+    const notices = sentOfType(registered, "rlm-compaction")
+    expect(notices.length).toBe(1)
+    expect(JSON.stringify(notices[0].payload)).toContain("surviving names")
   })
 
   test("SEQ-KM-5 negative: no notice is sent when the kernel has none pending", async () => {
@@ -280,7 +303,7 @@ describe("durability wiring", () => {
     const { registered } = loadExtension({ kernel })
     const handlers = registered.handlers.get("auto_compaction_end") ?? []
     await handlers[0]({})
-    expect(registered.sentMessages.length).toBe(0)
+    expect(sentOfType(registered, "rlm-compaction").length).toBe(0)
   })
 })
 
