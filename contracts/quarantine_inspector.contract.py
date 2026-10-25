@@ -23,6 +23,13 @@ from typing import Final, Literal
 DEFAULT_QUARANTINE_DIRNAME: Final[str] = ".omp/quarantine"
 REPORT_FILENAME: Final[str] = "quarantine_manifest.json"
 
+# Names that reconstruct a file handle (and so open a path) when a serialized variable is rebuilt, and the text an
+# inspection finding about such a variable carries
+FILE_HANDLE_RECONSTRUCTORS: Final[frozenset[str]] = frozenset({
+    "_create_filehandle",
+})
+HANDLE_REASON_MARKER: Final[str] = "file handle"
+
 # =============================================================================
 # Artifact 2: Domain Exception Classes
 # =============================================================================
@@ -104,6 +111,18 @@ CONTRACT_QUARANTINE_INSPECTOR: Final[dict[str, Clause]] = {
         id="FORBIDDEN-UNARCHIVED-DELETE-1",
         method="test",
         description="QuarantineInspector SHALL NOT remove or truncate a legacy snapshot without first creating a verified copy in the quarantine archive",
+        requirement_ids=("REQ-RLM-REHYDRATE-004",),
+    ),
+    "POST-QNOOPEN-1": Clause(
+        id="POST-QNOOPEN-1",
+        method="test",
+        description="QuarantineInspector refuses, BEFORE any deserialization that could open a path, a per-variable blob whose serialized form references a file-handle reconstructor (including a handle nested inside a container or object): the variable is reported unpicklable with an error that names a file handle, every other variable is still inspected and reported recoverable, and the file the handle named is byte-identical afterwards. Inspection that truncates a file is destruction, not forensics. This is an accidental-I/O guard, not a sandbox for arbitrary pickles",
+        requirement_ids=("REQ-RLM-REHYDRATE-004",),
+    ),
+    "ERRORS-QHANDLECONTAINER-1": Clause(
+        id="ERRORS-QHANDLECONTAINER-1",
+        method="test",
+        description="When the snapshot's CONTAINER itself references a file-handle reconstructor, QuarantineInspector raises UnsafeReconstructionError naming a file handle after archiving the source copy and before deserializing anything; it opens no path named inside the snapshot",
         requirement_ids=("REQ-RLM-REHYDRATE-004",),
     ),
     "IP-6": Clause(

@@ -19,7 +19,11 @@
         "IP-3",
         "IP-4",
         "INV-RESTORE-PURITY-1",
-        "FORBIDDEN-RESTORE-ABORT-1"
+        "FORBIDDEN-RESTORE-ABORT-1",
+        "POST-NOHANDLE-1",
+        "POST-NOOPEN-1",
+        "ERRORS-HANDLECONTAINER-1",
+        "FORBIDDEN-HANDLEOPEN-1"
       ],
       "clauses_deferred": [
         "POST-SESSION-ISOLATION-1",
@@ -91,7 +95,9 @@
       "clauses_in_scope": [
         "POST-QUARANTINE-INSPECT-1",
         "IP-6",
-        "FORBIDDEN-UNARCHIVED-DELETE-1"
+        "FORBIDDEN-UNARCHIVED-DELETE-1",
+        "POST-QNOOPEN-1",
+        "ERRORS-QHANDLECONTAINER-1"
       ],
       "clauses_deferred": [],
       "negative_constraints": [

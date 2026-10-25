@@ -44,6 +44,15 @@ BASE_BOOTSTRAP_MODULES: Final[frozenset[str]] = frozenset({
     "IPython.display",
 })
 
+# Names that reconstruct a file handle (and so open a path) when a serialized variable is rebuilt
+FILE_HANDLE_RECONSTRUCTORS: Final[frozenset[str]] = frozenset({
+    "_create_filehandle",
+})
+
+# Reason text and error type a refused variable carries in the skipped telemetry
+HANDLE_REASON_MARKER: Final[str] = "file handle"
+UNSAFE_RECONSTRUCTION_ERROR_TYPE: Final[str] = "UnsafeReconstructionError"
+
 # =============================================================================
 # Artifact 2: Domain Exception Classes
 # =============================================================================
@@ -58,6 +67,10 @@ class NamespacePurityViolationError(ResilientRestoreContractError):
 
 class BuiltinLeakageError(ResilientRestoreContractError):
     """Raised when an interactive shell builtin is serialized into user snapshot variables."""
+
+
+class UnsafeReconstructionContractError(ResilientRestoreContractError):
+    """Raised when a restore or snapshot lets a file-handle reconstruction reach an open."""
 
 
 # =============================================================================
@@ -130,6 +143,34 @@ def validate_bootstrap_environment(sys_modules: Mapping[str, Any]) -> bool:
     return True
 
 
+# Validators for the file-handle guard (POST-NOHANDLE-1, POST-NOOPEN-1, FORBIDDEN-HANDLEOPEN-1)
+
+
+def validate_handle_refusal(skipped: tuple[SkippedVariableRecord, ...], name: str) -> bool:
+    """POST-NOOPEN-1 / POST-NOHANDLE-1: `name` is skipped, for a reason naming a file handle, as UnsafeReconstructionError."""
+    matching = [record for record in skipped if record.name == name]
+    if len(matching) != 1:
+        raise UnsafeReconstructionContractError(
+            f"POST-NOOPEN-1 violation: expected exactly one skipped record for {name!r}, got {len(matching)}"
+        )
+    record = matching[0]
+    if HANDLE_REASON_MARKER not in record.reason or record.error_type != UNSAFE_RECONSTRUCTION_ERROR_TYPE:
+        raise UnsafeReconstructionContractError(
+            f"POST-NOOPEN-1 violation: skipped record for {name!r} must name a {HANDLE_REASON_MARKER} "
+            f"as {UNSAFE_RECONSTRUCTION_ERROR_TYPE}, got reason={record.reason!r} error_type={record.error_type!r}"
+        )
+    return True
+
+
+def validate_no_open_effect(before: bytes, after: bytes) -> bool:
+    """FORBIDDEN-HANDLEOPEN-1: the file a snapshot named is byte-identical after a restore attempt."""
+    if before != after:
+        raise UnsafeReconstructionContractError(
+            f"FORBIDDEN-HANDLEOPEN-1 violation: a path named in the snapshot changed ({len(before)} -> {len(after)} bytes)"
+        )
+    return True
+
+
 # =============================================================================
 # Artifact 5: Clause Contract Map
 # =============================================================================
@@ -190,6 +231,30 @@ CONTRACT_RLM_DILL_RESILIENT_RESTORE: Final[dict[str, Clause]] = {
         method="test",
         description="KernelRunner SHALL NOT raise CorruptSnapshotError for individual unpickling failures when the container dict and compression headers are valid",
         requirement_ids=("REQ-RLM-REHYDRATE-001",),
+    ),
+    "POST-NOHANDLE-1": Clause(
+        id="POST-NOHANDLE-1",
+        method="test",
+        description="KernelRunner._snapshot_write never serializes a live or closed file handle, including one nested inside a container or object attribute: a variable whose serialized form would reconstruct a file handle is skipped, reported in the skipped telemetry with a reason that names a file handle, and every other variable is still written. A handle cannot be rebuilt without reopening its path, so it is not state a snapshot may carry",
+        requirement_ids=("REQ-RLM-REHYDRATE-001", "REQ-RLM-REHYDRATE-006"),
+    ),
+    "POST-NOOPEN-1": Clause(
+        id="POST-NOOPEN-1",
+        method="test",
+        description="KernelRunner._snapshot_restore refuses, BEFORE any deserialization that could open a path, a per-variable blob whose serialized form references a file-handle reconstructor (a legacy snapshot written by an older runner, including a handle nested inside a container or object): the variable is skipped with a reason that names a file handle and error_type UnsafeReconstructionError, every other variable is restored, and the file the handle named is byte-identical afterwards. This is an accidental-I/O guard under the runner's existing permissions, not a sandbox for arbitrary pickles",
+        requirement_ids=("REQ-RLM-REHYDRATE-001", "REQ-RLM-REHYDRATE-002"),
+    ),
+    "ERRORS-HANDLECONTAINER-1": Clause(
+        id="ERRORS-HANDLECONTAINER-1",
+        method="test",
+        description="When the snapshot's CONTAINER itself (not a per-variable blob) references a file-handle reconstructor, KernelRunner._snapshot_restore raises CorruptSnapshotError naming a file handle before deserializing anything, mutates no namespace, and opens no path; per-variable skipping does not apply because no per-variable boundary exists",
+        requirement_ids=("REQ-RLM-REHYDRATE-002",),
+    ),
+    "FORBIDDEN-HANDLEOPEN-1": Clause(
+        id="FORBIDDEN-HANDLEOPEN-1",
+        method="test",
+        description="Restoring a snapshot SHALL NOT create, open, truncate or write any path named inside the snapshot",
+        requirement_ids=("REQ-RLM-REHYDRATE-002",),
     ),
     "IP-1": Clause(
         id="IP-1",
