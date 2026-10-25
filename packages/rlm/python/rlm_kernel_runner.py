@@ -695,11 +695,13 @@ def _bootstrap() -> None:
     # Verify dill is importable
     import dill  # noqa: F401
 
-    # Import the runtime package if available
+    # POST-BOOTSTRAP-RLM-REQUIRED-1: the runtime package is required; never report readiness without it.
     try:
         import rlm  # noqa: F401
-    except ImportError:
-        pass
+    except ImportError as exc:
+        raise ImportError(
+            "rlm-runtime is not installed in this IPython kernel; install it into the kernel interpreter"
+        ) from exc
 
     # Pre-load base interactive and standard library primitives into sys.modules (POST-BOOTSTRAP-PRIMITIVES-1)
     import json  # noqa: F401
