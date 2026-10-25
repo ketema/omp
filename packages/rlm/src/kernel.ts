@@ -77,6 +77,16 @@ export class KernelPortsUnresolvedError extends RlmKernelContractError {
 	}
 }
 
+/** POST-SESSION-PREFLUSH-BOUNDED-1: a pre-transition flush did not settle within SNAPSHOT_DISPOSE_TIMEOUT_MS. */
+export class SnapshotFlushTimeoutError extends RlmKernelContractError {
+	constructor() {
+		super(
+			`Snapshot flush did not settle within ${SNAPSHOT_DISPOSE_TIMEOUT_MS}ms; the abandoned snapshot will not be committed`,
+		);
+		this.name = "SnapshotFlushTimeoutError";
+	}
+}
+
 export class ExecutionAbortedError extends RlmKernelContractError {
 	constructor() {
 		super("IPython execution aborted");
@@ -487,6 +497,20 @@ export class KernelManager {
 	 */
 	async ensureStarted(onProgress?: (phase: "starting" | "restoring" | "preparing") => void): Promise<void> {
 		if (this.started) return;
+		// POST-KM-START-SINGLEFLIGHT-1: concurrent callers share ONE start (spawn, restore, bootstrap).
+		if (this.startInFlight === null) {
+			const run: Promise<void> = this.startOnce(onProgress).finally(() => {
+				if (this.startInFlight === run) this.startInFlight = null;
+			});
+			this.startInFlight = run;
+		}
+		return this.startInFlight;
+	}
+
+	private startInFlight: Promise<void> | null = null;
+
+	private async startOnce(onProgress?: (phase: "starting" | "restoring" | "preparing") => void): Promise<void> {
+		if (this.started) return;
 		try {
 			if (onProgress !== undefined) onProgress("starting");
 			await this.transport.start();
@@ -781,14 +805,30 @@ export class KernelManager {
 			this.snapshotCancel();
 			this.snapshotCancel = null;
 		}
-		await this.runSnapshot();
+		// POST-SESSION-PREFLUSH-BOUNDED-1: bounded like the dispose flush; work abandoned by the timeout never
+		// commits, so it cannot race the host's copy of the artifacts directory.
+		const token = { abandoned: false };
+		const run = this.runSnapshot(token);
+		run.catch(() => undefined);
+		let cancelTimer: () => void = () => {};
+		const bound = new Promise<never>((_, reject) => {
+			cancelTimer = this.clock.schedule(() => {
+				token.abandoned = true;
+				reject(new SnapshotFlushTimeoutError());
+			}, SNAPSHOT_DISPOSE_TIMEOUT_MS);
+		});
+		try {
+			await Promise.race([run, bound]);
+		} finally {
+			cancelTimer();
+		}
 	}
 
 	/**
 	 * FORBIDDEN-KM-1/SEQ-KM-5: snapshot flow — snapshotNames → filter
 	 * SNAPSHOT_ALWAYS_SKIP → writeSnapshot → atomic payload write → manifest.
 	 */
-	private async runSnapshot(): Promise<void> {
+	private async runSnapshot(token?: { abandoned: boolean }): Promise<void> {
 		// C5: snapshots run through the serialization chain — a snapshot cell
 		// concurrent with an active cell races kernel state (prime-agent
 		// enqueues snapshot cells; same discipline here)
@@ -819,6 +859,7 @@ export class KernelManager {
 					fs.mkdirSync(this.artifactsDir, { recursive: true });
 					fs.mkdirSync(tempDir, { recursive: true });
 					await payloadFn(tempDir);
+					if (token?.abandoned === true) return;
 
 					// Same-filesystem rename: atomic
 					const payloadSrc = join(tempDir, SNAPSHOT_PAYLOAD_FILE);
@@ -837,6 +878,7 @@ export class KernelManager {
 			// C6: the manifest's pythonVersion comes from the kernel when the
 			// transport can report it (prime-agent writes sys.version)
 			const pythonVersion = await (this.transport.pythonVersion?.() ?? Promise.resolve(""));
+			if (token?.abandoned === true) return;
 
 			// V5/F4: the manifest gets the same atomicity guarantee as the
 			// payload — temp file in artifactsDir + rename (a torn manifest
