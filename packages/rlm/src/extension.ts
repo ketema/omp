@@ -40,6 +40,8 @@ type MutableKernelConfig = {
 
 /** The kernel port exposed to the extension, adding compaction and teardown lifecycle. */
 export interface RlmExtensionKernelPort extends RlmToolKernelPort {
+	/** POST-SESSION-MOVE-2: `snapshotInto` relocates the kernel to the session's new owned directory before its final snapshot. */
+	dispose(options?: { readonly snapshotInto?: string }): Promise<void>;
 	onCompactionComplete(): Promise<void>;
 	flushSnapshot(): Promise<void>;
 	compactionNotice(): string | null;
@@ -119,7 +121,8 @@ export class KernelManagerAdapter implements RlmExtensionKernelPort {
 		await (this.manager as unknown as { kill(): Promise<void> }).kill();
 	}
 
-	async dispose(): Promise<void> {
+	async dispose(options?: { readonly snapshotInto?: string }): Promise<void> {
+		if (options?.snapshotInto !== undefined) this.manager.relocate(options.snapshotInto);
 		await this.manager.dispose({ snapshot: true });
 	}
 
@@ -561,14 +564,14 @@ export function createRlmExtension(
 		api.on("session_before_branch", handlePreTransitionFlush);
 
 		// Save and dispose the outgoing kernel to prevent cross-session leakage (Comment 4366356325)
-		const disposeOutgoingKernel = async (): Promise<void> => {
+		const disposeOutgoingKernel = async (options?: { readonly snapshotInto?: string }): Promise<void> => {
 			const outgoing = kernel;
 			if (outgoing === null) return;
 			// POST-TOOL-SESSION-BINDING-1: relinquish ownership BEFORE the awaited dispose, so every later call
 			// from a cell bound to this kernel fails closed instead of reaching the incoming session.
 			kernel = null;
 			try {
-				await outgoing.dispose();
+				await outgoing.dispose(options);
 				// Check for observable teardown failure notices from KernelManager
 				const teardownNotice = outgoing.takeTeardownNotice?.();
 				if (teardownNotice) {
@@ -629,15 +632,19 @@ export function createRlmExtension(
 		};
 
 		// Handle session start, session switches, and branches (for /new, /fork, /resume, /branch)
-		const handleSessionInit = async (_event: unknown, ctx?: unknown) => {
+		const handleSessionInit = async (event: unknown, ctx?: unknown) => {
 			const myGeneration = ++generation;
 			const isCurrent = (): boolean => myGeneration === generation;
+			// POST-SESSION-MOVE-2: the session is being relocated (the host's artifact copy started BEFORE this event).
+			// The outgoing kernel's final snapshot must land in the session's NEW owned directory, after that copy has
+			// settled, so the namespace executed since its last snapshot is not lost to the older copied one.
+			const relocating = (event as { reason?: string } | undefined)?.reason === "move";
 			const resolution = (async (): Promise<IncomingArtifacts | null> => {
 				// POST-SESSION-RESOLUTION-GATE-1: a construction already in flight targets the outgoing
 				// session; let it finish so it is disposed below instead of surviving into this session.
 				// Its failure is delivered to the caller that requested the kernel, so it is not re-raised here.
 				if (kernelConstruction !== null) await kernelConstruction.catch(() => undefined);
-				await disposeOutgoingKernel();
+				if (!relocating) await disposeOutgoingKernel();
 				// ERRORS-SESSION-RESOLUTION-FAILED-1: forget the outgoing directory before resolving, so a failed
 				// or abandoned resolution can never leave it selectable by the next kernel. A superseded transition
 				// still resolves (a kernel requested during it is built on ITS directory) but never touches the
@@ -655,7 +662,13 @@ export function createRlmExtension(
 							reason: `Incoming session artifacts directory could not be resolved (${err instanceof Error ? err.name : "error"})`,
 						};
 					}
+					// A relocation whose directory cannot be resolved falls back to the ordinary dispose; the error propagates.
+					if (relocating && isCurrent()) await disposeOutgoingKernel();
 					throw err;
+				}
+				// A relocation superseded by a newer transition neither disposes nor snapshots: the newest owns both.
+				if (relocating && isCurrent()) {
+					await disposeOutgoingKernel(resolved.kind === "resolved" ? { snapshotInto: resolved.dir } : undefined);
 				}
 				// POST-SESSION-TRANSITION-GEN-1: a stale completion never publishes its directory.
 				if (isCurrent()) incoming = resolved;

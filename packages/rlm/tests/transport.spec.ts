@@ -412,6 +412,33 @@ describe("transport wire protocol", () => {
     await pending
     expect(resolved).toBe(true)
   })
+
+  test("POST-SESSION-MOVE-2: after setArtifactsDir the runner snapshots and restores through the new directory only", async () => {
+    // The runner writes kernel-state.* itself, at the path the host sends; a relocation that only retargets the manager
+    // would still send the construction-time directory and write into the superseded session's artifacts.
+    const fake = makeFakeProcess()
+    const { transport } = makeWireTransport(fake)
+    await startReady(fake, transport)
+
+    const sentOp = (name: string) =>
+      fake.state.stdinLines.map(line => JSON.parse(line) as { op: string; id: string; path?: string; manifestPath?: string }).filter(op => op.op === name)
+
+    void transport.writeSnapshot(["x"], 1024).catch(() => undefined)
+    await Bun.sleep(0)
+    expect(sentOp("snapshot_write")[0].path).toBe("/tmp/artifacts/kernel-state.dill")
+
+    transport.setArtifactsDir("/tmp/relocated")
+    void transport.writeSnapshot(["x"], 1024).catch(() => undefined)
+    void transport.restoreSnapshot().catch(() => undefined)
+    await Bun.sleep(0)
+
+    const second = sentOp("snapshot_write")[1]
+    expect(second.path, "POST-SESSION-MOVE-2 violation: a relocated transport still writes into the old directory").toBe(
+      "/tmp/relocated/kernel-state.dill",
+    )
+    expect(second.manifestPath).toBe("/tmp/relocated/kernel-state.json")
+    expect(sentOp("snapshot_restore")[0].path).toBe("/tmp/relocated/kernel-state.dill")
+  })
 })
 
 // ---------------------------------------------------------------------------

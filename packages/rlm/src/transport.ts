@@ -356,6 +356,8 @@ interface PendingOp<T> {
  */
 export class RlmTransport implements KernelTransport {
 	private readonly config: RlmTransportConfig;
+	/** Where the runner reads and writes `kernel-state.*`; starts as `config.artifactsDir`, retargeted on relocation. */
+	private snapshotDir: string;
 	private readonly clock: { now(): number; schedule(fn: () => void, ms: number): () => void };
 	private readonly spawnFn: (
 		cmd: string,
@@ -391,6 +393,7 @@ export class RlmTransport implements KernelTransport {
 		| null = null;
 	constructor(config: RlmTransportConfig, deps?: RlmTransportDeps) {
 		this.config = config;
+		this.snapshotDir = config.artifactsDir;
 		this.clock = deps?.clock ?? {
 			now: () => Date.now(),
 			schedule(fn: () => void, ms: number): () => void {
@@ -399,6 +402,11 @@ export class RlmTransport implements KernelTransport {
 			},
 		};
 		this.spawnFn = deps?.spawn ?? defaultSpawn;
+	}
+
+	/** POST-SESSION-MOVE-2: the session's owned directory changed; later snapshots and restores use `dir`. */
+	setArtifactsDir(dir: string): void {
+		this.snapshotDir = dir;
 	}
 
 	// ---- KernelTransport implementation ----
@@ -623,8 +631,8 @@ export class RlmTransport implements KernelTransport {
 		this.assertStarted();
 
 		const id = `snap-write-${this.opIdCounter++}`;
-		const payloadPath = join(this.config.artifactsDir, "kernel-state.dill");
-		const manifestPath = join(this.config.artifactsDir, "kernel-state.json");
+		const payloadPath = join(this.snapshotDir, "kernel-state.dill");
+		const manifestPath = join(this.snapshotDir, "kernel-state.json");
 
 		return new Promise<KernelSnapshotWriteResult>((resolve, reject) => {
 			this.pendingOps.set(id, {
@@ -647,8 +655,8 @@ export class RlmTransport implements KernelTransport {
 		this.assertStarted();
 
 		const id = `snap-restore-${this.opIdCounter++}`;
-		const payloadPath = join(this.config.artifactsDir, "kernel-state.dill");
-		const manifestPath = join(this.config.artifactsDir, "kernel-state.json");
+		const payloadPath = join(this.snapshotDir, "kernel-state.dill");
+		const manifestPath = join(this.snapshotDir, "kernel-state.json");
 
 		return new Promise<string[]>((resolve, reject) => {
 			this.pendingOps.set(id, {

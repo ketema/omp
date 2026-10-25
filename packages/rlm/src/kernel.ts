@@ -168,6 +168,8 @@ export interface KernelTransport {
 	writeSnapshotPayload?(dir: string): Promise<void>;
 	/** C6: reports the kernel's Python version for the snapshot manifest. */
 	pythonVersion?(): Promise<string>;
+	/** POST-SESSION-MOVE-2: retarget the directory later snapshot writes and restores use (transports that write it themselves). */
+	setArtifactsDir?(dir: string): void;
 	restoreSnapshot(): Promise<string[]>;
 	bootstrap(): Promise<void> | void;
 	isBusy(): boolean;
@@ -219,9 +221,19 @@ function safeInterrupt(transport: KernelTransport): void {
 export class KernelManager {
 	private readonly transport: KernelTransport;
 	private readonly clock: KernelClock;
-	private readonly artifactsDir: string;
+	private artifactsDir: string;
 	/** POST-KM-NO-RESURRECT-1: the directory existed at construction or a snapshot already wrote into it. */
 	private artifactsDirSeen: boolean;
+
+	/**
+	 * POST-SESSION-MOVE-2: the session this kernel serves now owns `dir`. Later snapshots - including the final one at
+	 * dispose - are written there, never into the superseded directory. The new directory is NOT assumed to exist.
+	 */
+	relocate(dir: string): void {
+		this.artifactsDir = dir;
+		this.artifactsDirSeen = fs.existsSync(dir);
+		this.transport.setArtifactsDir?.(dir);
+	}
 
 	private started = false;
 	private disposed = false;
