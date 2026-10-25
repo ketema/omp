@@ -112,6 +112,8 @@ type TransportScript = {
   writeSnapshotPayload?: (dir: string) => Promise<void>
   restoreSnapshot?: () => Promise<string[]>
   isBusy?: () => boolean
+  /** Kernel Python version for the snapshot manifest (POST-KM-SNAPSHOT-PAIR-1). */
+  pythonVersion?: () => Promise<string>
 }
 
 /** Fake transport: scripted AT CONSTRUCTION, records every call. */
@@ -155,6 +157,9 @@ function makeTransport(script: TransportScript = {}) {
     isBusy(): boolean { return script.isBusy?.() ?? false },
     ...(script.writeSnapshotPayload !== undefined
       ? { writeSnapshotPayload: (dir: string): Promise<void> => script.writeSnapshotPayload?.(dir) ?? Promise.resolve() }
+      : {}),
+    ...(script.pythonVersion !== undefined
+      ? { pythonVersion: (): Promise<string> => script.pythonVersion?.() ?? Promise.resolve("") }
       : {}),
     alive(): boolean { return true },
     async dispose(): Promise<void> { calls.push({ kind: "transportDispose", detail: "" }) },
@@ -1398,4 +1403,35 @@ test("POST-KM-NO-RESURRECT-1: a directory that never existed is still created by
   await manager.flushSnapshot()
   expect(fs.existsSync(`${dir}/kernel-state.dill`)).toBe(true)
   expect(fs.existsSync(`${dir}/kernel-state.json`)).toBe(true)
+})
+
+// ---------------------------------------------------------------------------
+// POST-KM-SNAPSHOT-SERIAL-1 (contracts/rlm-session-isolation.contract.ts)
+// ---------------------------------------------------------------------------
+
+test("POST-KM-SNAPSHOT-SERIAL-1: a flush requested while a cell runs does not touch the kernel until that cell settles", async () => {
+  let releaseCell: () => void = () => {}
+  const cellHold = new Promise<void>(resolve => { releaseCell = resolve })
+  const transport = makeTransport({
+    execute: async (_id, code) => {
+      if (code === "slow = 1") await cellHold
+      return { code: 0, stdout: "", stderr: "", result: "" }
+    },
+  })
+  const manager = new KernelManager(transport, { clock: makeClock(), artifactsDir: artifactsDir() })
+  await manager.execute("warm = 1")
+  const cell = manager.execute("slow = 1")
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const flush = manager.flushSnapshot()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const namesWhileCellRuns = transport.calls.filter(c => c.kind === "snapshotNames").length
+  releaseCell()
+  await cell
+  await flush
+  expect(
+    namesWhileCellRuns,
+    "POST-KM-SNAPSHOT-SERIAL-1 violation: snapshotNames ran while an earlier cell was still active",
+  ).toBe(0)
+  expect(transport.calls.filter(c => c.kind === "snapshotNames").length).toBe(1)
 })

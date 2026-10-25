@@ -248,7 +248,19 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
   "POST-KM-NO-RESURRECT-1": {
     id: "POST-KM-NO-RESURRECT-1",
     method: "test",
-    description: "KernelManager never re-creates an artifacts directory that existed (it was present at construction or a snapshot already wrote into it) and has since been removed by the host - for example the host's /delete drops the session's artifacts BEFORE the switch that disposes its kernel. A dispose-time, flush or debounced snapshot into a removed directory is skipped: no directory, temp directory, payload or manifest is created, and teardown still completes. A directory that never existed (a fresh session's first snapshot) is still created as before. Covers Copilot comment 4370059184",
+    description: "KernelManager never re-creates an artifacts directory that existed (it was present at construction or a snapshot already wrote into it) and has since been removed by the host - for example the host's /delete drops the session's artifacts BEFORE the switch that disposes its kernel. A dispose-time, flush or debounced snapshot into a removed directory is skipped: no directory, temp directory, payload or manifest is created, and teardown still completes. The check is made again immediately before every filesystem write of a snapshot, not only when it is requested: a directory removed while the kernel is still serializing (snapshotNames / writeSnapshot pending) is never re-created when that work settles, and a snapshot abandoned by the flush timeout never creates a directory or staging area at all. A directory that never existed (a fresh session's first snapshot) is still created as before. Covers Copilot comment 4370059184 and the parent review of 5fa85b0",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "POST-KM-SNAPSHOT-SERIAL-1": {
+    id: "POST-KM-SNAPSHOT-SERIAL-1",
+    method: "test",
+    description: "Snapshots run through the same serialization chain as cells: a snapshot's side effects (snapshotNames, writeSnapshot, any staging or artifact write) do not START until every earlier chain entry - an active cell included - has settled, whether that entry fulfilled or rejected. A flush requested while a cell runs queues behind it and touches the kernel namespace only afterwards",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "POST-KM-SNAPSHOT-PAIR-1": {
+    id: "POST-KM-SNAPSHOT-PAIR-1",
+    method: "test",
+    description: "A snapshot commits its payload and manifest as one generation. Every asynchronous preparation step (names, serialization, the kernel's Python version, payload staging) completes BEFORE either artifact is replaced, and the commit itself is synchronous with a rollback: if the commit cannot complete, or the snapshot was abandoned or its directory removed while preparing, the previously committed payload and manifest are left exactly as they were - never a new payload beside an old manifest, and never the reverse",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
   },
   "POST-SESSION-MOVE-1": {
