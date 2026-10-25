@@ -80,7 +80,7 @@ interface StructuralExtensionAPI {
 // Kernel adapter — wraps KernelManager to satisfy RlmExtensionKernelPort
 // =============================================================================
 
-class KernelManagerAdapter implements RlmExtensionKernelPort {
+export class KernelManagerAdapter implements RlmExtensionKernelPort {
 	private readonly manager: KernelManager;
 	private readonly transport: KernelTransport;
 	private _restoredNames: readonly string[] = [];
