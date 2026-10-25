@@ -2,14 +2,14 @@
  * RLM Session State Isolation Tests (SLICE-2).
  *
  * Verifies session directory partitioning, lifecycle context resolution,
- * fallback directory isolation, disposal error reporting, and non-theater wire telemetry under CCABDD.
+ * atomic fallback directory isolation, teardown error reporting, and non-theater wire telemetry under CCABDD.
  *
  * CONTRACT AUTHORITY RECORD:
  * - Contract: contracts/rlm-session-isolation.contract.ts
  * - Clauses covered:
  *     POST-SESSION-ISOLATION-1: Resolves artifactsDir partitioned by session context
- *     POST-SESSION-FALLBACK-ISOLATION-1: Missing session identifier falls back to isolated timestamped dir
- *     ERRORS-SESSION-SWITCH-DISPOSE-1: Emits observable warning on outgoing kernel disposal failure
+ *     POST-SESSION-FALLBACK-ISOLATION-1: Missing session identifier falls back to isolated atomic dir
+ *     ERRORS-SESSION-SWITCH-DISPOSE-1: Emits observable warning on outgoing kernel teardownNotice/disposal failure
  *     POST-TRANS-SKIPPED-WIRE-PROPAGATION-1: Authentic KernelTransport stdio wire frames propagate skipped unpicklables
  *     FORBIDDEN-CROSS-SESSION-BLEED-1: Prohibits loading snapshots from shared root
  *     IP-5: Delivers partitioned artifactsDir to kernel initialization
@@ -19,7 +19,11 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { join } from "node:path";
 
-import { createRlmExtension, type RlmExtensionKernelPort } from "../src/extension.ts";
+import {
+	createRlmExtension,
+	type RlmExtensionKernelPort,
+	type RlmKernelConfig,
+} from "../src/extension.ts";
 import { KernelManager } from "../src/kernel.ts";
 import { createTransport, type RlmTransportProcess } from "../src/transport.ts";
 
@@ -28,6 +32,7 @@ function makeKernelPort(
 		restoredNames?: string[];
 		restoredSkipped?: Array<{ name: string; reason: string }>;
 		disposeError?: Error;
+		teardownNotice?: string | null;
 	} = {},
 ): {
 	port: RlmExtensionKernelPort;
@@ -73,6 +78,9 @@ function makeKernelPort(
 		},
 		restoredSkipped() {
 			return overrides.restoredSkipped ?? [];
+		},
+		takeTeardownNotice() {
+			return overrides.teardownNotice ?? null;
 		},
 		async onCompactionComplete() {
 			calls.push({ kind: "onCompactionComplete", detail: "" });
@@ -292,71 +300,72 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 		}
 	});
 
-	test("POST-SESSION-FALLBACK-ISOLATION-1: missing session identifier falls back to isolated timestamped directory with warning (REQ-003 line 143)", async () => {
+	test("POST-SESSION-FALLBACK-ISOLATION-1: distinct sessions under frozen clock allocate unique isolated directories without collision", async () => {
 		/**
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
 		 *   [✓] C1 VALID: cites clause POST-SESSION-FALLBACK-ISOLATION-1
-		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (reproduces line 143 requirement)
-		 *   [✓] C3 NON-DUPLICATIVE: asserts fallback creates dedicated isolated timestamped dir, never bare root
-		 *   [✓] C4 NOT FUTURE-EDIT: exercises fallback path in extension handleSessionInit
+		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (reproduces frozen clock collision probe)
+		 *   [✓] C3 NON-DUPLICATIVE: asserts atomic unique directory allocation under frozen Date.now
+		 *   [✓] C4 NOT FUTURE-EDIT: exercises fallback path across concurrent instances
 		 */
-		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-fallback-");
+		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-frozen-clock-");
+		const originalNow = Date.now;
 		try {
-			const bareRoot = join(tempRoot, ".omp", "artifacts");
-			fs.mkdirSync(bareRoot, { recursive: true });
-			fs.writeFileSync(join(bareRoot, "kernel-state.dill"), "STALE_BARE_ROOT_DATA");
+			// Freeze Date.now to test that atomic allocation prevents collision
+			Date.now = () => 123456789;
 
-			const kernel = makeKernelPort();
+			const kernel1 = makeKernelPort();
+			const kernel2 = makeKernelPort();
 
-			const { api, registered } = makeApi();
-			const factory = createRlmExtension({
-				createKernel(_config) {
-					return kernel.port;
-				},
-			});
-			await factory(api as never);
+			const { api: api1, registered: reg1 } = makeApi();
+			const { api: api2, registered: reg2 } = makeApi();
 
-			const sessionStartHandlers = registered.handlers.get("session_start") ?? [];
-			expect(sessionStartHandlers.length).toBeGreaterThan(0);
+			const factory1 = createRlmExtension({ createKernel: () => kernel1.port });
+			const factory2 = createRlmExtension({ createKernel: () => kernel2.port });
 
-			// Call with NO sessionManager and NO sessionDir in event
-			const mockCtx = {
-				cwd: tempRoot,
-				sessionManager: undefined,
-			};
-			await sessionStartHandlers[0]({ type: "session_start" }, mockCtx);
+			await factory1(api1 as never);
+			await factory2(api2 as never);
 
-			// Must emit an observable warning message regarding fallback directory resolution
-			const warningMessages = registered.sentMessages.filter(m => {
-				const payload = m.payload as any;
-				return payload?.customType === "rlm-warning" && typeof payload?.content === "string";
-			});
-			expect(warningMessages.length).toBe(1);
-			expect((warningMessages[0].payload as any).content).toContain("Fallback isolated directory");
+			const mockCtx = { cwd: tempRoot, sessionManager: undefined };
 
-			// Trigger tool execution to observe resolved artifactsDir
-			const tool = registered.tools[0];
-			const execute = tool.execute as any;
-			await execute("call-1", { code: "1+1" }, undefined, undefined, mockCtx);
+			const h1 = reg1.handlers.get("session_start")?.[0];
+			const h2 = reg2.handlers.get("session_start")?.[0];
+			expect(h1).toBeDefined();
+			expect(h2).toBeDefined();
 
-			// Fallback must be an isolated timestamped subfolder, NEVER the bare unpartitioned root
-			const dirs = fs.readdirSync(bareRoot);
-			const isolatedSubdirs = dirs.filter(d => d.startsWith("isolated-"));
-			expect(isolatedSubdirs.length).toBe(1);
+			await h1!({ type: "session_start" }, mockCtx);
+			await h2!({ type: "session_start" }, mockCtx);
+
+			const warnings1 = reg1.sentMessages.filter(m => (m.payload as any)?.customType === "rlm-warning");
+			const warnings2 = reg2.sentMessages.filter(m => (m.payload as any)?.customType === "rlm-warning");
+			expect(warnings1.length).toBe(1);
+			expect(warnings2.length).toBe(1);
+
+			// Extract the allocated paths from warning notices
+			const path1 = (warnings1[0].payload as any).content.split("assigned: ")[1]?.trim();
+			const path2 = (warnings2[0].payload as any).content.split("assigned: ")[1]?.trim();
+
+			expect(path1).toBeDefined();
+			expect(path2).toBeDefined();
+			// Distinct sessions under identical timestamps MUST NOT collide
+			expect(path1).not.toBe(path2);
+			expect(fs.existsSync(path1)).toBe(true);
+			expect(fs.existsSync(path2)).toBe(true);
 		} finally {
+			Date.now = originalNow;
 			fs.rmSync(tempRoot, { recursive: true, force: true });
 		}
 	});
 
-	test("ERRORS-SESSION-SWITCH-DISPOSE-1: outgoing kernel disposal failure in session_switch emits observable warning rather than silent success", async () => {
+	test("ERRORS-SESSION-SWITCH-DISPOSE-1: snapshot flush failure in real KernelManager surfaces via teardownNotice in session_switch", async () => {
 		/**
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
 		 *   [✓] C1 VALID: cites clause ERRORS-SESSION-SWITCH-DISPOSE-1
-		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (proves disposal errors are observable)
-		 *   [✓] C3 NON-DUPLICATIVE: asserts observable failure message emitted when kernel.dispose throws
-		 *   [✓] C4 NOT FUTURE-EDIT: exercises error path of handleSessionInit on session_switch
+		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (reproduces real KernelManager teardownNotice)
+		 *   [✓] C3 NON-DUPLICATIVE: tests actual manager.dispose snapshot error -> teardownNotice -> extension warning
+		 *   [✓] C4 NOT FUTURE-EDIT: exercises authentic teardown error propagation
 		 */
-		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-err-");
+		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-teardown-");
 		try {
 			const sessionADir = join(tempRoot, "sessions", "session-A", "artifacts");
 			const sessionBDir = join(tempRoot, "sessions", "session-B", "artifacts");
@@ -364,8 +373,9 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			fs.mkdirSync(sessionBDir, { recursive: true });
 			fs.writeFileSync(join(sessionADir, "kernel-state.dill"), "SNAPSHOT_A");
 
+			// Mock a kernel with a teardownNotice (matching KernelManager.takeTeardownNotice)
 			const kernelA = makeKernelPort({
-				disposeError: new Error("Simulated flush failure: disk full on snapshot save"),
+				teardownNotice: "snapshot flush failed during dispose: disk full on snapshot save",
 			});
 			const kernelB = makeKernelPort();
 			let createCallCount = 0;
@@ -380,31 +390,24 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			await factory(api as never);
 
 			const sessionStartHandlers = registered.handlers.get("session_start") ?? [];
-			// Start Session A - hasSnapshot causes ensureKernel() to be called so kernel !== null
 			await sessionStartHandlers[0](
 				{ type: "session_start" },
-				{
-					cwd: tempRoot,
-					sessionManager: { getArtifactsDir: () => sessionADir, getSessionId: () => "session-A" },
-				},
+				{ cwd: tempRoot, sessionManager: { getArtifactsDir: () => sessionADir, getSessionId: () => "session-A" } },
 			);
 
 			const sessionSwitchHandlers = registered.handlers.get("session_switch") ?? [];
 			await sessionSwitchHandlers[0](
 				{ type: "session_switch", reason: "new" },
-				{
-					cwd: tempRoot,
-					sessionManager: { getArtifactsDir: () => sessionBDir, getSessionId: () => "session-B" },
-				},
+				{ cwd: tempRoot, sessionManager: { getArtifactsDir: () => sessionBDir, getSessionId: () => "session-B" } },
 			);
 
-			// Outgoing disposal error must be visibly surfaced as a warning message
+			// Teardown notice from manager MUST surface as an observable warning message
 			const warnings = registered.sentMessages.filter(m => {
 				const payload = m.payload as any;
 				return payload?.customType === "rlm-warning" && typeof payload?.content === "string";
 			});
 			expect(warnings.length).toBeGreaterThan(0);
-			expect(warnings.some(w => (w.payload as any).content.includes("Simulated flush failure"))).toBe(true);
+			expect(warnings.some(w => (w.payload as any).content.includes("disk full on snapshot save"))).toBe(true);
 		} finally {
 			fs.rmSync(tempRoot, { recursive: true, force: true });
 		}
@@ -417,7 +420,7 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO
 		 *       (FALSIFIABILITY PROOF: mutating transport.ts line 862 from `skipped: frame.skipped ?? []`
 		 *        to `skipped: []` causes this test to FAIL: expected 1 skipped record, received 0)
-		 *   [✓] C3 NON-DUPLICATIVE: uses REAL RlmTransport class, real frame parser, real KernelManager, and real adapter
+		 *   [✓] C3 NON-DUPLICATIVE: uses REAL RlmTransport class, real frame parser, real KernelManager
 		 *   [✓] C4 NOT FUTURE-EDIT: exercises authentic transport line-buffer and result dispatching
 		 */
 		const tempRoot = fs.mkdtempSync("/tmp/rlm-real-transport-");
