@@ -838,7 +838,8 @@ export class KernelManager {
 		// C5: snapshots run through the serialization chain — a snapshot cell
 		// concurrent with an active cell races kernel state (prime-agent
 		// enqueues snapshot cells; same discipline here)
-		const run = (async (): Promise<void> => {
+		// POST-KM-SNAPSHOT-SERIAL-1: a thunk, started by the chain only after every earlier entry settled.
+		const run = async (): Promise<void> => {
 			// Gather all names from the kernel
 			const allNames = await this.transport.snapshotNames();
 
@@ -908,13 +909,13 @@ export class KernelManager {
 				timestamp: utcIsoTimestamp(this.clock),
 			};
 			atomicWriteFileSync(join(this.artifactsDir, SNAPSHOT_MANIFEST_FILE), JSON.stringify(manifest));
-		})();
+		};
 		// The chain tail carries this snapshot; a cell submitted meanwhile
 		// serializes AFTER it (chain discipline preserved)
 		const prev = this.chainTail;
 		const next = (prev ?? Promise.resolve()).then(
-			() => run,
-			() => run,
+			() => run(),
+			() => run(),
 		);
 		this.chainTail = next.then(
 			() => undefined,
