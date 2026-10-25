@@ -253,6 +253,94 @@ class SnapshotConfigurationError(RlmSnapshotCompressionError):
     pass
 
 
+# =============================================================================
+# File-handle guard (POST-NOHANDLE-1, POST-NOOPEN-1, ERRORS-HANDLECONTAINER-1, FORBIDDEN-HANDLEOPEN-1)
+# =============================================================================
+#
+# dill rebuilds a file handle by reopening its path BEFORE it applies the closed flag, so loading a serialized handle
+# truncates a write-mode file. A snapshot therefore never carries one, and a restore refuses one before anything opens.
+# The scan reads pickle opcodes only and never unpickles. This is an accidental-I/O guard under the runner's existing
+# permissions; it does not sandbox arbitrary pickles.
+
+# Names that reconstruct a file handle (and so open a path) when a serialized variable is rebuilt.
+FILE_HANDLE_RECONSTRUCTORS = frozenset({"_create_filehandle"})
+
+_NO_PUSH_OPCODES = frozenset({"PROTO", "FRAME", "MEMOIZE", "PUT", "BINPUT", "LONG_BINPUT"})
+_MEMO_PUT_OPCODES = frozenset({"PUT", "BINPUT", "LONG_BINPUT"})
+_MEMO_GET_OPCODES = frozenset({"GET", "BINGET", "LONG_BINGET"})
+_STRING_PUSH_OPCODES = frozenset(
+    {"SHORT_BINUNICODE", "BINUNICODE", "BINUNICODE8", "UNICODE", "STRING", "BINSTRING", "SHORT_BINSTRING"}
+)
+
+
+class UnsafeReconstructionError(Exception):
+    """Names the refusal of a serialized variable that would reconstruct a file handle (never raised past the guard)."""
+
+
+def _references_file_handle_reconstructor(data) -> bool:
+    """True when the pickle stream `data` (bytes or a binary file object) references a file-handle reconstructor.
+
+    Looks only at how a global is named: GLOBAL's operand, or the two strings pushed immediately before STACK_GLOBAL
+    (read through the memo, since dill reuses a memoized module name). Plain text that merely mentions a name is not
+    a reference. A stream that cannot be parsed further is judged on the opcodes read before the break: the unpickler
+    cannot execute past it either, so the break reports as the ordinary deserialization error.
+    """
+    import pickletools
+
+    recent: list = []
+    memo: dict = {}
+    memo_index = 0
+    try:
+        for opcode, arg, _position in pickletools.genops(data):
+            name = opcode.name
+            if name in _NO_PUSH_OPCODES:
+                top = recent[-1] if recent else None
+                if name == "MEMOIZE":
+                    memo[memo_index] = top
+                    memo_index += 1
+                else:
+                    memo[arg] = top
+                continue
+            value = None
+            if name == "GLOBAL":
+                if str(arg).rsplit(" ", 1)[-1] in FILE_HANDLE_RECONSTRUCTORS:
+                    return True
+            elif name == "STACK_GLOBAL":
+                if len(recent) == 2 and recent[1] in FILE_HANDLE_RECONSTRUCTORS:
+                    return True
+            elif name in _STRING_PUSH_OPCODES:
+                value = arg if isinstance(arg, str) else None
+            elif name in _MEMO_GET_OPCODES:
+                value = memo.get(arg)
+            recent.append(value)
+            del recent[:-2]
+    except (ValueError, EOFError):
+        return False
+    return False
+
+
+def _refuse_handle_container(path: str, codec: str) -> None:
+    """ERRORS-HANDLECONTAINER-1: reject a snapshot whose CONTAINER references a file-handle reconstructor, before loading it."""
+    if codec == "lzma":
+        import lzma
+
+        with lzma.open(path, "rb") as fh:
+            found = _references_file_handle_reconstructor(fh)
+    elif codec == "gzip":
+        import gzip
+
+        with gzip.open(path, "rb") as fh:
+            found = _references_file_handle_reconstructor(fh)
+    else:
+        with open(path, "rb") as fh:
+            found = _references_file_handle_reconstructor(fh)
+    if found:
+        raise CorruptSnapshotError(
+            "Snapshot container references a file handle; refused before any path was opened "
+            "(a file handle cannot be restored without reopening its path)"
+        )
+
+
 class _CountingWriter(io.RawIOBase):
     """Transparent stream wrapper that counts exact uncompressed bytes written by dill.dump without buffering in RAM."""
 
@@ -435,6 +523,16 @@ def _snapshot_write(
         val = ns[name]
         try:
             blob = dill.dumps(val)
+            # POST-NOHANDLE-1: a live or closed file handle (also nested in a container or object) is never carried; a
+            # handle cannot be rebuilt without reopening its path, which would truncate a write-mode file.
+            if _references_file_handle_reconstructor(blob):
+                skipped.append(
+                    {
+                        "name": name,
+                        "reason": "contains a file handle; a file handle cannot be restored without reopening its path",
+                    }
+                )
+                continue
             # Size ceiling validation per serialized variable
             if len(blob) > max_bytes:
                 skipped.append({"name": name, "reason": "exceeds snapshot size cap"})
@@ -632,13 +730,16 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
                 raise UnsupportedCodecError(
                     f"LZMA decompression unsupported on this Python build (missing _lzma): {exc}"
                 ) from exc
+            _refuse_handle_container(path, codec)
             with lzma.open(path, "rb") as fh:
                 payload = dill.load(fh)
         elif codec == "gzip":
             import gzip
+            _refuse_handle_container(path, codec)
             with gzip.open(path, "rb") as fh:
                 payload = dill.load(fh)
         else:
+            _refuse_handle_container(path, codec)
             with open(path, "rb") as fh:
                 payload = dill.load(fh)
     except Exception as exc:
@@ -660,6 +761,16 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
         if not isinstance(name, str):
             raise CorruptSnapshotError(f"Invalid non-string variable name in snapshot payload: {name!r}")
         try:
+            if _references_file_handle_reconstructor(blob):
+                # POST-NOOPEN-1: refused BEFORE deserialization, so no path is opened (dill reopens a handle's path,
+                # truncating a write-mode file, before it applies the closed flag). Siblings still restore.
+                skipped_restores.append({
+                    "name": name,
+                    "reason": "unsafe: the serialized variable reconstructs a file handle; "
+                    "refused before any path was opened",
+                    "error_type": UnsafeReconstructionError.__name__,
+                })
+                continue
             temp_restored[name] = dill.loads(blob)
         except Exception as exc:
             # POST-RESTORE-SKIP-1: Resilient restore skips unpicklable variable instead of aborting

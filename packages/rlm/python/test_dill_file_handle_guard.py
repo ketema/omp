@@ -157,6 +157,8 @@ class TestRestoreRefusesHandleBlobs(_GuardCase):
             "in_dict": {"k": {"deeper": [handle, 1]}},
             "in_tuple": (1, (handle,)),
             "in_attr": types.SimpleNamespace(f=handle, n=2),
+            # the constructor's name was already pushed as text, so the global reads it back through the pickle memo
+            "after_same_text": ["_create_filehandle", "dill._dill", handle],
         }
         blobs = {name: dill.dumps(value) for name, value in values.items()}
         for name, blob in blobs.items():
