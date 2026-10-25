@@ -191,6 +191,18 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
     description: "When POST-TOOL-SESSION-BINDING-1 outcome O2 occurs the tool does not throw: it returns isError true with details.status 'aborted' and text stating that the session changed and the cell was not executed. The abort is synthesised by the extension's bound kernel port (typed RlmSessionChangedError), never by probing private fields. The abort makes no kernel call, and a later invocation binds to the current session's kernel and runs normally. A session transition never waits for a running cell (no deadlock)",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
   },
+  "POST-CI-RLM-SELECTION-1": {
+    id: "POST-CI-RLM-SELECTION-1",
+    method: "test",
+    description: "The repo's test-selection script (scripts/ci-test-ts.ts) dispatches mode 'rlm' to exactly one command: `bun test` in packages/rlm with NO file filter, name filter or exclusion, so every spec under packages/rlm/tests - including the real-SessionManager/native-backed, default-path and atomicity specs - is selected; mode 'rlm-python' dispatches to the Python recovery/quarantine suite through the pinned rlm-runtime uv project with `--locked` (lock drift fails) and its dependency group, never an unpinned or host-global interpreter; modes 'workspace' and 'native' select exactly the packages they selected before (no broadening, none dropped); 'all' and 'local-ts' additionally select the rlm TS command. Verified by running the script's real --dry-run dispatch, not by matching config strings",
+    requirement_ids: ["REQ-RLM-REHYDRATE-001", "REQ-RLM-REHYDRATE-003"],
+  },
+  "POST-CI-RLM-EXECUTION-1": {
+    id: "POST-CI-RLM-EXECUTION-1",
+    method: "execution",
+    description: "The GitHub Actions run for the PR head contains a dedicated, visibly named job (needs native_addons; real linux-x64 native artifacts via the existing native-artifacts action) that runs, each to completion: the selection/dispatch test, the full packages/rlm TS suite, and the Python recovery/quarantine suite in an isolated pinned uv environment. Evidence is the actual job log and API result: non-zero executed counts, zero skipped, zero failed, and the real-SessionManager spec files executed rather than failing to load. A missing prerequisite (uv, native addon, interpreter) is a failure, never a skip. The job adds no secrets, no token scope beyond the workflow's `contents: read`, and no deploy/publish trigger; the runner strips credentials from test processes",
+    requirement_ids: ["REQ-RLM-REHYDRATE-001", "REQ-RLM-REHYDRATE-003"],
+  },
   "IP-5": {
     id: "IP-5",
     method: "test",
