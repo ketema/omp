@@ -209,6 +209,24 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
     description: "When a PR run has no main-built native addon cache and falls back to a published npm addon, the fallback is the release whose version equals packages/natives/package.json of the tree under test - never `latest`. A `latest` addon can carry a different ABI than the source (observed: 18.12.6 requires EditPolicy.maxColumns and a 4th encodeSixelAsync backgroundRgb argument; this tree, at 18.11.0, supplies neither), turning every native-backed job red for reasons that are not defects of the PR. A version with no published tarball MUST fail the step (fail-fast), never fall through to another version. Evidence is the real job log: the fetch step prints the pinned version, and the previously failing `Missing field maxColumns` / `Undefined into rust type u32` clusters no longer fail. The change adds no secrets, no token scope, no deploy trigger, and removes no test",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
   },
+  "POST-SESSION-TRANSITION-GEN-1": {
+    id: "POST-SESSION-TRANSITION-GEN-1",
+    method: "test",
+    description: "Each lifecycle transition (session_start, session_switch, session_branch) takes a monotonically increasing generation at entry. A transition publishes its resolved artifacts directory, and may revive state, ONLY if it is still the latest generation when its resolution settles. If a newer transition began while an older one (B) was still resolving, B's completion - however late - neither replaces the newer session's directory nor restores into it nor sends a revival notice; the newer transition's directory is the one a later kernel is built against. Covers Copilot comments 4370059188 and its duplicate 4369992551 (same defect: stale B overwrites C's directory; same generation-token remedy; same slow-B/fast-C regression test)",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "POST-SESSION-SHUTDOWN-RACE-1": {
+    id: "POST-SESSION-SHUTDOWN-RACE-1",
+    method: "test",
+    description: "session_shutdown invalidates every in-flight transition: a directory resolution still pending at shutdown never constructs or starts a kernel once it settles (no leaked Python process), however late it settles. Shutdown itself does NOT wait for a pending resolution (a stuck host resolution must not deadlock shutdown); it still waits for an in-flight kernel construction, then disposes the current kernel",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "ERRORS-SESSION-RESOLUTION-FAILED-1": {
+    id: "ERRORS-SESSION-RESOLUTION-FAILED-1",
+    method: "test",
+    description: "When resolving the incoming session's artifacts directory rejects, the outgoing session's directory is never reused: the extension forgets it before resolving, the error still propagates to the host (not swallowed), and the next kernel use allocates a fresh isolated directory with its single observable rlm-warning. Fail closed, never fail open onto the previous session's state",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
   "IP-5": {
     id: "IP-5",
     method: "test",

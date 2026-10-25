@@ -609,3 +609,161 @@ describe("POST-SESSION-NO-SIDE-EFFECT-1: a session without an owned directory le
 		expect(w.dirs[0].startsWith(isolatedRoot(dir))).toBe(true);
 	});
 });
+
+describe("POST-SESSION-TRANSITION-GEN-1 / POST-SESSION-SHUTDOWN-RACE-1 / ERRORS-SESSION-RESOLUTION-FAILED-1: lifecycle ordering", () => {
+	interface GenWiring {
+		readonly registry: Registry;
+		readonly records: PortRecord[];
+		readonly dirs: string[];
+		readonly started: string[];
+	}
+
+	async function wire(): Promise<GenWiring> {
+		const records: PortRecord[] = [];
+		const dirs: string[] = [];
+		const started: string[] = [];
+		const { api, registry } = makeRegistry();
+		await createRlmExtension({
+			createKernel(_config, artifactsDir) {
+				const { port, record } = makePort(`S${records.length + 1}`, {});
+				const realEnsure = port.ensureStarted.bind(port);
+				port.ensureStarted = async onProgress => {
+					started.push(artifactsDir);
+					await realEnsure(onProgress);
+				};
+				records.push(record);
+				dirs.push(artifactsDir);
+				return port;
+			},
+		})(api as never);
+		return { registry, records, dirs, started };
+	}
+
+	/** A host context whose directory resolution parks until the returned gate opens (or rejects when told to). */
+	function parkedCtx(cwd: string, ownDir: string, hold: Gate, fail = false) {
+		return {
+			cwd,
+			sessionManager: {
+				async resolveOwnArtifactsDir(): Promise<string | null> {
+					await hold.opened;
+					if (fail) throw new Error("resolution failed");
+					return ownDir;
+				},
+			},
+		};
+	}
+
+	function seedSnapshot(dir: string): void {
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(join(dir, "kernel-state.dill"), "SNAPSHOT");
+	}
+
+	test("a slow transition B that settles after a newer transition C neither replaces C's directory nor revives into it", async () => {
+		const dir = caseDir("gen-slow-b");
+		const w = await wire();
+		const dirB = join(dir, "sessions", "B");
+		const dirC = join(dir, "sessions", "C");
+		seedSnapshot(dirB);
+		seedSnapshot(dirC);
+		const holdB = gate();
+
+		const slowB = emit(w.registry, "session_switch", { reason: "new" }, parkedCtx(dir, dirB, holdB));
+		// C starts while B is still resolving, and completes first.
+		await within(
+			2000,
+			"newer transition C",
+			emit(w.registry, "session_switch", { reason: "new" }, hostCtx(dir, dirC)),
+		);
+		const startedBeforeB = w.started.length;
+		holdB.open();
+		await within(2000, "stale transition B settling", slowB);
+
+		await tool({ registry: w.registry, records: w.records } as unknown as Harness).execute(
+			"c-gen",
+			{ code: "x = 1" },
+			undefined,
+			undefined,
+			toolCtx(),
+		);
+		expect(
+			w.started.includes(dirB),
+			"POST-SESSION-TRANSITION-GEN-1 violation: the stale transition B restored into / started a kernel on its own directory",
+		).toBe(false);
+		expect(
+			w.dirs[w.dirs.length - 1],
+			"POST-SESSION-TRANSITION-GEN-1 violation: a kernel was built against B's directory instead of the newer session C's",
+		).toBe(dirC);
+		expect(w.started.length - startedBeforeB).toBeLessThanOrEqual(1);
+		expect(
+			w.registry.messages.filter(m => m.customType === "rlm-revival" && (m.content ?? "").includes("B")).length,
+		).toBe(0);
+	});
+
+	test("a resolution still pending at shutdown never constructs or starts a kernel, and shutdown does not wait for it", async () => {
+		const dir = caseDir("shutdown-race");
+		const w = await wire();
+		const dirB = join(dir, "sessions", "B");
+		seedSnapshot(dirB);
+		const holdB = gate();
+
+		const pendingStart = emit(w.registry, "session_start", {}, parkedCtx(dir, dirB, holdB));
+		await within(
+			2000,
+			"shutdown while a resolution is parked (no deadlock)",
+			emit(w.registry, "session_shutdown", {}, undefined),
+		);
+		holdB.open();
+		await within(2000, "late resolution settling", pendingStart);
+
+		expect(
+			w.records.length,
+			"POST-SESSION-SHUTDOWN-RACE-1 violation: a kernel was constructed after session_shutdown",
+		).toBe(0);
+		expect(w.started).toEqual([]);
+	});
+
+	test("a rejected incoming resolution never lets the next kernel reuse the outgoing session's directory", async () => {
+		const dir = caseDir("resolution-failed");
+		const w = await wire();
+		const dirA = join(dir, "sessions", "A");
+		await emit(w.registry, "session_start", {}, hostCtx(dir, dirA));
+		await tool({ registry: w.registry, records: w.records } as unknown as Harness).execute(
+			"c-a",
+			{ code: "a = 1" },
+			undefined,
+			undefined,
+			toolCtx(),
+		);
+		expect(w.dirs[0]).toBe(dirA);
+
+		const open = gate();
+		open.open();
+		let propagated = false;
+		try {
+			await emit(
+				w.registry,
+				"session_switch",
+				{ reason: "new" },
+				parkedCtx(dir, join(dir, "sessions", "B"), open, true),
+			);
+		} catch {
+			propagated = true;
+		}
+		expect(propagated, "ERRORS-SESSION-RESOLUTION-FAILED-1 violation: the resolution error was swallowed").toBe(true);
+
+		await tool({ registry: w.registry, records: w.records } as unknown as Harness).execute(
+			"c-b",
+			{ code: "b = 1" },
+			undefined,
+			undefined,
+			toolCtx(),
+		);
+		const next = w.dirs[w.dirs.length - 1];
+		expect(
+			next,
+			"ERRORS-SESSION-RESOLUTION-FAILED-1 violation: the next kernel was built on the outgoing session's directory",
+		).not.toBe(dirA);
+		expect(next.startsWith(join(dir, ".omp", "artifacts", "isolated-"))).toBe(true);
+		expect(w.registry.messages.filter(m => m.customType === "rlm-warning").length).toBe(1);
+	});
+});
