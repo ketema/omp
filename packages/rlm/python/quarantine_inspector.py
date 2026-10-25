@@ -132,7 +132,7 @@ def quarantine_and_inspect(
                 )
             )
             recoverable_count += 1
-        except (dill.PicklingError, dill.UnpicklingError, ModuleNotFoundError, AttributeError, EOFError, ValueError) as exc:
+        except Exception as exc:  # noqa: BLE001
             status_records.append(
                 VariableStatusRecord(
                     name=name,
