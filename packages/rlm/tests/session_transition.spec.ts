@@ -582,11 +582,15 @@ describe("POST-SESSION-RESOLUTION-GATE-1: no kernel is constructed against an un
 		).toEqual([b.ownDir, c.ownDir]);
 		expect(created[0].state.disposed, "the in-flight B kernel must be disposed by the switch to C").toBe(true);
 		expect(created[1].state.disposed, "C's kernel must survive into session C").toBe(false);
-		// The cell issued in C runs on C's kernel. NOTE (PARKED, outside GATE-1): a tool call that is
-		// mid-flight while a switch races it (ensureStarted -> execute are separate kernel resolutions)
-		// can have its execute step land on the next session's kernel; the host's idle-gating policy for
-		// switches, not this clause, decides that. See plan pivot_guidance.
-		expect(created[1].state.executes.at(-1)).toBe("in_c = 1");
+		// POST-TOOL-SESSION-BINDING-1: B's cell raced the switch to C. Permitted outcomes are exhaustive and
+		// correlated with its tool result: it ran on B's own kernel (O1), or it aborted and reached NO kernel (O2).
+		// It is never both, and never on C's kernel.
+		const resB = await execB;
+		const executedOnB = created[0].state.executes.includes("in_b = 1");
+		expect(resB.isError ?? false, "B's result must match where (and whether) its cell ran").toBe(!executedOnB);
+		expect(created[0].state.executes).toEqual(executedOnB ? ["in_b = 1"] : []);
+		// C's kernel sees exactly the cell issued in C: no old cell code ever executes in the incoming namespace.
+		expect(created[1].state.executes).toEqual(["in_c = 1"]);
 		await a.sm.close();
 		await b.sm.close();
 		await c.sm.close();

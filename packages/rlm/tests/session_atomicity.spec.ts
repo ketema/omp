@@ -54,7 +54,7 @@ interface Registry {
 	readonly tools: ToolRecord[];
 }
 
-function makeRegistry() {
+function makeRegistry(flags: Record<string, string | boolean> = {}) {
 	const registry: Registry = { handlers: new Map(), tools: [] };
 	const api = {
 		registerTool(tool: ToolRecord) {
@@ -67,8 +67,8 @@ function makeRegistry() {
 			list.push(handler);
 			registry.handlers.set(event, list);
 		},
-		getFlag() {
-			return undefined;
+		getFlag(name: string) {
+			return flags[name];
 		},
 		sendMessage() {},
 	};
@@ -113,6 +113,8 @@ interface PortScript {
 	readonly executeGate?: Gate;
 	/** First execute attempt throws the kernel's busy-after-interrupt error (the cell never ran). */
 	readonly busyOnFirstExecute?: boolean;
+	/** Park inside dispose until opened (a slow snapshot flush). */
+	readonly disposeGate?: Gate;
 }
 
 interface PortRecord {
@@ -122,6 +124,7 @@ interface PortRecord {
 	disposed: boolean;
 	readonly ensureStartedEntered: Gate;
 	readonly executeEntered: Gate;
+	readonly disposeEntered: Gate;
 }
 
 interface ScriptedPort {
@@ -137,6 +140,7 @@ function makePort(label: string, script: PortScript): ScriptedPort {
 		disposed: false,
 		ensureStartedEntered: gate(),
 		executeEntered: gate(),
+		disposeEntered: gate(),
 	};
 	const port: RlmExtensionKernelPort = {
 		async ensureStarted() {
@@ -165,6 +169,8 @@ function makePort(label: string, script: PortScript): ScriptedPort {
 		async kill() {},
 		async dispose() {
 			record.disposed = true;
+			record.disposeEntered.open();
+			await script.disposeGate?.opened;
 		},
 		restoredNames() {
 			return [];
@@ -353,4 +359,157 @@ describe("POST-TOOL-SESSION-BINDING-1 / ERRORS-TOOL-SESSION-CHANGED-1: a cell st
 		expect(ranOn(h, "RUNNING_CELL = 1")).toEqual(["S1"]);
 		expect(h.records.length, "a running cell must not cause the incoming session's kernel to be built").toBe(1);
 	});
+
+	test("O2: a cell resuming while the outgoing kernel is still DISPOSING aborts visibly without calling the disposing kernel", async () => {
+		const hold = gate();
+		const disposing = gate();
+		const h = await startSessionA(
+			[{ ensureStartedGate: hold, disposeGate: disposing }, {}],
+			caseDir("o2-slow-dispose"),
+		);
+		const cell = tool(h).execute("c-slow", { code: "SLOW_CELL = 1" }, undefined, undefined, toolCtx());
+		await within(2000, "cell entering ensureStarted", h.records[0].ensureStartedEntered.opened);
+
+		// The switch parks INSIDE S1.dispose (a slow snapshot flush); the lifecycle has not completed yet.
+		const switching = emit(h.registry, "session_switch", { reason: "new" }, h.sessionB);
+		await within(2000, "S1.dispose starting", h.records[0].disposeEntered.opened);
+
+		hold.open();
+		// The cell must settle WHILE dispose is still parked: ownership was relinquished before the awaited dispose.
+		const res = await within(2000, "aborted cell result during dispose", cell);
+		expect(res.isError).toBe(true);
+		expect(res.details?.status).toBe("aborted");
+		expect(
+			h.records[0].attempts,
+			"POST-TOOL-SESSION-BINDING-1 violation: the cell called a kernel that is mid-dispose",
+		).toBe(0);
+
+		disposing.open();
+		await within(2000, "session_switch completing", switching);
+		expect(ranOn(h, "SLOW_CELL = 1")).toEqual([]);
+	});
+
+	test("O2: a cell resuming while the kernel is still being disposed by SHUTDOWN aborts visibly without calling the disposing kernel", async () => {
+		const hold = gate();
+		const disposing = gate();
+		const h = await startSessionA(
+			[{ ensureStartedGate: hold, disposeGate: disposing }, {}],
+			caseDir("o2-shutdown-slow-dispose"),
+		);
+		const cell = tool(h).execute("c-shut-slow", { code: "SHUT_SLOW_CELL = 1" }, undefined, undefined, toolCtx());
+		await within(2000, "cell entering ensureStarted", h.records[0].ensureStartedEntered.opened);
+
+		const shuttingDown = emit(h.registry, "session_shutdown", {}, h.sessionA);
+		await within(2000, "S1.dispose starting", h.records[0].disposeEntered.opened);
+
+		hold.open();
+		const res = await within(2000, "aborted cell result during shutdown dispose", cell);
+		expect(res.isError).toBe(true);
+		expect(res.details?.status).toBe("aborted");
+		expect(
+			h.records[0].attempts,
+			"POST-TOOL-SESSION-BINDING-1 violation: the cell called a kernel that shutdown is disposing",
+		).toBe(0);
+
+		disposing.open();
+		await within(2000, "session_shutdown completing", shuttingDown);
+		expect(ranOn(h, "SHUT_SLOW_CELL = 1")).toEqual([]);
+		expect(h.records.length).toBe(1);
+	});
+
+	test("a cell racing back-to-back switches runs on its own kernel or aborts, and the final session's kernel sees exactly its own cell", async () => {
+		const h = await startSessionA([{}, {}], caseDir("back-to-back"));
+		const sessionC = hostCtx(h.sessionA.cwd, join(h.sessionA.cwd, "sessions", "C"));
+
+		const toB = emit(h.registry, "session_switch", { reason: "new" }, h.sessionB);
+		const cellB = tool(h).execute("c-b", { code: "in_b = 1" }, undefined, undefined, toolCtx());
+		const toC = emit(h.registry, "session_switch", { reason: "new" }, sessionC);
+		await within(2000, "back-to-back switches and the racing cell", Promise.all([toB, cellB, toC]));
+		const resB = await cellB;
+		const resC = await tool(h).execute("c-c", { code: "in_c = 1" }, undefined, undefined, toolCtx());
+
+		expect(resC.isError ?? false).toBe(false);
+		const finalKernel = h.records[h.records.length - 1];
+		expect(
+			finalKernel.executes,
+			"POST-TOOL-SESSION-BINDING-1 violation: old cell code executed in the incoming session's namespace",
+		).toEqual(["in_c = 1"]);
+		expect(finalKernel.disposed).toBe(false);
+		expect(h.records[0].disposed, "the kernel built for the racing cell must be disposed by the next switch").toBe(
+			true,
+		);
+		// B's cell: exactly one of O1 (ran on its own kernel) / O2 (aborted, reached no kernel), correlated with its result.
+		expect(ranOn(h, "in_b = 1")).toEqual(resB.isError === true ? [] : ["S1"]);
+		expect(resB.details?.status).toBe(resB.isError === true ? "aborted" : "ok");
+	});
+
+	test("REAL kernel: a genuinely running cell survives a switch on its own process; the incoming session shares neither its state nor its process", async () => {
+		const dir = caseDir("real-running-cell");
+		const flags: Record<string, string> = { OMP_RLM_AGENT_DIR: join(dir, "agent") };
+		const existingPython = join(process.env.HOME ?? "/Users/ketema", ".omp/agent/kernel-venv/bin/python");
+		if (fs.existsSync(existingPython)) flags.RLM_KERNEL_PYTHON = existingPython;
+		const { api, registry } = makeRegistry(flags);
+		await createRlmExtension()(api as never);
+		const sessionA = hostCtx(dir, join(dir, "sessions", "A"));
+		const sessionB = hostCtx(dir, join(dir, "sessions", "B"));
+		const flag = join(dir, "long-cell-running.flag");
+		const realTool = registry.tools[0];
+		try {
+			await emit(registry, "session_start", {}, sessionA);
+			const first = await realTool.execute(
+				"a-pid",
+				{ code: "import os\nowner_pid = os.getpid()\nprint(f'PID={owner_pid}')" },
+				undefined,
+				undefined,
+				toolCtx(),
+			);
+			expect(first.isError ?? false).toBe(false);
+			const pidA = /PID=(\d+)/.exec(first.content[0].text)?.[1];
+			expect(pidA).toBeDefined();
+
+			// The barrier is the running cell's own signal (it writes a flag file from INSIDE the real kernel).
+			const longCell = realTool.execute(
+				"a-long",
+				{
+					code: `import time\nopen(${JSON.stringify(flag)}, "w").write("1")\ntime.sleep(2.5)\nold_cell_marker = 1\nprint("old-cell-finished")`,
+				},
+				undefined,
+				undefined,
+				toolCtx(),
+			);
+			const deadline = Date.now() + 60_000;
+			while (!fs.existsSync(flag)) {
+				if (Date.now() > deadline) throw new Error("real long cell never signalled that it was running");
+				await new Promise(resolve => setTimeout(resolve, 25));
+			}
+
+			// REAL lifecycle while the cell is genuinely running inside the real kernel.
+			await within(
+				90_000,
+				"session_switch behind a real running cell",
+				emit(registry, "session_switch", { reason: "new" }, sessionB),
+			);
+			await within(90_000, "the real long cell settling", longCell);
+
+			const probe = await realTool.execute(
+				"b-probe",
+				{
+					code: "import os\nprint(f\"PID={os.getpid()} MARKER={'old_cell_marker' in globals()} OWNER={'owner_pid' in globals()}\")",
+				},
+				undefined,
+				undefined,
+				toolCtx(),
+			);
+			expect(probe.isError ?? false).toBe(false);
+			const text = probe.content[0].text;
+			expect(text, "REQ-RLM-REHYDRATE-003 violation: session A's state is visible in session B").toContain(
+				"MARKER=False OWNER=False",
+			);
+			const pidB = /PID=(\d+)/.exec(text)?.[1];
+			expect(pidB).toBeDefined();
+			expect(pidB, "session B must run in a different kernel process than session A").not.toBe(pidA);
+		} finally {
+			await emit(registry, "session_shutdown", {}, sessionB);
+		}
+	}, 240_000);
 });

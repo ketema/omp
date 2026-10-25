@@ -11,7 +11,12 @@ import { bootstrapManagedVenv, buildKernelEnv } from "./bootstrap";
 import { EMBEDDED_RUNTIME_SOURCES, ensureExtractedAssets } from "./embedded_assets";
 import type { KernelClock, KernelExecutionResult, KernelTransport } from "./kernel";
 import { KernelManager } from "./kernel";
-import { createRlmToolDefinition, type RlmToolKernelPort, type RlmToolKernelResult } from "./tool";
+import {
+	createRlmToolDefinition,
+	RlmSessionChangedError,
+	type RlmToolKernelPort,
+	type RlmToolKernelResult,
+} from "./tool";
 import { createTransport } from "./transport";
 // =============================================================================
 // Config types
@@ -376,6 +381,37 @@ export function createRlmExtension(
 			return kernelConstruction;
 		};
 
+		// POST-TOOL-SESSION-BINDING-1: a port bound to ONE kernel object. Each call is made on that object, and
+		// only while it is still the extension's current kernel; otherwise the call is not made and the invocation
+		// aborts visibly (ERRORS-TOOL-SESSION-CHANGED-1). No per-call global slot, no lock: the check is a plain
+		// identity comparison and a session transition never waits for a running cell.
+		const bindKernel = (bound: RlmExtensionKernelPort): RlmToolKernelPort => {
+			const assertCurrent = (): void => {
+				if (kernel !== bound) throw new RlmSessionChangedError();
+			};
+			return {
+				async ensureStarted(onProgress) {
+					assertCurrent();
+					await bound.ensureStarted(onProgress);
+				},
+				async execute(code) {
+					assertCurrent();
+					return bound.execute(code);
+				},
+				async kill() {
+					assertCurrent();
+					await bound.kill();
+				},
+				async dispose() {
+					assertCurrent();
+					await bound.dispose();
+				},
+				restoredNames() {
+					return bound.restoredNames();
+				},
+			};
+		};
+
 		// registerTool: exactly ONE tool, the ipython tool
 		const toolDef = createRlmToolDefinition({
 			kernel: {
@@ -394,6 +430,12 @@ export function createRlmExtension(
 				restoredNames() {
 					if (kernel === null) return [];
 					return kernel.restoredNames();
+				},
+				acquire() {
+					// Capture synchronously when a kernel exists, so the binding is the kernel current at entry.
+					const current = kernel;
+					if (current !== null) return Promise.resolve(bindKernel(current));
+					return ensureKernel().then(bindKernel);
 				},
 			},
 			onRevival: (names: readonly string[]) => {
@@ -500,11 +542,15 @@ export function createRlmExtension(
 
 		// Save and dispose the outgoing kernel to prevent cross-session leakage (Comment 4366356325)
 		const disposeOutgoingKernel = async (): Promise<void> => {
-			if (kernel === null) return;
+			const outgoing = kernel;
+			if (outgoing === null) return;
+			// POST-TOOL-SESSION-BINDING-1: relinquish ownership BEFORE the awaited dispose, so every later call
+			// from a cell bound to this kernel fails closed instead of reaching the incoming session.
+			kernel = null;
 			try {
-				await kernel.dispose();
+				await outgoing.dispose();
 				// Check for observable teardown failure notices from KernelManager
-				const teardownNotice = kernel.takeTeardownNotice?.();
+				const teardownNotice = outgoing.takeTeardownNotice?.();
 				if (teardownNotice) {
 					api.sendMessage(
 						{
@@ -531,8 +577,6 @@ export function createRlmExtension(
 					},
 					{ deliverAs: "nextTurn" },
 				);
-			} finally {
-				kernel = null;
 			}
 		};
 
@@ -621,10 +665,9 @@ export function createRlmExtension(
 		api.on("session_shutdown", async () => {
 			// Never orphan a kernel whose construction is still in flight (its failure surfaces to its requester).
 			if (kernelConstruction !== null) await kernelConstruction.catch(() => undefined);
-			if (kernel !== null) {
-				await kernel.dispose();
-				kernel = null;
-			}
+			const outgoing = kernel;
+			kernel = null; // in-flight cells bound to it abort visibly instead of reaching a replacement kernel
+			if (outgoing !== null) await outgoing.dispose();
 		});
 	};
 }
