@@ -124,7 +124,7 @@ describe("contract/implementation alignment (CL11-F): tests are the only bridge"
 		await ownedRun.useKernel("a = 1");
 		expect(
 			ownedRun.dirs,
-			"POST-SESSION-OWNED-DIR-1 violation: the kernel was not built on the resolved owned directory",
+			"IP-5 / POST-SESSION-OWNED-DIR-1 violation: kernel construction was not handed the resolved owned directory",
 		).toEqual([owned]);
 		expect(validateSessionArtifactsDir(owned, { sessionDir: owned, cwd })).toBe(true);
 

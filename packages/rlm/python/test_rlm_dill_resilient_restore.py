@@ -149,7 +149,14 @@ class TestRlmDillResilientRestore(unittest.TestCase):
         # ACT: Call _snapshot_restore on the implementation
         # Expected under current implementation: raises CorruptSnapshotError (RED failure)
         # Expected under contract: succeeds, restores good_var, skips broken_var, reports in telemetry
-        result = rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+        try:
+            result = rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+        except CorruptSnapshotError as exc:
+            raise AssertionError(
+                "FORBIDDEN-RESTORE-ABORT-1 violation: an individual unpickling failure aborted the restore\n"
+                "EXPECTED: the broken variable is skipped and the container still restores\n"
+                f"ACTUAL: CorruptSnapshotError: {exc}"
+            ) from exc
 
         # ASSERT: good_var must be restored in user_ns
         assert "good_var" in self.ns, (
@@ -302,7 +309,7 @@ class TestRlmDillResilientRestore(unittest.TestCase):
                 _contract_mod.validate_bootstrap_environment(sys.modules)
             except _contract_mod.ResilientRestoreContractError as exc:
                 raise AssertionError(
-                    "POST-BOOTSTRAP-PRIMITIVES-1 violation: bootstrap did not load the base primitives\n"
+                    "IP-4 / POST-BOOTSTRAP-PRIMITIVES-1 violation: bootstrap did not load the base primitives before restore\n"
                     f"EXPECTED: {sorted(BASE_BOOTSTRAP_MODULES)} present after _bootstrap()\n"
                     f"ACTUAL: {exc}\n"
                     "GUIDANCE: every base module the contract names is loaded before any cell or restore runs"

@@ -1,9 +1,16 @@
 /**
- * RED PHASE — RLM transport implementation tests (SLICE-4, TRANS-* clauses).
+ * RLM transport implementation tests (SLICE-4, TRANS-* clauses).
  *
- * Targets the IMPLEMENTATION artifact packages/rlm/src/transport.ts, not the
- * contract. At RED time the module does not exist; every test fails with a
- * module-resolution error.
+ * Targets the IMPLEMENTATION artifact packages/rlm/src/transport.ts.
+ *
+ * GATE 5 CLASSIFICATION OF THE DOUBLES USED HERE (CL13):
+ * - makeFakeProcess is an adversarial WIRE INPUT fixture. It feeds scripted stdout frames and exit events to the real
+ *   transport and records what the transport writes; it does NOT stand in for a provider's behavior and emulates none.
+ *   The frames it feeds are judged against the closed protocol vocabulary (TRANS_FRAMES, TRANS-V2) and include the
+ *   negative frames: malformed JSON and an unknown frame type (ERRORS-TRANS-3), a stale id (INV-TRANS-1), a missing
+ *   readiness frame (ERRORS-TRANS-2) and a spawn failure (ERRORS-TRANS-1). Its real-process companion is the LIVE tier below.
+ * - makeScriptedTransport (kernel_transport_double.ts) IS a behavioral substitute for this transport in the manager and
+ *   extension specs. Its parity with the real transport is pinned by "KernelTransport double parity" below.
  *
  * Added by the 2026-08-16 constitutional-refactor re-assessment: REQ-RLM-0019
  * assigned the real kernel spawn to SLICE-4 (requirements -> contracts ->
@@ -56,6 +63,7 @@ import {
   RlmTransport,
   type RlmTransportProcess,
 } from "../src/transport.ts"
+import { makeScriptedTransport } from "./kernel_transport_double.ts"
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -455,6 +463,43 @@ describe("transport wire protocol", () => {
   })
 })
 
+describe("KernelTransport double parity (CL13)", () => {
+  test("every public method of the real transport exists on the double; optional members appear only when scripted", () => {
+    // Risk tier: MEDIUM — a transport method the double lacks makes the manager specs exercise a shape the real transport
+    // does not have (the drift that left port doubles without `retarget`).
+    const real = createTransport(CONFIG)
+    const realMethods = Object.getOwnPropertyNames(RlmTransport.prototype)
+      .filter(name => name !== "constructor" && typeof (real as unknown as Record<string, unknown>)[name] === "function")
+      .filter(name => !name.startsWith("_") && !name.startsWith("#"))
+    // Members the KernelTransport interface marks optional: present on the double only when a spec scripts them.
+    const optionalOnInterface = new Set([
+      "shutdown",
+      "writeSnapshotPayload",
+      "discardSnapshotStage",
+      "pythonVersion",
+      "setArtifactsDir",
+    ])
+    const plain = makeScriptedTransport() as unknown as Record<string, unknown>
+    const missingRequired = realMethods.filter(name => !optionalOnInterface.has(name) && typeof plain[name] !== "function")
+    expect(
+      missingRequired,
+      `CL13 violation: the double lacks real transport methods: ${missingRequired.join(", ")}`,
+    ).toEqual([])
+    const scripted = makeScriptedTransport({
+      writeSnapshotPayload: async () => undefined,
+      pythonVersion: async () => "3.11.0",
+      setArtifactsDir: () => undefined,
+      discardSnapshotStage: () => undefined,
+      shutdown: () => undefined,
+    }) as unknown as Record<string, unknown>
+    const missingOptional = [...optionalOnInterface].filter(name => typeof scripted[name] !== "function")
+    expect(missingOptional, `CL13 violation: scripting does not surface ${missingOptional.join(", ")}`).toEqual([])
+    for (const name of optionalOnInterface) {
+      expect(typeof plain[name], `optional member ${name} must be absent until scripted`).toBe("undefined")
+    }
+  })
+})
+
 // ---------------------------------------------------------------------------
 // WIRE tier — contract validators (supporting, labeled)
 // ---------------------------------------------------------------------------
@@ -699,6 +744,42 @@ time.sleep(30)`,
       }
     }
   }, 120_000)
+
+  test("KernelTransport double parity live: the double's observable results have the real transport's shapes (CL13)", async () => {
+    // Risk tier: MEDIUM — the manager specs trust the double; this pins it to what the real runner returns.
+    const artifacts = join(workRoot, "art-parity")
+    fs.mkdirSync(artifacts, { recursive: true })
+    const real = createTransport(liveConfig(artifacts))
+    const double = makeScriptedTransport()
+    const shapeOf = (value: unknown): string =>
+      Array.isArray(value) ? "array" : value === null ? "null" : typeof value
+    try {
+      await real.start()
+      await double.start()
+      const realExec = await real.execute("p1", "kept = 1\nprint('hi')")
+      const doubleExec = await double.execute("p1", "print('hi')")
+      for (const key of ["code", "stdout", "stderr", "result"] as const) {
+        expect(
+          shapeOf((doubleExec as Record<string, unknown>)[key]),
+          `CL13 violation: the double's execute result field '${key}' differs in shape from the real transport's`,
+        ).toBe(shapeOf((realExec as Record<string, unknown>)[key]))
+      }
+      expect(shapeOf(await double.snapshotNames())).toBe(shapeOf(await real.snapshotNames()))
+      const realWrite = await real.writeSnapshot(["kept"], 256 * 1024 * 1024)
+      const doubleWrite = await double.writeSnapshot(["kept"], 256 * 1024 * 1024)
+      expect(shapeOf(doubleWrite.bytes), "CL13 violation: write result 'bytes' shape").toBe(shapeOf(realWrite.bytes))
+      expect(shapeOf(doubleWrite.skipped), "CL13 violation: write result 'skipped' shape").toBe(shapeOf(realWrite.skipped))
+      await real.writeSnapshotPayload(artifacts)
+      expect(shapeOf(await double.restoreSnapshot()), "CL13 violation: restore result shape").toBe(
+        shapeOf(await real.restoreSnapshot()),
+      )
+      expect(typeof double.alive()).toBe(typeof real.alive())
+      expect(typeof double.isBusy()).toBe(typeof real.isBusy())
+    } finally {
+      await real.dispose()
+      await double.dispose()
+    }
+  }, 60_000)
 
   test("POST-TRANS-5 live: the runtime bootstrap succeeds in the managed venv", async () => {
     // Risk tier: HIGH — the bootstrap cell is the runtime admission gate;

@@ -330,7 +330,7 @@ class TestQuarantineRefusesHandleBlobs(_GuardCase):
         )
         status = {v.name: v for v in report.variables}
         for name in ("fh", "nested"):
-            assert status[name].status == "unpicklable" and _quarantine_contract.HANDLE_REASON_MARKER in (
+            assert status[name].status == "unpicklable" and _restore_contract.HANDLE_REASON_MARKER in (
                 status[name].error or ""
             ), (
                 f"POST-QNOOPEN-1 violation: {name!r} must be unpicklable with an error naming a file handle\n"
@@ -384,34 +384,90 @@ class TestQuarantineRefusesHandleBlobs(_GuardCase):
         )
 
 
+class TestBothConsumersRefuseTheWholeAuthoritySet(_GuardCase):
+    def test_cross_inv_1_every_declared_reconstructor_is_refused_by_the_runner_and_by_the_inspector(self) -> None:
+        """
+        FOUR-CRITERIA TEST VALIDITY GATE:
+          [x] C1 VALID: cites CROSS_INV-1 (both contracts) and POST-NOOPEN-1 / POST-QNOOPEN-1
+          [x] C2 VALUABLE: a consumer that refuses only a subset of the authority's set fails for the missing name
+          [x] C3 NON-DUPLICATIVE: the handle-blob tests exercise dill's real handle blob; this one iterates the AUTHORITY's
+              set, so a reconstructor added to it is covered without editing a test
+          [x] C4 NOT FUTURE-EDIT: it fails only when a declared name is not refused
+        """
+        for name in sorted(_restore_contract.FILE_HANDLE_RECONSTRUCTORS):
+            # A protocol-0 GLOBAL reference to the reconstructor: scanned, never loaded
+            stream = b"cdill._dill\n" + name.encode() + b"\n."
+            self.write_snapshot({"refused": stream, "kept": dill.dumps(7)})
+
+            restored = rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+            skipped = tuple(
+                _restore_contract.SkippedVariableRecord(name=s["name"], reason=s["reason"], error_type=s["error_type"])
+                for s in restored["skipped"]
+            )
+            try:
+                _restore_contract.validate_handle_refusal(skipped, "refused")
+            except _restore_contract.UnsafeReconstructionContractError as exc:
+                raise AssertionError(f"CROSS_INV-1 violation: the runner did not refuse {name!r}: {exc}") from exc
+            assert restored["restoredNames"] == ["kept"], f"CROSS_INV-1 violation: runner restored {restored['restoredNames']}"
+            self.ns.clear()
+
+            report = quarantine_inspector.quarantine_and_inspect(
+                self.snapshot_path, os.path.join(self.test_dir, "quarantine", name)
+            )
+            status = {v.name: v for v in report.variables}
+            assert status["refused"].status == "unpicklable" and _restore_contract.HANDLE_REASON_MARKER in (
+                status["refused"].error or ""
+            ), f"CROSS_INV-1 violation: the inspector did not refuse {name!r}: {status['refused']}"
+            assert status["kept"].status == "recoverable", "CROSS_INV-1 violation: the inspector lost the healthy sibling"
+
+
 class TestGuardAlignsWithTheContracts(unittest.TestCase):
-    def test_both_implementations_redeclare_the_contracts_reconstructor_set(self) -> None:
+    def test_one_authority_declares_the_reconstructor_set_and_every_consumer_shares_one_scanner(self) -> None:
         """
-        FOUR-CRITERIA TEST VALIDITY GATE (CL11-F alignment, no production import of a contract):
-          [x] C1 VALID: the implementations redeclare the constants the contracts own
-          [x] C2 VALUABLE: a reconstructor present in a contract but not in an implementation (or the reverse) fails
-          [x] C3 NON-DUPLICATIVE: only test comparing the three declarations
-          [x] C4 NOT FUTURE-EDIT: bounds the declared sets today
+        FOUR-CRITERIA TEST VALIDITY GATE (CL11-C single authority, CL11-F alignment; no production import of a contract):
+          [x] C1 VALID: cites POST-NOOPEN-1, POST-QNOOPEN-1 and CROSS_INV-1
+          [x] C2 VALUABLE: a second declaration of the set, a quarantine contract that stops referencing the authority, a
+              non-reciprocal CROSS_INV-1, or a consumer carrying its own scanner copy each fail
+          [x] C3 NON-DUPLICATIVE: only test comparing the contracts' linkage with the production declarations
+          [x] C4 NOT FUTURE-EDIT: bounds the declarations present today
         """
-        assert rlm_kernel_runner.FILE_HANDLE_RECONSTRUCTORS == _restore_contract.FILE_HANDLE_RECONSTRUCTORS, (
-            "POST-NOOPEN-1 violation: runner reconstructor set differs from the contract\n"
+        import rlm_pickle_guard  # the ONE production declaration the runner and the inspector share
+
+        for name in ("FILE_HANDLE_RECONSTRUCTORS", "HANDLE_REASON_MARKER"):
+            assert not hasattr(_quarantine_contract, name), (
+                f"CL11-C violation: the quarantine contract redeclares {name}; the restore contract is the single authority"
+            )
+        for label, reference in _quarantine_contract.DEPENDS_ON.items():
+            path, clause = reference.split("::")
+            assert path == "contracts/rlm_dill_resilient_restore.contract.py", f"DEPENDS_ON {label} names {path}"
+            assert clause in _restore_contract.CONTRACT_RLM_DILL_RESILIENT_RESTORE, (
+                f"DEPENDS_ON {label} names {clause}, which the authority does not declare"
+            )
+        restore_cross = _restore_contract.CONTRACT_RLM_DILL_RESILIENT_RESTORE["CROSS_INV-1"].description
+        quarantine_cross = _quarantine_contract.CONTRACT_QUARANTINE_INSPECTOR["CROSS_INV-1"].description
+        assert restore_cross == quarantine_cross, "CROSS_INV-1 is not reciprocal: the two contracts word it differently"
+        for participant in (
+            "contracts/rlm_dill_resilient_restore.contract.py",
+            "contracts/quarantine_inspector.contract.py",
+        ):
+            assert participant in restore_cross, f"CROSS_INV-1 does not name its participant {participant}"
+
+        assert rlm_pickle_guard.FILE_HANDLE_RECONSTRUCTORS == _restore_contract.FILE_HANDLE_RECONSTRUCTORS, (
+            "POST-NOOPEN-1 violation: the production reconstructor set differs from the authority\n"
             f"EXPECTED: {sorted(_restore_contract.FILE_HANDLE_RECONSTRUCTORS)}\n"
-            f"ACTUAL: {sorted(rlm_kernel_runner.FILE_HANDLE_RECONSTRUCTORS)}"
+            f"ACTUAL: {sorted(rlm_pickle_guard.FILE_HANDLE_RECONSTRUCTORS)}"
         )
-        assert quarantine_inspector.FILE_HANDLE_RECONSTRUCTORS == _quarantine_contract.FILE_HANDLE_RECONSTRUCTORS, (
-            "POST-QNOOPEN-1 violation: inspector reconstructor set differs from the contract\n"
-            f"EXPECTED: {sorted(_quarantine_contract.FILE_HANDLE_RECONSTRUCTORS)}\n"
-            f"ACTUAL: {sorted(quarantine_inspector.FILE_HANDLE_RECONSTRUCTORS)}"
-        )
-        assert rlm_kernel_runner.FILE_HANDLE_RECONSTRUCTORS == quarantine_inspector.FILE_HANDLE_RECONSTRUCTORS, (
-            "the runner and the inspector must refuse the same reconstructors"
-        )
-        assert (
-            rlm_kernel_runner.UNSAFE_RECONSTRUCTION_ERROR_TYPE == _restore_contract.UNSAFE_RECONSTRUCTION_ERROR_TYPE
-        ), (
+        for consumer in (rlm_kernel_runner, quarantine_inspector):
+            assert consumer.references_file_handle_reconstructor is rlm_pickle_guard.references_file_handle_reconstructor, (
+                f"{consumer.__name__} carries its own scanner instead of the shared one"
+            )
+            assert consumer.FILE_HANDLE_RECONSTRUCTORS is rlm_pickle_guard.FILE_HANDLE_RECONSTRUCTORS, (
+                f"{consumer.__name__} redeclares the reconstructor set instead of sharing it"
+            )
+        assert rlm_kernel_runner.UNSAFE_RECONSTRUCTION_ERROR_TYPE == _restore_contract.UNSAFE_RECONSTRUCTION_ERROR_TYPE, (
             "POST-NOOPEN-1 violation: the error type a refused variable carries differs from the contract\n"
             f"EXPECTED: {_restore_contract.UNSAFE_RECONSTRUCTION_ERROR_TYPE!r}\n"
-            f"ACTUAL: {getattr(rlm_kernel_runner, 'UNSAFE_RECONSTRUCTION_ERROR_TYPE', '<undeclared>')!r}"
+            f"ACTUAL: {rlm_kernel_runner.UNSAFE_RECONSTRUCTION_ERROR_TYPE!r}"
         )
 
     def test_every_reconstructor_in_the_pinned_dill_that_opens_a_path_is_declared(self) -> None:

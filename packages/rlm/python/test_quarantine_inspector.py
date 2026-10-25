@@ -86,10 +86,10 @@ class TestQuarantineInspector(unittest.TestCase):
         )
 
         # ASSERT: Contract verification
-        assert os.path.exists(report.quarantine_path), "Quarantined snapshot file must exist"
-        assert report.total_variables == 3, f"Expected 3, got {report.total_variables}"
-        assert report.recoverable_count == 2, f"Expected 2, got {report.recoverable_count}"
-        assert report.unpicklable_count == 1, f"Expected 1, got {report.unpicklable_count}"
+        assert os.path.exists(report.quarantine_path), "IP-6 violation: the report names a quarantined snapshot that does not exist"
+        assert report.total_variables == 3, f"IP-6 / POST-QUARANTINE-INSPECT-1 violation: expected 3 variables, got {report.total_variables}"
+        assert report.recoverable_count == 2, f"IP-6 / POST-QUARANTINE-INSPECT-1 violation: expected 2 recoverable, got {report.recoverable_count}"
+        assert report.unpicklable_count == 1, f"IP-6 / POST-QUARANTINE-INSPECT-1 violation: expected 1 unpicklable, got {report.unpicklable_count}"
 
         # F1 check: Verify the file lives in a unique subfolder, not directly in quarantine_root
         quarantine_subfolder = os.path.dirname(report.quarantine_path)
