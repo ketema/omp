@@ -22,13 +22,17 @@
       "clauses_deferred": [
         "POST-SESSION-ISOLATION-1",
         "POST-SESSION-OWNED-DIR-1",
+        "POST-SM-OWN-ARTIFACTS-READY-1",
         "POST-SESSION-PREFLUSH-1",
         "POST-SESSION-READINESS-1",
         "POST-SESSION-FALLBACK-ISOLATION-1",
+        "POST-SESSION-NO-OWNED-DIR-ISOLATION-1",
+        "POST-SESSION-RESOLUTION-GATE-1",
         "ERRORS-SESSION-SWITCH-DISPOSE-1",
         "POST-TRANS-SKIPPED-WIRE-PROPAGATION-1",
-        "POST-QUARANTINE-INSPECT-1",
+        "FORBIDDEN-CROSS-SESSION-BLEED-1",
         "IP-5",
+        "POST-QUARANTINE-INSPECT-1",
         "IP-6"
       ],
       "negative_constraints": [
@@ -49,11 +53,15 @@
       "clauses_in_scope": [
         "POST-SESSION-ISOLATION-1",
         "POST-SESSION-OWNED-DIR-1",
+        "POST-SM-OWN-ARTIFACTS-READY-1",
         "POST-SESSION-PREFLUSH-1",
         "POST-SESSION-READINESS-1",
         "POST-SESSION-FALLBACK-ISOLATION-1",
+        "POST-SESSION-NO-OWNED-DIR-ISOLATION-1",
+        "POST-SESSION-RESOLUTION-GATE-1",
         "ERRORS-SESSION-SWITCH-DISPOSE-1",
         "POST-TRANS-SKIPPED-WIRE-PROPAGATION-1",
+        "FORBIDDEN-CROSS-SESSION-BLEED-1",
         "IP-5"
       ],
       "clauses_deferred": [
@@ -64,9 +72,11 @@
         "REQ-RLM-REHYDRATE-003"
       ],
       "status": "GREEN_COMPLETE",
-      "depends_on": ["SLICE-1"],
+      "depends_on": [
+        "SLICE-1"
+      ],
       "issue": "TODO",
-      "pivot_note": "Host extension and SessionManager partition kernel artifacts by session ID, handle session_switch/session_branch, resolve owned directory from getSessionFile(), provide atomic isolated fallback dirs, and await readiness before restore."
+      "pivot_note": "Kernel-state directory is exactly SessionManager.resolveOwnArtifactsDir() (own session file dir, awaited past the background copy into that file); no owned dir -> fresh mkdtemp isolated state; kernel construction gated on resolved dir; typed pre-transition flush. CORRECTION: the GREEN_COMPLETE claimed at e3f85186aa was FALSE (parent-reproduced A->B bleed for adopted no-file sessions); repaired by 39fcd7f/573e850 (accessor), 7d73739/96369bf (no-owned-dir isolation + own-copy readiness), db48c7a/f70cf3f (resolution gate). GREEN_COMPLETE here means local RED->GREEN evidence only: not AUDITED, not human-accepted, and required CI is red on pre-existing native/coding-agent jobs."
     },
     {
       "id": "SLICE-3",
@@ -79,7 +89,10 @@
         "REQ-RLM-REHYDRATE-004"
       ],
       "status": "GREEN_COMPLETE",
-      "depends_on": ["SLICE-1", "SLICE-2"],
+      "depends_on": [
+        "SLICE-1",
+        "SLICE-2"
+      ],
       "issue": "TODO",
       "pivot_note": "Quarantine utility safely isolates legacy dill files and extracts recoverable variables without contaminating clean sessions, continuing past SyntaxError and deserialization exceptions with lazy lzma import."
     }
@@ -87,10 +100,11 @@
   "pivot_guidance": [
     "Verify SLICE-1 resilient restore and builtin filtering passes before moving to SLICE-2 host session directory partitioning.",
     "Verify SLICE-2 guarantees empty state on fresh sessions before running SLICE-3 quarantine inspection.",
-    "STATUS NOTICE (PARKED CHOICES - NOT COMPLETED OR HUMAN ACCEPTED):",
-    "1. SEQ-8: Manifest SEQ-8 specifies automated legacy quarantine invocation on session bootstrap. quarantine_inspector.py operates as an approved standalone forensic utility. Automated bootstrap invocation remains PARKED and unexecuted pending explicit human disposition and approval.",
-    "2. POST-SESSION-OWNED-DIR-1 (adopted session without session file): If a subagent adopts a parent artifact manager and has no session file, getArtifactsDir() returns the parent dir; child-specific identity cannot be derived. PARKED: unestablished storage-migration intent; fallback uses getArtifactsDir() directly.",
-    "3. POST-SESSION-READINESS-1 (adopted manager readiness): Adopted artifact managers expose only the parent's readiness promise; a child session's own background copy readiness is unobservable via public API. PARKED: child sessions do not wait on the parent's readiness promise."
+    "STATUS NOTICE (PARKED - NOT COMPLETED, NOT HUMAN ACCEPTED):",
+    "1. SEQ-8: Manifest SEQ-8 specifies automated legacy quarantine invocation on session bootstrap. quarantine_inspector.py is a standalone forensic utility only. Automated bootstrap invocation remains PARKED and unexecuted pending explicit human disposition; no legacy operations were run.",
+    "2. Persistence/restore policy for sessions WITHOUT a session file (in-memory, adopted subagents): needs new intent. Meanwhile such sessions get fresh isolated mkdtemp state each lifecycle event and never read or write another session's files (POST-SESSION-NO-OWNED-DIR-ISOLATION-1); returning to the same no-file session within a process does not restore its prior state.",
+    "3. Tool-call/transition atomicity: a tool call racing a session switch issues ensureStarted and execute as separate kernel resolutions, so its execute step can land on the next session's kernel. Construction is gated (GATE-1) but serialising transitions behind in-flight calls, or binding a call to its starting kernel, is a new behavior needing a decision. Host fork paths gate on #assertIdleForSnapshot only when requireIdleFor is set.",
+    "4. Host surfaces lacking SessionManager.resolveOwnArtifactsDir() (older hosts) get fresh isolated state with an observable warning; there is no compatibility path that trusts getArtifactsDir()."
   ],
   "forgotten_invariants": [
     "REQ-RLM-REHYDRATE-001",
