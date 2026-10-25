@@ -9,6 +9,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 const repoRoot = path.join(import.meta.dir, "..");
@@ -16,6 +17,8 @@ const repoRoot = path.join(import.meta.dir, "..");
 interface PlannedCommand {
 	readonly label: string;
 	readonly command: string;
+	/** The dry-run's "gate:" line for this command, if any. */
+	readonly gate: string | null;
 }
 
 async function plan(mode: string): Promise<PlannedCommand[]> {
@@ -43,7 +46,12 @@ async function plan(mode: string): Promise<PlannedCommand[]> {
 		if (!lines[i].startsWith("==> ")) continue;
 		const next = lines[i + 1] ?? "";
 		if (!next.startsWith("$ ")) continue;
-		planned.push({ label: lines[i].slice(4), command: next.slice(2) });
+		const gateLine = lines[i + 2] ?? "";
+		planned.push({
+			label: lines[i].slice(4),
+			command: next.slice(2),
+			gate: gateLine.startsWith("gate: ") ? gateLine.slice(6) : null,
+		});
 	}
 	return planned;
 }
@@ -72,16 +80,45 @@ describe("POST-CI-RLM-SELECTION-1: mode 'rlm' dispatches the whole RLM TS packag
 		}
 	});
 
-	test("no spec in the selected package can skip silently (.skip / skipIf / .todo / .only)", () => {
-		const dir = path.join(repoRoot, "packages/rlm/tests");
-		const offenders: string[] = [];
-		for (const file of fs.readdirSync(dir)) {
-			if (!/\.(spec|test)\.ts$/.test(file)) continue;
-			const text = fs.readFileSync(path.join(dir, file), "utf8");
-			if (/\b(?:test|it|describe)\.(?:skip|skipIf|todo|only)\b/.test(text)) offenders.push(file);
+	test("POST-CI-RLM-NOSKIP-1: only the rlm command is marked as gated on Bun's own skipped/todo count", async () => {
+		const rlm = await plan("rlm");
+		expect(rlm[0].gate, "POST-CI-RLM-NOSKIP-1 violation: the rlm command is not skip-gated").toContain("skip");
+		for (const mode of ["workspace", "native"]) {
+			for (const command of await plan(mode)) {
+				expect(command.gate, `${mode}/${command.label} must not gain a skip gate`).toBeNull();
+			}
 		}
-		expect(offenders, "a skip/only/todo would let the gate go green without executing the case").toEqual([]);
-	});
+	}, 60_000);
+
+	test("POST-CI-RLM-NOSKIP-1: the gate counts skips from REAL Bun output, including aliased skips and todos", async () => {
+		const { skippedOrTodoCount } = await import("./ci-bun-summary.ts");
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ci-skip-fixture-"));
+		try {
+			const run = async (source: string, extraArgs: string[] = []): Promise<string> => {
+				fs.writeFileSync(path.join(dir, "fixture.test.ts"), source);
+				const proc = Bun.spawn(["bun", "test", ...extraArgs], { cwd: dir, stdout: "pipe", stderr: "pipe" });
+				const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+				await proc.exited;
+				return `${out}\n${err}`;
+			};
+			const skippySource = `import { expect, test } from "bun:test";\nconst t = test;\nt["skip"]("aliased skip", () => {});\ntest.todo("a todo");\n// test.skip is only mentioned in this comment\ntest("runs", () => { expect(1).toBe(1); });\n`;
+			for (const extraArgs of [[], ["--only-failures"]]) {
+				expect(
+					skippedOrTodoCount(await run(skippySource, extraArgs)),
+					`POST-CI-RLM-NOSKIP-1 violation: an aliased skip and a todo were not counted from the runner output (args: ${extraArgs.join(" ") || "none"})`,
+				).toBe(2);
+			}
+			const clean = await run(
+				`import { expect, test } from "bun:test";\n// test.skip appears in this comment only\ntest("runs", () => { expect(1).toBe(1); });\n`,
+			);
+			expect(
+				skippedOrTodoCount(clean),
+				"POST-CI-RLM-NOSKIP-1 violation: a comment mentioning skip was flagged",
+			).toBe(0);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}, 60_000);
 });
 
 describe("POST-CI-RLM-SELECTION-1: existing selections are neither broadened nor weakened", () => {

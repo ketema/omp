@@ -239,6 +239,12 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
     description: "Refines POST-SESSION-PREFLUSH-1: KernelManager.flushSnapshot settles within SNAPSHOT_DISPOSE_TIMEOUT_MS even if the kernel or serializer hangs, rejecting with the typed SnapshotFlushTimeoutError (the extension already surfaces any rejection as an observable rlm-warning and the transition proceeds). Snapshot work abandoned by that timeout never commits afterwards: it writes neither the payload nor the manifest into the artifacts directory, so it cannot race the host's artifact copy of the same directory. Covers Copilot comments 4369849292, 4370038281 and 4369909562",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
   },
+  "POST-CI-RLM-NOSKIP-1": {
+    id: "POST-CI-RLM-NOSKIP-1",
+    method: "test",
+    description: "Refines POST-CI-RLM-SELECTION-1: the rlm TS command fails when Bun's OWN run summary reports any skipped or todo test. The judgement is made from the actual runner output, not from spec source text, so computed or aliased skips (`test['skip'](...)`, `const t = test; t.skip(...)`) are caught and harmless comments mentioning skip are not flagged. The rule is a pure function over Bun's summary (`skippedOrTodoCount`), verified against real Bun output for a fixture containing aliased skip and todo tests and for a clean fixture; the script's dry-run plan marks the rlm command as skip-gated and no other command. Covers Copilot comment 4370304315",
+    requirement_ids: ["REQ-RLM-REHYDRATE-001", "REQ-RLM-REHYDRATE-003"],
+  },
   "IP-5": {
     id: "IP-5",
     method: "test",
