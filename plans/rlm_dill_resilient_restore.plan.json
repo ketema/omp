@@ -138,7 +138,8 @@
         "POST-CI-NATIVE-ABI-1",
         "POST-KM-SNAPSHOT-SERIAL-1",
         "POST-KM-SNAPSHOT-PAIR-1",
-        "POST-SESSION-MOVE-2"
+        "POST-SESSION-MOVE-2",
+        "POST-STAGE-1"
       ],
       "clauses_deferred": [],
       "negative_constraints": [

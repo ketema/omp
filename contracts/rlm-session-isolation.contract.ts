@@ -263,6 +263,12 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
     description: "A snapshot commits its payload and manifest as one generation. Every asynchronous preparation step (names, serialization, the kernel's Python version, payload staging) completes BEFORE either artifact is replaced, and the commit itself is synchronous with a rollback: if the commit cannot complete, or the snapshot was abandoned or its directory removed while preparing, the previously committed payload and manifest are left exactly as they were - never a new payload beside an old manifest, and never the reverse",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
   },
+  "POST-STAGE-1": {
+    id: "POST-STAGE-1",
+    method: "test",
+    description: "Refines POST-KM-NO-RESURRECT-1 and POST-KM-SNAPSHOT-PAIR-1 for the REAL provider (RlmTransport and the Python runner), not only a fake. Every byte the runner writes for a snapshot goes into an owned staging directory OUTSIDE the live artifacts directory: a same-filesystem sibling of it (`<parent>/.rlm-snapshot-stage-<unique>`), created mode 0700, its files mode 0600, and the live directory (or any ancestor) is never created, written or modified by the runner. KernelManager is the single commit authority: it moves the staged payload into the live directory only after its own removal and abandonment checks, so a live directory removed while the runner serializes stays absent, a snapshot abandoned by the flush timeout leaves the previously committed payload and manifest byte-identical when the runner finally finishes, and a failing stage never reaches the live pair. Only stages the transport itself created are removed - when the snapshot commits, is abandoned, fails, or the transport is disposed. Evidence is the real runner (a slow __reduce__ keeps it inside serialization while the host removes the directory or the flush times out), never a fake transport. Covers audit findings 7 and 13 of f5611865",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
   "POST-SESSION-MOVE-1": {
     id: "POST-SESSION-MOVE-1",
     method: "test",
