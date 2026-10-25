@@ -1343,3 +1343,59 @@ test("POST-SESSION-PREFLUSH-BOUNDED-1: snapshot work abandoned by the flush time
     "POST-SESSION-PREFLUSH-BOUNDED-1 violation: an abandoned snapshot committed its manifest after the timeout",
   ).toBe(false)
 })
+
+// ---------------------------------------------------------------------------
+// POST-KM-NO-RESURRECT-1 (contracts/rlm-session-isolation.contract.ts)
+// ---------------------------------------------------------------------------
+
+function payloadTransport() {
+  return makeTransport({
+    writeSnapshotPayload: async tempDir => {
+      fs.writeFileSync(`${tempDir}/kernel-state.dill`, "PAYLOAD")
+    },
+  })
+}
+test("POST-KM-NO-RESURRECT-1: a dispose-time snapshot never re-creates an artifacts directory the host removed", async () => {
+  const clock = makeClock()
+  const dir = artifactsDir()
+  const manager = new KernelManager(payloadTransport(), { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  fs.rmSync(dir, { recursive: true, force: true })
+  const done = manager.dispose({ snapshot: true })
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + DISPOSE_TIMEOUT_MS + 100)
+  await done
+  expect(
+    fs.existsSync(dir),
+    "POST-KM-NO-RESURRECT-1 violation: dispose re-created the artifacts directory the host had removed",
+  ).toBe(false)
+})
+
+test("POST-KM-NO-RESURRECT-1: a flush never re-creates a removed artifacts directory", async () => {
+  const clock = makeClock()
+  const dir = artifactsDir()
+  const manager = new KernelManager(payloadTransport(), { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  fs.rmSync(dir, { recursive: true, force: true })
+  await manager.flushSnapshot()
+  expect(
+    fs.existsSync(dir),
+    "POST-KM-NO-RESURRECT-1 violation: flushSnapshot re-created the artifacts directory the host had removed",
+  ).toBe(false)
+})
+
+test("POST-KM-NO-RESURRECT-1: a directory that never existed is still created by the first snapshot", async () => {
+  const clock = makeClock()
+  const dir = `${artifactsDir()}/fresh-session`
+  const manager = new KernelManager(
+    makeTransport({
+      writeSnapshotPayload: async tempDir => {
+        fs.writeFileSync(`${tempDir}/kernel-state.dill`, "PAYLOAD")
+      },
+    }),
+    { clock, artifactsDir: dir },
+  )
+  await manager.execute("x = 1")
+  await manager.flushSnapshot()
+  expect(fs.existsSync(`${dir}/kernel-state.dill`)).toBe(true)
+  expect(fs.existsSync(`${dir}/kernel-state.json`)).toBe(true)
+})

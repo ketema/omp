@@ -245,6 +245,18 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
     description: "Refines POST-CI-RLM-SELECTION-1: the rlm TS command fails when Bun's OWN run summary reports any skipped or todo test. The judgement is made from the actual runner output, not from spec source text, so computed or aliased skips (`test['skip'](...)`, `const t = test; t.skip(...)`) are caught and harmless comments mentioning skip are not flagged. The rule is a pure function over Bun's summary (`skippedOrTodoCount`), verified against real Bun output for a fixture containing aliased skip and todo tests and for a clean fixture; the script's dry-run plan marks the rlm command as skip-gated and no other command. Covers Copilot comment 4370304315",
     requirement_ids: ["REQ-RLM-REHYDRATE-001", "REQ-RLM-REHYDRATE-003"],
   },
+  "POST-KM-NO-RESURRECT-1": {
+    id: "POST-KM-NO-RESURRECT-1",
+    method: "test",
+    description: "KernelManager never re-creates an artifacts directory that existed (it was present at construction or a snapshot already wrote into it) and has since been removed by the host - for example the host's /delete drops the session's artifacts BEFORE the switch that disposes its kernel. A dispose-time, flush or debounced snapshot into a removed directory is skipped: no directory, temp directory, payload or manifest is created, and teardown still completes. A directory that never existed (a fresh session's first snapshot) is still created as before. Covers Copilot comment 4370059184",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
+  "POST-SESSION-MOVE-1": {
+    id: "POST-SESSION-MOVE-1",
+    method: "test",
+    description: "When the host relocates the active session - the explicit /move, or a persistence move-off that re-keys the session to a new session file with a background artifact copy - it emits the existing lifecycle events with reason 'move' (session_before_switch before an explicit /move so the live kernel flushes into the directory that is about to move; session_switch after). The extension treats 'move' like any other transition: it disposes the kernel bound to the superseded directory, resolves the session's NEW owned directory after the host's artifact copy settles, and restores state there, so a live kernel never keeps writing to the old directory. Covers Copilot comments 4370059196 and 4369909544",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
   "IP-5": {
     id: "IP-5",
     method: "test",
