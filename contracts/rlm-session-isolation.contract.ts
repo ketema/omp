@@ -269,6 +269,12 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
     description: "When the host relocates the active session - the explicit /move, or a persistence move-off that re-keys the session to a new session file with a background artifact copy - it emits the existing lifecycle events with reason 'move' (session_before_switch before an explicit /move so the live kernel flushes into the directory that is about to move; session_switch after). The extension treats 'move' like any other transition: it disposes the kernel bound to the superseded directory, resolves the session's NEW owned directory after the host's artifact copy settles, and restores state there, so a live kernel never keeps writing to the old directory. Covers Copilot comments 4370059196 and 4369909544",
     requirement_ids: ["REQ-RLM-REHYDRATE-003"],
   },
+  "POST-SESSION-MOVE-2": {
+    id: "POST-SESSION-MOVE-2",
+    method: "test",
+    description: "Refines POST-SESSION-MOVE-1 for the live namespace. On a 'move' transition the outgoing kernel's final snapshot is written to the session's NEW owned directory, and only after the host's background artifact copy into it has settled - never into the superseded directory (a persistence move-off leaves that directory with the process that wrote the original session, and the host copy may already have finished before this kernel flushed). The session restored in the new directory therefore carries state executed after the last idle snapshot (marker2), not the older copied one (marker1), and the superseded directory is left exactly as it was. A transition superseded by a newer one (repeated persistence notices) neither disposes nor snapshots: the newest transition owns the kernel and its directory. If the new directory cannot be resolved the outgoing kernel falls back to the ordinary dispose and the error propagates. Covers the parent review of 6672c6a (persistence move-off ordering)",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
   "IP-5": {
     id: "IP-5",
     method: "test",
