@@ -20,7 +20,7 @@ AI MAY NOT infer success from metrics.
 | Kernel Manager | `KernelManager` in `packages/rlm/src/kernel.ts` |
 | RLM Extension | `createRlmExtension` in `packages/rlm/src/extension.ts` |
 | Session Manager | `SessionManager` in `packages/coding-agent` |
-| Quarantine Inspector | `scripts/quarantine_inspector.py` |
+| Quarantine Inspector | `packages/rlm/python/quarantine_inspector.py` |
 | Operator | Human authority (Ketema) |
 
 ## 1. Intent Traceability
@@ -149,10 +149,11 @@ Kernel Runner restores all valid variables into `user_ns` with 100% fidelity, re
 
 ## 9. Contract Authority
 
-Authoritative Source: `packages/rlm/python/rlm_dill_resilient_restore_contract.py` and `contracts/rlm-session-isolation.contract.ts`
+Authoritative Sources: `contracts/rlm_dill_resilient_restore.contract.py`, `contracts/quarantine_inspector.contract.py` and `contracts/rlm-session-isolation.contract.ts` (one authority per domain; the implementation never imports them, tests import both).
 
 ## 10. Revision History
 
 | Date | Author | Change |
 |------|--------|--------|
 | 2026-10-23 | Ketema Harris & Claude | Initial requirement manifest for global dill rehydration, builtin filtering, and session isolation fix |
+| 2026-10-25 | Claude (for Ketema Harris) | Corrected two dangling file references found by the in-session slice-completion audit of f5611865: the Quarantine Inspector actor path and the Contract Authority section named files that do not exist. No requirement text changed. |

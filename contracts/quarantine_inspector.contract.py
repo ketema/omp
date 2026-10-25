@@ -7,7 +7,7 @@ variables, and extracting recoverable user state into a clean inspectable JSON/d
 
 Traceability:
     REQ-RLM-REHYDRATE-004 (Non-Destructive Quarantine: archive and inspect, never destroy)
-    IP-4 / IP-6 (Quarantine inspector outputs forensic summary to operator)
+    IP-6 (Quarantine inspector outputs forensic summary to operator)
 
 The implementation does NOT import from this file; tests import both.
 """

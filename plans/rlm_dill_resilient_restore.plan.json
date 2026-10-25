@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "feature_name": "rlm_dill_resilient_restore_and_session_isolation",
   "manifest_path": "requirements/REQUIREMENT_MANIFEST_RLM_DILL_REHYDRATION.md",
-  "manifest_hash": "sha256:de9ce04406919abe4033633b0f6666719a450f9d90ebcef6053abec708f908bc",
+  "manifest_hash": "sha256:19542ad5ff42a84c4ce7061809bc779f3073feec6f057c3f81901ca7abc56d5e",
   "created": "2026-10-23",
   "last_updated": "2026-10-25",
   "status": "ACTIVE",
