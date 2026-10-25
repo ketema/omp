@@ -426,8 +426,19 @@ export function createRlmExtension(
 			if (kernel !== null) {
 				try {
 					await kernel.dispose();
-				} catch {
-					// Non-fatal cleanup error on switch
+				} catch (err) {
+					// ERRORS-SESSION-SWITCH-DISPOSE-1: Surface observable diagnostic on flush failure
+					api.sendMessage(
+						{
+							role: "custom",
+							customType: "rlm-warning",
+							content: `Warning: Failed to cleanly dispose outgoing kernel during session switch: ${err instanceof Error ? err.message : String(err)}`,
+							display: true,
+							attribution: "agent",
+							timestamp: Date.now(),
+						},
+						{ deliverAs: "nextTurn" },
+					);
 				} finally {
 					kernel = null;
 				}
@@ -456,7 +467,24 @@ export function createRlmExtension(
 			} else if (typeof sessionId === "string" && sessionId.trim() !== "") {
 				artifactsDir = join(effectiveCwd, ".omp", "artifacts", sessionId.trim());
 			} else {
-				artifactsDir = join(effectiveCwd, ".omp", "artifacts");
+				// POST-SESSION-FALLBACK-ISOLATION-1: REQ-003 line 143
+				// Missing session identifier falls back to a dedicated isolated timestamped directory, NEVER bare root
+				const fallbackTimestamp = Date.now();
+				const fallbackDir = join(effectiveCwd, ".omp", "artifacts", `isolated-${fallbackTimestamp}`);
+				fs.mkdirSync(fallbackDir, { recursive: true });
+				artifactsDir = fallbackDir;
+
+				api.sendMessage(
+					{
+						role: "custom",
+						customType: "rlm-warning",
+						content: `Warning: Session ID missing or invalid. Fallback isolated directory assigned: ${artifactsDir}`,
+						display: false,
+						attribution: "agent",
+						timestamp: fallbackTimestamp,
+					},
+					{ deliverAs: "nextTurn" },
+				);
 			}
 
 			// Restore and announce revival only when an actual snapshot exists in the resolved artifactsDir

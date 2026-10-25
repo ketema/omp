@@ -362,6 +362,7 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			const sessionBDir = join(tempRoot, "sessions", "session-B", "artifacts");
 			fs.mkdirSync(sessionADir, { recursive: true });
 			fs.mkdirSync(sessionBDir, { recursive: true });
+			fs.writeFileSync(join(sessionADir, "kernel-state.dill"), "SNAPSHOT_A");
 
 			const kernelA = makeKernelPort({
 				disposeError: new Error("Simulated flush failure: disk full on snapshot save"),
@@ -379,6 +380,7 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			await factory(api as never);
 
 			const sessionStartHandlers = registered.handlers.get("session_start") ?? [];
+			// Start Session A - hasSnapshot causes ensureKernel() to be called so kernel !== null
 			await sessionStartHandlers[0](
 				{ type: "session_start" },
 				{
