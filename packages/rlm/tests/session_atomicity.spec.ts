@@ -684,6 +684,28 @@ describe("POST-SESSION-TRANSITION-GEN-1 / POST-SESSION-SHUTDOWN-RACE-1 / ERRORS-
 		expect(w.records[1].disposed).toBe(false);
 	});
 
+	test("back-to-back B, B's cell and C with no pause between them still builds B's kernel on B's directory, then C's on C's", async () => {
+		const dir = caseDir("gen-back-to-back-sync");
+		const w = await wire();
+		const dirA = join(dir, "sessions", "A");
+		const dirB = join(dir, "sessions", "B");
+		const dirC = join(dir, "sessions", "C");
+		await emit(w.registry, "session_start", {}, hostCtx(dir, dirA));
+		const harness = { registry: w.registry, records: w.records } as unknown as Harness;
+
+		// Same shape as the real-SessionManager spec: issued in one synchronous burst.
+		const toB = emit(w.registry, "session_switch", { reason: "new" }, hostCtx(dir, dirB));
+		const cellB = tool(harness).execute("c-b", { code: "in_b = 1" }, undefined, undefined, toolCtx());
+		const toC = emit(w.registry, "session_switch", { reason: "new" }, hostCtx(dir, dirC));
+		await within(2000, "B, its cell and C", Promise.all([toB, cellB, toC]));
+		await tool(harness).execute("c-c", { code: "in_c = 1" }, undefined, undefined, toolCtx());
+
+		expect(
+			w.dirs,
+			"POST-SESSION-TRANSITION-GEN-1 violation: a kernel requested during B was built on the previous session's directory instead of B's",
+		).toEqual([dirB, dirC]);
+	});
+
 	test("a slow transition B that settles after a newer transition C neither replaces C's directory nor revives into it", async () => {
 		const dir = caseDir("gen-slow-b");
 		const w = await wire();
