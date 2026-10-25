@@ -195,15 +195,6 @@ function appendCapped(current: string, chunk: string): string {
 	return next.slice(0, MAX_OUTPUT_CHARS + markerLength);
 }
 
-/** V4/V5/F3/F4: atomic file write — temp file in the SAME directory as the
- * destination, then rename (POSIX same-filesystem rename is atomic). A
- * crash mid-write leaves the prior file intact and readable. */
-function atomicWriteFileSync(destPath: string, content: string): void {
-	const tempPath = `${destPath}.tmp-${process.pid}-${Date.now()}`;
-	fs.writeFileSync(tempPath, content);
-	fs.renameSync(tempPath, destPath);
-}
-
 /** C1/F-017: stderr tails quoted in errors are bounded to
  * STDERR_TAIL_CHARS (prime-agent slices the last 1024 at throw sites). */
 function boundedStderrTail(stderr: string): string {
@@ -857,46 +848,12 @@ export class KernelManager {
 			const writeResult = await this.transport.writeSnapshot(filteredNames, SNAPSHOT_MAX_BYTES);
 			if (!canWrite()) return;
 
-			// Atomic payload write: write to a temp dir INSIDE artifactsDir,
-			// then rename within the same filesystem (V4/F3: a cross-filesystem
-			// temp location silently degrades to non-atomic copy — same-dir
-			// rename is atomic on POSIX)
-			// FORBIDDEN-KM-1: crash mid-write must leave prior artifacts intact
-			const payloadFn = this.transport.writeSnapshotPayload;
-			if (typeof payloadFn === "function") {
-				const tempDir = join(
-					this.artifactsDir,
-					`.kernel-snapshot-tmp-${this.clock.now()}-${Math.random().toString(36).slice(2, 10)}`,
-				);
-				try {
-					fs.mkdirSync(this.artifactsDir, { recursive: true });
-					this.artifactsDirSeen = true;
-					fs.mkdirSync(tempDir, { recursive: true });
-					await payloadFn(tempDir);
-					if (!canWrite()) return;
-
-					// Same-filesystem rename: atomic
-					const payloadSrc = join(tempDir, SNAPSHOT_PAYLOAD_FILE);
-					const payloadDest = join(this.artifactsDir, SNAPSHOT_PAYLOAD_FILE);
-					fs.renameSync(payloadSrc, payloadDest);
-				} finally {
-					// Clean up temp dir regardless of success/failure
-					try {
-						fs.rmSync(tempDir, { recursive: true, force: true });
-					} catch {
-						// temp cleanup failure never affects the committed payload
-					}
-				}
-			}
-
-			// C6: the manifest's pythonVersion comes from the kernel when the
-			// transport can report it (prime-agent writes sys.version)
+			// POST-KM-SNAPSHOT-PAIR-1: EVERY asynchronous preparation step completes before either artifact is
+			// replaced. C6: the manifest's pythonVersion comes from the kernel when the transport can report it
+			// (prime-agent writes sys.version); a hang here abandons the snapshot with the prior pair untouched.
 			const pythonVersion = await (this.transport.pythonVersion?.() ?? Promise.resolve(""));
 			if (!canWrite()) return;
 
-			// V5/F4: the manifest gets the same atomicity guarantee as the
-			// payload — temp file in artifactsDir + rename (a torn manifest
-			// makes the prior snapshot unreadable per INV-KM-2)
 			const manifest: KernelSnapshotManifest = {
 				version: SNAPSHOT_MANIFEST_VERSION,
 				savedNames: filteredNames,
@@ -914,7 +871,62 @@ export class KernelManager {
 				pythonVersion,
 				timestamp: utcIsoTimestamp(this.clock),
 			};
-			atomicWriteFileSync(join(this.artifactsDir, SNAPSHOT_MANIFEST_FILE), JSON.stringify(manifest));
+
+			// Payload staging: write to a temp dir INSIDE artifactsDir, then rename within the same filesystem
+			// (V4/F3: a cross-filesystem temp location silently degrades to non-atomic copy; a same-dir rename is
+			// atomic on POSIX). FORBIDDEN-KM-1: a crash mid-write leaves the prior artifacts intact.
+			const payloadFn = this.transport.writeSnapshotPayload;
+			const payloadDest = join(this.artifactsDir, SNAPSHOT_PAYLOAD_FILE);
+			const manifestDest = join(this.artifactsDir, SNAPSHOT_MANIFEST_FILE);
+			const suffix = `${this.clock.now()}-${Math.random().toString(36).slice(2, 10)}`;
+			const tempDir =
+				typeof payloadFn === "function" ? join(this.artifactsDir, `.kernel-snapshot-tmp-${suffix}`) : undefined;
+			const manifestTmp = `${manifestDest}.tmp-${suffix}`;
+			const rollbackLink = `${payloadDest}.rollback-${suffix}`;
+			try {
+				if (tempDir !== undefined && typeof payloadFn === "function") {
+					fs.mkdirSync(this.artifactsDir, { recursive: true });
+					this.artifactsDirSeen = true;
+					fs.mkdirSync(tempDir, { recursive: true });
+					await payloadFn(tempDir);
+					if (!canWrite()) return;
+				}
+
+				// Commit, synchronous (no await between the two replacements): V5/F4 the manifest is staged as a
+				// temp file beside its destination and renamed (a torn manifest makes the prior snapshot unreadable
+				// per INV-KM-2). The prior payload stays reachable through a hard link until the manifest has
+				// committed, so a failed commit restores the previous generation exactly.
+				fs.writeFileSync(manifestTmp, JSON.stringify(manifest));
+				let payloadReplaced = false;
+				let hadPriorPayload = false;
+				try {
+					if (tempDir !== undefined) {
+						if (fs.existsSync(payloadDest)) {
+							fs.linkSync(payloadDest, rollbackLink);
+							hadPriorPayload = true;
+						}
+						fs.renameSync(join(tempDir, SNAPSHOT_PAYLOAD_FILE), payloadDest);
+						payloadReplaced = true;
+					}
+					fs.renameSync(manifestTmp, manifestDest);
+				} catch (error) {
+					if (payloadReplaced) {
+						if (hadPriorPayload) fs.renameSync(rollbackLink, payloadDest);
+						else fs.rmSync(payloadDest, { force: true });
+					}
+					throw error;
+				}
+			} finally {
+				// Staging leftovers never affect the committed generation.
+				for (const leftover of [tempDir, manifestTmp, rollbackLink]) {
+					if (leftover === undefined) continue;
+					try {
+						fs.rmSync(leftover, { recursive: true, force: true });
+					} catch {
+						// cleanup failure never affects the committed generation
+					}
+				}
+			}
 		};
 		// The chain tail carries this snapshot; a cell submitted meanwhile
 		// serializes AFTER it (chain discipline preserved)
