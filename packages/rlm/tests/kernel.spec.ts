@@ -1570,3 +1570,51 @@ test("POST-KM-SNAPSHOT-PAIR-1: a completed snapshot replaces payload and manifes
   expect(manifest.pythonVersion).toBe("3.11.0")
   expect(fs.readdirSync(dir).filter(name => name.includes(".rollback-"))).toEqual([])
 })
+
+// ---------------------------------------------------------------------------
+// ERRORS-SESSION-SWITCH-DISPOSE-1: the teardown diagnostic names the real cause
+// (contracts/rlm-session-isolation.contract.ts)
+// ---------------------------------------------------------------------------
+
+test("ERRORS-SESSION-SWITCH-DISPOSE-1: a dispose-time snapshot abandoned at its bound surfaces a notice naming the bound and the unsaved state", async () => {
+  const clock = makeClock()
+  const transport = makeTransport({ snapshotNames: () => new Promise<string[]>(() => {}) }) // the serializer never settles
+  const manager = new KernelManager(transport, { clock, artifactsDir: artifactsDir() })
+  await manager.execute("x = 1")
+  const done = manager.dispose({ snapshot: true })
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + DISPOSE_TIMEOUT_MS + 100)
+  await done
+  const notice = manager.takeTeardownNotice()
+  expect(
+    notice,
+    "ERRORS-SESSION-SWITCH-DISPOSE-1 violation: abandoning the dispose snapshot at its bound was not surfaced\nEXPECTED: a notice stating the snapshot did not settle within the bound\nACTUAL: no notice",
+  ).not.toBeNull()
+  expect(
+    notice,
+    "ERRORS-SESSION-SWITCH-DISPOSE-1 violation: the notice does not name the bound\nEXPECTED: it names 'did not settle within' and the bound in ms",
+  ).toContain(`did not settle within ${SNAPSHOT_DISPOSE_TIMEOUT_MS}ms`)
+})
+
+test("ERRORS-SESSION-SWITCH-DISPOSE-1: a snapshot abandoned at the dispose bound does not later overwrite the notice with a downstream transport error", async () => {
+  const clock = makeClock()
+  let failLate: (error: Error) => void = () => {}
+  const transport = makeTransport({
+    snapshotNames: () =>
+      new Promise<string[]>((_, reject) => {
+        failLate = reject
+      }),
+  })
+  const manager = new KernelManager(transport, { clock, artifactsDir: artifactsDir() })
+  await manager.execute("x = 1")
+  const done = manager.dispose({ snapshot: true })
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + DISPOSE_TIMEOUT_MS + 100)
+  await done
+  failLate(new Error("transport not started; call start() first")) // what the killed runner produces afterwards
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const notice = manager.takeTeardownNotice()
+  expect(
+    notice ?? "",
+    "ERRORS-SESSION-SWITCH-DISPOSE-1 violation: a downstream transport error replaced the cause of the abandoned snapshot\nEXPECTED: the notice keeps naming the bound\nACTUAL: " + String(notice),
+  ).toContain(`did not settle within ${SNAPSHOT_DISPOSE_TIMEOUT_MS}ms`)
+})
+
