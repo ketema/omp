@@ -26,15 +26,12 @@ import dill
 DEFAULT_QUARANTINE_DIRNAME = ".omp/quarantine"
 REPORT_FILENAME = "quarantine_manifest.json"
 
-# Names that reconstruct a file handle (and so open a path) when a serialized variable is rebuilt. dill's
-# _create_filehandle opens the path (truncating a write-mode file) BEFORE it applies the closed flag. Redeclared
-# independently of the runner and of the contract (CL11-F); a test aligns the three declarations.
-FILE_HANDLE_RECONSTRUCTORS = frozenset({"_create_filehandle"})
-
-_NO_PUSH_OPCODES = frozenset({"PROTO", "FRAME", "MEMOIZE", "PUT", "BINPUT", "LONG_BINPUT"})
-_MEMO_GET_OPCODES = frozenset({"GET", "BINGET", "LONG_BINGET"})
-_STRING_PUSH_OPCODES = frozenset(
-    {"SHORT_BINUNICODE", "BINUNICODE", "BINUNICODE8", "UNICODE", "STRING", "BINSTRING", "SHORT_BINSTRING"}
+# The file-handle guard is SHARED with the kernel runner (CROSS_INV-1): one scanner, one reconstructor set, declared in
+# rlm_pickle_guard.py beside this file. The runner loads the same file from its own directory.
+from rlm_pickle_guard import (  # noqa: E402
+    FILE_HANDLE_RECONSTRUCTORS,  # noqa: F401  re-exported for the alignment tests
+    container_references_file_handle_reconstructor,
+    references_file_handle_reconstructor,
 )
 
 
@@ -42,61 +39,9 @@ class UnsafeReconstructionError(Exception):
     """A serialized variable or container would reconstruct a file handle (POST-QNOOPEN-1, ERRORS-QHANDLECONTAINER-1)."""
 
 
-def _references_file_handle_reconstructor(data: Any) -> bool:
-    """True when the pickle stream `data` (bytes or a binary file object) references a file-handle reconstructor.
-
-    Reads opcodes only and never unpickles. Looks only at how a global is named: GLOBAL's operand, or the two strings
-    pushed immediately before STACK_GLOBAL (read through the memo). Plain text that merely mentions a name is not a
-    reference. A stream that cannot be parsed further is judged on the opcodes read before the break.
-    """
-    import pickletools
-
-    recent: list[Any] = []
-    memo: dict[Any, Any] = {}
-    memo_index = 0
-    try:
-        for opcode, arg, _position in pickletools.genops(data):
-            name = opcode.name
-            if name in _NO_PUSH_OPCODES:
-                top = recent[-1] if recent else None
-                if name == "MEMOIZE":
-                    memo[memo_index] = top
-                    memo_index += 1
-                else:
-                    memo[arg] = top
-                continue
-            value = None
-            if name == "GLOBAL":
-                if str(arg).rsplit(" ", 1)[-1] in FILE_HANDLE_RECONSTRUCTORS:
-                    return True
-            elif name == "STACK_GLOBAL":
-                if len(recent) == 2 and recent[1] in FILE_HANDLE_RECONSTRUCTORS:
-                    return True
-            elif name in _STRING_PUSH_OPCODES:
-                value = arg if isinstance(arg, str) else None
-            elif name in _MEMO_GET_OPCODES:
-                value = memo.get(arg)
-            recent.append(value)
-            del recent[:-2]
-    except (ValueError, EOFError):
-        return False
-    return False
-
-
 def _refuse_handle_container(path: str, codec: str) -> None:
     """ERRORS-QHANDLECONTAINER-1: reject a container that references a file-handle reconstructor, before loading it."""
-    if codec == "lzma":
-        import lzma
-
-        with lzma.open(path, "rb") as fh:
-            found = _references_file_handle_reconstructor(fh)
-    elif codec == "gzip":
-        with gzip.open(path, "rb") as fh:
-            found = _references_file_handle_reconstructor(fh)
-    else:
-        with open(path, "rb") as fh:
-            found = _references_file_handle_reconstructor(fh)
-    if found:
+    if container_references_file_handle_reconstructor(path, codec):
         raise UnsafeReconstructionError(
             "snapshot container references a file handle; refused before any path was opened "
             "(a file handle cannot be restored without reopening its path)"
@@ -208,7 +153,7 @@ def quarantine_and_inspect(
     for name in sorted(payload.keys()):
         blob = payload[name]
         try:
-            if _references_file_handle_reconstructor(blob):
+            if references_file_handle_reconstructor(blob):
                 # POST-QNOOPEN-1: refused BEFORE deserialization, so no path is opened (dill reopens a handle's path,
                 # truncating a write-mode file, before it applies the closed flag). Siblings are still inspected.
                 raise UnsafeReconstructionError(

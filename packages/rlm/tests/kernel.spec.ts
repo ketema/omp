@@ -57,14 +57,6 @@ import {
 // Doubles — injected at construction, scripted at construction
 // ---------------------------------------------------------------------------
 
-type TransportResult = {
-  code: number
-  stdout: string
-  stderr: string
-  result: string
-  traceback?: string
-  errorEname?: string
-}
 
 /** Injectable clock with a DETERMINISTIC scheduler: the manager schedules
  * all timers through clock.schedule, and tests advance virtual time. */
@@ -101,71 +93,9 @@ function makeClock() {
   return clock
 }
 
-import type { KernelSnapshotWriteResult } from "../src/kernel.ts"
-
-type TransportScript = {
-  start?: () => Promise<void> | void
-  execute?: (id: string, code: string, call: number) => Promise<TransportResult>
-  snapshotNames?: () => Promise<string[]>
-  writeSnapshot?: (names: string[], maxBytes: number) => Promise<KernelSnapshotWriteResult>
-  /** Snapshot payload write at the FS boundary: default writes to artifactsDir. */
-  writeSnapshotPayload?: (dir: string) => Promise<void>
-  restoreSnapshot?: () => Promise<string[]>
-  isBusy?: () => boolean
-  /** Kernel Python version for the snapshot manifest (POST-KM-SNAPSHOT-PAIR-1). */
-  pythonVersion?: () => Promise<string>
-}
-
-/** Fake transport: scripted AT CONSTRUCTION, records every call. */
-function makeTransport(script: TransportScript = {}) {
-  const calls: Array<{ kind: string; detail: string }> = []
-  const listeners: Array<(o: { id: string; stream: "stdout" | "stderr"; data: string }) => void> = []
-  let execCount = 0
-  const transport = {
-    calls,
-    emit(id: string, stream: "stdout" | "stderr", data: string) {
-      for (const l of listeners) l({ id, stream, data })
-    },
-    async start(): Promise<void> {
-      calls.push({ kind: "start", detail: "" })
-      await script.start?.()
-    },
-    async execute(id: string, code: string): Promise<TransportResult> {
-      execCount += 1
-      calls.push({ kind: "execute", detail: `${id}:${code}` })
-      const r = await script.execute?.(id, code, execCount)
-      return r ?? { code: 0, stdout: "", stderr: "", result: "" }
-    },
-    interrupt() { calls.push({ kind: "interrupt", detail: "" }) },
-    kill() { calls.push({ kind: "kill", detail: "" }) },
-    onOutput(cb: (o: { id: string; stream: "stdout" | "stderr"; data: string }) => void) {
-      listeners.push(cb)
-    },
-    async snapshotNames(): Promise<string[]> {
-      calls.push({ kind: "snapshotNames", detail: "" })
-      return await (script.snapshotNames?.() ?? Promise.resolve(["a", "b"]))
-    },
-    async writeSnapshot(names: string[], maxBytes: number): Promise<{ bytes: number; skipped: { name: string; reason: string }[] }> {
-      calls.push({ kind: "writeSnapshot", detail: names.join(",") })
-      return await (script.writeSnapshot?.(names, maxBytes) ?? Promise.resolve({ bytes: 10, skipped: [] }))
-    },
-    async restoreSnapshot(): Promise<string[]> {
-      calls.push({ kind: "restoreSnapshot", detail: "" })
-      return await (script.restoreSnapshot?.() ?? Promise.resolve(["a", "b"]))
-    },
-    async bootstrap(): Promise<void> { calls.push({ kind: "bootstrap", detail: "" }) },
-    isBusy(): boolean { return script.isBusy?.() ?? false },
-    ...(script.writeSnapshotPayload !== undefined
-      ? { writeSnapshotPayload: (dir: string): Promise<void> => script.writeSnapshotPayload?.(dir) ?? Promise.resolve() }
-      : {}),
-    ...(script.pythonVersion !== undefined
-      ? { pythonVersion: (): Promise<string> => script.pythonVersion?.() ?? Promise.resolve("") }
-      : {}),
-    alive(): boolean { return true },
-    async dispose(): Promise<void> { calls.push({ kind: "transportDispose", detail: "" }) },
-  }
-  return transport
-}
+// The scripted transport is shared (kernel_transport_double.ts): it is a behavioral substitute for the real transport,
+// so its parity with RlmTransport is pinned once, in transport.spec.ts.
+import { makeScriptedTransport as makeTransport, type TransportResult } from "./kernel_transport_double.ts"
 
 function artifactsDir(): string {
   return fs.mkdtempSync("/tmp/rlm-km-test-")

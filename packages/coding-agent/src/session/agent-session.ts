@@ -2458,18 +2458,7 @@ export class AgentSession implements SettingsScope {
 		// (session persistence, hooks, auto-compaction, retry logic)
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
 		this.#unsubscribeQueueChange = this.agent.onQueueChange(() => this.#emitQueueUpdateIfChanged());
-		// POST-SESSION-MOVE-1: a persistence move-off re-keys the session to a sibling file; announce it like /move.
-		// Notices raised before this session existed are replayed synchronously on subscribe: history, not a transition.
-		let replayingNotices = true;
-		if (typeof this.sessionManager.onPersistenceNotice === "function") {
-			this.#disposers.push(
-				this.sessionManager.onPersistenceNotice(notice => {
-					if (replayingNotices) return;
-					void this.#emitSessionMoved(notice.from);
-				}),
-			);
-		}
-		replayingNotices = false;
+		this.#announcePersistenceMoves();
 		// Re-evaluate append-only context mode when the setting changes at runtime.
 		cfgProviderAppendOnlyContext.listen(this, () => this.#syncAppendOnlyContext(this.model));
 		cfgModelRoles.listen(this, () => this.#advisors.reconcileModelRoles());
@@ -10103,6 +10092,22 @@ export class AgentSession implements SettingsScope {
 			cursor = children[0].id;
 		}
 		return leafId;
+	}
+
+	/**
+	 * POST-SESSION-MOVE-1: a persistence move-off re-keys the session to a sibling file; announce it like /move.
+	 * Notices raised before this session existed are replayed synchronously on subscribe: history, not a transition.
+	 */
+	#announcePersistenceMoves(): void {
+		if (typeof this.sessionManager.onPersistenceNotice !== "function") return;
+		let replaying = true;
+		this.#disposers.push(
+			this.sessionManager.onPersistenceNotice(notice => {
+				if (replaying) return;
+				void this.#emitSessionMoved(notice.from);
+			}),
+		);
+		replaying = false;
 	}
 
 	/** POST-SESSION-MOVE-1: tell extensions the active session was relocated (reason "move"); a failing handler never breaks the host. */

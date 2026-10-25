@@ -11,12 +11,8 @@ import { bootstrapManagedVenv, buildKernelEnv } from "./bootstrap";
 import { EMBEDDED_RUNTIME_SOURCES, ensureExtractedAssets } from "./embedded_assets";
 import type { KernelClock, KernelExecutionResult, KernelTransport } from "./kernel";
 import { KernelManager } from "./kernel";
-import {
-	createRlmToolDefinition,
-	RlmSessionChangedError,
-	type RlmToolKernelPort,
-	type RlmToolKernelResult,
-} from "./tool";
+import { RlmSessionLifecycle } from "./session_lifecycle";
+import { createRlmToolDefinition, type RlmToolKernelPort, type RlmToolKernelResult } from "./tool";
 import { createTransport } from "./transport";
 // =============================================================================
 // Config types
@@ -319,15 +315,6 @@ async function createDefaultKernel(config: RlmKernelConfig, artifactsDir: string
 // Extension factory
 // =============================================================================
 
-/**
- * Where the CURRENT session's kernel state lives (POST-SESSION-NO-SIDE-EFFECT-1): a directory the host says the
- * session owns, or an isolated directory that is NOT yet allocated. Lifecycle events only record this; nothing is
- * created and nothing is announced until a kernel is actually constructed for the session.
- */
-type IncomingArtifacts =
-	| { readonly kind: "resolved"; readonly dir: string }
-	| { readonly kind: "unallocated"; readonly cwd: string; readonly reason: string };
-
 export interface CreateRlmExtensionOptions {
 	/** Test seam: builds the kernel port for the RESOLVED session artifacts directory (POST-SESSION-RESOLUTION-GATE-1). */
 	readonly createKernel?: (config: RlmKernelConfig, artifactsDir: string) => RlmExtensionKernelPort;
@@ -335,155 +322,54 @@ export interface CreateRlmExtensionOptions {
 
 /**
  * Creates the RLM extension factory. Registers the tool, flags, commands,
- * and lifecycle hooks into the omp extension API.
+ * and lifecycle hooks into the omp extension API. Which kernel serves the current session, and what each lifecycle
+ * event does to it, is RlmSessionLifecycle's job (session_lifecycle.ts).
  */
 export function createRlmExtension(
 	options?: CreateRlmExtensionOptions,
 ): (api: StructuralExtensionAPI) => Promise<void> {
 	return async (api: StructuralExtensionAPI): Promise<void> => {
-		let kernel: RlmExtensionKernelPort | null = null;
-		// null until a lifecycle event describes the session's directory (or first use allocates a fallback).
-		let incoming: IncomingArtifacts | null = null;
-		// POST-SESSION-RESOLUTION-GATE-1: the in-flight transition's directory resolution, and the single
-		// in-flight kernel construction. A kernel is only ever built against a resolved directory.
-		let pendingResolution: Promise<IncomingArtifacts | null> | null = null;
-		let kernelConstruction: Promise<RlmExtensionKernelPort> | null = null;
-		// POST-SESSION-TRANSITION-GEN-1 / POST-SESSION-SHUTDOWN-RACE-1: every lifecycle transition takes a
-		// generation at entry; a transition that is no longer the latest (a newer one began, or shutdown
-		// invalidated it) never publishes a directory, restores, or constructs a kernel.
-		let generation = 0;
-
-		// POST-SESSION-FALLBACK-ISOLATION-1: a dedicated atomically unique (mkdtemp) directory, announced by an
-		// observable warning naming it. It starts empty, so nothing is ever restored into it.
-		const allocateIsolatedFallback = (cwd: string, reason: string): string => {
-			const artifactsRoot = join(cwd, ".omp", "artifacts");
-			fs.mkdirSync(artifactsRoot, { recursive: true });
-			const fallbackDir = fs.mkdtempSync(join(artifactsRoot, `isolated-${Date.now()}-`));
+		const notify = (customType: string, content: string, display: boolean): void =>
 			api.sendMessage(
-				{
-					role: "custom",
-					customType: "rlm-warning",
-					content: `Warning: ${reason}. Starting with fresh isolated state; no snapshot restored. Fallback isolated directory assigned: ${fallbackDir}`,
-					display: false,
-					attribution: "agent",
-					timestamp: Date.now(),
-				},
+				{ role: "custom", customType, content, display, attribution: "agent", timestamp: Date.now() },
 				{ deliverAs: "nextTurn" },
 			);
-			return fallbackDir;
-		};
-
-		// Lazy, single-flight kernel construction — deferred until first use, gated on directory resolution.
-		const ensureKernel = async (): Promise<RlmExtensionKernelPort> => {
-			if (kernel !== null) return kernel;
-			if (kernelConstruction === null) {
-				const resolutionAtStart = pendingResolution;
-				const construction = (async (): Promise<RlmExtensionKernelPort> => {
-					// Wait for the resolution in flight at entry only: a newer transition waits for THIS construction
-					// (to dispose it), so waiting on it here would deadlock.
-					// The kernel belongs to the transition it started under: use THAT transition's resolved directory
-					// even if a newer transition has since begun (it waits for this construction and disposes it).
-					const resolvedAtStart = resolutionAtStart !== null ? await resolutionAtStart : null;
-					// POST-SESSION-NO-OWNED-DIR-ISOLATION-1 / NO-SIDE-EFFECT-1: an unowned session (or first use before
-					// any lifecycle event) allocates its fresh isolated directory - and announces it - only now.
-					const target: IncomingArtifacts = resolvedAtStart ??
-						incoming ?? {
-							kind: "unallocated",
-							cwd: process.cwd(),
-							reason: "No session lifecycle event resolved an artifacts directory before first kernel use",
-						};
-					const dir =
-						target.kind === "resolved" ? target.dir : allocateIsolatedFallback(target.cwd, target.reason);
-					// Remember it: exactly one directory and one announcement per session.
-					incoming = { kind: "resolved", dir };
-					const config = resolveConfigFromFlags(api);
-					const created =
-						options?.createKernel !== undefined
-							? options.createKernel(config, dir)
-							: await createDefaultKernel(config, dir);
-					kernel = created;
-					return created;
-				})();
-				kernelConstruction = construction;
-				const clear = () => {
-					if (kernelConstruction === construction) kernelConstruction = null;
-				};
-				construction.then(clear, clear);
-			}
-			return kernelConstruction;
-		};
-
-		// POST-TOOL-SESSION-BINDING-1: a port bound to ONE kernel object. Each call is made on that object, and
-		// only while it is still the extension's current kernel; otherwise the call is not made and the invocation
-		// aborts visibly (ERRORS-TOOL-SESSION-CHANGED-1). No per-call global slot, no lock: the check is a plain
-		// identity comparison and a session transition never waits for a running cell.
-		const bindKernel = (bound: RlmExtensionKernelPort): RlmToolKernelPort => {
-			const assertCurrent = (): void => {
-				if (kernel !== bound) throw new RlmSessionChangedError();
-			};
-			return {
-				async ensureStarted(onProgress) {
-					assertCurrent();
-					await bound.ensureStarted(onProgress);
-				},
-				async execute(code) {
-					assertCurrent();
-					return bound.execute(code);
-				},
-				async kill() {
-					assertCurrent();
-					await bound.kill();
-				},
-				async dispose() {
-					assertCurrent();
-					await bound.dispose();
-				},
-				restoredNames() {
-					return bound.restoredNames();
-				},
-			};
-		};
+		const lifecycle = new RlmSessionLifecycle({
+			notify,
+			buildKernel(dir) {
+				const config = resolveConfigFromFlags(api);
+				return options?.createKernel !== undefined
+					? options.createKernel(config, dir)
+					: createDefaultKernel(config, dir);
+			},
+		});
 
 		// registerTool: exactly ONE tool, the ipython tool
 		const toolDef = createRlmToolDefinition({
 			kernel: {
 				ensureStarted(onProgress?: (phase: "starting" | "restoring" | "preparing") => void) {
-					return ensureKernel().then(k => k.ensureStarted(onProgress));
+					return lifecycle.ensureKernel().then(k => k.ensureStarted(onProgress));
 				},
 				execute(code: string) {
-					return ensureKernel().then(k => k.execute(code));
+					return lifecycle.ensureKernel().then(k => k.execute(code));
 				},
 				kill() {
-					return ensureKernel().then(k => k.kill());
+					return lifecycle.ensureKernel().then(k => k.kill());
 				},
 				dispose() {
-					return ensureKernel().then(k => k.dispose());
+					return lifecycle.ensureKernel().then(k => k.dispose());
 				},
-				restoredNames() {
-					if (kernel === null) return [];
-					return kernel.restoredNames();
-				},
-				acquire() {
-					// Capture synchronously when a kernel exists, so the binding is the kernel current at entry.
-					const current = kernel;
-					if (current !== null) return Promise.resolve(bindKernel(current));
-					return ensureKernel().then(bindKernel);
-				},
+				restoredNames: () => lifecycle.restoredNames(),
+				// Captured synchronously when a kernel exists, so the binding is the kernel current at entry.
+				acquire: () => lifecycle.acquire(),
 			},
-			onRevival: (names: readonly string[]) => {
-				// SEQ-KM-5: revival notice enumerating restored names via api.sendMessage
-				api.sendMessage(
-					{
-						role: "custom",
-						customType: "rlm-revival",
-						content: `IPython state restored. The following names are available again: ${names.join(", ")}`,
-						display: true,
-						attribution: "agent",
-						timestamp: Date.now(),
-					},
-					{ deliverAs: "nextTurn" },
-				);
-			},
+			// SEQ-KM-5: revival notice enumerating restored names
+			onRevival: (names: readonly string[]) =>
+				notify(
+					"rlm-revival",
+					`IPython state restored. The following names are available again: ${names.join(", ")}`,
+					true,
+				),
 		});
 
 		// Register tool with exactly the required keys (FORBIDDEN-TOOL-1)
@@ -515,13 +401,7 @@ export function createRlmExtension(
 					throw new Error("rlm-max-depth requires a non-negative integer argument");
 				}
 				const parsed = Number(trimmed);
-				if (Number.isNaN(parsed)) {
-					throw new Error(`rlm-max-depth argument must be a non-negative integer, got: ${trimmed}`);
-				}
-				if (!Number.isInteger(parsed)) {
-					throw new Error(`rlm-max-depth argument must be a non-negative integer, got: ${trimmed}`);
-				}
-				if (parsed < 0) {
+				if (Number.isNaN(parsed) || !Number.isInteger(parsed) || parsed < 0) {
 					throw new Error(`rlm-max-depth argument must be a non-negative integer, got: ${trimmed}`);
 				}
 				// Valid: accept '0' and positive integers
@@ -529,255 +409,13 @@ export function createRlmExtension(
 			},
 		});
 
-		// on('auto_compaction_end', handler): SEQ-KM-5 compaction notice
-		api.on("auto_compaction_end", async () => {
-			const k = await ensureKernel();
-			await k.onCompactionComplete();
-			const notice = k.compactionNotice();
-			if (notice !== null) {
-				api.sendMessage(
-					{
-						role: "custom",
-						customType: "rlm-compaction",
-						content: notice,
-						display: false,
-						attribution: "agent",
-						timestamp: Date.now(),
-					},
-					{ deliverAs: "nextTurn" },
-				);
-			}
-		});
-
-		// POST-SESSION-PREFLUSH-1: flush BEFORE the host copies artifacts. Never disposes (these hooks are
-		// cancellable), never cancels the transition; a failure is surfaced, not swallowed.
-		const handlePreTransitionFlush = async () => {
-			if (kernel === null) return;
-			try {
-				await kernel.flushSnapshot();
-			} catch (err) {
-				api.sendMessage(
-					{
-						role: "custom",
-						customType: "rlm-warning",
-						content: `Warning: Pre-transition snapshot flush failed; a fork or branch may copy stale kernel state: ${err instanceof Error ? err.message : String(err)}`,
-						display: true,
-						attribution: "agent",
-						timestamp: Date.now(),
-					},
-					{ deliverAs: "nextTurn" },
-				);
-			}
-		};
-		api.on("session_before_switch", handlePreTransitionFlush);
-		api.on("session_before_branch", handlePreTransitionFlush);
-
-		// Save and dispose the outgoing kernel to prevent cross-session leakage (Comment 4366356325)
-		const disposeOutgoingKernel = async (): Promise<void> => {
-			const outgoing = kernel;
-			if (outgoing === null) return;
-			// POST-TOOL-SESSION-BINDING-1: relinquish ownership BEFORE the awaited dispose, so every later call
-			// from a cell bound to this kernel fails closed instead of reaching the incoming session.
-			kernel = null;
-			try {
-				await outgoing.dispose();
-				// Check for observable teardown failure notices from KernelManager
-				const teardownNotice = outgoing.takeTeardownNotice?.();
-				if (teardownNotice) {
-					api.sendMessage(
-						{
-							role: "custom",
-							customType: "rlm-warning",
-							content: `Warning: ${teardownNotice}`,
-							display: true,
-							attribution: "agent",
-							timestamp: Date.now(),
-						},
-						{ deliverAs: "nextTurn" },
-					);
-				}
-			} catch (err) {
-				// ERRORS-SESSION-SWITCH-DISPOSE-1: Surface observable diagnostic on flush failure
-				api.sendMessage(
-					{
-						role: "custom",
-						customType: "rlm-warning",
-						content: `Warning: Failed to cleanly dispose outgoing kernel during session switch: ${err instanceof Error ? err.message : String(err)}`,
-						display: true,
-						attribution: "agent",
-						timestamp: Date.now(),
-					},
-					{ deliverAs: "nextTurn" },
-				);
-			}
-		};
-
-		// POST-SESSION-MOVE-3: retarget the live kernel to the session's new owned directory. Returns whether a live
-		// kernel was retargeted (false: none was live, so the ordinary restore applies). A flush that cannot settle is
-		// surfaced, never silent; the kernel stays live and later snapshots land in the new directory.
-		const retargetLiveKernel = async (dir: string): Promise<boolean> => {
-			const live = kernel;
-			if (live === null) return false;
-			try {
-				await live.retarget(dir);
-			} catch (err) {
-				api.sendMessage(
-					{
-						role: "custom",
-						customType: "rlm-warning",
-						content: `Warning: Snapshot flush after the session move failed: ${err instanceof Error ? err.message : String(err)}`,
-						display: true,
-						attribution: "agent",
-						timestamp: Date.now(),
-					},
-					{ deliverAs: "nextTurn" },
-				);
-			}
-			return true;
-		};
-
-		// POST-SESSION-OWNED-DIR-1 / POST-SESSION-READINESS-1: the kernel-state directory is exactly what
-		// the host's typed sessionManager.resolveOwnArtifactsDir() returns: the CURRENT session file's own
-		// directory, resolved only after the host's background artifact copy into that file has settled.
-		// getArtifactsDir()/getArtifactManager() are never consulted: under adoption they name the parent's.
-		const resolveIncomingArtifactsDir = async (ctx: unknown): Promise<IncomingArtifacts> => {
-			const sessionCtx = ctx as
-				| { cwd?: string; sessionManager?: { resolveOwnArtifactsDir?: () => Promise<string | null> } }
-				| undefined;
-			const effectiveCwd = sessionCtx?.cwd ?? process.cwd();
-			const sessionManager = sessionCtx?.sessionManager;
-			let ownDir: string | null = null;
-			let noOwnedDirReason: string;
-			if (sessionManager === undefined) {
-				noOwnedDirReason = "No session context supplied";
-			} else if (typeof sessionManager.resolveOwnArtifactsDir !== "function") {
-				noOwnedDirReason =
-					"Session-owned artifacts directory cannot be established: host SessionManager lacks resolveOwnArtifactsDir()";
-			} else {
-				ownDir = await sessionManager.resolveOwnArtifactsDir();
-				noOwnedDirReason = "Session has no session file, so it owns no artifacts directory";
-			}
-			// POST-SESSION-NO-OWNED-DIR-ISOLATION-1: no owned directory -> fresh isolated state, never a shared root.
-			// Allocation is deferred (POST-SESSION-NO-SIDE-EFFECT-1).
-			return ownDir !== null
-				? { kind: "resolved", dir: ownDir }
-				: { kind: "unallocated", cwd: effectiveCwd, reason: noOwnedDirReason };
-		};
-
-		// Handle session start, session switches, and branches (for /new, /fork, /resume, /branch)
-		const handleSessionInit = async (event: unknown, ctx?: unknown) => {
-			const myGeneration = ++generation;
-			const isCurrent = (): boolean => myGeneration === generation;
-			// POST-SESSION-MOVE-2: the session is being relocated (the host's artifact copy started BEFORE this event).
-			// The outgoing kernel's final snapshot must land in the session's NEW owned directory, after that copy has
-			// settled, so the namespace executed since its last snapshot is not lost to the older copied one.
-			const relocating = (event as { reason?: string } | undefined)?.reason === "move";
-			let retargeted = false;
-			const resolution = (async (): Promise<IncomingArtifacts | null> => {
-				// POST-SESSION-RESOLUTION-GATE-1: a construction already in flight targets the outgoing
-				// session; let it finish so it is disposed below instead of surviving into this session.
-				// Its failure is delivered to the caller that requested the kernel, so it is not re-raised here.
-				if (kernelConstruction !== null) await kernelConstruction.catch(() => undefined);
-				if (!relocating) await disposeOutgoingKernel();
-				// ERRORS-SESSION-RESOLUTION-FAILED-1: forget the outgoing directory before resolving, so a failed
-				// or abandoned resolution can never leave it selectable by the next kernel. A superseded transition
-				// still resolves (a kernel requested during it is built on ITS directory) but never touches the
-				// published state a newer transition owns.
-				if (isCurrent()) incoming = null;
-				let resolved: IncomingArtifacts;
-				try {
-					resolved = await resolveIncomingArtifactsDir(ctx);
-				} catch (err) {
-					if (isCurrent()) {
-						const sessionCtx = ctx as { cwd?: string } | undefined;
-						incoming = {
-							kind: "unallocated",
-							cwd: sessionCtx?.cwd ?? process.cwd(),
-							reason: `Incoming session artifacts directory could not be resolved (${err instanceof Error ? err.name : "error"})`,
-						};
-					}
-					// A relocation whose directory cannot be resolved falls back to the ordinary dispose; the error propagates.
-					if (relocating && isCurrent()) await disposeOutgoingKernel();
-					throw err;
-				}
-				// POST-SESSION-MOVE-3: a relocation keeps the SAME kernel (the same logical session): it is retargeted to
-				// the new owned directory and its live namespace flushed there. A relocation superseded by a newer
-				// transition neither retargets nor flushes: the newest owns both.
-				if (relocating && isCurrent()) {
-					if (resolved.kind === "resolved") {
-						retargeted = await retargetLiveKernel(resolved.dir);
-					} else {
-						await disposeOutgoingKernel();
-					}
-				}
-				// POST-SESSION-TRANSITION-GEN-1: a stale completion never publishes its directory.
-				if (isCurrent()) incoming = resolved;
-				return resolved;
-			})();
-			pendingResolution = resolution;
-			try {
-				await resolution;
-			} finally {
-				if (pendingResolution === resolution) pendingResolution = null;
-			}
-			// A newer transition started while this one resolved (or shutdown invalidated it); it owns the
-			// incoming session's restore.
-			const resolvedIncoming = incoming;
-			if (!isCurrent() || pendingResolution !== null || resolvedIncoming === null) return;
-			// An unallocated (unowned) session has nothing to restore: it starts fresh and isolated.
-			const hasSnapshot =
-				!retargeted &&
-				resolvedIncoming.kind === "resolved" &&
-				fs.existsSync(join(resolvedIncoming.dir, "kernel-state.dill"));
-			if (hasSnapshot) {
-				try {
-					const k = await ensureKernel();
-					await k.ensureStarted();
-					const names = k.restoredNames();
-					const skipped = k.restoredSkipped?.() ?? [];
-					if (names.length > 0 || skipped.length > 0) {
-						const parts: string[] = [];
-						if (names.length > 0) {
-							parts.push(`IPython state restored. The following names are available again: ${names.join(", ")}`);
-						}
-						if (skipped.length > 0) {
-							// IP-2: each skipped variable keeps the reason the runner reported, so an operator can tell a refused
-							// file handle from a corrupt blob.
-							const skippedNames = skipped.map(s => `${s.name} (${s.reason})`).join(", ");
-							parts.push(`Warning: The following unpicklable variables were skipped: ${skippedNames}`);
-						}
-						api.sendMessage(
-							{
-								role: "custom",
-								customType: "rlm-revival",
-								content: parts.join("\n"),
-								display: true,
-								attribution: "agent",
-								timestamp: Date.now(),
-							},
-							{ deliverAs: "nextTurn" },
-						);
-					}
-				} catch {
-					// Non-fatal on session_start / session_switch / session_branch: lazy start will retry on first explicit tool invocation
-				}
-			}
-		};
-
-		api.on("session_start", handleSessionInit);
-		api.on("session_switch", handleSessionInit);
-		api.on("session_branch", handleSessionInit);
-
-		// on('session_shutdown'): dispose kernel
-		api.on("session_shutdown", async () => {
-			// POST-SESSION-SHUTDOWN-RACE-1: invalidate every in-flight transition (a pending resolution never
-			// constructs a kernel once it settles). Shutdown does not wait for a possibly stuck resolution.
-			generation++;
-			// Never orphan a kernel whose construction is still in flight (its failure surfaces to its requester).
-			if (kernelConstruction !== null) await kernelConstruction.catch(() => undefined);
-			const outgoing = kernel;
-			kernel = null; // in-flight cells bound to it abort visibly instead of reaching a replacement kernel
-			if (outgoing !== null) await outgoing.dispose();
-		});
+		// Lifecycle hooks
+		api.on("auto_compaction_end", () => lifecycle.onCompactionComplete());
+		api.on("session_before_switch", () => lifecycle.preTransitionFlush());
+		api.on("session_before_branch", () => lifecycle.preTransitionFlush());
+		api.on("session_start", (event, ctx) => lifecycle.handleSessionInit(event, ctx));
+		api.on("session_switch", (event, ctx) => lifecycle.handleSessionInit(event, ctx));
+		api.on("session_branch", (event, ctx) => lifecycle.handleSessionInit(event, ctx));
+		api.on("session_shutdown", () => lifecycle.shutdown());
 	};
 }

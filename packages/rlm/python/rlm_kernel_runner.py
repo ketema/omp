@@ -257,82 +257,40 @@ class SnapshotConfigurationError(RlmSnapshotCompressionError):
 # File-handle guard (POST-NOHANDLE-1, POST-NOOPEN-1, ERRORS-HANDLECONTAINER-1, FORBIDDEN-HANDLEOPEN-1)
 # =============================================================================
 #
-# dill rebuilds a file handle by reopening its path BEFORE it applies the closed flag, so loading a serialized handle
-# truncates a write-mode file. A snapshot therefore never carries one, and a restore refuses one before anything opens.
-# The scan reads pickle opcodes only and never unpickles. This is an accidental-I/O guard under the runner's existing
-# permissions; it does not sandbox arbitrary pickles.
+# The scanner and the reconstructor set live in rlm_pickle_guard.py, shared with the quarantine inspector (CROSS_INV-1).
+# The runner is spawned as `python <runner path>`, so the guard is loaded from THIS file's own directory: the embedded
+# assets extract it beside the runner. A missing guard stops the runner at start with an error naming the file; there
+# is no unguarded fallback (CL9).
 
-# Names that reconstruct a file handle (and so open a path) when a serialized variable is rebuilt.
-FILE_HANDLE_RECONSTRUCTORS = frozenset({"_create_filehandle"})
 
-_NO_PUSH_OPCODES = frozenset({"PROTO", "FRAME", "MEMOIZE", "PUT", "BINPUT", "LONG_BINPUT"})
-_MEMO_GET_OPCODES = frozenset({"GET", "BINGET", "LONG_BINGET"})
-_STRING_PUSH_OPCODES = frozenset(
-    {"SHORT_BINUNICODE", "BINUNICODE", "BINUNICODE8", "UNICODE", "STRING", "BINSTRING", "SHORT_BINSTRING"}
-)
+def _load_pickle_guard():
+    """Return the rlm_pickle_guard module, loaded from beside this runner (reusing an already-imported one)."""
+    loaded = sys.modules.get("rlm_pickle_guard")
+    if loaded is not None:
+        return loaded
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rlm_pickle_guard.py")
+    spec = importlib.util.spec_from_file_location("rlm_pickle_guard", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"rlm_pickle_guard.py cannot be loaded from {path}; the file-handle guard is required")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["rlm_pickle_guard"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_pickle_guard = _load_pickle_guard()
+FILE_HANDLE_RECONSTRUCTORS = _pickle_guard.FILE_HANDLE_RECONSTRUCTORS
+references_file_handle_reconstructor = _pickle_guard.references_file_handle_reconstructor
 
 # The error type a refused variable carries in the restore's skipped telemetry.
 UNSAFE_RECONSTRUCTION_ERROR_TYPE = "UnsafeReconstructionError"
 
 
-def _references_file_handle_reconstructor(data) -> bool:
-    """True when the pickle stream `data` (bytes or a binary file object) references a file-handle reconstructor.
-
-    Looks only at how a global is named: GLOBAL's operand, or the two strings pushed immediately before STACK_GLOBAL
-    (read through the memo, since dill reuses a memoized module name). Plain text that merely mentions a name is not
-    a reference. A stream that cannot be parsed further is judged on the opcodes read before the break: the unpickler
-    cannot execute past it either, so the break reports as the ordinary deserialization error.
-    """
-    import pickletools
-
-    recent: list = []
-    memo: dict = {}
-    memo_index = 0
-    try:
-        for opcode, arg, _position in pickletools.genops(data):
-            name = opcode.name
-            if name in _NO_PUSH_OPCODES:
-                top = recent[-1] if recent else None
-                if name == "MEMOIZE":
-                    memo[memo_index] = top
-                    memo_index += 1
-                else:
-                    memo[arg] = top
-                continue
-            value = None
-            if name == "GLOBAL":
-                if str(arg).rsplit(" ", 1)[-1] in FILE_HANDLE_RECONSTRUCTORS:
-                    return True
-            elif name == "STACK_GLOBAL":
-                if len(recent) == 2 and recent[1] in FILE_HANDLE_RECONSTRUCTORS:
-                    return True
-            elif name in _STRING_PUSH_OPCODES:
-                value = arg if isinstance(arg, str) else None
-            elif name in _MEMO_GET_OPCODES:
-                value = memo.get(arg)
-            recent.append(value)
-            del recent[:-2]
-    except (ValueError, EOFError):
-        return False
-    return False
-
-
 def _refuse_handle_container(path: str, codec: str) -> None:
     """ERRORS-HANDLECONTAINER-1: reject a snapshot whose CONTAINER references a file-handle reconstructor, before loading it."""
-    if codec == "lzma":
-        import lzma
-
-        with lzma.open(path, "rb") as fh:
-            found = _references_file_handle_reconstructor(fh)
-    elif codec == "gzip":
-        import gzip
-
-        with gzip.open(path, "rb") as fh:
-            found = _references_file_handle_reconstructor(fh)
-    else:
-        with open(path, "rb") as fh:
-            found = _references_file_handle_reconstructor(fh)
-    if found:
+    if _pickle_guard.container_references_file_handle_reconstructor(path, codec):
         raise CorruptSnapshotError(
             "Snapshot container references a file handle; refused before any path was opened "
             "(a file handle cannot be restored without reopening its path)"
@@ -523,7 +481,7 @@ def _snapshot_write(
             blob = dill.dumps(val)
             # POST-NOHANDLE-1: a live or closed file handle (also nested in a container or object) is never carried; a
             # handle cannot be rebuilt without reopening its path, which would truncate a write-mode file.
-            if _references_file_handle_reconstructor(blob):
+            if references_file_handle_reconstructor(blob):
                 skipped.append(
                     {
                         "name": name,
@@ -759,7 +717,7 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
         if not isinstance(name, str):
             raise CorruptSnapshotError(f"Invalid non-string variable name in snapshot payload: {name!r}")
         try:
-            if _references_file_handle_reconstructor(blob):
+            if references_file_handle_reconstructor(blob):
                 # POST-NOOPEN-1: refused BEFORE deserialization, so no path is opened (dill reopens a handle's path,
                 # truncating a write-mode file, before it applies the closed flag). Siblings still restore.
                 skipped_restores.append({

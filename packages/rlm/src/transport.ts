@@ -181,6 +181,15 @@ function boundedStderrTail(stderr: string): string {
 function isKnownFrameType(type: unknown): type is FrameType {
 	return typeof type === "string" && (TRANS_FRAMES as readonly string[]).includes(type);
 }
+
+/** POST-TRANS-4: the revived names in runner order, carrying the variables the runner skipped (empty when it reported none). */
+function restoredNamesResult<T>(
+	names: readonly string[],
+	skipped: readonly T[] | undefined,
+): string[] & { skipped: readonly T[] } {
+	return Object.assign([...names], { skipped: skipped ?? [] });
+}
+
 // =============================================================================
 // Default process wrapper (Bun.spawn)
 // =============================================================================
@@ -933,10 +942,7 @@ export class RlmTransport implements KernelTransport {
 					if (frame.names !== undefined) {
 						op.resolve(frame.names);
 					} else if (frame.restoredNames !== undefined) {
-						const res = Object.assign([...frame.restoredNames], {
-							skipped: frame.skipped ?? [],
-						});
-						op.resolve(res);
+						op.resolve(restoredNamesResult(frame.restoredNames, frame.skipped));
 					} else if (frame.bytes !== undefined) {
 						op.resolve({
 							bytes: frame.bytes,

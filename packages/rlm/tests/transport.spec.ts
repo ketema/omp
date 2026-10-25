@@ -464,14 +464,24 @@ describe("transport wire protocol", () => {
 })
 
 describe("KernelTransport double parity (CL13)", () => {
-  test("every public method of the real transport exists on the double; optional members appear only when scripted", () => {
-    // Risk tier: MEDIUM — a transport method the double lacks makes the manager specs exercise a shape the real transport
-    // does not have (the drift that left port doubles without `retarget`).
-    const real = createTransport(CONFIG)
-    const realMethods = Object.getOwnPropertyNames(RlmTransport.prototype)
-      .filter(name => name !== "constructor" && typeof (real as unknown as Record<string, unknown>)[name] === "function")
-      .filter(name => !name.startsWith("_") && !name.startsWith("#"))
-    // Members the KernelTransport interface marks optional: present on the double only when a spec scripts them.
+  test("the double has every KernelTransport member the real transport has; optional members appear only when scripted", () => {
+    // Risk tier: MEDIUM — a member the double lacks makes the manager specs exercise a shape the real transport does
+    // not have (the drift that left port doubles without `retarget`).
+    // The KernelTransport interface (src/kernel.ts), mirrored here: required members, then members it marks optional.
+    const requiredMembers = [
+      "start",
+      "execute",
+      "interrupt",
+      "kill",
+      "onOutput",
+      "snapshotNames",
+      "writeSnapshot",
+      "restoreSnapshot",
+      "bootstrap",
+      "isBusy",
+      "alive",
+      "dispose",
+    ]
     const optionalOnInterface = new Set([
       "shutdown",
       "writeSnapshotPayload",
@@ -479,12 +489,17 @@ describe("KernelTransport double parity (CL13)", () => {
       "pythonVersion",
       "setArtifactsDir",
     ])
-    const plain = makeScriptedTransport() as unknown as Record<string, unknown>
-    const missingRequired = realMethods.filter(name => !optionalOnInterface.has(name) && typeof plain[name] !== "function")
+    const real = createTransport(CONFIG) as unknown as Record<string, unknown>
+    const absentOnReal = [...requiredMembers, ...optionalOnInterface].filter(name => typeof real[name] !== "function")
+    // `shutdown` is the one interface member the real transport does not implement (it shuts the runner down inside
+    // dispose()); the double exposes it only when scripted.
     expect(
-      missingRequired,
-      `CL13 violation: the double lacks real transport methods: ${missingRequired.join(", ")}`,
+      absentOnReal.filter(name => name !== "shutdown"),
+      "CL13 violation: the mirrored interface names members the real transport does not have",
     ).toEqual([])
+    const plain = makeScriptedTransport() as unknown as Record<string, unknown>
+    const missingRequired = requiredMembers.filter(name => typeof plain[name] !== "function")
+    expect(missingRequired, `CL13 violation: the double lacks KernelTransport members: ${missingRequired.join(", ")}`).toEqual([])
     const scripted = makeScriptedTransport({
       writeSnapshotPayload: async () => undefined,
       pythonVersion: async () => "3.11.0",
