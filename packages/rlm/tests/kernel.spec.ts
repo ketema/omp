@@ -1435,3 +1435,61 @@ test("POST-KM-SNAPSHOT-SERIAL-1: a flush requested while a cell runs does not to
   ).toBe(0)
   expect(transport.calls.filter(c => c.kind === "snapshotNames").length).toBe(1)
 })
+
+test("POST-KM-NO-RESURRECT-1: a directory removed while the kernel is still serializing is not re-created when that work settles", async () => {
+  let release: () => void = () => {}
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const dir = artifactsDir()
+  const transport = makeTransport({
+    writeSnapshot: async () => {
+      await hold
+      return { bytes: 10, skipped: [] }
+    },
+    writeSnapshotPayload: async tempDir => {
+      fs.writeFileSync(`${tempDir}/kernel-state.dill`, "PAYLOAD")
+    },
+  })
+  const manager = new KernelManager(transport, { clock: makeClock(), artifactsDir: dir })
+  await manager.execute("x = 1")
+  const flush = manager.flushSnapshot().catch((error: unknown) => error)
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(transport.calls.some(c => c.kind === "writeSnapshot"), "precondition: serialization is in flight").toBe(true)
+  fs.rmSync(dir, { recursive: true, force: true }) // the host's /delete lands mid-snapshot
+  release()
+  await flush
+  expect(
+    fs.existsSync(dir),
+    "POST-KM-NO-RESURRECT-1 violation: a snapshot that began before the host removed the directory re-created it",
+  ).toBe(false)
+})
+
+test("POST-KM-NO-RESURRECT-1: a snapshot abandoned by the flush timeout never starts payload staging", async () => {
+  const clock = makeClock()
+  const dir = artifactsDir()
+  let release: () => void = () => {}
+  const hold = new Promise<void>(resolve => { release = resolve })
+  let stagingStarts = 0
+  const transport = makeTransport({
+    writeSnapshot: async () => {
+      await hold
+      return { bytes: 10, skipped: [] }
+    },
+    writeSnapshotPayload: async tempDir => {
+      stagingStarts += 1
+      fs.writeFileSync(`${tempDir}/kernel-state.dill`, "PAYLOAD")
+    },
+  })
+  const manager = new KernelManager(transport, { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  const outcome = manager.flushSnapshot().catch((error: unknown) => error)
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + 100)
+  await Promise.race([outcome, new Promise(resolve => setTimeout(resolve, 500))])
+  release()
+  await new Promise(resolve => setTimeout(resolve, 50))
+  expect(
+    stagingStarts,
+    "POST-KM-NO-RESURRECT-1 violation: abandoned snapshot work still created a staging area and wrote into it",
+  ).toBe(0)
+  expect(fs.readdirSync(dir).filter(name => name.startsWith(".kernel-snapshot-tmp-"))).toEqual([])
+})
