@@ -413,31 +413,45 @@ describe("transport wire protocol", () => {
     expect(resolved).toBe(true)
   })
 
-  test("POST-SESSION-MOVE-2: after setArtifactsDir the runner snapshots and restores through the new directory only", async () => {
-    // The runner writes kernel-state.* itself, at the path the host sends; a relocation that only retargets the manager
-    // would still send the construction-time directory and write into the superseded session's artifacts.
-    const fake = makeFakeProcess()
-    const { transport } = makeWireTransport(fake)
-    await startReady(fake, transport)
+  test("POST-SESSION-MOVE-2 / POST-STAGE-1: after setArtifactsDir the runner stages beside the NEW directory and restores from it", async () => {
+    // The runner writes where the host tells it to. A relocation that only retargets the manager would still stage
+    // beside the construction-time directory; the live directories themselves must never be named in a write op.
+    const root = fs.mkdtempSync("/tmp/rlm-wire-stage-")
+    try {
+      const liveA = join(root, "a", "artifacts")
+      const liveB = join(root, "b", "artifacts")
+      fs.mkdirSync(join(root, "a"), { recursive: true })
+      fs.mkdirSync(join(root, "b"), { recursive: true })
+      const fake = makeFakeProcess()
+      const transport = createTransport({ ...CONFIG, artifactsDir: liveA }, { clock: makeClock(), spawn: fake.spawnFactory })
+      await startReady(fake, transport)
 
-    const sentOp = (name: string) =>
-      fake.state.stdinLines.map(line => JSON.parse(line) as { op: string; id: string; path?: string; manifestPath?: string }).filter(op => op.op === name)
+      const sentOp = (name: string) =>
+        fake.state.stdinLines.map(line => JSON.parse(line) as { op: string; id: string; path?: string; manifestPath?: string }).filter(op => op.op === name)
 
-    void transport.writeSnapshot(["x"], 1024).catch(() => undefined)
-    await Bun.sleep(0)
-    expect(sentOp("snapshot_write")[0].path).toBe("/tmp/artifacts/kernel-state.dill")
+      void transport.writeSnapshot(["x"], 1024).catch(() => undefined)
+      await Bun.sleep(0)
+      const first = sentOp("snapshot_write")[0]
+      expect(first.path?.startsWith(join(root, "a", ".rlm-snapshot-stage-")), "POST-STAGE-1 violation: the write op does not name a stage beside the live directory").toBe(true)
+      expect(first.path?.startsWith(liveA), "POST-STAGE-1 violation: the write op names the live directory").toBe(false)
 
-    transport.setArtifactsDir("/tmp/relocated")
-    void transport.writeSnapshot(["x"], 1024).catch(() => undefined)
-    void transport.restoreSnapshot().catch(() => undefined)
-    await Bun.sleep(0)
+      transport.setArtifactsDir(liveB)
+      void transport.writeSnapshot(["x"], 1024).catch(() => undefined)
+      void transport.restoreSnapshot().catch(() => undefined)
+      await Bun.sleep(0)
 
-    const second = sentOp("snapshot_write")[1]
-    expect(second.path, "POST-SESSION-MOVE-2 violation: a relocated transport still writes into the old directory").toBe(
-      "/tmp/relocated/kernel-state.dill",
-    )
-    expect(second.manifestPath).toBe("/tmp/relocated/kernel-state.json")
-    expect(sentOp("snapshot_restore")[0].path).toBe("/tmp/relocated/kernel-state.dill")
+      const second = sentOp("snapshot_write")[1]
+      expect(
+        second.path?.startsWith(join(root, "b", ".rlm-snapshot-stage-")),
+        "POST-SESSION-MOVE-2 violation: a relocated transport still stages beside the old directory",
+      ).toBe(true)
+      expect(second.manifestPath?.startsWith(join(root, "b", ".rlm-snapshot-stage-"))).toBe(true)
+      expect(sentOp("snapshot_restore")[0].path).toBe(join(liveB, "kernel-state.dill"))
+      transport.discardSnapshotStage()
+      expect(fs.readdirSync(join(root, "b")).filter(name => name.startsWith(".rlm-snapshot-stage-"))).toEqual([])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 
@@ -663,6 +677,9 @@ time.sleep(30)`,
       const names = await first.snapshotNames()
       expect(names).toContain("x")
       const write = await first.writeSnapshot(names.filter(n => n === "x"), 256 * 1024 * 1024)
+      // POST-STAGE-1: the transport only stages; committing into the live directory is KernelManager's job.
+      // Commit the way the manager does so the revival below reads a live pair.
+      await first.writeSnapshotPayload(artifacts)
       expect(write.bytes).toBeGreaterThan(0)
       await first.dispose()
 
@@ -732,6 +749,8 @@ time.sleep(30)`,
 
       // Write compressed snapshot
       const writeResult = await first.writeSnapshot(names, 256 * 1024 * 1024)
+      // POST-STAGE-1: stage, then commit into the live directory as KernelManager does.
+      await first.writeSnapshotPayload(artifacts)
       expect(writeResult.bytes).toBeGreaterThan(0)
       expect(writeResult.compression).toBe("lzma")
       // Narrow via explicit guard rather than a non-null assertion: compressedBytes

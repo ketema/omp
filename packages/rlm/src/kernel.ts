@@ -166,6 +166,8 @@ export interface KernelTransport {
 	snapshotNames(): Promise<string[]>;
 	writeSnapshot(names: readonly string[], maxBytes: number): Promise<KernelSnapshotWriteResult>;
 	writeSnapshotPayload?(dir: string): Promise<void>;
+	/** POST-STAGE-1: remove the stage the transport owns for the snapshot that just settled (committed, abandoned or failed). */
+	discardSnapshotStage?(): void;
 	/** C6: reports the kernel's Python version for the snapshot manifest. */
 	pythonVersion?(): Promise<string>;
 	/** POST-SESSION-MOVE-2: retarget the directory later snapshot writes and restores use (transports that write it themselves). */
@@ -900,7 +902,7 @@ export class KernelManager {
 					fs.mkdirSync(this.artifactsDir, { recursive: true });
 					this.artifactsDirSeen = true;
 					fs.mkdirSync(tempDir, { recursive: true });
-					await payloadFn(tempDir);
+					await payloadFn.call(this.transport, tempDir);
 					if (!canWrite()) return;
 				}
 
@@ -942,11 +944,10 @@ export class KernelManager {
 		};
 		// The chain tail carries this snapshot; a cell submitted meanwhile
 		// serializes AFTER it (chain discipline preserved)
+		// POST-STAGE-1: whatever the outcome, the stage the provider wrote into is discarded once the work settled.
+		const runAndDiscard = (): Promise<void> => run().finally(() => this.transport.discardSnapshotStage?.());
 		const prev = this.chainTail;
-		const next = (prev ?? Promise.resolve()).then(
-			() => run(),
-			() => run(),
-		);
+		const next = (prev ?? Promise.resolve()).then(runAndDiscard, runAndDiscard);
 		this.chainTail = next.then(
 			() => undefined,
 			() => undefined,
