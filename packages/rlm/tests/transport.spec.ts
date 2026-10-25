@@ -64,6 +64,7 @@ import {
   type RlmTransportProcess,
 } from "../src/transport.ts"
 import { makeScriptedTransport } from "./kernel_transport_double.ts"
+import { scriptedRunnerTransport } from "./scripted_runner_transport.ts"
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -795,6 +796,56 @@ time.sleep(30)`,
       await double.dispose()
     }
   }, 60_000)
+
+  test("scripted runner transport parity live: after setArtifactsDir a snapshot lands in the NEW directory only and restores from it (CL13)", async () => {
+    // Risk tier: HIGH — the move specs trust this double to relocate state the way the real transport does.
+    type Relocatable = {
+      start(): Promise<void> | void
+      execute(id: string, code: string): Promise<unknown>
+      snapshotNames(): Promise<string[]>
+      writeSnapshot(names: string[], maxBytes: number): Promise<unknown>
+      writeSnapshotPayload?(dir: string): Promise<void>
+      setArtifactsDir?(dir: string): void
+      restoreSnapshot(): Promise<string[]>
+      dispose(): Promise<void> | void
+    }
+    const observe = async (label: string, make: (dir: string) => Relocatable) => {
+      const oldDir = join(workRoot, `art-reloc-${label}-old`)
+      const newDir = join(workRoot, `art-reloc-${label}-new`)
+      fs.mkdirSync(oldDir, { recursive: true })
+      fs.mkdirSync(newDir, { recursive: true })
+      const first = make(oldDir)
+      const second = make(oldDir)
+      try {
+        await first.start()
+        first.setArtifactsDir?.(newDir)
+        await first.execute("e1", "x=7")
+        await first.writeSnapshot((await first.snapshotNames()).filter(name => name === "x"), 256 * 1024 * 1024)
+        // POST-STAGE-1: the real transport only stages; committing is the manager's job (the double writes itself).
+        await first.writeSnapshotPayload?.(newDir)
+        await first.dispose()
+        await second.start()
+        second.setArtifactsDir?.(newDir)
+        const restored = await second.restoreSnapshot()
+        return {
+          newHasPayload: fs.existsSync(join(newDir, "kernel-state.dill")),
+          oldHasPayload: fs.existsSync(join(oldDir, "kernel-state.dill")),
+          restoredX: restored.includes("x"),
+        }
+      } finally {
+        await first.dispose()
+        await second.dispose()
+      }
+    }
+    const real = await observe("real", dir => createTransport(liveConfig(dir)))
+    const scripted = await observe("scripted", dir => scriptedRunnerTransport(dir))
+    expect(real, "precondition: the REAL transport relocates a snapshot").toEqual({
+      newHasPayload: true,
+      oldHasPayload: false,
+      restoredX: true,
+    })
+    expect(scripted, "CL13 violation: the scripted runner transport relocates differently from the real transport").toEqual(real)
+  }, 90_000)
 
   test("POST-TRANS-5 live: the runtime bootstrap succeeds in the managed venv", async () => {
     // Risk tier: HIGH — the bootstrap cell is the runtime admission gate;

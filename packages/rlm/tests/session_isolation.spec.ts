@@ -523,6 +523,10 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			expect(restoreOpLine).toBeDefined();
 			const restoreOp = JSON.parse(restoreOpLine!) as { id: string };
 
+			// CL13 CLASSIFICATION: a wire INPUT fixture, not a provider substitute. It feeds ONE frame to the real transport's
+			// parser and does not emulate the runner. Its shape is the protocol's `result` frame (TRANS_FRAMES) with the
+			// runner's skipped-record shape; the REAL runner is held to the same shape by handle_guard_real_runner.spec.ts
+			// (end to end, real Python) and test_rlm_dill_resilient_restore.py (the runner's own record).
 			const wireFrame = {
 				type: "result",
 				id: restoreOp.id,

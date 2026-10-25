@@ -19,7 +19,8 @@ import * as os from "node:os";
 import { join } from "node:path";
 
 import { createRlmExtension, KernelManagerAdapter } from "../src/extension.ts";
-import { KernelManager, type KernelClock, type KernelTransport } from "../src/kernel.ts";
+import { KernelManager, type KernelClock } from "../src/kernel.ts";
+import { scriptedRunnerTransport } from "./scripted_runner_transport.ts";
 
 type Handler = (event: unknown, ctx?: unknown) => unknown;
 
@@ -74,49 +75,9 @@ const realClock: KernelClock = {
 	},
 };
 
-/** The Python process, scripted: `name=N` sets a variable, a bare `name` reports it. */
-function scriptedTransport(initialDir: string) {
-	let dir = initialDir;
-	const namespace: Record<string, number> = {};
-	const transport: KernelTransport & { setArtifactsDir(next: string): void } = {
-		// What the real transport offers a manager that relocates a kernel.
-		setArtifactsDir(next) {
-			dir = next;
-		},
-		start() {},
-		async execute(_id, code) {
-			const assignment = /^(\w+)=(\d+)$/.exec(code);
-			if (assignment) {
-				namespace[assignment[1]] = Number(assignment[2]);
-				return { code: 0, stdout: "", stderr: "", result: "" };
-			}
-			return { code: 0, stdout: `${code}=${namespace[code]}`, stderr: "", result: "" };
-		},
-		interrupt() {},
-		kill() {},
-		onOutput() {},
-		async snapshotNames() {
-			return Object.keys(namespace);
-		},
-		// The real runner writes the payload into the transport's own directory.
-		async writeSnapshot() {
-			fs.mkdirSync(dir, { recursive: true });
-			fs.writeFileSync(join(dir, "kernel-state.dill"), JSON.stringify(namespace));
-			return { bytes: 1, skipped: [] };
-		},
-		async restoreSnapshot() {
-			const payload = join(dir, "kernel-state.dill");
-			if (!fs.existsSync(payload)) return [];
-			Object.assign(namespace, JSON.parse(fs.readFileSync(payload, "utf8")) as Record<string, number>);
-			return Object.keys(namespace);
-		},
-		bootstrap() {},
-		isBusy: () => false,
-		alive: () => true,
-		dispose() {},
-	};
-	return transport;
-}
+// The scripted runner is shared (scripted_runner_transport.ts); its parity with the real transport is pinned in
+// transport.spec.ts ("scripted runner transport parity live").
+const scriptedTransport = scriptedRunnerTransport;
 
 const roots: string[] = [];
 afterEach(() => {
