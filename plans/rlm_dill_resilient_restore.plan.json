@@ -122,6 +122,36 @@
       ],
       "issue": "TODO",
       "pivot_note": "RLM CI gate. POST-CI-RLM-SELECTION-1 is GREEN_COMPLETE locally only: RED 500b79e, GREEN a2b12ab; scripts/ci-test-ts.test.ts drives the script's real --dry-run dispatch (6/6; four compiling mutations each caught). POST-CI-RLM-EXECUTION-1 (method: execution) is DEFERRED and NOT evidenced by this plan: it is satisfied only by the real GitHub Actions job log of 'Test RLM (TS + Python)' on the PR head (needs native_addons; non-zero executed counts, zero skip/fail, real-SessionManager files executed rather than failing to load). No run result is recorded here; the observed run is reported separately by URL."
+    },
+    {
+      "id": "SLICE-5",
+      "clauses_in_scope": [
+        "POST-SESSION-TRANSITION-GEN-1",
+        "POST-SESSION-SHUTDOWN-RACE-1",
+        "ERRORS-SESSION-RESOLUTION-FAILED-1",
+        "POST-KM-START-SINGLEFLIGHT-1",
+        "POST-SESSION-PREFLUSH-BOUNDED-1",
+        "POST-KM-NO-RESURRECT-1",
+        "POST-SESSION-MOVE-1",
+        "POST-BOOTSTRAP-RLM-REQUIRED-1",
+        "POST-CI-RLM-NOSKIP-1",
+        "POST-CI-NATIVE-ABI-1"
+      ],
+      "clauses_deferred": [],
+      "negative_constraints": [
+        "REQ-RLM-REHYDRATE-001",
+        "REQ-RLM-REHYDRATE-003",
+        "REQ-RLM-REHYDRATE-008"
+      ],
+      "status": "GREEN_COMPLETE",
+      "depends_on": [
+        "SLICE-1",
+        "SLICE-2",
+        "SLICE-3",
+        "SLICE-4"
+      ],
+      "issue": "TODO",
+      "pivot_note": "Copilot review repair (PR #44), released by Ketema's directive. Batches RED -> GREEN: A lifecycle generation/shutdown/resolution-failed 44f5c6a -> f9bf421 (regression repairs 7eca9d1 -> 73ca669); B kernel single-flight + bounded non-racing flush 4e33370 -> c36ec40; C bootstrap requires rlm c800b0e -> 8b81e9f; D CI no-skip gate judged from real Bun output faa68a9 -> dd36080; E1 kernel never resurrects a removed dir 39629a3 -> 11c1d79; E2 host announces a session relocation with reason 'move' 39b13e7 -> 49fb4f3 (moveWouldRelocate in 5fa85b0). The E2 RED was observed on GitHub run 40189908737 (host native addon; 3 tests failed, the 2 guards passed); the first generation-token change was caught by the native-backed session_transition spec on GitHub (run 40188968056) and repaired. Test-defect repairs unrelated to RLM semantics: 4eb685c, 035139d, 5fa85b0 (host double, git identity, Bun 1.4.4 pack/CLOEXEC/CDP endpoint). POST-CI-RLM-EXECUTION-1 evidence is the real job log of run 40191047739 (235 pass, 0 fail, 22 files, 0 skipped; Python 32 ran, 0 skipped). Not claimed here: Copilot could not re-review the new heads (quota); comment 4366298454 (F13) is DISPUTED 0:4 and was not changed."
     }
   ],
   "pivot_guidance": [
