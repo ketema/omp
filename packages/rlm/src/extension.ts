@@ -307,6 +307,15 @@ async function createDefaultKernel(config: RlmKernelConfig, artifactsDir: string
 // Extension factory
 // =============================================================================
 
+/**
+ * Where the CURRENT session's kernel state lives (POST-SESSION-NO-SIDE-EFFECT-1): a directory the host says the
+ * session owns, or an isolated directory that is NOT yet allocated. Lifecycle events only record this; nothing is
+ * created and nothing is announced until a kernel is actually constructed for the session.
+ */
+type IncomingArtifacts =
+	| { readonly kind: "resolved"; readonly dir: string }
+	| { readonly kind: "unallocated"; readonly cwd: string; readonly reason: string };
+
 export interface CreateRlmExtensionOptions {
 	/** Test seam: builds the kernel port for the RESOLVED session artifacts directory (POST-SESSION-RESOLUTION-GATE-1). */
 	readonly createKernel?: (config: RlmKernelConfig, artifactsDir: string) => RlmExtensionKernelPort;
@@ -321,8 +330,8 @@ export function createRlmExtension(
 ): (api: StructuralExtensionAPI) => Promise<void> {
 	return async (api: StructuralExtensionAPI): Promise<void> => {
 		let kernel: RlmExtensionKernelPort | null = null;
-		// null until a lifecycle event resolves the session's directory (or first use allocates a fallback).
-		let artifactsDir: string | null = null;
+		// null until a lifecycle event describes the session's directory (or first use allocates a fallback).
+		let incoming: IncomingArtifacts | null = null;
 		// POST-SESSION-RESOLUTION-GATE-1: the in-flight transition's directory resolution, and the single
 		// in-flight kernel construction. A kernel is only ever built against a resolved directory.
 		let pendingResolution: Promise<void> | null = null;
@@ -355,15 +364,17 @@ export function createRlmExtension(
 				const resolutionAtStart = pendingResolution;
 				const construction = (async (): Promise<RlmExtensionKernelPort> => {
 					if (resolutionAtStart !== null) await resolutionAtStart;
-					// POST-SESSION-NO-OWNED-DIR-ISOLATION-1: first use before any lifecycle event resolved a
-					// directory gets a fresh isolated directory, never a cwd-relative shared path.
+					// POST-SESSION-NO-OWNED-DIR-ISOLATION-1 / NO-SIDE-EFFECT-1: an unowned session (or first use before
+					// any lifecycle event) allocates its fresh isolated directory - and announces it - only now.
+					const target: IncomingArtifacts = incoming ?? {
+						kind: "unallocated",
+						cwd: process.cwd(),
+						reason: "No session lifecycle event resolved an artifacts directory before first kernel use",
+					};
 					const dir =
-						artifactsDir ??
-						allocateIsolatedFallback(
-							process.cwd(),
-							"No session lifecycle event resolved an artifacts directory before first kernel use",
-						);
-					artifactsDir = dir;
+						target.kind === "resolved" ? target.dir : allocateIsolatedFallback(target.cwd, target.reason);
+					// Remember it: exactly one directory and one announcement per session.
+					incoming = { kind: "resolved", dir };
 					const config = resolveConfigFromFlags(api);
 					const created =
 						options?.createKernel !== undefined
@@ -584,7 +595,7 @@ export function createRlmExtension(
 		// the host's typed sessionManager.resolveOwnArtifactsDir() returns: the CURRENT session file's own
 		// directory, resolved only after the host's background artifact copy into that file has settled.
 		// getArtifactsDir()/getArtifactManager() are never consulted: under adoption they name the parent's.
-		const resolveIncomingArtifactsDir = async (ctx: unknown): Promise<string> => {
+		const resolveIncomingArtifactsDir = async (ctx: unknown): Promise<IncomingArtifacts> => {
 			const sessionCtx = ctx as
 				| { cwd?: string; sessionManager?: { resolveOwnArtifactsDir?: () => Promise<string | null> } }
 				| undefined;
@@ -602,7 +613,10 @@ export function createRlmExtension(
 				noOwnedDirReason = "Session has no session file, so it owns no artifacts directory";
 			}
 			// POST-SESSION-NO-OWNED-DIR-ISOLATION-1: no owned directory -> fresh isolated state, never a shared root.
-			return ownDir ?? allocateIsolatedFallback(effectiveCwd, noOwnedDirReason);
+			// Allocation is deferred (POST-SESSION-NO-SIDE-EFFECT-1).
+			return ownDir !== null
+				? { kind: "resolved", dir: ownDir }
+				: { kind: "unallocated", cwd: effectiveCwd, reason: noOwnedDirReason };
 		};
 
 		// Handle session start, session switches, and branches (for /new, /fork, /resume, /branch)
@@ -613,7 +627,7 @@ export function createRlmExtension(
 				// Its failure is delivered to the caller that requested the kernel, so it is not re-raised here.
 				if (kernelConstruction !== null) await kernelConstruction.catch(() => undefined);
 				await disposeOutgoingKernel();
-				artifactsDir = await resolveIncomingArtifactsDir(ctx);
+				incoming = await resolveIncomingArtifactsDir(ctx);
 			})();
 			pendingResolution = resolution;
 			try {
@@ -622,8 +636,11 @@ export function createRlmExtension(
 				if (pendingResolution === resolution) pendingResolution = null;
 			}
 			// A newer transition started while this one resolved; it owns the incoming session's restore.
-			if (pendingResolution !== null || artifactsDir === null) return;
-			const hasSnapshot = fs.existsSync(join(artifactsDir, "kernel-state.dill"));
+			const resolvedIncoming = incoming;
+			if (pendingResolution !== null || resolvedIncoming === null) return;
+			// An unallocated (unowned) session has nothing to restore: it starts fresh and isolated.
+			const hasSnapshot =
+				resolvedIncoming.kind === "resolved" && fs.existsSync(join(resolvedIncoming.dir, "kernel-state.dill"));
 			if (hasSnapshot) {
 				try {
 					const k = await ensureKernel();

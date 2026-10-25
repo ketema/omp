@@ -378,8 +378,17 @@ describe("POST-SESSION-NO-OWNED-DIR-ISOLATION-1: no session-owned directory -> f
 		const { api, registry } = makeRegistry();
 		await createRlmExtension({ createKernel: () => kernel.port })(api as never);
 
-		await emit(registry, "session_start", {}, hostContext(dir, a));
-		await emit(registry, "session_switch", { reason: "new", previousSessionFile: undefined }, hostContext(dir, b));
+		const ctxA = hostContext(dir, a);
+		const ctxB = hostContext(dir, b);
+		await emit(registry, "session_start", {}, ctxA);
+		expect(
+			messagesOf(registry, "rlm-warning"),
+			"POST-SESSION-NO-SIDE-EFFECT-1 violation: a lifecycle event announced a fallback before any kernel existed",
+		).toEqual([]);
+		// The isolated directory is allocated and announced when each session's kernel is first constructed.
+		await registry.tools[0].execute("a1", { code: "a = 1" }, undefined, undefined, ctxA);
+		await emit(registry, "session_switch", { reason: "new", previousSessionFile: undefined }, ctxB);
+		await registry.tools[0].execute("b1", { code: "b = 1" }, undefined, undefined, ctxB);
 
 		expect(
 			messagesOf(registry, "rlm-revival").length,
@@ -460,7 +469,10 @@ describe("POST-SESSION-NO-OWNED-DIR-ISOLATION-1: no session-owned directory -> f
 		const kernel = makePort({ names: ["legacy_var"] });
 		const { api, registry } = makeRegistry();
 		await createRlmExtension({ createKernel: () => kernel.port })(api as never);
-		await emit(registry, "session_start", {}, { cwd: join(dir, "project"), sessionManager: legacySessionManager });
+		const legacyCtx = { cwd: join(dir, "project"), sessionManager: legacySessionManager };
+		await emit(registry, "session_start", {}, legacyCtx);
+		expect(messagesOf(registry, "rlm-warning"), "no announcement before a kernel exists").toEqual([]);
+		await registry.tools[0].execute("l1", { code: "l = 1" }, undefined, undefined, legacyCtx);
 
 		expect(
 			messagesOf(registry, "rlm-revival").length,

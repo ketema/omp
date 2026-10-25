@@ -371,6 +371,13 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 
 			await h1!({ type: "session_start" }, mockCtx);
 			await h2!({ type: "session_start" }, mockCtx);
+			// POST-SESSION-NO-SIDE-EFFECT-1: nothing is allocated or announced by the lifecycle event itself.
+			expect(reg1.sentMessages.length).toBe(0);
+			expect(reg2.sentMessages.length).toBe(0);
+			// The isolated directory is allocated when each session's kernel is first constructed.
+			const idleCtx = { hasUI: false, setWorkingMessage() {}, ui: { select: async () => undefined } };
+			await reg1.tools[0].execute("f1", { code: "a = 1" }, undefined, undefined, idleCtx);
+			await reg2.tools[0].execute("f2", { code: "a = 1" }, undefined, undefined, idleCtx);
 
 			const warnings1 = reg1.sentMessages.filter(
 				m => isMessagePayload(m.payload) && m.payload.customType === "rlm-warning",
