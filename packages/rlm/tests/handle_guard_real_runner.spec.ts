@@ -8,19 +8,13 @@
  * fresh directory; a second session then restores from that directory. dill reopens a handle's path (truncating a write-mode
  * file) before applying the closed flag, so an unguarded restore turns the 48-byte sentinel into 0 bytes. Nothing outside
  * the test's temp directory is read or written.
- *
- * Interpreter: `RLM_TEST_PYTHON` when set; otherwise the managed kernel venv via uv, as the other real-kernel specs do.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
 
-import { createRlmExtension } from "../src/extension.ts";
-
-type Handler = (event: unknown, ctx?: unknown) => unknown;
-type Message = { customType?: string; content?: string };
+import { openRealSession as openSession } from "./real_extension.ts";
 
 let suiteRoot = "";
 beforeAll(() => {
@@ -29,47 +23,6 @@ beforeAll(() => {
 afterAll(() => {
 	fs.rmSync(suiteRoot, { recursive: true, force: true });
 });
-
-async function openSession(root: string, artifactsDir: string) {
-	const flags: Record<string, string> = { OMP_RLM_AGENT_DIR: join(root, "agent") };
-	if (process.env.RLM_TEST_PYTHON) flags.RLM_KERNEL_PYTHON = process.env.RLM_TEST_PYTHON;
-	const handlers = new Map<string, Handler[]>();
-	const tools: Array<{
-		execute: (...args: unknown[]) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
-	}> = [];
-	const messages: Message[] = [];
-	const api = {
-		registerTool(tool: (typeof tools)[number]) {
-			tools.push(tool);
-		},
-		registerFlag() {},
-		registerCommand() {},
-		on(event: string, handler: Handler) {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-		getFlag(name: string) {
-			return flags[name];
-		},
-		sendMessage(payload: Message) {
-			messages.push(payload);
-		},
-	};
-	const ctx = { cwd: root, sessionManager: { resolveOwnArtifactsDir: async () => artifactsDir } };
-	const toolCtx = { hasUI: false, setWorkingMessage() {}, ui: { select: async () => undefined } };
-	await createRlmExtension()(api as never);
-	const emit = async (type: string) => {
-		for (const handler of handlers.get(type) ?? []) await handler({ type }, ctx);
-	};
-	return {
-		messages,
-		start: () => emit("session_start"),
-		shutdown: () => emit("session_shutdown"),
-		run: async (code: string) =>
-			(await tools[0].execute(`c-${crypto.randomUUID()}`, { code }, undefined, undefined, toolCtx)).content
-				.map(part => part.text)
-				.join("\n"),
-	};
-}
 
 describe("file-handle guard through the real bundled runner", () => {
 	test("a legacy snapshot holding a closed write-mode handle restores its healthy variables, reports the skip, and leaves the handle's file untouched", async () => {

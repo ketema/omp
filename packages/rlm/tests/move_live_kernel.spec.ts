@@ -12,9 +12,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
 
-import { createRlmExtension } from "../src/extension.ts";
-
-type Handler = (event: unknown, ctx?: unknown) => unknown;
+import { openRealSession } from "./real_extension.ts";
 
 let suiteRoot = "";
 let caseCounter = 0;
@@ -31,46 +29,9 @@ async function openSession(label: string) {
 	const oldDir = join(root, "sessions", "original-artifacts");
 	const newDir = join(root, "sessions", "sibling-artifacts");
 	fs.mkdirSync(oldDir, { recursive: true });
-	const flags: Record<string, string> = { OMP_RLM_AGENT_DIR: join(root, "agent") };
-	if (process.env.RLM_TEST_PYTHON) flags.RLM_KERNEL_PYTHON = process.env.RLM_TEST_PYTHON;
-	const handlers = new Map<string, Handler[]>();
-	const tools: Array<{
-		execute: (...args: unknown[]) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
-	}> = [];
-	const warnings: string[] = [];
-	const api = {
-		registerTool(tool: (typeof tools)[number]) {
-			tools.push(tool);
-		},
-		registerFlag() {},
-		registerCommand() {},
-		on(event: string, handler: Handler) {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-		getFlag(name: string) {
-			return flags[name];
-		},
-		sendMessage(payload: { customType?: string; content?: string }) {
-			if (payload.customType === "rlm-warning") warnings.push(String(payload.content));
-		},
-	};
-	const ctxFor = (dir: string) => ({ cwd: root, sessionManager: { resolveOwnArtifactsDir: async () => dir } });
-	const toolCtx = { hasUI: false, setWorkingMessage() {}, ui: { select: async () => undefined } };
-	await createRlmExtension()(api as never);
-	const emit = async (type: string, event: object, dir: string) => {
-		for (const handler of handlers.get(type) ?? []) await handler({ type, ...event }, ctxFor(dir));
-	};
-	await emit("session_start", {}, oldDir);
-	const call = (code: string) => tools[0].execute(`c-${crypto.randomUUID()}`, { code }, undefined, undefined, toolCtx);
-	return {
-		root,
-		oldDir,
-		newDir,
-		warnings,
-		emit,
-		call,
-		run: async (code: string) => (await call(code)).content.map(part => part.text).join("\n"),
-	};
+	const session = await openRealSession(root, oldDir);
+	await session.start();
+	return Object.assign(session, { oldDir, newDir });
 }
 
 function pairHashes(dir: string): Record<string, string> {
