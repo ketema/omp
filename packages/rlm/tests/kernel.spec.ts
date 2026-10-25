@@ -1493,3 +1493,80 @@ test("POST-KM-NO-RESURRECT-1: a snapshot abandoned by the flush timeout never st
   ).toBe(0)
   expect(fs.readdirSync(dir).filter(name => name.startsWith(".kernel-snapshot-tmp-"))).toEqual([])
 })
+
+// ---------------------------------------------------------------------------
+// POST-KM-SNAPSHOT-PAIR-1 (contracts/rlm-session-isolation.contract.ts)
+// ---------------------------------------------------------------------------
+
+function pairTransport(extra: { pythonVersion?: () => Promise<string> } = {}) {
+  return makeTransport({
+    writeSnapshotPayload: async tempDir => {
+      fs.writeFileSync(`${tempDir}/kernel-state.dill`, "NEW-PAYLOAD")
+    },
+    ...extra,
+  })
+}
+
+function seedPriorPair(dir: string): void {
+  fs.writeFileSync(`${dir}/kernel-state.dill`, "OLD-PAYLOAD")
+  fs.writeFileSync(`${dir}/kernel-state.json`, JSON.stringify({ version: 1, savedNames: ["prior"] }))
+}
+
+test("POST-KM-SNAPSHOT-PAIR-1: a flush abandoned while the kernel's Python version is pending leaves the prior payload and manifest intact", async () => {
+  const clock = makeClock()
+  const dir = artifactsDir()
+  seedPriorPair(dir)
+  let release: () => void = () => {}
+  const hold = new Promise<string>(resolve => { release = () => resolve("3.11.0") })
+  const manager = new KernelManager(pairTransport({ pythonVersion: () => hold }), { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  const outcome = manager.flushSnapshot().catch((error: unknown) => error)
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await clock.advance(SNAPSHOT_DISPOSE_TIMEOUT_MS + 100)
+  await Promise.race([outcome, new Promise(resolve => setTimeout(resolve, 500))])
+  release()
+  await new Promise(resolve => setTimeout(resolve, 50))
+  expect(
+    fs.readFileSync(`${dir}/kernel-state.dill`, "utf8"),
+    "POST-KM-SNAPSHOT-PAIR-1 violation: the payload was replaced although the snapshot was abandoned before its manifest could commit",
+  ).toBe("OLD-PAYLOAD")
+  expect(
+    (JSON.parse(fs.readFileSync(`${dir}/kernel-state.json`, "utf8")) as { savedNames: string[] }).savedNames,
+    "POST-KM-SNAPSHOT-PAIR-1 violation: the manifest no longer matches the payload beside it",
+  ).toEqual(["prior"])
+})
+
+test("POST-KM-SNAPSHOT-PAIR-1: a commit that cannot finish rolls the payload back to the prior generation", async () => {
+  const clock = makeClock()
+  const dir = artifactsDir()
+  fs.writeFileSync(`${dir}/kernel-state.dill`, "OLD-PAYLOAD")
+  // A non-empty directory squats on the manifest path, so replacing the manifest must fail.
+  fs.mkdirSync(`${dir}/kernel-state.json`)
+  fs.writeFileSync(`${dir}/kernel-state.json/keep`, "x")
+  const manager = new KernelManager(pairTransport(), { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  const outcome = await manager.flushSnapshot().then(
+    () => "committed" as const,
+    () => "failed" as const,
+  )
+  expect(outcome).toBe("failed")
+  expect(
+    fs.readFileSync(`${dir}/kernel-state.dill`, "utf8"),
+    "POST-KM-SNAPSHOT-PAIR-1 violation: a failed commit left the new payload beside the old manifest",
+  ).toBe("OLD-PAYLOAD")
+  expect(fs.readdirSync(dir).filter(name => name.includes(".rollback-"))).toEqual([])
+})
+
+test("POST-KM-SNAPSHOT-PAIR-1: a completed snapshot replaces payload and manifest together", async () => {
+  const clock = makeClock()
+  const dir = artifactsDir()
+  seedPriorPair(dir)
+  const manager = new KernelManager(pairTransport({ pythonVersion: async () => "3.11.0" }), { clock, artifactsDir: dir })
+  await manager.execute("x = 1")
+  await manager.flushSnapshot()
+  expect(fs.readFileSync(`${dir}/kernel-state.dill`, "utf8")).toBe("NEW-PAYLOAD")
+  const manifest = JSON.parse(fs.readFileSync(`${dir}/kernel-state.json`, "utf8")) as { savedNames: string[]; pythonVersion: string }
+  expect(manifest.savedNames).toEqual(["a", "b"])
+  expect(manifest.pythonVersion).toBe("3.11.0")
+  expect(fs.readdirSync(dir).filter(name => name.includes(".rollback-"))).toEqual([])
+})
