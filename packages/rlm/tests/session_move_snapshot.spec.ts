@@ -10,8 +10,8 @@
  * SessionManager.#moveOffSessionFile produces (copy at session-manager.ts:1281, notice at :1284).
  *
  * COVERAGE LIMIT: the producer is the extension-facing contract (resolveOwnArtifactsDir resolving after the copy), not
- * the real SessionManager, which needs the host native addon. The real producer runs in
- * packages/coding-agent/test/agent-session-move-off-live-state.test.ts on GitHub.
+ * the real SessionManager, which needs the host native addon. The real SessionManager producer, the real AgentSession
+ * event and real Python run end to end in move_off_real_host.spec.ts (CI, where the native addon loads).
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";

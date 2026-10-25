@@ -452,7 +452,7 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 		 * FOUR-CRITERIA TEST VALIDITY GATE:
 		 *   [✓] C1 VALID: cites clause POST-TRANS-SKIPPED-WIRE-PROPAGATION-1
 		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO
-		 *       (FALSIFIABILITY PROOF: mutating transport.ts line 862 from `skipped: frame.skipped ?? []`
+		 *       (FALSIFIABILITY PROOF: mutating the transport's result-frame handler from `skipped: frame.skipped ?? []`
 		 *        to `skipped: []` causes this test to FAIL: expected 1 skipped record, received 0)
 		 *   [✓] C3 NON-DUPLICATIVE: uses REAL RlmTransport class, real frame parser, real KernelManager
 		 *   [✓] C4 NOT FUTURE-EDIT: exercises authentic transport line-buffer and result dispatching
@@ -525,7 +525,8 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 				type: "result",
 				id: restoreOp.id,
 				restoredNames: ["good_df", "valid_var"],
-				skipped: [{ name: "corrupted_fn", reason: "UnpicklingError: invalid opcode", type: "UnpicklingError" }],
+				// The runner's actual record shape (rlm_kernel_runner._snapshot_restore; contract SkippedVariableRecord).
+				skipped: [{ name: "corrupted_fn", reason: "UnpicklingError: invalid opcode", error_type: "UnpicklingError" }],
 			};
 			emitStdout(`${JSON.stringify(wireFrame)}\n`);
 
