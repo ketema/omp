@@ -82,7 +82,7 @@
         "SLICE-1"
       ],
       "issue": "TODO",
-      "pivot_note": "Kernel-state dir is exactly SessionManager.resolveOwnArtifactsDir() (own session-file dir, awaited past the background copy into that file); no owned dir -> fresh mkdtemp isolated state; kernel construction gated on the resolved dir; typed pre-transition flush; each ipython invocation is bound at entry to its kernel and aborts visibly if that kernel is replaced (POST-TOOL-SESSION-BINDING-1). CORRECTIONS: (1) GREEN_COMPLETE at e3f85186aa was FALSE (adopted no-file A->B bleed); repaired 39fcd7f..f70cf3f. (2) d2504a9 parked tool-call/switch atomicity as a policy choice; that was wrong - it is a live REQ-RLM-REHYDRATE-003 leak path - repaired d1cc30a (RED) / fdc5a32 (GREEN). GREEN_COMPLETE means local RED->GREEN evidence only: not audited, not human-accepted. packages/rlm is NOT in any scripts/ci-test-ts.ts bucket, so GitHub CI never runs the RLM suite; specs that import the real SessionManager need the host native addon and could not be run in the final local environment. (3) 96369bf's eager no-owned-dir fallback injected a transcript message and a stray .omp/artifacts/isolated-* dir into every in-memory host session (the host loads this extension in all unrestricted sessions) and turned CI job 'coding-agent runtime/session' red at d2504a9 (rpc-goal messageCount 1 vs 0); repaired lazily by 214eff5 (RED) / ac03b8f (GREEN). That job's recovery is UNVERIFIED locally (needs the host native addon); the next CI run is the discriminator."
+      "pivot_note": "Kernel-state dir is exactly SessionManager.resolveOwnArtifactsDir() (own session-file dir, awaited past the background copy into that file); no owned dir -> fresh mkdtemp isolated state; kernel construction gated on the resolved dir; typed pre-transition flush; each ipython invocation is bound at entry to its kernel and aborts visibly if that kernel is replaced (POST-TOOL-SESSION-BINDING-1). CORRECTIONS: (1) GREEN_COMPLETE at e3f85186aa was FALSE (adopted no-file A->B bleed); repaired 39fcd7f..f70cf3f. (2) d2504a9 parked tool-call/switch atomicity as a policy choice; that was wrong - it is a live REQ-RLM-REHYDRATE-003 leak path - repaired d1cc30a (RED) / fdc5a32 (GREEN). GREEN_COMPLETE means local RED->GREEN evidence only: not audited, not human-accepted. Until a2b12ab packages/rlm was in no scripts/ci-test-ts.ts bucket, so GitHub CI never ran the RLM suite; a dedicated 'Test RLM (TS + Python)' job now exists (SLICE-4) but its execution is not yet evidenced here. Specs that import the real SessionManager need the host native addon (the dedicated job provides the real linux-x64 artifact) and could not be run in the local environment. (3) 96369bf's eager no-owned-dir fallback injected a transcript message and a stray .omp/artifacts/isolated-* dir into every in-memory host session (the host loads this extension in all unrestricted sessions) and turned CI job 'coding-agent runtime/session' red at d2504a9 (rpc-goal messageCount 1 vs 0); repaired lazily by 214eff5 (RED) / ac03b8f (GREEN). That job's recovery is UNVERIFIED locally (needs the host native addon); the next CI run is the discriminator."
     },
     {
       "id": "SLICE-3",
@@ -101,6 +101,27 @@
       ],
       "issue": "TODO",
       "pivot_note": "Quarantine utility safely isolates legacy dill files and extracts recoverable variables without contaminating clean sessions, continuing past SyntaxError and deserialization exceptions with lazy lzma import."
+    },
+    {
+      "id": "SLICE-4",
+      "clauses_in_scope": [
+        "POST-CI-RLM-SELECTION-1"
+      ],
+      "clauses_deferred": [
+        "POST-CI-RLM-EXECUTION-1"
+      ],
+      "negative_constraints": [
+        "REQ-RLM-REHYDRATE-001",
+        "REQ-RLM-REHYDRATE-003"
+      ],
+      "status": "GREEN_COMPLETE",
+      "depends_on": [
+        "SLICE-1",
+        "SLICE-2",
+        "SLICE-3"
+      ],
+      "issue": "TODO",
+      "pivot_note": "RLM CI gate. POST-CI-RLM-SELECTION-1 is GREEN_COMPLETE locally only: RED 500b79e, GREEN a2b12ab; scripts/ci-test-ts.test.ts drives the script's real --dry-run dispatch (6/6; four compiling mutations each caught). POST-CI-RLM-EXECUTION-1 (method: execution) is DEFERRED and NOT evidenced by this plan: it is satisfied only by the real GitHub Actions job log of 'Test RLM (TS + Python)' on the PR head (needs native_addons; non-zero executed counts, zero skip/fail, real-SessionManager files executed rather than failing to load). No run result is recorded here; the observed run is reported separately by URL."
     }
   ],
   "pivot_guidance": [
@@ -111,8 +132,8 @@
     "2. Persistence/restore POLICY for sessions WITHOUT a session file (in-memory, adopted subagents) needs new intent. Safe behaviour is in force meanwhile: fresh isolated mkdtemp state per lifecycle event, never another session's files (POST-SESSION-NO-OWNED-DIR-ISOLATION-1); returning to the same no-file session does not restore its prior state.",
     "3. Older hosts lacking SessionManager.resolveOwnArtifactsDir() get fresh isolated state plus an observable warning; no path trusts getArtifactsDir().",
     "RESOLVED (was parked in d2504a9): tool-call/transition atomicity - see POST-TOOL-SESSION-BINDING-1 / ERRORS-TOOL-SESSION-CHANGED-1.",
-    "ENVIRONMENT / CI COVERAGE (record for human): packages/rlm is absent from every scripts/ci-test-ts.ts package bucket; real-SessionManager RLM specs (session_transition, session_isolation, host_session) need the host's pi_natives addon and failed to LOAD (not assert) in the final local run because the unauthorised addon symlink was removed.",
-    "RESIDUES left untouched for human disposition: worktree-root kernel-state.dill (dated before the resolution gate; never loaded); gitignored .omp/artifacts/isolated-* dirs created by the contracted no-owned-dir fallback during local runs."
+    "RESIDUES left untouched for human disposition: worktree-root kernel-state.dill (dated before the resolution gate; never loaded); gitignored .omp/artifacts/isolated-* dirs created by the contracted no-owned-dir fallback during local runs.",
+    "ENVIRONMENT / CI COVERAGE (record for human): before a2b12ab packages/rlm was absent from every scripts/ci-test-ts.ts bucket. A dedicated job 'Test RLM (TS + Python)' (also added to release_gate) now selects the full packages/rlm TS suite and the locked-uv Python suite; it runs with the real linux-x64 native artifact and a job-local pinned uv 0.13.5. Its execution evidence is the GitHub job log only - not recorded in this plan. Four coding-agent/native-integration CI jobs remain red on tests identical to the branch's first run (coding-agent tree identical to base); they are a separate, unrelated blocker."
   ],
   "forgotten_invariants": [
     "REQ-RLM-REHYDRATE-001",
