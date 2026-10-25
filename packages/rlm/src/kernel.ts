@@ -438,16 +438,26 @@ export class KernelManager {
 		// bounded by SNAPSHOT_DISPOSE_TIMEOUT_MS so a hung kernel cannot
 		// deadlock teardown (prime-agent flushSnapshotForDispose shape)
 		if (options?.snapshot === true && this.started && this.transport.alive()) {
+			// ERRORS-SESSION-SWITCH-DISPOSE-1: work abandoned at the bound is named as such and never commits afterwards;
+			// whatever the killed provider reports later is a consequence, not the cause, and never replaces that notice.
+			const token = { abandoned: false };
+			let cancelBound: () => void = () => {};
 			await Promise.race([
-				this.runSnapshot().catch((error: unknown) => {
+				this.runSnapshot(token).catch((error: unknown) => {
+					if (token.abandoned) return;
 					// Snapshot failure at teardown is observable, not silent (F8):
 					// the durability loss is named; teardown proceeds
 					this.teardownNotice = `snapshot flush failed during dispose: ${String(error)}`;
 				}),
 				new Promise<void>(resolve => {
-					this.clock.schedule(() => resolve(), SNAPSHOT_DISPOSE_TIMEOUT_MS);
+					cancelBound = this.clock.schedule(() => {
+						token.abandoned = true;
+						this.teardownNotice = `snapshot flush did not settle within ${SNAPSHOT_DISPOSE_TIMEOUT_MS}ms and was abandoned; state executed since the last committed snapshot was not persisted`;
+						resolve();
+					}, SNAPSHOT_DISPOSE_TIMEOUT_MS);
 				}),
 			]);
+			cancelBound();
 		}
 
 		// INV-KM-LIFETIME-2: wait for in-flight executions with timeout
