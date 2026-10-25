@@ -14,7 +14,9 @@ type Mode =
 	| "coding-agent-ui"
 	| "coding-agent-runtime"
 	| "coding-agent-native"
-	| "coding-agent-heavy";
+	| "coding-agent-heavy"
+	| "rlm"
+	| "rlm-python";
 
 type CodingAgentBucket = "singleton" | "ui" | "runtime" | "native";
 
@@ -54,6 +56,8 @@ const validModes: Record<Mode, true> = {
 	"local-ts": true,
 	workspace: true,
 	native: true,
+	rlm: true,
+	"rlm-python": true,
 	"coding-agent-singleton": true,
 	"coding-agent-ui": true,
 	"coding-agent-runtime": true,
@@ -222,6 +226,37 @@ function rustTestCommand(): TestCommand {
 	};
 }
 
+// packages/rlm is deliberately NOT in a shared bucket: its specs mutate process-global state
+// (agent dir, cwd), spawn real Python kernels, and need both the native addon (real SessionManager)
+// and `uv` on PATH. Run it as one unfiltered `bun test` at width 1 so every spec under
+// packages/rlm/tests is selected and none can race another (POST-CI-RLM-SELECTION-1).
+function rlmTestCommand(options: { extraArgs?: string[] } = {}): TestCommand {
+	return workspaceTestCommand("packages/rlm", 1, options);
+}
+
+// The RLM Python recovery/quarantine suite, run through the rlm-runtime uv project: `--locked`
+// makes lock drift a failure, and `--group test` brings the pinned test-only deps (dill, numpy).
+// Not part of `all`/`local-ts`: it provisions an environment from the network. ci_run_tests.py
+// fails on zero tests or any skip.
+function rlmPythonTestCommand(): TestCommand {
+	return {
+		label: "packages/rlm/python (pinned uv env)",
+		cwd: ".",
+		command: [
+			"uv",
+			"run",
+			"--locked",
+			"--no-progress",
+			"--project",
+			"packages/rlm/python/rlm-runtime",
+			"--group",
+			"test",
+			"python",
+			"packages/rlm/python/ci_run_tests.py",
+		],
+	};
+}
+
 async function collectTestsUnder(root: string, baseDir: string): Promise<string[]> {
 	const entries = await fs.readdir(root, { withFileTypes: true });
 	const files: string[] = [];
@@ -328,6 +363,10 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 			return fastWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 8));
 		case "native":
 			return nativeAndIntegrationPackages.map(pkg => workspaceTestCommand(pkg, 4));
+		case "rlm":
+			return [rlmTestCommand()];
+		case "rlm-python":
+			return [rlmPythonTestCommand()];
 		case "coding-agent-singleton":
 			return await codingAgentTestCommands("singleton");
 		case "coding-agent-ui":
@@ -347,6 +386,7 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 			return [
 				...(await commandsForMode("workspace")),
 				...(await commandsForMode("native")),
+				...(await commandsForMode("rlm")),
 				...(await commandsForMode("coding-agent-heavy")),
 			];
 		// `local-ts` is the full local TypeScript run that root `bun run test:ts`
@@ -358,6 +398,7 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 			return [
 				...fastWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 8, { extraArgs: onlyFailuresArgs })),
 				...nativeAndIntegrationPackages.map(pkg => workspaceTestCommand(pkg, 4, { extraArgs: onlyFailuresArgs })),
+				rlmTestCommand({ extraArgs: onlyFailuresArgs }),
 				...localOnlyWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 4, { extraArgs: onlyFailuresArgs })),
 				...(await commandsForMode("coding-agent-heavy")),
 			];

@@ -697,6 +697,54 @@ jobs:
               OMP_TEST_CONCURRENCY: "4"
            run: bun run ci:test:coding-agent:runtime
 
+   # packages/rlm is in no ci-test-ts.ts shared bucket: its specs mutate process-global state, import the
+   # real SessionManager (native addon), and spawn real Python kernels bootstrapped with `uv`. It gets its
+   # own visibly named check so a green run is genuine evidence about it. The runner (ci-test-ts.ts) scrubs
+   # credentials from the test processes; the job adds no secrets and no token scope beyond `contents: read`.
+   test_rlm:
+      name: Test RLM (TS + Python)
+      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
+      needs: [native_addons]
+      if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
+      timeout-minutes: 30
+      steps:
+         - uses: actions/checkout@v4
+         - uses: ./.github/actions/bun-install
+         - uses: ./.github/actions/native-artifacts
+           with:
+              targets: linux-x64-baseline linux-x64-modern
+              stash: ${{ needs.native_addons.outputs.stash }}
+         # The suite's default-path tests bootstrap the kernel venv with `uv`, and the Python suite runs
+         # through it. Install the pinned release into a job-local dir (same shape as the bun install in
+         # ./.github/actions/bun-install): nothing global, and a version mismatch fails the job.
+         - name: Install pinned uv (job-local)
+           shell: bash
+           env:
+              UV_VERSION: "0.13.5"
+           run: |
+              set -euo pipefail
+              dest="$RUNNER_TEMP/uv-bin"
+              mkdir -p "$dest"
+              curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | UV_INSTALL_DIR="$dest" UV_NO_MODIFY_PATH=1 sh
+              echo "$dest" >> "$GITHUB_PATH"
+              got="$("$dest/uv" --version | awk '{print $2}')"
+              if [ "$got" != "$UV_VERSION" ]; then
+                echo "::error::expected uv $UV_VERSION, got $got"
+                exit 1
+              fi
+              echo "uv $got installed job-locally at $dest"
+         - name: RLM selection tests (real ci-test-ts.ts dispatch)
+           run: bun test scripts/ci-test-ts.test.ts
+         - name: Test RLM package (TS) - real SessionManager, default path, atomicity
+           if: ${{ !cancelled() }}
+           run: bun run ci:test:rlm
+         - name: Test RLM Python recovery/quarantine (locked uv env)
+           if: ${{ !cancelled() }}
+           env:
+              UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/rlm-python-env
+              UV_CACHE_DIR: ${{ runner.temp }}/rlm-uv-cache
+           run: bun run ci:test:rlm:python
+
    test_smoke:
       name: Test CLI smoke (TS)
       runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
@@ -745,9 +793,10 @@ jobs:
          needs.test_coding_agent_ui.result == 'success' &&
          needs.test_coding_agent_runtime.result == 'success' &&
          needs.test_coding_agent_native.result == 'success' &&
+         needs.test_rlm.result == 'success' &&
          needs.test_smoke.result == 'success' && needs.check.result == 'success' &&
          needs.install_methods.result == 'success' }}
-      needs: [release_metadata, check, rust_validate, native_addons, native_addons_cross, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods]
+      needs: [release_metadata, check, rust_validate, native_addons, native_addons_cross, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_rlm, test_smoke, install_methods]
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@v4
