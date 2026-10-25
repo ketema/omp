@@ -499,7 +499,8 @@ export class KernelManager {
 		if (onProgress !== undefined) onProgress("restoring");
 		const restored = await this.transport.restoreSnapshot();
 		this.lastRestoredNames = Array.from(restored);
-		const skippedFromRestored = (restored as unknown as { skipped?: Array<{ name: string; reason: string }> }).skipped;
+		const skippedFromRestored = (restored as unknown as { skipped?: Array<{ name: string; reason: string }> })
+			.skipped;
 		this.lastRestoredSkipped = Array.isArray(skippedFromRestored) ? skippedFromRestored : [];
 		if (onProgress !== undefined) onProgress("preparing");
 		await this.transport.bootstrap();

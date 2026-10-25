@@ -340,10 +340,6 @@ export function createRlmExtension(
 					if (kernel === null) return [];
 					return kernel.restoredNames();
 				},
-				restoredSkipped() {
-					if (kernel === null) return [];
-					return kernel.restoredSkipped?.() ?? [];
-				},
 			},
 			onRevival: (names: readonly string[]) => {
 				// SEQ-KM-5: revival notice enumerating restored names via api.sendMessage
@@ -424,16 +420,29 @@ export function createRlmExtension(
 			}
 		});
 
-		// on('session_start'): restore and announce revived names
-		api.on("session_start", async (event: unknown, ctx?: unknown) => {
+		// Handle session start and session switches (for /new, /fork, /resume)
+		const handleSessionInit = async (event: unknown, ctx?: unknown) => {
+			// Save and dispose outgoing kernel if present to prevent cross-session leakage (Comment 4366356325)
+			if (kernel !== null) {
+				try {
+					await kernel.dispose();
+				} catch {
+					// Non-fatal cleanup error on switch
+				} finally {
+					kernel = null;
+				}
+			}
+
 			// Resolve artifactsDir from session context or event (F2 / F6 fix)
-			const sessionCtx = ctx as {
-				cwd?: string;
-				sessionManager?: {
-					getArtifactsDir?: () => string | null;
-					getSessionId?: () => string;
-				};
-			} | undefined;
+			const sessionCtx = ctx as
+				| {
+						cwd?: string;
+						sessionManager?: {
+							getArtifactsDir?: () => string | null;
+							getSessionId?: () => string;
+						};
+				  }
+				| undefined;
 			const sessionEvent = event as { sessionDir?: string; sessionId?: string; cwd?: string } | undefined;
 
 			const effectiveCwd = sessionCtx?.cwd ?? sessionEvent?.cwd ?? process.cwd();
@@ -480,10 +489,13 @@ export function createRlmExtension(
 						);
 					}
 				} catch {
-					// Non-fatal on session_start: lazy start will retry on first explicit tool invocation
+					// Non-fatal on session_start / session_switch: lazy start will retry on first explicit tool invocation
 				}
 			}
-		});
+		};
+
+		api.on("session_start", handleSessionInit);
+		api.on("session_switch", handleSessionInit);
 
 		// on('session_shutdown'): dispose kernel
 		api.on("session_shutdown", async () => {

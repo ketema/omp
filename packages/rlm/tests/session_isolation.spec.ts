@@ -12,291 +12,298 @@
  *     IP-5: Delivers partitioned artifactsDir to kernel initialization
  */
 
-import { describe, expect, test } from "bun:test"
-import * as fs from "node:fs"
-import { join } from "node:path"
+import { describe, expect, test } from "bun:test";
+import * as fs from "node:fs";
+import { join } from "node:path";
 
-import {
-  createRlmExtension,
-  type RlmExtensionKernelPort,
-} from "../src/extension.ts"
+import { createRlmExtension, type RlmExtensionKernelPort } from "../src/extension.ts";
 
-function makeKernelPort(overrides: {
-  restoredNames?: string[]
-  restoredSkipped?: Array<{ name: string; reason: string }>
-} = {}): { port: RlmExtensionKernelPort; calls: Array<{ kind: string; detail: string }>; wasStarted: () => boolean; wasDisposed: () => boolean } {
-  const calls: Array<{ kind: string; detail: string }> = []
-  let started = false
-  let disposed = false
-  const port: RlmExtensionKernelPort = {
-    async ensureStarted() {
-      calls.push({ kind: "ensureStarted", detail: "" })
-      started = true
-    },
-    async execute(code) {
-      calls.push({ kind: "execute", detail: code })
-      return {
-        status: "ok" as const,
-        stdout: "",
-        stderr: "",
-        result: "",
-        traceback: undefined,
-        errorEname: undefined,
-        durationMs: 1,
-        kernelRestarted: undefined,
-      }
-    },
-    async kill() {
-      calls.push({ kind: "kill", detail: "" })
-      started = false
-    },
-    async dispose() {
-      calls.push({ kind: "dispose", detail: "" })
-      disposed = true
-      started = false
-    },
-    restoredNames() {
-      return overrides.restoredNames ?? []
-    },
-    restoredSkipped() {
-      return overrides.restoredSkipped ?? []
-    },
-    async onCompactionComplete() {
-      calls.push({ kind: "onCompactionComplete", detail: "" })
-    },
-    compactionNotice() {
-      return null
-    },
-  }
-  return { port, calls, wasStarted: () => started, wasDisposed: () => disposed }
+function makeKernelPort(
+	overrides: {
+		restoredNames?: string[];
+		restoredSkipped?: Array<{ name: string; reason: string }>;
+	} = {},
+): {
+	port: RlmExtensionKernelPort;
+	calls: Array<{ kind: string; detail: string }>;
+	wasStarted: () => boolean;
+	wasDisposed: () => boolean;
+} {
+	const calls: Array<{ kind: string; detail: string }> = [];
+	let started = false;
+	let disposed = false;
+	const port: RlmExtensionKernelPort = {
+		async ensureStarted() {
+			calls.push({ kind: "ensureStarted", detail: "" });
+			started = true;
+		},
+		async execute(code) {
+			calls.push({ kind: "execute", detail: code });
+			return {
+				status: "ok" as const,
+				stdout: "",
+				stderr: "",
+				result: "",
+				traceback: undefined,
+				errorEname: undefined,
+				durationMs: 1,
+				kernelRestarted: undefined,
+			};
+		},
+		async kill() {
+			calls.push({ kind: "kill", detail: "" });
+			started = false;
+		},
+		async dispose() {
+			calls.push({ kind: "dispose", detail: "" });
+			disposed = true;
+			started = false;
+		},
+		restoredNames() {
+			return overrides.restoredNames ?? [];
+		},
+		restoredSkipped() {
+			return overrides.restoredSkipped ?? [];
+		},
+		async onCompactionComplete() {
+			calls.push({ kind: "onCompactionComplete", detail: "" });
+		},
+		compactionNotice() {
+			return null;
+		},
+	};
+	return { port, calls, wasStarted: () => started, wasDisposed: () => disposed };
 }
 
 interface MessageReceipt {
-  readonly payload: unknown
-  readonly options: unknown
+	readonly payload: unknown;
+	readonly options: unknown;
 }
 
 function makeApi() {
-  const registered: {
-    tools: Array<Record<string, unknown>>
-    handlers: Map<string, Array<(event: unknown, ctx?: unknown) => unknown>>
-    sentMessages: MessageReceipt[]
-  } = { tools: [], handlers: new Map(), sentMessages: [] }
+	const registered: {
+		tools: Array<Record<string, unknown>>;
+		handlers: Map<string, Array<(event: unknown, ctx?: unknown) => unknown>>;
+		sentMessages: MessageReceipt[];
+	} = { tools: [], handlers: new Map(), sentMessages: [] };
 
-  const api = {
-    registerTool(tool: Record<string, unknown>) {
-      registered.tools.push(tool)
-    },
-    registerFlag() {},
-    registerCommand() {},
-    on(event: string, handler: (event: unknown, ctx?: unknown) => unknown) {
-      const list = registered.handlers.get(event) ?? []
-      list.push(handler)
-      registered.handlers.set(event, list)
-    },
-    getFlag() {
-      return undefined
-    },
-    sendMessage(payload: unknown, options?: unknown) {
-      registered.sentMessages.push({ payload, options })
-    },
-  }
-  return { api, registered }
+	const api = {
+		registerTool(tool: Record<string, unknown>) {
+			registered.tools.push(tool);
+		},
+		registerFlag() {},
+		registerCommand() {},
+		on(event: string, handler: (event: unknown, ctx?: unknown) => unknown) {
+			const list = registered.handlers.get(event) ?? [];
+			list.push(handler);
+			registered.handlers.set(event, list);
+		},
+		getFlag() {
+			return undefined;
+		},
+		sendMessage(payload: unknown, options?: unknown) {
+			registered.sentMessages.push({ payload, options });
+		},
+	};
+	return { api, registered };
 }
 
 describe("SLICE-2: Session Artifacts Isolation", () => {
-  test("POST-SESSION-ISOLATION-1: fresh session with sessionManager.getArtifactsDir() partitions artifactsDir and does NOT bleed shared root snapshot (F2/F6)", async () => {
-    /**
-     * FOUR-CRITERIA TEST VALIDITY GATE:
-     *   [✓] C1 VALID: cites clause POST-SESSION-ISOLATION-1 and FORBIDDEN-CROSS-SESSION-BLEED-1
-     *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO
-     *   [✓] C3 NON-DUPLICATIVE: asserts true (event, ctx) production lifecycle signature
-     *   [✓] C4 NOT FUTURE-EDIT: exercises sessionManager.getArtifactsDir() integration
-     */
-    const tempRoot = fs.mkdtempSync("/tmp/rlm-session-iso-")
-    try {
-      // Create a stale legacy snapshot in unpartitioned root: .omp/artifacts/kernel-state.dill
-      const sharedRoot = join(tempRoot, ".omp", "artifacts")
-      fs.mkdirSync(sharedRoot, { recursive: true })
-      fs.writeFileSync(join(sharedRoot, "kernel-state.dill"), "STALE_PRIOR_SESSION_DATA")
+	test("POST-SESSION-ISOLATION-1: fresh session with sessionManager.getArtifactsDir() partitions artifactsDir and does NOT bleed shared root snapshot (F2/F6)", async () => {
+		/**
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites clause POST-SESSION-ISOLATION-1 and FORBIDDEN-CROSS-SESSION-BLEED-1
+		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO
+		 *   [✓] C3 NON-DUPLICATIVE: asserts true (event, ctx) production lifecycle signature
+		 *   [✓] C4 NOT FUTURE-EDIT: exercises sessionManager.getArtifactsDir() integration
+		 */
+		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-iso-");
+		try {
+			// Create a stale legacy snapshot in unpartitioned root: .omp/artifacts/kernel-state.dill
+			const sharedRoot = join(tempRoot, ".omp", "artifacts");
+			fs.mkdirSync(sharedRoot, { recursive: true });
+			fs.writeFileSync(join(sharedRoot, "kernel-state.dill"), "STALE_PRIOR_SESSION_DATA");
 
-      const kernel = makeKernelPort({ restoredNames: ["stale_leaked_var"] })
+			const kernel = makeKernelPort({ restoredNames: ["stale_leaked_var"] });
 
-      const { api, registered } = makeApi()
-      const factory = createRlmExtension({
-        createKernel() {
-          return kernel.port
-        },
-      })
-      await factory(api as never)
+			const { api, registered } = makeApi();
+			const factory = createRlmExtension({
+				createKernel() {
+					return kernel.port;
+				},
+			});
+			await factory(api as never);
 
-      const sessionStartHandlers = registered.handlers.get("session_start") ?? []
-      expect(sessionStartHandlers.length).toBeGreaterThan(0)
+			const sessionStartHandlers = registered.handlers.get("session_start") ?? [];
+			expect(sessionStartHandlers.length).toBeGreaterThan(0);
 
-      // Provide authentic (event, ctx) shape matching OMP runtime (F2 / F6 fix)
-      const sessionArtifactsDir = join(tempRoot, "sessions", "session-alpha", "artifacts")
-      fs.mkdirSync(sessionArtifactsDir, { recursive: true })
+			// Provide authentic (event, ctx) shape matching OMP runtime (F2 / F6 fix)
+			const sessionArtifactsDir = join(tempRoot, "sessions", "session-alpha", "artifacts");
+			fs.mkdirSync(sessionArtifactsDir, { recursive: true });
 
-      const mockCtx = {
-        cwd: tempRoot,
-        sessionManager: {
-          getArtifactsDir: () => sessionArtifactsDir,
-          getSessionId: () => "session-alpha",
-        },
-      }
+			const mockCtx = {
+				cwd: tempRoot,
+				sessionManager: {
+					getArtifactsDir: () => sessionArtifactsDir,
+					getSessionId: () => "session-alpha",
+				},
+			};
 
-      await sessionStartHandlers[0]({ type: "session_start" }, mockCtx)
+			await sessionStartHandlers[0]({ type: "session_start" }, mockCtx);
 
-      // Fresh session has no snapshot in its partitioned artifacts directory,
-      // so no revival message should announce leaked variables from the shared root.
-      const revivalMessages = registered.sentMessages.filter(m => {
-        const payload = m.payload
-        if (payload && typeof payload === "object" && "customType" in payload) {
-          return payload.customType === "rlm-revival"
-        }
-        return false
-      })
+			// Fresh session has no snapshot in its partitioned artifacts directory,
+			// so no revival message should announce leaked variables from the shared root.
+			const revivalMessages = registered.sentMessages.filter(m => {
+				const payload = m.payload;
+				if (payload && typeof payload === "object" && "customType" in payload) {
+					return payload.customType === "rlm-revival";
+				}
+				return false;
+			});
 
-      expect(revivalMessages.length).toBe(0)
-    } finally {
-      fs.rmSync(tempRoot, { recursive: true, force: true })
-    }
-  })
+			expect(revivalMessages.length).toBe(0);
+		} finally {
+			fs.rmSync(tempRoot, { recursive: true, force: true });
+		}
+	});
 
-  test("POST-SESSION-ISOLATION-1: session with snapshot in partitioned directory revives and surfaces skipped warnings (F5)", async () => {
-    const tempRoot = fs.mkdtempSync("/tmp/rlm-session-iso-dir-")
-    try {
-      const sessionArtifactsDir = join(tempRoot, "sessions", "session-beta", "artifacts")
-      fs.mkdirSync(sessionArtifactsDir, { recursive: true })
-      fs.writeFileSync(join(sessionArtifactsDir, "kernel-state.dill"), "VALID_SESSION_SNAPSHOT")
+	test("POST-SESSION-ISOLATION-1: session with snapshot in partitioned directory revives and surfaces skipped warnings (F5)", async () => {
+		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-iso-dir-");
+		try {
+			const sessionArtifactsDir = join(tempRoot, "sessions", "session-beta", "artifacts");
+			fs.mkdirSync(sessionArtifactsDir, { recursive: true });
+			fs.writeFileSync(join(sessionArtifactsDir, "kernel-state.dill"), "VALID_SESSION_SNAPSHOT");
 
-      const kernel = makeKernelPort({
-        restoredNames: ["valid_var"],
-        restoredSkipped: [{ name: "broken_var", reason: "missing module" }],
-      })
+			const kernel = makeKernelPort({
+				restoredNames: ["valid_var"],
+				restoredSkipped: [{ name: "broken_var", reason: "missing module" }],
+			});
 
-      const { api, registered } = makeApi()
-      const factory = createRlmExtension({
-        createKernel() {
-          return kernel.port
-        },
-      })
-      await factory(api as never)
+			const { api, registered } = makeApi();
+			const factory = createRlmExtension({
+				createKernel() {
+					return kernel.port;
+				},
+			});
+			await factory(api as never);
 
-      const sessionStartHandlers = registered.handlers.get("session_start") ?? []
-      expect(sessionStartHandlers.length).toBeGreaterThan(0)
+			const sessionStartHandlers = registered.handlers.get("session_start") ?? [];
+			expect(sessionStartHandlers.length).toBeGreaterThan(0);
 
-      const mockCtx = {
-        cwd: tempRoot,
-        sessionManager: {
-          getArtifactsDir: () => sessionArtifactsDir,
-          getSessionId: () => "session-beta",
-        },
-      }
+			const mockCtx = {
+				cwd: tempRoot,
+				sessionManager: {
+					getArtifactsDir: () => sessionArtifactsDir,
+					getSessionId: () => "session-beta",
+				},
+			};
 
-      await sessionStartHandlers[0]({ type: "session_start" }, mockCtx)
+			await sessionStartHandlers[0]({ type: "session_start" }, mockCtx);
 
-      const revivalMessages = registered.sentMessages.filter(m => {
-        const payload = m.payload
-        if (payload && typeof payload === "object" && "customType" in payload) {
-          return payload.customType === "rlm-revival"
-        }
-        return false
-      })
+			const revivalMessages = registered.sentMessages.filter(m => {
+				const payload = m.payload;
+				if (payload && typeof payload === "object" && "customType" in payload) {
+					return payload.customType === "rlm-revival";
+				}
+				return false;
+			});
 
-      expect(revivalMessages.length).toBe(1)
-      const firstPayload = revivalMessages[0].payload
-      let content = ""
-      if (firstPayload && typeof firstPayload === "object" && "content" in firstPayload) {
-        const rawContent = firstPayload.content
-        if (typeof rawContent === "string") {
-          content = rawContent
-        }
-      }
-      expect(content).toContain("valid_var")
-      expect(content).toContain("The following unpicklable variables were skipped: broken_var")
-    } finally {
-      fs.rmSync(tempRoot, { recursive: true, force: true })
-    }
-  })
+			expect(revivalMessages.length).toBe(1);
+			const firstPayload = revivalMessages[0].payload;
+			let content = "";
+			if (firstPayload && typeof firstPayload === "object" && "content" in firstPayload) {
+				const rawContent = firstPayload.content;
+				if (typeof rawContent === "string") {
+					content = rawContent;
+				}
+			}
+			expect(content).toContain("valid_var");
+			expect(content).toContain("The following unpicklable variables were skipped: broken_var");
+		} finally {
+			fs.rmSync(tempRoot, { recursive: true, force: true });
+		}
+	});
 
-  test("POST-SESSION-ISOLATION-1: session_switch disposes outgoing kernel and re-resolves storage for new session (Comment 4366356325)", async () => {
-    /**
-     * FOUR-CRITERIA TEST VALIDITY GATE:
-     *   [✓] C1 VALID: cites clause POST-SESSION-ISOLATION-1
-     *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (reproduces Comment 4366356325)
-     *   [✓] C3 NON-DUPLICATIVE: asserts session_switch event registration & kernel disposal
-     *   [✓] C4 NOT FUTURE-EDIT: exercises session_switch lifecycle handler
-     */
-    const tempRoot = fs.mkdtempSync("/tmp/rlm-session-switch-")
-    try {
-      const sessionADir = join(tempRoot, "sessions", "session-A", "artifacts")
-      const sessionBDir = join(tempRoot, "sessions", "session-B", "artifacts")
-      fs.mkdirSync(sessionADir, { recursive: true })
-      fs.mkdirSync(sessionBDir, { recursive: true })
-      fs.writeFileSync(join(sessionADir, "kernel-state.dill"), "SNAPSHOT_A")
-      fs.writeFileSync(join(sessionBDir, "kernel-state.dill"), "SNAPSHOT_B")
+	test("POST-SESSION-ISOLATION-1: session_switch disposes outgoing kernel and re-resolves storage for new session (Comment 4366356325)", async () => {
+		/**
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites clause POST-SESSION-ISOLATION-1
+		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (reproduces Comment 4366356325)
+		 *   [✓] C3 NON-DUPLICATIVE: asserts session_switch event registration & kernel disposal
+		 *   [✓] C4 NOT FUTURE-EDIT: exercises session_switch lifecycle handler
+		 */
+		const tempRoot = fs.mkdtempSync("/tmp/rlm-session-switch-");
+		try {
+			const sessionADir = join(tempRoot, "sessions", "session-A", "artifacts");
+			const sessionBDir = join(tempRoot, "sessions", "session-B", "artifacts");
+			fs.mkdirSync(sessionADir, { recursive: true });
+			fs.mkdirSync(sessionBDir, { recursive: true });
+			fs.writeFileSync(join(sessionADir, "kernel-state.dill"), "SNAPSHOT_A");
+			fs.writeFileSync(join(sessionBDir, "kernel-state.dill"), "SNAPSHOT_B");
 
-      const kernelA = makeKernelPort({ restoredNames: ["var_from_session_A"] })
-      const kernelB = makeKernelPort({ restoredNames: ["var_from_session_B"] })
-      let createCallCount = 0
+			const kernelA = makeKernelPort({ restoredNames: ["var_from_session_A"] });
+			const kernelB = makeKernelPort({ restoredNames: ["var_from_session_B"] });
+			let createCallCount = 0;
 
-      const { api, registered } = makeApi()
-      const factory = createRlmExtension({
-        createKernel() {
-          createCallCount++
-          return createCallCount === 1 ? kernelA.port : kernelB.port
-        },
-      })
-      await factory(api as never)
+			const { api, registered } = makeApi();
+			const factory = createRlmExtension({
+				createKernel() {
+					createCallCount++;
+					return createCallCount === 1 ? kernelA.port : kernelB.port;
+				},
+			});
+			await factory(api as never);
 
-      // Start Session A
-      const sessionStartHandlers = registered.handlers.get("session_start") ?? []
-      expect(sessionStartHandlers.length).toBeGreaterThan(0)
+			// Start Session A
+			const sessionStartHandlers = registered.handlers.get("session_start") ?? [];
+			expect(sessionStartHandlers.length).toBeGreaterThan(0);
 
-      const ctxA = {
-        cwd: tempRoot,
-        sessionManager: {
-          getArtifactsDir: () => sessionADir,
-          getSessionId: () => "session-A",
-        },
-      }
-      await sessionStartHandlers[0]({ type: "session_start" }, ctxA)
-      expect(kernelA.wasStarted()).toBe(true)
-      expect(kernelA.wasDisposed()).toBe(false)
+			const ctxA = {
+				cwd: tempRoot,
+				sessionManager: {
+					getArtifactsDir: () => sessionADir,
+					getSessionId: () => "session-A",
+				},
+			};
+			await sessionStartHandlers[0]({ type: "session_start" }, ctxA);
+			expect(kernelA.wasStarted()).toBe(true);
+			expect(kernelA.wasDisposed()).toBe(false);
 
-      // session_switch handler MUST be registered for /new, /fork, /resume
-      const sessionSwitchHandlers = registered.handlers.get("session_switch") ?? []
-      expect(sessionSwitchHandlers.length).toBeGreaterThan(0)
+			// session_switch handler MUST be registered for /new, /fork, /resume
+			const sessionSwitchHandlers = registered.handlers.get("session_switch") ?? [];
+			expect(sessionSwitchHandlers.length).toBeGreaterThan(0);
 
-      // Switch to Session B
-      const ctxB = {
-        cwd: tempRoot,
-        sessionManager: {
-          getArtifactsDir: () => sessionBDir,
-          getSessionId: () => "session-B",
-        },
-      }
-      await sessionSwitchHandlers[0]({ type: "session_switch", reason: "resume", previousSessionFile: "/path/to/A" }, ctxB)
+			// Switch to Session B
+			const ctxB = {
+				cwd: tempRoot,
+				sessionManager: {
+					getArtifactsDir: () => sessionBDir,
+					getSessionId: () => "session-B",
+				},
+			};
+			await sessionSwitchHandlers[0](
+				{ type: "session_switch", reason: "resume", previousSessionFile: "/path/to/A" },
+				ctxB,
+			);
 
-      // Outgoing Session A kernel MUST be disposed
-      expect(kernelA.wasDisposed()).toBe(true)
+			// Outgoing Session A kernel MUST be disposed
+			expect(kernelA.wasDisposed()).toBe(true);
 
-      // Incoming Session B kernel should be revived with Session B's variables
-      expect(kernelB.wasStarted()).toBe(true)
+			// Incoming Session B kernel should be revived with Session B's variables
+			expect(kernelB.wasStarted()).toBe(true);
 
-      const revivalMessages = registered.sentMessages.filter(m => {
-        const payload = m.payload
-        if (payload && typeof payload === "object" && "customType" in payload) {
-          return payload.customType === "rlm-revival"
-        }
-        return false
-      })
+			const revivalMessages = registered.sentMessages.filter(m => {
+				const payload = m.payload;
+				if (payload && typeof payload === "object" && "customType" in payload) {
+					return payload.customType === "rlm-revival";
+				}
+				return false;
+			});
 
-      expect(revivalMessages.length).toBe(2)
-      expect(JSON.stringify(revivalMessages[1].payload)).toContain("var_from_session_B")
-    } finally {
-      fs.rmSync(tempRoot, { recursive: true, force: true })
-    }
-  })
-})
+			expect(revivalMessages.length).toBe(2);
+			expect(JSON.stringify(revivalMessages[1].payload)).toContain("var_from_session_B");
+		} finally {
+			fs.rmSync(tempRoot, { recursive: true, force: true });
+		}
+	});
+});
