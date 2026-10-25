@@ -193,10 +193,15 @@ export async function loadPuppeteerInWorker(safeDir: string): Promise<typeof Pup
 	return loaded;
 }
 
+/** How long failure-path diagnostics wait for a browser's `/json/version` before giving up on naming its endpoint. */
+const DEBUGGER_ENDPOINT_PROBE_TIMEOUT_MS = 2_000;
+
 /** The debugger websocket a `browserURL` advertises, or undefined when it cannot be read (failure-path diagnostics only). */
 async function advertisedDebuggerEndpoint(browserURL: string): Promise<string | undefined> {
 	try {
-		const response = await fetch(new URL("/json/version", browserURL), { signal: AbortSignal.timeout(2_000) });
+		const response = await fetch(new URL("/json/version", browserURL), {
+			signal: AbortSignal.timeout(DEBUGGER_ENDPOINT_PROBE_TIMEOUT_MS),
+		});
 		const body: unknown = await response.json();
 		return isRecord(body) && typeof body.webSocketDebuggerUrl === "string" ? body.webSocketDebuggerUrl : undefined;
 	} catch {
