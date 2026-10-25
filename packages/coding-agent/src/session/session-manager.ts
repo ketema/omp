@@ -726,6 +726,7 @@ export type ReadonlySessionManager = Pick<
 	| "getSessionFile"
 	| "getSessionName"
 	| "getArtifactsDir"
+	| "resolveOwnArtifactsDir"
 	| "getArtifactManager"
 	| "allocateArtifactPath"
 	| "saveArtifact"
@@ -3167,6 +3168,22 @@ export class SessionManager {
 	getArtifactsDir(): string | null {
 		if (this.#adoptedArtifactManager) return this.#adoptedArtifactManager.dir;
 		return artifactsDirectoryFor(this.#sessionFile);
+	}
+
+	/**
+	 * The artifact directory owned by the current session file, resolved only
+	 * after any background artifact copy into that same session file (fork,
+	 * branch, move-off) has settled. Unlike {@link getArtifactsDir}, an adopted
+	 * artifact manager is ignored: a parent's directory is never this session's
+	 * own. Resolves `null` when the session has no session file.
+	 */
+	async resolveOwnArtifactsDir(): Promise<string | null> {
+		const sessionFile = this.#sessionFile;
+		const ownDir = artifactsDirectoryFor(sessionFile);
+		if (ownDir === null) return null;
+		const pendingCopy = this.#pendingArtifactCopy;
+		if (pendingCopy !== undefined && pendingCopy.sessionFile === sessionFile) await pendingCopy.done;
+		return ownDir;
 	}
 
 	adoptArtifactManager(manager: ArtifactManager): void {
