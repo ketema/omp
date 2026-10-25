@@ -377,6 +377,7 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			const branchDirB = join(tempRoot, "branch-B");
 			fs.mkdirSync(branchDirA, { recursive: true });
 			fs.mkdirSync(branchDirB, { recursive: true });
+			fs.writeFileSync(join(branchDirA, "kernel-state.dill"), "SNAPSHOT_A");
 
 			const kernelA = makeKernelPort({ restoredNames: ["branch_a_var"] });
 			const kernelB = makeKernelPort({ restoredNames: ["branch_b_var"] });
