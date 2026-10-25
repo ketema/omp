@@ -706,11 +706,14 @@ def _bootstrap() -> None:
     # Pre-load base interactive and standard library primitives into sys.modules (POST-BOOTSTRAP-PRIMITIVES-1)
     import json  # noqa: F401
     import pathlib  # noqa: F401
+    # POST-BOOTSTRAP-IPYTHON-1: the promised runtime is an IPython kernel; never report readiness without it.
     try:
         import IPython  # noqa: F401
         import IPython.display  # noqa: F401
-    except ImportError:
-        pass
+    except ImportError as exc:
+        raise ImportError(
+            "IPython is not installed in this IPython kernel (ipykernel); install ipykernel into the kernel interpreter"
+        ) from exc
 
     # Pre-freeze the snapshot compression codec (FORBIDDEN-4).
     _freeze_snapshot_codec()
