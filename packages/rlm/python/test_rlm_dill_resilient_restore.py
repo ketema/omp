@@ -50,6 +50,18 @@ from rlm_kernel_runner import CorruptSnapshotError
 _MISSING = object()
 
 
+def _a_var_visible_during_restore():
+    """Unpickled by the runner while it restores: reports whether `a_var` is already bound in user_ns (INV-RESTORE-PURITY-1)."""
+    return 1 if "a_var" in rlm_kernel_runner._get_ns() else 0
+
+
+class _NamespaceProbe:
+    """A variable whose reconstruction observes the live namespace at the moment the runner rebuilds it."""
+
+    def __reduce__(self):
+        return (_a_var_visible_during_restore, ())
+
+
 class TestRlmDillResilientRestore(unittest.TestCase):
     """Adversarial RED-phase tests targeting SLICE-1 resilient restore obligations."""
 
@@ -195,6 +207,126 @@ class TestRlmDillResilientRestore(unittest.TestCase):
             "POST-BOOTSTRAP-RLM-REQUIRED-1 violation: the readiness failure does not name rlm-runtime\n"
             f"ACTUAL message: {str(raised)[:200]}"
         )
+
+    def test_post_name_filter_1_ip3_snapshot_write_excludes_every_shell_builtin_end_to_end(self):
+        """
+        FOUR-CRITERIA TEST VALIDITY GATE:
+          [x] C1 VALID: cites POST-NAME-FILTER-1 and IP-3 (contracts/rlm_dill_resilient_restore.contract.py)
+          [x] C2 VALUABLE: a _snapshot_write that does not apply the name filter writes the builtins and fails this test
+          [x] C3 NON-DUPLICATIVE: test_post_name_filter_1_excludes_shell_open_builtin calls _snapshot_names() directly; this one
+              observes the written payload (the IP-3 handoff names -> write)
+          [x] C4 NOT FUTURE-EDIT: bounds the write path the runner performs today
+
+        CONTRACT TRACEABILITY:
+        - Enforces: POST-NAME-FILTER-1, IP-3 (the contract's own validator judges the written names)
+        - Category: integration (handoff)
+        - Risk tier: High - a serialized IPython wrapper breaks every later restore
+        """
+        for name in EXCLUDED_BUILTIN_NAMES:
+            self.ns[name] = object()
+        self.ns["valid_user_var"] = 42
+
+        rlm_kernel_runner._snapshot_write(self.snapshot_path, self.manifest_path, 100 * 1024 * 1024, force_codec="raw")
+        with open(self.snapshot_path, "rb") as fh:
+            written = set(dill.load(fh))
+
+        try:
+            _contract_mod.validate_names_for_snapshot(written)
+        except _contract_mod.BuiltinLeakageError as exc:
+            raise AssertionError(
+                "IP-3 / POST-NAME-FILTER-1 violation: the written snapshot carries shell builtins\n"
+                f"EXPECTED: none of {sorted(EXCLUDED_BUILTIN_NAMES)} in the payload\n"
+                f"ACTUAL: {exc}\n"
+                "GUIDANCE: names handed to the snapshot write exclude interactive shell wrappers"
+            ) from exc
+        assert written == {"valid_user_var"}, (
+            "IP-3 violation: the payload is not exactly the user's variables\n"
+            f"EXPECTED: {{'valid_user_var'}}\nACTUAL: {sorted(written)}"
+        )
+
+    def test_post_bootstrap_primitives_1_ip4_bootstrap_preloads_the_base_modules(self):
+        """
+        FOUR-CRITERIA TEST VALIDITY GATE:
+          [x] C1 VALID: cites POST-BOOTSTRAP-PRIMITIVES-1 and IP-4
+          [x] C2 VALUABLE: a _bootstrap that preloads nothing leaves json/pathlib out of sys.modules and fails this test
+          [x] C3 NON-DUPLICATIVE: no other test observes the preloaded primitives
+          [x] C4 NOT FUTURE-EDIT: bounds what _bootstrap does today (the contract's BASE_BOOTSTRAP_MODULES)
+
+        CONTRACT TRACEABILITY:
+        - Enforces: POST-BOOTSTRAP-PRIMITIVES-1, IP-4 (the contract's validate_bootstrap_environment judges sys.modules)
+        - Risk tier: Medium
+        """
+        saved = {name: sys.modules.pop(name) for name in ("json", "pathlib") if name in sys.modules}
+        try:
+            rlm_kernel_runner._bootstrap()
+            try:
+                _contract_mod.validate_bootstrap_environment(sys.modules)
+            except _contract_mod.ResilientRestoreContractError as exc:
+                raise AssertionError(
+                    "POST-BOOTSTRAP-PRIMITIVES-1 violation: bootstrap did not load the base primitives\n"
+                    f"EXPECTED: {sorted(BASE_BOOTSTRAP_MODULES)} present after _bootstrap()\n"
+                    f"ACTUAL: {exc}\n"
+                    "GUIDANCE: every base module the contract names is loaded before any cell or restore runs"
+                ) from exc
+        finally:
+            for name in saved:
+                sys.modules.pop(name, None)
+            sys.modules.update(saved)
+
+    def test_inv_restore_purity_1_user_ns_is_not_mutated_while_variables_are_still_being_rebuilt(self):
+        """
+        FOUR-CRITERIA TEST VALIDITY GATE:
+          [x] C1 VALID: cites INV-RESTORE-PURITY-1 and POST-RESTORE-SKIP-1
+          [x] C2 VALUABLE: a restore that binds each variable immediately makes the probe see a_var and fails this test
+          [x] C3 NON-DUPLICATIVE: the skip test only observes the END state, which an unstaged restore also satisfies
+          [x] C4 NOT FUTURE-EDIT: bounds the staging the runner performs today
+
+        CONTRACT TRACEABILITY:
+        - Enforces: INV-RESTORE-PURITY-1 (observed during restore), POST-RESTORE-SKIP-1 (the contract's validate_restore_outcome
+          accounts for every container key)
+        - Risk tier: High - a half-restored namespace after a later failure is silent corruption
+        """
+        container = {"a_var": dill.dumps(1), "b_var": dill.dumps(_NamespaceProbe())}
+        with open(self.snapshot_path, "wb") as fh:
+            dill.dump(container, fh)
+
+        result = rlm_kernel_runner._snapshot_restore(self.snapshot_path, self.manifest_path)
+
+        assert self.ns.get("a_var") == 1 and "b_var" in self.ns, "restore did not bind both variables"
+        assert self.ns["b_var"] == 0, (
+            "INV-RESTORE-PURITY-1 violation: user_ns already held a_var while b_var was still being rebuilt\n"
+            "EXPECTED: user_ns mutated only after every container variable has been evaluated and staged\n"
+            f"ACTUAL: b_var observed a_var bound during restore (probe={self.ns['b_var']})\n"
+            "GUIDANCE: the namespace is untouched until the whole container has been rebuilt"
+        )
+        outcome = RestoreOutcome(
+            restored_names=tuple(result["restoredNames"]),
+            skipped=tuple(
+                SkippedVariableRecord(name=s["name"], reason=s["reason"], error_type=s["error_type"])
+                for s in result["skipped"]
+            ),
+        )
+        assert validate_restore_outcome(outcome, total_container_keys=2) is True
+
+    def test_contract_alignment_runner_constants_and_validator_falsifiability(self):
+        """
+        CL11-F bridge (tests are the only link between contract and implementation): the runner redeclares its excluded
+        names independently and must equal the contract's set; the contract's accounting predicate must reject an
+        outcome that loses a variable (so the predicate used above is itself falsifiable).
+
+        CONTRACT TRACEABILITY:
+        - Enforces: POST-NAME-FILTER-1 (value alignment), POST-RESTORE-SKIP-1 (predicate falsifiability)
+        - Category: contract/implementation alignment, supporting (not RED)
+        """
+        assert rlm_kernel_runner._EXCLUDED_SNAPSHOT_NAMES == EXCLUDED_BUILTIN_NAMES, (
+            "POST-NAME-FILTER-1 violation: the runner's excluded names diverge from the contract\n"
+            f"EXPECTED: {sorted(EXCLUDED_BUILTIN_NAMES)}\nACTUAL: {sorted(rlm_kernel_runner._EXCLUDED_SNAPSHOT_NAMES)}"
+        )
+        try:
+            validate_restore_outcome(RestoreOutcome(restored_names=(), skipped=()), total_container_keys=2)
+        except _contract_mod.NamespacePurityViolationError:
+            return
+        raise AssertionError("POST-RESTORE-SKIP-1 violation: the contract predicate accepted an outcome that lost two variables")
 
 
 if __name__ == "__main__":

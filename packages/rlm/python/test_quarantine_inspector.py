@@ -209,6 +209,48 @@ class TestQuarantineInspector(unittest.TestCase):
         assert "healthy_var" in var_map, "healthy_var sibling must be inspected and preserved"
         assert var_map["healthy_var"].status == "recoverable", "healthy_var sibling must be recoverable"
 
+    def test_contract_alignment_quarantine_constants_and_report_accounting(self):
+        """
+        CL11-F bridge for the quarantine contract: the inspector redeclares its constants independently and its report
+        must satisfy the contract's own accounting predicate (POST-QUARANTINE-INSPECT-1: total == recoverable +
+        unpicklable == len(variables)). The predicate is also shown to reject a report that loses a variable.
+
+        CONTRACT TRACEABILITY:
+        - Enforces: POST-QUARANTINE-INSPECT-1 (accounting), IP-6 (report handed to the caller)
+        - Category: contract/implementation alignment, supporting (not RED)
+        """
+        assert quarantine_inspector.DEFAULT_QUARANTINE_DIRNAME == DEFAULT_QUARANTINE_DIRNAME, (
+            "POST-QUARANTINE-INSPECT-1 violation: the inspector's default quarantine directory diverges from the contract"
+        )
+        assert quarantine_inspector.REPORT_FILENAME == REPORT_FILENAME, (
+            "POST-QUARANTINE-INSPECT-1 violation: the inspector's report filename diverges from the contract"
+        )
+        container = {"ok": dill.dumps(1), "bad": b"CORRUPTED_PICKLE_BLOB_NOT_DILL"}
+        with lzma.open(self.source_lzma, "wb") as f:
+            dill.dump(container, f)
+        report = quarantine_inspector.quarantine_and_inspect(self.source_lzma, self.quarantine_dir)
+
+        contract_report = QuarantineReport(
+            source_path=report.source_path,
+            quarantine_path=report.quarantine_path,
+            total_variables=report.total_variables,
+            recoverable_count=report.recoverable_count,
+            unpicklable_count=report.unpicklable_count,
+            variables=tuple(
+                VariableStatusRecord(name=v.name, status=v.status, type_name=v.type_name, error=v.error)
+                for v in report.variables
+            ),
+        )
+        assert validate_quarantine_report(contract_report) is True
+        lossy = QuarantineReport(
+            source_path="s", quarantine_path="q", total_variables=2, recoverable_count=1, unpicklable_count=0, variables=()
+        )
+        try:
+            validate_quarantine_report(lossy)
+        except _contract_mod.QuarantineContractError:
+            return
+        raise AssertionError("POST-QUARANTINE-INSPECT-1 violation: the contract predicate accepted a report that lost a variable")
+
 
 if __name__ == "__main__":
     unittest.main()
