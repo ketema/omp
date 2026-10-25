@@ -417,3 +417,88 @@ describe("POST-SESSION-OWNED-DIR-1: exact session-owned directory resolution", (
 		}
 	});
 });
+
+describe("POST-SESSION-READINESS-1: pending artifact copy readiness barrier", () => {
+	test("extension awaits the incoming artifact manager's public listFiles() before probing snapshot existence", async () => {
+		const root = scratch("rlm-readiness-wait-");
+		try {
+			const sessionsDir = join(root, "sessions");
+			const dirB = join(sessionsDir, "B");
+			fs.mkdirSync(sessionsDir, { recursive: true });
+
+			// Simulate a background artifact copy: the file does NOT exist when session_start fires,
+			// but lands when listFiles() resolves.
+			let listFilesCalled = false;
+			const fakeArtifactManager: ArtifactManagerShape = {
+				dir: dirB,
+				async listFiles() {
+					listFilesCalled = true;
+					await new Promise(r => setTimeout(r, 20));
+					fs.mkdirSync(dirB, { recursive: true });
+					fs.writeFileSync(join(dirB, "kernel-state.dill"), "COPIED_IN_BACKGROUND");
+					return ["kernel-state.dill"];
+				},
+			};
+
+			const kernel = makePort({ names: ["copied_var"] });
+			const { api, registry } = makeRegistry();
+			await createRlmExtension({ createKernel: () => kernel.port })(api as never);
+
+			const sessionManager: SessionManagerShape = {
+				getSessionFile: () => join(sessionsDir, "B.jsonl"),
+				getArtifactsDir: () => dirB,
+				getSessionId: () => "B",
+				getArtifactManager: () => fakeArtifactManager,
+			};
+			const ctx = hostContext(root, sessionManager);
+			await emit(registry, "session_start", {}, ctx);
+
+			expect(listFilesCalled).toBe(true);
+			const revivals = registry.messages.filter(m => m.customType === "rlm-revival");
+			expect(revivals.length).toBe(1);
+			expect(revivals[0].content ?? "").toContain("copied_var");
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("negative: an adopted artifact manager whose dir is the parent's is NOT awaited for a child session (PARKED)", async () => {
+		const root = scratch("rlm-readiness-adopted-");
+		try {
+			const parentDir = join(root, "parent-root");
+			const childDir = join(root, "sessions", "child");
+			fs.mkdirSync(parentDir, { recursive: true });
+			fs.mkdirSync(childDir, { recursive: true });
+			fs.writeFileSync(join(childDir, "kernel-state.dill"), "CHILD_STATE");
+
+			let parentListFilesCalled = false;
+			const parentArtifactManager: ArtifactManagerShape = {
+				dir: parentDir, // does NOT match childDir
+				async listFiles() {
+					parentListFilesCalled = true;
+					return [];
+				},
+			};
+
+			const kernel = makePort({ names: ["child_var"] });
+			const { api, registry } = makeRegistry();
+			await createRlmExtension({ createKernel: () => kernel.port })(api as never);
+
+			const childSessionManager: SessionManagerShape = {
+				getSessionFile: () => join(root, "sessions", "child.jsonl"),
+				getArtifactsDir: () => parentDir,
+				getSessionId: () => "child",
+				getArtifactManager: () => parentArtifactManager,
+			};
+			const ctx = hostContext(root, childSessionManager);
+			await emit(registry, "session_start", {}, ctx);
+
+			// Since parentArtifactManager.dir !== childDir, the extension must NOT wait on parent's readiness
+			expect(parentListFilesCalled).toBe(false);
+			const revivals = registry.messages.filter(m => m.customType === "rlm-revival");
+			expect(revivals.length).toBe(1);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
