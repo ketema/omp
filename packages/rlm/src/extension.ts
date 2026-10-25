@@ -425,7 +425,20 @@ export function createRlmExtension(
 			}
 		});
 
-		// Handle session start and session switches (for /new, /fork, /resume)
+		// Pre-transition hook: flush snapshot BEFORE branch or switch copies artifacts (Comment 4369713144)
+		const handlePreTransitionFlush = async () => {
+			if (kernel !== null) {
+				try {
+					await (kernel as any).manager?.runSnapshot?.();
+				} catch {
+					// Non-fatal pre-transition flush attempt
+				}
+			}
+		};
+		api.on("session_before_switch", handlePreTransitionFlush);
+		api.on("session_before_branch", handlePreTransitionFlush);
+
+		// Handle session start, session switches, and branches (for /new, /fork, /resume, /branch)
 		const handleSessionInit = async (event: unknown, ctx?: unknown) => {
 			// Save and dispose outgoing kernel if present to prevent cross-session leakage (Comment 4366356325)
 			if (kernel !== null) {
@@ -480,8 +493,20 @@ export function createRlmExtension(
 			const managerArtifactsDir = sessionCtx?.sessionManager?.getArtifactsDir?.();
 			const sessionId = sessionCtx?.sessionManager?.getSessionId?.() ?? sessionEvent?.sessionId;
 
+			// Comment 4369713118: If managerArtifactsDir is an adopted parent manager root,
+			// independent child sessions with their own sessionId must partition under their own id.
 			if (typeof managerArtifactsDir === "string" && managerArtifactsDir.trim() !== "") {
-				artifactsDir = managerArtifactsDir;
+				if (
+					typeof sessionId === "string" &&
+					sessionId.trim() !== "" &&
+					!managerArtifactsDir.includes(sessionId.trim())
+				) {
+					const childDir = join(managerArtifactsDir, sessionId.trim());
+					fs.mkdirSync(childDir, { recursive: true });
+					artifactsDir = childDir;
+				} else {
+					artifactsDir = managerArtifactsDir;
+				}
 			} else if (typeof sessionEvent?.sessionDir === "string" && sessionEvent.sessionDir.trim() !== "") {
 				artifactsDir = sessionEvent.sessionDir;
 			} else if (typeof sessionId === "string" && sessionId.trim() !== "") {
@@ -537,13 +562,14 @@ export function createRlmExtension(
 						);
 					}
 				} catch {
-					// Non-fatal on session_start / session_switch: lazy start will retry on first explicit tool invocation
+					// Non-fatal on session_start / session_switch / session_branch: lazy start will retry on first explicit tool invocation
 				}
 			}
 		};
 
 		api.on("session_start", handleSessionInit);
 		api.on("session_switch", handleSessionInit);
+		api.on("session_branch", handleSessionInit);
 
 		// on('session_shutdown'): dispose kernel
 		api.on("session_shutdown", async () => {

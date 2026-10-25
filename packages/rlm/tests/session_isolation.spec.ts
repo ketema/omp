@@ -520,8 +520,7 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			expect(warnings.length).toBeGreaterThan(0);
 			expect(
 				warnings.some(
-					w =>
-						isMessagePayload(w.payload) && (w.payload.content ?? "").includes("disk full on snapshot save"),
+					w => isMessagePayload(w.payload) && (w.payload.content ?? "").includes("disk full on snapshot save"),
 				),
 			).toBe(true);
 		} finally {
@@ -650,10 +649,7 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			fs.mkdirSync(sessionADir, { recursive: true });
 			fs.mkdirSync(sessionBDir, { recursive: true });
 
-			const existingPython = join(
-				process.env.HOME ?? "/Users/ketema",
-				".omp/agent/kernel-venv/bin/python",
-			);
+			const existingPython = join(process.env.HOME ?? "/Users/ketema", ".omp/agent/kernel-venv/bin/python");
 			const configuredPython = fs.existsSync(existingPython) ? existingPython : undefined;
 
 			const flags: Record<string, string> = {

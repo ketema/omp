@@ -14,7 +14,6 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
-import lzma
 import os
 import shutil
 import time
@@ -59,12 +58,20 @@ class QuarantineReport:
 
 
 def _detect_and_load(path: str) -> dict[str, Any]:
-    """Detect compression (LZMA, Gzip, or Raw) and load the snapshot payload dict (F4)."""
+    """Detect compression (LZMA, Gzip, or Raw) and load the snapshot payload dict (F4).
+
+    Follows rlm_kernel_runner lazy codec import policy: lzma is imported on demand
+    so environments lacking _lzma can still recover gzip and raw snapshots.
+    """
     with open(path, "rb") as fh:
         header = fh.read(6)
 
     # Check for LZMA magic bytes 0xfd 7zXZ \x00
     if len(header) >= 6 and header[:6] == bytes([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]):
+        try:
+            import lzma
+        except ImportError as exc:
+            raise RuntimeError(f"LZMA decompression unsupported on this Python build (missing _lzma): {exc}") from exc
         with lzma.open(path, "rb") as comp_fh:
             payload = dill.load(comp_fh)
     # Check for Gzip magic bytes 0x1f 0x8b (F4 fix)
