@@ -19,11 +19,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { join } from "node:path";
 
-import {
-	createRlmExtension,
-	type RlmExtensionKernelPort,
-	type RlmKernelConfig,
-} from "../src/extension.ts";
+import { createRlmExtension, type RlmExtensionKernelPort, type RlmKernelConfig } from "../src/extension.ts";
 import { KernelManager } from "../src/kernel.ts";
 import { createTransport, type RlmTransportProcess } from "../src/transport.ts";
 

@@ -33,11 +33,12 @@ type MutableKernelConfig = {
 	-readonly [K in keyof RlmKernelConfig]: RlmKernelConfig[K];
 };
 
-/** The kernel port exposed to the extension, adding compaction lifecycle. */
+/** The kernel port exposed to the extension, adding compaction and teardown lifecycle. */
 export interface RlmExtensionKernelPort extends RlmToolKernelPort {
 	onCompactionComplete(): Promise<void>;
 	compactionNotice(): string | null;
 	restoredSkipped?(): ReadonlyArray<{ readonly name: string; readonly reason: string }>;
+	takeTeardownNotice?(): string | null;
 }
 
 // =============================================================================
@@ -114,6 +115,10 @@ class KernelManagerAdapter implements RlmExtensionKernelPort {
 
 	async dispose(): Promise<void> {
 		await this.manager.dispose({ snapshot: true });
+	}
+
+	takeTeardownNotice(): string | null {
+		return this.manager.takeTeardownNotice();
 	}
 
 	restoredNames(): readonly string[] {
@@ -426,6 +431,21 @@ export function createRlmExtension(
 			if (kernel !== null) {
 				try {
 					await kernel.dispose();
+					// Check for observable teardown failure notices from KernelManager
+					const teardownNotice = kernel.takeTeardownNotice?.();
+					if (teardownNotice) {
+						api.sendMessage(
+							{
+								role: "custom",
+								customType: "rlm-warning",
+								content: `Warning: ${teardownNotice}`,
+								display: true,
+								attribution: "agent",
+								timestamp: Date.now(),
+							},
+							{ deliverAs: "nextTurn" },
+						);
+					}
 				} catch (err) {
 					// ERRORS-SESSION-SWITCH-DISPOSE-1: Surface observable diagnostic on flush failure
 					api.sendMessage(
@@ -468,10 +488,10 @@ export function createRlmExtension(
 				artifactsDir = join(effectiveCwd, ".omp", "artifacts", sessionId.trim());
 			} else {
 				// POST-SESSION-FALLBACK-ISOLATION-1: REQ-003 line 143
-				// Missing session identifier falls back to a dedicated isolated timestamped directory, NEVER bare root
-				const fallbackTimestamp = Date.now();
-				const fallbackDir = join(effectiveCwd, ".omp", "artifacts", `isolated-${fallbackTimestamp}`);
-				fs.mkdirSync(fallbackDir, { recursive: true });
+				// Missing session identifier falls back to a dedicated atomically unique directory, NEVER bare root
+				const artifactsRoot = join(effectiveCwd, ".omp", "artifacts");
+				fs.mkdirSync(artifactsRoot, { recursive: true });
+				const fallbackDir = fs.mkdtempSync(join(artifactsRoot, `isolated-${Date.now()}-`));
 				artifactsDir = fallbackDir;
 
 				api.sendMessage(
@@ -481,7 +501,7 @@ export function createRlmExtension(
 						content: `Warning: Session ID missing or invalid. Fallback isolated directory assigned: ${artifactsDir}`,
 						display: false,
 						attribution: "agent",
-						timestamp: fallbackTimestamp,
+						timestamp: Date.now(),
 					},
 					{ deliverAs: "nextTurn" },
 				);
