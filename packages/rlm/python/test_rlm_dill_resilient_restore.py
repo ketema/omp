@@ -47,6 +47,9 @@ import rlm_kernel_runner
 from rlm_kernel_runner import CorruptSnapshotError
 
 
+_MISSING = object()
+
+
 class TestRlmDillResilientRestore(unittest.TestCase):
     """Adversarial RED-phase tests targeting SLICE-1 resilient restore obligations."""
 
@@ -165,6 +168,32 @@ class TestRlmDillResilientRestore(unittest.TestCase):
             "POST-RESTORE-TELEMETRY-1 violation: 'broken_var' not reported in skipped telemetry\n"
             f"ACTUAL skipped: {result['skipped']}\n"
             "GUIDANCE: Every skipped variable must be reported with its name and failure diagnostic"
+        )
+
+    def test_post_bootstrap_rlm_required_1_missing_runtime_fails_fast(self):
+        """POST-BOOTSTRAP-RLM-REQUIRED-1: bootstrap must not report readiness when the rlm runtime cannot be imported."""
+        saved = sys.modules.get("rlm", _MISSING)
+        sys.modules["rlm"] = None  # makes `import rlm` raise ImportError
+        try:
+            raised = None
+            try:
+                rlm_kernel_runner._bootstrap()
+            except ImportError as exc:
+                raised = exc
+        finally:
+            if saved is _MISSING:
+                sys.modules.pop("rlm", None)
+            else:
+                sys.modules["rlm"] = saved
+        assert raised is not None, (
+            "POST-BOOTSTRAP-RLM-REQUIRED-1 violation: _bootstrap reported success although the rlm runtime is not importable\n"
+            "Contract: CONTRACT_RLM_DILL_RESILIENT_RESTORE['POST-BOOTSTRAP-RLM-REQUIRED-1']\n"
+            "ACTUAL: no exception raised\n"
+            "GUIDANCE: bootstrap must fail with an ImportError that names rlm-runtime"
+        )
+        assert "rlm-runtime" in str(raised), (
+            "POST-BOOTSTRAP-RLM-REQUIRED-1 violation: the readiness failure does not name rlm-runtime\n"
+            f"ACTUAL message: {str(raised)[:200]}"
         )
 
 

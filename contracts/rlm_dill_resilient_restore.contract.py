@@ -165,6 +165,12 @@ CONTRACT_RLM_DILL_RESILIENT_RESTORE: Final[dict[str, Clause]] = {
         description="KernelRunner._bootstrap pre-loads standard interactive and standard library primitives into sys.modules",
         requirement_ids=("REQ-RLM-REHYDRATE-008",),
     ),
+    "POST-BOOTSTRAP-RLM-REQUIRED-1": Clause(
+        id="POST-BOOTSTRAP-RLM-REQUIRED-1",
+        method="test",
+        description="KernelRunner._bootstrap fails fast when the rlm runtime package cannot be imported: it raises an ImportError naming 'rlm-runtime' (never reports readiness without it). rlm is a required member of BASE_BOOTSTRAP_MODULES, so an explicit interpreter override that lacks the runtime is a readiness failure, not a silently degraded kernel",
+        requirement_ids=("REQ-RLM-REHYDRATE-008",),
+    ),
     "INV-RESTORE-PURITY-1": Clause(
         id="INV-RESTORE-PURITY-1",
         method="test",
