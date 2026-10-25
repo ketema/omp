@@ -70,6 +70,9 @@ function makeKernelPort(overrides: { restoredNames?: string[]; compactionNotice?
     restoredNames() {
       return overrides.restoredNames ?? []
     },
+    async flushSnapshot() {
+      calls.push({ kind: "flushSnapshot", detail: "" })
+    },
     async onCompactionComplete() {
       calls.push({ kind: "onCompactionComplete", detail: "" })
     },

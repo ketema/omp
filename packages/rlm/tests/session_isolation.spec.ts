@@ -79,6 +79,9 @@ function makeKernelPort(
 		takeTeardownNotice() {
 			return overrides.teardownNotice ?? null;
 		},
+		async flushSnapshot() {
+			calls.push({ kind: "flushSnapshot", detail: "" });
+		},
 		async onCompactionComplete() {
 			calls.push({ kind: "onCompactionComplete", detail: "" });
 		},

@@ -36,6 +36,7 @@ type MutableKernelConfig = {
 /** The kernel port exposed to the extension, adding compaction and teardown lifecycle. */
 export interface RlmExtensionKernelPort extends RlmToolKernelPort {
 	onCompactionComplete(): Promise<void>;
+	flushSnapshot(): Promise<void>;
 	compactionNotice(): string | null;
 	restoredSkipped?(): ReadonlyArray<{ readonly name: string; readonly reason: string }>;
 	takeTeardownNotice?(): string | null;
@@ -115,6 +116,10 @@ class KernelManagerAdapter implements RlmExtensionKernelPort {
 
 	async dispose(): Promise<void> {
 		await this.manager.dispose({ snapshot: true });
+	}
+
+	async flushSnapshot(): Promise<void> {
+		await this.manager.flushSnapshot();
 	}
 
 	takeTeardownNotice(): string | null {
@@ -425,14 +430,24 @@ export function createRlmExtension(
 			}
 		});
 
-		// Pre-transition hook: flush snapshot BEFORE branch or switch copies artifacts (Comment 4369713144)
+		// POST-SESSION-PREFLUSH-1: flush BEFORE the host copies artifacts. Never disposes (these hooks are
+		// cancellable), never cancels the transition; a failure is surfaced, not swallowed.
 		const handlePreTransitionFlush = async () => {
-			if (kernel !== null) {
-				try {
-					await (kernel as any).manager?.runSnapshot?.();
-				} catch {
-					// Non-fatal pre-transition flush attempt
-				}
+			if (kernel === null) return;
+			try {
+				await kernel.flushSnapshot();
+			} catch (err) {
+				api.sendMessage(
+					{
+						role: "custom",
+						customType: "rlm-warning",
+						content: `Warning: Pre-transition snapshot flush failed; a fork or branch may copy stale kernel state: ${err instanceof Error ? err.message : String(err)}`,
+						display: true,
+						attribution: "agent",
+						timestamp: Date.now(),
+					},
+					{ deliverAs: "nextTurn" },
+				);
 			}
 		};
 		api.on("session_before_switch", handlePreTransitionFlush);

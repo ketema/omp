@@ -253,3 +253,97 @@ describe("POST-SESSION-PREFLUSH-1: typed pre-transition flush boundary", () => {
 		}
 	});
 });
+
+describe("POST-SESSION-PREFLUSH-1: real KernelManager / runner flush ordering and veto safety", () => {
+	test("real KernelManager.flushSnapshot commits live execution state before the host copies artifacts on fork", async () => {
+		const root = scratch("rlm-real-flush-order-");
+		let shutdown: (() => Promise<unknown>) | null = null;
+		try {
+			const existingPython = join(process.env.HOME ?? "/Users/ketema", ".omp/agent/kernel-venv/bin/python");
+			const flags: Record<string, string> = { OMP_RLM_AGENT_DIR: join(root, "agent") };
+			if (fs.existsSync(existingPython)) flags.RLM_KERNEL_PYTHON = existingPython;
+
+			const { api, registry } = makeRegistry(flags);
+			await createRlmExtension()(api as never);
+			shutdown = async () => {
+				await emit(
+					registry,
+					"session_shutdown",
+					{},
+					hostContext(root, ownedSession(join(root, "shutdown.jsonl"), "s")),
+				);
+			};
+
+			const sessionsDir = join(root, "sessions");
+			const dirA = join(sessionsDir, "A");
+			const dirB = join(sessionsDir, "B");
+			fs.mkdirSync(dirA, { recursive: true });
+			fs.mkdirSync(dirB, { recursive: true });
+			const ctxA = hostContext(root, ownedSession(join(sessionsDir, "A.jsonl"), "A"));
+			const ctxB = hostContext(root, ownedSession(join(sessionsDir, "B.jsonl"), "B"));
+
+			await emit(registry, "session_start", {}, ctxA);
+			const tool = registry.tools[0];
+			// Execute cell; within SNAPSHOT_DEBOUNCE_MS no snapshot has been written yet.
+			const runRes = await tool.execute("c1", { code: "pre_fork_answer = 6 * 7" }, undefined, undefined, ctxA);
+			expect(runRes.isError ?? false).toBe(false);
+
+			// Before-branch flushes immediately via KernelManager.flushSnapshot() before copy.
+			await emit(registry, "session_before_branch", { reason: "fork", entryId: "e1" }, ctxA);
+			expect(fs.existsSync(join(dirA, "kernel-state.dill"))).toBe(true);
+
+			// Host copies session A's directory into session B.
+			fs.cpSync(dirA, dirB, { recursive: true });
+			await emit(registry, "session_branch", { reason: "fork", previousSessionFile: "A.jsonl" }, ctxB);
+
+			// Session B restored from the copy: variable must be live.
+			const probe = await tool.execute("c2", { code: "print(pre_fork_answer)" }, undefined, undefined, ctxB);
+			expect(probe.isError ?? false).toBe(false);
+			expect(probe.content[0].text).toContain("42");
+		} finally {
+			if (shutdown) await shutdown();
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 180_000);
+
+	test("vetoed transition leaves real outgoing kernel usable with preserved state", async () => {
+		const root = scratch("rlm-real-veto-");
+		let shutdown: (() => Promise<unknown>) | null = null;
+		try {
+			const existingPython = join(process.env.HOME ?? "/Users/ketema", ".omp/agent/kernel-venv/bin/python");
+			const flags: Record<string, string> = { OMP_RLM_AGENT_DIR: join(root, "agent") };
+			if (fs.existsSync(existingPython)) flags.RLM_KERNEL_PYTHON = existingPython;
+
+			const { api, registry } = makeRegistry(flags);
+			await createRlmExtension()(api as never);
+			shutdown = async () => {
+				await emit(
+					registry,
+					"session_shutdown",
+					{},
+					hostContext(root, ownedSession(join(root, "shutdown.jsonl"), "s")),
+				);
+			};
+
+			const sessionsDir = join(root, "sessions");
+			const dirA = join(sessionsDir, "A");
+			fs.mkdirSync(dirA, { recursive: true });
+			const ctxA = hostContext(root, ownedSession(join(sessionsDir, "A.jsonl"), "A"));
+
+			await emit(registry, "session_start", {}, ctxA);
+			const tool = registry.tools[0];
+			await tool.execute("c1", { code: "state_token = 'veto_survivor'" }, undefined, undefined, ctxA);
+
+			// A before-hook fires, transition is vetoed (e.g. user aborts or another hook cancels): no after-event.
+			await emit(registry, "session_before_switch", { reason: "fork" }, ctxA);
+
+			// The outgoing session remains in turn: subsequent execution still has state_token.
+			const probe = await tool.execute("c2", { code: "print(state_token)" }, undefined, undefined, ctxA);
+			expect(probe.isError ?? false).toBe(false);
+			expect(probe.content[0].text).toContain("veto_survivor");
+		} finally {
+			if (shutdown) await shutdown();
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 180_000);
+});

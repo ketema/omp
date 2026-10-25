@@ -768,6 +768,23 @@ export class KernelManager {
 	}
 
 	/**
+	 * POST-SESSION-PREFLUSH-1: write the current snapshot NOW without disposing or restarting, so a host about to
+	 * copy this session's artifacts (fork/branch) sees the latest state, and a vetoed transition leaves the kernel
+	 * fully usable. Cancels the pending debounce (the flushed state supersedes it).
+	 *
+	 * No-op ONLY when there is nothing live to flush (never started, disposed, or process dead). A failing snapshot
+	 * REJECTS so the caller can surface it; it is never swallowed here.
+	 */
+	async flushSnapshot(): Promise<void> {
+		if (this.disposed || !this.started || !this.transport.alive()) return;
+		if (this.snapshotCancel !== null) {
+			this.snapshotCancel();
+			this.snapshotCancel = null;
+		}
+		await this.runSnapshot();
+	}
+
+	/**
 	 * FORBIDDEN-KM-1/SEQ-KM-5: snapshot flow — snapshotNames → filter
 	 * SNAPSHOT_ALWAYS_SKIP → writeSnapshot → atomic payload write → manifest.
 	 */
