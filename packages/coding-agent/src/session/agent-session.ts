@@ -438,6 +438,7 @@ import {
 	copySessionArtifacts,
 	extractSessionInit,
 	type PersistedSessionInit,
+	SessionMoveRefusedError,
 	type SessionManager,
 } from "./session-manager";
 import { SessionMemory, type SessionMemoryHost } from "./session-memory";
@@ -2457,6 +2458,18 @@ export class AgentSession implements SettingsScope {
 		// (session persistence, hooks, auto-compaction, retry logic)
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
 		this.#unsubscribeQueueChange = this.agent.onQueueChange(() => this.#emitQueueUpdateIfChanged());
+		// POST-SESSION-MOVE-1: a persistence move-off re-keys the session to a sibling file; announce it like /move.
+		// Notices raised before this session existed are replayed synchronously on subscribe: history, not a transition.
+		let replayingNotices = true;
+		if (typeof this.sessionManager.onPersistenceNotice === "function") {
+			this.#disposers.push(
+				this.sessionManager.onPersistenceNotice(notice => {
+					if (replayingNotices) return;
+					void this.#emitSessionMoved(notice.from);
+				}),
+			);
+		}
+		replayingNotices = false;
 		// Re-evaluate append-only context mode when the setting changes at runtime.
 		cfgProviderAppendOnlyContext.listen(this, () => this.#syncAppendOnlyContext(this.model));
 		cfgModelRoles.listen(this, () => this.#advisors.reconcileModelRoles());
@@ -10092,10 +10105,36 @@ export class AgentSession implements SettingsScope {
 		return leafId;
 	}
 
+	/** POST-SESSION-MOVE-1: tell extensions the active session was relocated (reason "move"); a failing handler never breaks the host. */
+	async #emitSessionMoved(previousSessionFile: string | undefined): Promise<void> {
+		const runner = this.#extensionRunner;
+		if (!runner) return;
+		try {
+			await runner.emit({ type: "session_switch", reason: "move", previousSessionFile });
+		} catch (err) {
+			logger.error("session_switch (move) handler failed", { err });
+		}
+	}
+
 	/** Move the active session and artifacts after enforcing mode transition invariants. */
 	async moveSession(newCwd: string, targetSessionDir?: string): Promise<void> {
 		this.#assertVibeSessionTransitionAllowed("move the session");
+		const previousSessionFile = this.sessionFile;
+		// POST-SESSION-MOVE-1: extensions flush into the directory that is about to move, and may veto the move.
+		const relocates =
+			targetSessionDir !== undefined || path.resolve(newCwd) !== path.resolve(this.sessionManager.getCwd());
+		if (relocates && this.#extensionRunner?.hasHandlers("session_before_switch")) {
+			const result = (await this.#extensionRunner.emit({ type: "session_before_switch", reason: "move" })) as
+				| SessionBeforeSwitchResult
+				| undefined;
+			if (result?.cancel) {
+				throw new SessionMoveRefusedError("Session move was cancelled by an extension. Nothing was moved.");
+			}
+		}
 		await this.sessionManager.moveTo(newCwd, targetSessionDir);
+		if (this.#extensionRunner && this.sessionFile !== previousSessionFile) {
+			await this.#extensionRunner.emit({ type: "session_switch", reason: "move", previousSessionFile });
+		}
 	}
 
 	// =========================================================================
