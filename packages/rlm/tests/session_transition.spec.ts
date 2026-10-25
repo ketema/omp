@@ -347,3 +347,73 @@ describe("POST-SESSION-PREFLUSH-1: real KernelManager / runner flush ordering an
 		}
 	}, 180_000);
 });
+
+describe("POST-SESSION-OWNED-DIR-1: exact session-owned directory resolution", () => {
+	test("adopted child session uses its own session-owned directory derived from getSessionFile(), not an ad-hoc subdirectory under the parent root", async () => {
+		const root = scratch("rlm-owned-adopted-");
+		try {
+			const parentArtifactsDir = join(root, "parent-artifacts-root");
+			const childOwnedDir = join(root, "sessions", "child-42");
+			fs.mkdirSync(parentArtifactsDir, { recursive: true });
+			fs.mkdirSync(childOwnedDir, { recursive: true });
+			// Pre-populate child-owned directory with the child's own prior snapshot.
+			fs.writeFileSync(join(childOwnedDir, "kernel-state.dill"), "CHILD_OWNED_SNAPSHOT");
+			// Pre-populate parent root with parent state (must NOT be loaded by child).
+			fs.writeFileSync(join(parentArtifactsDir, "kernel-state.dill"), "PARENT_SNAPSHOT");
+
+			const childKernel = makePort({ names: ["child_var"] });
+			const { api, registry } = makeRegistry();
+			await createRlmExtension({ createKernel: () => childKernel.port })(api as never);
+
+			// Subagent scenario: sessionManager.getArtifactsDir() returns parentArtifactsDir (adopted),
+			// but sessionManager.getSessionFile() returns the child's own session file.
+			const childSessionManager: SessionManagerShape = {
+				getSessionFile: () => join(root, "sessions", "child-42.jsonl"),
+				getArtifactsDir: () => parentArtifactsDir,
+				getSessionId: () => "child-42",
+			};
+			const ctx = hostContext(root, childSessionManager);
+			await emit(registry, "session_start", {}, ctx);
+
+			const revivals = registry.messages.filter(m => m.customType === "rlm-revival");
+			// The child's owned directory had a snapshot, so revival must fire for child_var.
+			expect(revivals.length).toBe(1);
+			expect(revivals[0].content ?? "").toContain("child_var");
+
+			// Verify that an ad-hoc child subdirectory under the parent was NOT synthesized.
+			expect(fs.existsSync(join(parentArtifactsDir, "child-42"))).toBe(false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("no substring heuristic: a parent directory whose name contains the child sessionId is not mistreated as an owned match", async () => {
+		const root = scratch("rlm-owned-substring-");
+		try {
+			// Parent directory path contains "child" as a SUBSTRING (e.g. /path/to/childhood-parent/artifacts)
+			const parentArtifactsDir = join(root, "childhood-parent-artifacts");
+			const childOwnedDir = join(root, "sessions", "child");
+			fs.mkdirSync(parentArtifactsDir, { recursive: true });
+			fs.mkdirSync(childOwnedDir, { recursive: true });
+			fs.writeFileSync(join(childOwnedDir, "kernel-state.dill"), "CHILD_OWNED_DATA");
+
+			const kernel = makePort({ names: ["exact_child_var"] });
+			const { api, registry } = makeRegistry();
+			await createRlmExtension({ createKernel: () => kernel.port })(api as never);
+
+			const childSessionManager: SessionManagerShape = {
+				getSessionFile: () => join(root, "sessions", "child.jsonl"),
+				getArtifactsDir: () => parentArtifactsDir,
+				getSessionId: () => "child",
+			};
+			const ctx = hostContext(root, childSessionManager);
+			await emit(registry, "session_start", {}, ctx);
+
+			const revivals = registry.messages.filter(m => m.customType === "rlm-revival");
+			expect(revivals.length).toBe(1);
+			expect(revivals[0].content ?? "").toContain("exact_child_var");
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
