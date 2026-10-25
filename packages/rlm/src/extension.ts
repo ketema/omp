@@ -492,36 +492,39 @@ export function createRlmExtension(
 				}
 			}
 
-			// Resolve artifactsDir from session context or event (F2 / F6 fix)
+			// POST-SESSION-OWNED-DIR-1 / F2 / F6: resolve the session-owned directory.
+			// Host convention: artifactsDirectoryFor(sessionFile) = sessionFile without ".jsonl".
+			// When getSessionFile() is available, it is the authoritative identity of this session's own artifacts,
+			// even when an adopted parent ArtifactManager makes sessionManager.getArtifactsDir() return the parent's.
 			const sessionCtx = ctx as
 				| {
 						cwd?: string;
 						sessionManager?: {
+							getSessionFile?: () => string | undefined;
 							getArtifactsDir?: () => string | null;
 							getSessionId?: () => string;
+							getArtifactManager?: () => { dir?: string; listFiles?: () => Promise<string[]> } | null;
 						};
 				  }
 				| undefined;
 			const sessionEvent = event as { sessionDir?: string; sessionId?: string; cwd?: string } | undefined;
 
 			const effectiveCwd = sessionCtx?.cwd ?? sessionEvent?.cwd ?? process.cwd();
+			const rawSessionFile = sessionCtx?.sessionManager?.getSessionFile?.();
+			const ownedFromSessionFile =
+				typeof rawSessionFile === "string" && rawSessionFile.endsWith(".jsonl")
+					? rawSessionFile.slice(0, -".jsonl".length)
+					: undefined;
+
 			const managerArtifactsDir = sessionCtx?.sessionManager?.getArtifactsDir?.();
 			const sessionId = sessionCtx?.sessionManager?.getSessionId?.() ?? sessionEvent?.sessionId;
 
-			// Comment 4369713118: If managerArtifactsDir is an adopted parent manager root,
-			// independent child sessions with their own sessionId must partition under their own id.
-			if (typeof managerArtifactsDir === "string" && managerArtifactsDir.trim() !== "") {
-				if (
-					typeof sessionId === "string" &&
-					sessionId.trim() !== "" &&
-					!managerArtifactsDir.includes(sessionId.trim())
-				) {
-					const childDir = join(managerArtifactsDir, sessionId.trim());
-					fs.mkdirSync(childDir, { recursive: true });
-					artifactsDir = childDir;
-				} else {
-					artifactsDir = managerArtifactsDir;
-				}
+			if (ownedFromSessionFile !== undefined && ownedFromSessionFile.trim() !== "") {
+				artifactsDir = ownedFromSessionFile;
+			} else if (typeof managerArtifactsDir === "string" && managerArtifactsDir.trim() !== "") {
+				// Non-file session or test fixture that provides getArtifactsDir() directly.
+				// PARKED (unestablished intent): adopted session with no session file.
+				artifactsDir = managerArtifactsDir;
 			} else if (typeof sessionEvent?.sessionDir === "string" && sessionEvent.sessionDir.trim() !== "") {
 				artifactsDir = sessionEvent.sessionDir;
 			} else if (typeof sessionId === "string" && sessionId.trim() !== "") {
@@ -547,7 +550,23 @@ export function createRlmExtension(
 				);
 			}
 
-			// Restore and announce revival only when an actual snapshot exists in the resolved artifactsDir
+			// POST-SESSION-READINESS-1: await the incoming session's artifact manager readiness
+			// (which settles when any background copy finishes) before probing snapshot existence.
+			// Applied ONLY when the artifact manager's dir matches the resolved session-owned dir.
+			// PARKED: adopted managers expose only parent readiness, not child's.
+			const incomingArtifactManager = sessionCtx?.sessionManager?.getArtifactManager?.();
+			if (
+				incomingArtifactManager &&
+				typeof incomingArtifactManager.dir === "string" &&
+				incomingArtifactManager.dir === artifactsDir &&
+				typeof incomingArtifactManager.listFiles === "function"
+			) {
+				try {
+					await incomingArtifactManager.listFiles();
+				} catch {
+					// Readiness wait is best-effort; snapshot probe proceeds below
+				}
+			}
 			const hasSnapshot = fs.existsSync(join(artifactsDir, "kernel-state.dill"));
 			if (hasSnapshot) {
 				try {
