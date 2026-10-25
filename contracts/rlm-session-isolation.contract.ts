@@ -203,6 +203,12 @@ export const CONTRACT_RLM_SESSION_ISOLATION: Readonly<Record<string, Clause>> = 
     description: "The GitHub Actions run for the PR head contains a dedicated, visibly named job (needs native_addons; real linux-x64 native artifacts via the existing native-artifacts action) that runs, each to completion: the selection/dispatch test, the full packages/rlm TS suite, and the Python recovery/quarantine suite in an isolated pinned uv environment. Evidence is the actual job log and API result: non-zero executed counts, zero skipped, zero failed, and the real-SessionManager spec files executed rather than failing to load. A missing prerequisite (uv, native addon, interpreter) is a failure, never a skip. The job adds no secrets, no token scope beyond the workflow's `contents: read`, and no deploy/publish trigger; the runner strips credentials from test processes",
     requirement_ids: ["REQ-RLM-REHYDRATE-001", "REQ-RLM-REHYDRATE-003"],
   },
+  "POST-CI-NATIVE-ABI-1": {
+    id: "POST-CI-NATIVE-ABI-1",
+    method: "execution",
+    description: "When a PR run has no main-built native addon cache and falls back to a published npm addon, the fallback is the release whose version equals packages/natives/package.json of the tree under test - never `latest`. A `latest` addon can carry a different ABI than the source (observed: 18.12.6 requires EditPolicy.maxColumns and a 4th encodeSixelAsync backgroundRgb argument; this tree, at 18.11.0, supplies neither), turning every native-backed job red for reasons that are not defects of the PR. A version with no published tarball MUST fail the step (fail-fast), never fall through to another version. Evidence is the real job log: the fetch step prints the pinned version, and the previously failing `Missing field maxColumns` / `Undefined into rust type u32` clusters no longer fail. The change adds no secrets, no token scope, no deploy trigger, and removes no test",
+    requirement_ids: ["REQ-RLM-REHYDRATE-003"],
+  },
   "IP-5": {
     id: "IP-5",
     method: "test",
