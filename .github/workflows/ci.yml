@@ -722,17 +722,23 @@ jobs:
               targets: linux-x64-baseline linux-x64-modern
               stash: ${{ needs.native_addons.outputs.stash }}
          # The suite's default-path tests bootstrap the kernel venv with `uv`, and the Python suite runs
-         # through it. Install the pinned release into a job-local dir (same shape as the bun install in
-         # ./.github/actions/bun-install): nothing global, and a version mismatch fails the job.
-         - name: Install pinned uv (job-local)
+         # through it. Install the pinned release into a job-local dir: nothing global, the downloaded archive
+         # must match the pinned sha256 (published beside the release asset) before it is unpacked, and a
+         # version mismatch fails the job. No installer script is piped into a shell.
+         - name: Install pinned uv (job-local, checksum-verified)
            shell: bash
            env:
               UV_VERSION: "0.13.5"
+              UV_ARCHIVE: uv-x86_64-unknown-linux-gnu
+              UV_SHA256: f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f
            run: |
               set -euo pipefail
               dest="$RUNNER_TEMP/uv-bin"
               mkdir -p "$dest"
-              curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | UV_INSTALL_DIR="$dest" UV_NO_MODIFY_PATH=1 sh
+              curl -fsSL --retry 3 -o "$RUNNER_TEMP/$UV_ARCHIVE.tar.gz" \
+                "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_ARCHIVE}.tar.gz"
+              echo "${UV_SHA256}  $RUNNER_TEMP/$UV_ARCHIVE.tar.gz" | sha256sum --check --strict -
+              tar -xzf "$RUNNER_TEMP/$UV_ARCHIVE.tar.gz" -C "$dest" --strip-components=1
               echo "$dest" >> "$GITHUB_PATH"
               got="$("$dest/uv" --version | awk '{print $2}')"
               if [ "$got" != "$UV_VERSION" ]; then
