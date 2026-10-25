@@ -637,13 +637,12 @@ export function createRlmExtension(
 				// session; let it finish so it is disposed below instead of surviving into this session.
 				// Its failure is delivered to the caller that requested the kernel, so it is not re-raised here.
 				if (kernelConstruction !== null) await kernelConstruction.catch(() => undefined);
-				// A newer transition (or shutdown) already owns the extension state: do not touch it.
-				if (!isCurrent()) return null;
 				await disposeOutgoingKernel();
-				if (!isCurrent()) return null;
 				// ERRORS-SESSION-RESOLUTION-FAILED-1: forget the outgoing directory before resolving, so a failed
-				// or abandoned resolution can never leave it selectable by the next kernel.
-				incoming = null;
+				// or abandoned resolution can never leave it selectable by the next kernel. A superseded transition
+				// still resolves (a kernel requested during it is built on ITS directory) but never touches the
+				// published state a newer transition owns.
+				if (isCurrent()) incoming = null;
 				let resolved: IncomingArtifacts;
 				try {
 					resolved = await resolveIncomingArtifactsDir(ctx);
