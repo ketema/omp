@@ -135,7 +135,9 @@
         "POST-SESSION-MOVE-1",
         "POST-BOOTSTRAP-RLM-REQUIRED-1",
         "POST-CI-RLM-NOSKIP-1",
-        "POST-CI-NATIVE-ABI-1"
+        "POST-CI-NATIVE-ABI-1",
+        "POST-KM-SNAPSHOT-SERIAL-1",
+        "POST-KM-SNAPSHOT-PAIR-1"
       ],
       "clauses_deferred": [],
       "negative_constraints": [
@@ -151,7 +153,7 @@
         "SLICE-4"
       ],
       "issue": "TODO",
-      "pivot_note": "Copilot review repair (PR #44), released by Ketema's directive. Batches RED -> GREEN: A lifecycle generation/shutdown/resolution-failed 44f5c6a -> f9bf421 (regression repairs 7eca9d1 -> 73ca669); B kernel single-flight + bounded non-racing flush 4e33370 -> c36ec40; C bootstrap requires rlm c800b0e -> 8b81e9f; D CI no-skip gate judged from real Bun output faa68a9 -> dd36080; E1 kernel never resurrects a removed dir 39629a3 -> 11c1d79; E2 host announces a session relocation with reason 'move' 39b13e7 -> 49fb4f3 (moveWouldRelocate in 5fa85b0). The E2 RED was observed on GitHub run 40189908737 (host native addon; 3 tests failed, the 2 guards passed); the first generation-token change was caught by the native-backed session_transition spec on GitHub (run 40188968056) and repaired. Test-defect repairs unrelated to RLM semantics: 4eb685c, 035139d, 5fa85b0 (host double, git identity, Bun 1.4.4 pack/CLOEXEC/CDP endpoint). POST-CI-RLM-EXECUTION-1 evidence is the real job log of run 40191047739 (235 pass, 0 fail, 22 files, 0 skipped; Python 32 ran, 0 skipped). Not claimed here: Copilot could not re-review the new heads (quota); comment 4366298454 (F13) is DISPUTED 0:4 and was not changed."
+      "pivot_note": "Copilot review repair (PR #44), released by Ketema's directive. Batches RED -> GREEN: A lifecycle generation/shutdown/resolution-failed 44f5c6a -> f9bf421 (regression repairs 7eca9d1 -> 73ca669); B kernel single-flight + bounded non-racing flush 4e33370 -> c36ec40; C bootstrap requires rlm c800b0e -> 8b81e9f; D CI no-skip gate judged from real Bun output faa68a9 -> dd36080; E1 kernel never resurrects a removed dir 39629a3 -> 11c1d79; E2 host announces a session relocation with reason 'move' 39b13e7 -> 49fb4f3 (moveWouldRelocate in 5fa85b0). The E2 RED was observed on GitHub run 40189908737 (host native addon; 3 tests failed, the 2 guards passed); the first generation-token change was caught by the native-backed session_transition spec on GitHub (run 40188968056) and repaired. Test-defect repairs unrelated to RLM semantics: 4eb685c, 035139d, 5fa85b0, 6672c6a (host double, git identity, Bun 1.4.4 pack/CLOEXEC/CDP endpoint, crash-cancel margin). Parent review of 5fa85b0 (snapshot boundary), each RED observed failing locally with natives-free tests before its GREEN: F1 serialization behind an active cell e4de06b -> f249032 (POST-KM-SNAPSHOT-SERIAL-1); F2 deletion and abandonment during in-flight work, re-checked before every write, 8191367 -> 1c73741 (POST-KM-NO-RESURRECT-1 tightened); F3 payload+manifest committed as one generation with rollback, async preparation before commit, 0136548 -> 1c42ff2 (POST-KM-SNAPSHOT-PAIR-1). POST-CI-RLM-EXECUTION-1 evidence for the final code head is the real job log of run 40193185166. Not claimed here: Copilot could not re-review the new heads (quota); comment 4366298454 (F13) is DISPUTED 0:4 and was not changed; the plan-file truncation writer is unidentified and the file is kept read-only (0444) as containment."
     }
   ],
   "pivot_guidance": [
