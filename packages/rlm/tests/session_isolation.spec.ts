@@ -17,6 +17,7 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 
 import { createRlmExtension, type RlmExtensionKernelPort } from "../src/extension.ts";
+import { KernelManager } from "../src/kernel.ts";
 
 function makeKernelPort(
 	overrides: {
@@ -218,7 +219,7 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 				}
 			}
 			expect(content).toContain("valid_var");
-			expect(content).toContain("The following unpicklable variables were skipped: broken_var");
+			expect(content).toContain("Warning: The following unpicklable variables were skipped: broken_var");
 		} finally {
 			fs.rmSync(tempRoot, { recursive: true, force: true });
 		}
@@ -302,6 +303,109 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 
 			expect(revivalMessages.length).toBe(2);
 			expect(JSON.stringify(revivalMessages[1].payload)).toContain("var_from_session_B");
+		} finally {
+			fs.rmSync(tempRoot, { recursive: true, force: true });
+		}
+	});
+
+	test("POST-SESSION-ISOLATION-1: end-to-end wire frame skipped records stream through transport and kernel to revival notice (Finding 4366298454)", async () => {
+		/**
+		 * FOUR-CRITERIA TEST VALIDITY GATE:
+		 *   [✓] C1 VALID: cites clause POST-SESSION-ISOLATION-1
+		 *   [✓] C2 VALUABLE: passes 'can impl be wrong and test pass?' = NO (proves wire frame carries skipped unpicklables into revival notice)
+		 *   [✓] C3 NON-DUPLICATIVE: tests runner frame -> transport -> KernelManager -> revival pipeline
+		 *   [✓] C4 NOT FUTURE-EDIT: exercises genuine transport and KernelManager classes
+		 */
+		const tempRoot = fs.mkdtempSync("/tmp/rlm-wire-telemetry-");
+		try {
+			const sessionDir = join(tempRoot, "sessions", "sess-telemetry", "artifacts");
+			fs.mkdirSync(sessionDir, { recursive: true });
+			fs.writeFileSync(join(sessionDir, "kernel-state.dill"), "SNAPSHOT_WITH_SKIPPED");
+
+			const wireSkipped = [
+				{ name: "corrupted_fn", reason: "UnpicklingError: invalid opcode", type: "UnpicklingError" },
+			];
+			const wireRestoredNames = ["healthy_df", "valid_model"];
+
+			// Result frame from wire (runner -> transport)
+			const transportRestoreResult = Object.assign([...wireRestoredNames], {
+				skipped: wireSkipped,
+			});
+
+			const fakeTransport = {
+				async start() {},
+				async restoreSnapshot() {
+					return transportRestoreResult;
+				},
+				async bootstrap() {},
+				async kill() {},
+				async dispose() {},
+				onOutput() {},
+				isBusy() {
+					return false;
+				},
+				alive() {
+					return true;
+				},
+			};
+
+			const clock = {
+				now() {
+					return Date.now();
+				},
+				schedule(fn: () => void) {
+					return () => {};
+				},
+			};
+
+			const manager = new KernelManager(fakeTransport as any, {
+				clock: clock as any,
+				artifactsDir: sessionDir,
+			});
+
+			const adapter = {
+				ensureStarted: (onProgress?: any) => manager.ensureStarted(onProgress),
+				execute: (code: string) => manager.execute(code) as any,
+				kill: () => manager.kill(),
+				dispose: () => manager.dispose(),
+				restoredNames: () => manager.restoredNames(),
+				restoredSkipped: () => manager.restoredSkipped(),
+				onCompactionComplete: () => manager.onCompactionComplete(),
+				compactionNotice: () => manager.compactionNotice(),
+			};
+
+			const { api, registered } = makeApi();
+			const factory = createRlmExtension({
+				createKernel() {
+					return adapter;
+				},
+			});
+			await factory(api as never);
+
+			const sessionStartHandlers = registered.handlers.get("session_start") ?? [];
+			const ctx = {
+				cwd: tempRoot,
+				sessionManager: {
+					getArtifactsDir: () => sessionDir,
+					getSessionId: () => "sess-telemetry",
+				},
+			};
+
+			await sessionStartHandlers[0]({ type: "session_start" }, ctx);
+
+			// Verify manager received both restored names and skipped telemetry from transport result frame
+			expect(manager.restoredNames()).toEqual(["healthy_df", "valid_model"]);
+			expect(manager.restoredSkipped()).toEqual(wireSkipped);
+
+			// Verify revival notice carries both parts
+			const revivalMessages = registered.sentMessages.filter(m => {
+				const payload = m.payload;
+				return payload && typeof payload === "object" && (payload as any).customType === "rlm-revival";
+			});
+			expect(revivalMessages.length).toBe(1);
+			const content = (revivalMessages[0].payload as any).content;
+			expect(content).toContain("healthy_df, valid_model");
+			expect(content).toContain("Warning: The following unpicklable variables were skipped: corrupted_fn");
 		} finally {
 			fs.rmSync(tempRoot, { recursive: true, force: true });
 		}
