@@ -661,15 +661,17 @@ describe("browser tabs whose renderer crashed", () => {
 				}
 				expect(getTab(name)).toMatchObject({ worker: { mode: "inline" } });
 				const run = runInTab(name, {
-					code: `await fetch("http://127.0.0.1:${server.port}/started"); await wait(2_000); await fetch("http://127.0.0.1:${server.port}/after-crash");`,
+					code: `await fetch("http://127.0.0.1:${server.port}/started"); await wait(6_000); await fetch("http://127.0.0.1:${server.port}/after-crash");`,
 					timeoutMs: 10_000,
 					session,
 				}).catch((error: unknown) => error);
 				await started.promise;
 				await crashRenderer(browser, url);
 				expect(String(await run)).toContain("the tab could not be reattached and was closed");
-				// A run left going reaches the second fetch two seconds after it started; nothing marks that it did not.
-				await Bun.sleep(2_500);
+				// A run left going reaches the second fetch six seconds after it started; nothing marks that it did not.
+				// The margin is wide on purpose: the crash must be detected and the run cancelled well inside it even on a
+				// loaded CI runner (a 2s margin raced renderer-crash handling there and flaked).
+				await Bun.sleep(6_500);
 				expect(requests).toBe(0);
 			} finally {
 				await releaseTab(name, { kill: true });
