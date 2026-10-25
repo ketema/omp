@@ -337,16 +337,20 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			expect(startHandler).toBeDefined();
 
 			// Subagent scenario: sessionManager.getArtifactsDir() returns parentArtifactsDir (adopted),
-			// but sessionManager.getSessionId() returns distinct child-subagent id
+			// but the subagent has its own sessionFile (task/executor.ts: sessionFile).
 			const childSessionId = "child-subagent-42";
+			const childSessionFile = join(tempRoot, "sessions", `${childSessionId}.jsonl`);
+			const childOwnedDir = join(tempRoot, "sessions", childSessionId);
+			fs.mkdirSync(childOwnedDir, { recursive: true });
+			fs.writeFileSync(join(childOwnedDir, "kernel-state.dill"), "CHILD_STATE");
 			const childCtx = {
 				cwd: tempRoot,
 				sessionManager: {
+					getSessionFile: () => childSessionFile,
 					getArtifactsDir: () => parentArtifactsDir,
 					getSessionId: () => childSessionId,
 				},
 			};
-
 			await startHandler!({ type: "session_start" }, childCtx);
 
 			const tool = registered.tools[0];
@@ -357,10 +361,8 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 
 			// Trigger execution
 			await tool.execute("call-child", { code: "1+1" }, undefined, undefined, childCtx);
-
-			// Child session MUST partition into childSessionId subdirectory, NEVER share parent root directly
-			const childExpectedDir = join(parentArtifactsDir, childSessionId);
-			expect(fs.existsSync(childExpectedDir)).toBe(true);
+			// Child session MUST resolve to its own session-owned directory, NEVER share parent root
+			expect(fs.existsSync(childOwnedDir)).toBe(true);
 		} finally {
 			fs.rmSync(tempRoot, { recursive: true, force: true });
 		}
