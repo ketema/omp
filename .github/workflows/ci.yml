@@ -321,8 +321,15 @@ jobs:
            shell: bash
            run: |
               set -euo pipefail
-              tarball="$(npm view @oh-my-pi/pi-natives-linux-x64@latest dist.tarball)"
-              echo "Fetching $tarball"
+              # The fallback must match the tree under test: `latest` can carry a different ABI than this
+              # source (POST-CI-NATIVE-ABI-1). A version with no published tarball fails the step.
+              version="$(node -p "require('./packages/natives/package.json').version")"
+              tarball="$(npm view "@oh-my-pi/pi-natives-linux-x64@${version}" dist.tarball)"
+              if [ -z "$tarball" ]; then
+                echo "::error::no published @oh-my-pi/pi-natives-linux-x64@${version} matches this tree's natives version"
+                exit 1
+              fi
+              echo "Fetching natives ${version}: $tarball"
               curl -fsSL --retry 3 "$tarball" | tar -xz -C "$RUNNER_TEMP"
               mkdir -p ci-natives/natives-linux-x64-baseline ci-natives/natives-linux-x64-modern
               cp "$RUNNER_TEMP/package/pi_natives.linux-x64-baseline.node" ci-natives/natives-linux-x64-baseline/
@@ -341,7 +348,7 @@ jobs:
               elif [ -n "$MATCHED" ]; then
                 echo "::notice title=Native addons not source-matched::No main build matches this PR's native sources; testing against main's newest addon build ($MATCHED). Native changes are validated post-merge on main and at release."
               else
-                echo "::notice title=Native addons from npm::No main-built addon cache entry is available; testing against the latest npm release addons."
+                echo "::notice title=Native addons from npm::No main-built addon cache entry is available; testing against the npm release addons matching this tree's natives version."
               fi
 
          # ---- main path: bazel build of the linux-x64 pair ----
