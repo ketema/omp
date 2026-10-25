@@ -4,8 +4,8 @@
   "manifest_path": "requirements/REQUIREMENT_MANIFEST_RLM_DILL_REHYDRATION.md",
   "manifest_hash": "sha256:de9ce04406919abe4033633b0f6666719a450f9d90ebcef6053abec708f908bc",
   "created": "2026-10-23",
-  "last_updated": "2026-10-23",
-  "status": "DRAFT",
+  "last_updated": "2026-10-25",
+  "status": "ACTIVE",
   "slices": [
     {
       "id": "SLICE-1",
@@ -21,6 +21,9 @@
       ],
       "clauses_deferred": [
         "POST-SESSION-ISOLATION-1",
+        "POST-SESSION-FALLBACK-ISOLATION-1",
+        "ERRORS-SESSION-SWITCH-DISPOSE-1",
+        "POST-TRANS-SKIPPED-WIRE-PROPAGATION-1",
         "POST-QUARANTINE-INSPECT-1",
         "IP-5",
         "IP-6"
@@ -33,7 +36,7 @@
         "REQ-RLM-REHYDRATE-007",
         "REQ-RLM-REHYDRATE-008"
       ],
-      "status": "PENDING",
+      "status": "GREEN_COMPLETE",
       "depends_on": [],
       "issue": "TODO",
       "pivot_note": "KernelRunner restores valid variables while skipping unpicklables, filters shell builtins, and initializes base primitives."
@@ -42,6 +45,9 @@
       "id": "SLICE-2",
       "clauses_in_scope": [
         "POST-SESSION-ISOLATION-1",
+        "POST-SESSION-FALLBACK-ISOLATION-1",
+        "ERRORS-SESSION-SWITCH-DISPOSE-1",
+        "POST-TRANS-SKIPPED-WIRE-PROPAGATION-1",
         "IP-5"
       ],
       "clauses_deferred": [
@@ -51,10 +57,10 @@
       "negative_constraints": [
         "REQ-RLM-REHYDRATE-003"
       ],
-      "status": "PENDING",
+      "status": "GREEN_COMPLETE",
       "depends_on": ["SLICE-1"],
       "issue": "TODO",
-      "pivot_note": "Host extension and SessionManager partition kernel artifacts by session ID to guarantee zero state mixture."
+      "pivot_note": "Host extension and SessionManager partition kernel artifacts by session ID, handle session_switch, provide isolated fallback dirs, and propagate unpicklable skipped records."
     },
     {
       "id": "SLICE-3",
@@ -66,15 +72,16 @@
       "negative_constraints": [
         "REQ-RLM-REHYDRATE-004"
       ],
-      "status": "PENDING",
+      "status": "GREEN_COMPLETE",
       "depends_on": ["SLICE-1", "SLICE-2"],
       "issue": "TODO",
-      "pivot_note": "Quarantine utility safely isolates legacy dill files and extracts recoverable variables without contaminating clean sessions."
+      "pivot_note": "Quarantine utility safely isolates legacy dill files and extracts recoverable variables without contaminating clean sessions, continuing past SyntaxError and deserialization exceptions."
     }
   ],
   "pivot_guidance": [
     "Verify SLICE-1 resilient restore and builtin filtering passes before moving to SLICE-2 host session directory partitioning.",
-    "Verify SLICE-2 guarantees empty state on fresh sessions before running SLICE-3 quarantine inspection."
+    "Verify SLICE-2 guarantees empty state on fresh sessions before running SLICE-3 quarantine inspection.",
+    "SEQ-8 legacy quarantine is implemented via standalone Python utility quarantine_inspector.py. Automatic runtime extension bootstrap invocation is parked per scope disposition."
   ],
   "forgotten_invariants": [
     "REQ-RLM-REHYDRATE-001",
