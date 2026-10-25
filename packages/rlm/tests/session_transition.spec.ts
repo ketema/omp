@@ -29,6 +29,7 @@ import {
 	persistedSession,
 	writeSnapshot,
 } from "./host_session.ts";
+import { completePortDouble } from "./kernel_port_double.ts";
 
 type Handler = (event: unknown, ctx?: unknown) => unknown;
 
@@ -115,6 +116,7 @@ interface PortState {
 function makePort(options: { names?: string[]; flush?: () => Promise<void> } = {}) {
 	const state: PortState = { disposed: false, flushCalls: 0, executes: [] };
 	const port: FlushablePort = {
+		...completePortDouble(),
 		async ensureStarted() {},
 		async execute(code: string) {
 			state.executes.push(code);

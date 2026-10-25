@@ -266,15 +266,13 @@ class SnapshotConfigurationError(RlmSnapshotCompressionError):
 FILE_HANDLE_RECONSTRUCTORS = frozenset({"_create_filehandle"})
 
 _NO_PUSH_OPCODES = frozenset({"PROTO", "FRAME", "MEMOIZE", "PUT", "BINPUT", "LONG_BINPUT"})
-_MEMO_PUT_OPCODES = frozenset({"PUT", "BINPUT", "LONG_BINPUT"})
 _MEMO_GET_OPCODES = frozenset({"GET", "BINGET", "LONG_BINGET"})
 _STRING_PUSH_OPCODES = frozenset(
     {"SHORT_BINUNICODE", "BINUNICODE", "BINUNICODE8", "UNICODE", "STRING", "BINSTRING", "SHORT_BINSTRING"}
 )
 
-
-class UnsafeReconstructionError(Exception):
-    """Names the refusal of a serialized variable that would reconstruct a file handle (never raised past the guard)."""
+# The error type a refused variable carries in the restore's skipped telemetry.
+UNSAFE_RECONSTRUCTION_ERROR_TYPE = "UnsafeReconstructionError"
 
 
 def _references_file_handle_reconstructor(data) -> bool:
@@ -768,7 +766,7 @@ def _snapshot_restore(path: str, manifest_path: str) -> dict:
                     "name": name,
                     "reason": "unsafe: the serialized variable reconstructs a file handle; "
                     "refused before any path was opened",
-                    "error_type": UnsafeReconstructionError.__name__,
+                    "error_type": UNSAFE_RECONSTRUCTION_ERROR_TYPE,
                 })
                 continue
             temp_restored[name] = dill.loads(blob)

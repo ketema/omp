@@ -34,6 +34,7 @@ import {
   type RlmExtensionKernelPort,
   type RlmKernelConfig,
 } from "../src/extension.ts"
+import { completePortDouble } from "./kernel_port_double.ts"
 
 // Kernels used before any lifecycle event get a fresh isolated directory under <process.cwd()>/.omp/artifacts
 // (POST-SESSION-NO-OWNED-DIR-ISOLATION-1). Run this file from a scratch cwd so none lands in the worktree.
@@ -64,6 +65,7 @@ function makeKernelPort(overrides: { restoredNames?: string[]; compactionNotice?
   const calls: Array<{ kind: string; detail: string }> = []
   let started = false
   const port: RlmExtensionKernelPort = {
+    ...completePortDouble(),
     async ensureStarted() {
       calls.push({ kind: "ensureStarted", detail: "" })
       started = true

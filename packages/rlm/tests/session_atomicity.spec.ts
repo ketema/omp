@@ -24,6 +24,7 @@ import { join } from "node:path";
 
 import { createRlmExtension, type RlmExtensionKernelPort } from "../src/extension.ts";
 import { TOOL_BUSY_CHOICES } from "../src/tool.ts";
+import { completePortDouble } from "./kernel_port_double.ts";
 
 type Handler = (event: unknown, ctx?: unknown) => unknown;
 
@@ -155,6 +156,7 @@ function makePort(label: string, script: PortScript): ScriptedPort {
 		disposeEntered: gate(),
 	};
 	const port: RlmExtensionKernelPort = {
+		...completePortDouble(),
 		async ensureStarted() {
 			record.ensureStartedEntered.open();
 			await script.ensureStartedGate?.opened;

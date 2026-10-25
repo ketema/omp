@@ -22,6 +22,7 @@ import {
 } from "../../../contracts/rlm-session-isolation.contract.ts";
 import { createRlmExtension, type RlmExtensionKernelPort } from "../src/extension.ts";
 import { SNAPSHOT_MANIFEST_FILE, SNAPSHOT_PAYLOAD_FILE } from "../src/kernel.ts";
+import { completePortDouble } from "./kernel_port_double.ts";
 
 type Handler = (event: unknown, ctx?: unknown) => unknown;
 
@@ -35,6 +36,7 @@ afterAll(() => {
 
 function inertPort(): RlmExtensionKernelPort {
 	return {
+		...completePortDouble(),
 		async ensureStarted() {},
 		async execute() {
 			return {

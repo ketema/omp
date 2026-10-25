@@ -33,6 +33,7 @@ import {
 	persistedSession,
 	writeSnapshot,
 } from "./host_session.ts";
+import { completePortDouble } from "./kernel_port_double.ts";
 
 let suiteRoot = "";
 let restoreAgentDir: () => void = () => {};
@@ -64,6 +65,7 @@ function makeKernelPort(
 	let started = false;
 	let disposed = false;
 	const port: RlmExtensionKernelPort = {
+		...completePortDouble(),
 		async ensureStarted() {
 			calls.push({ kind: "ensureStarted", detail: "" });
 			started = true;
@@ -526,7 +528,9 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 				id: restoreOp.id,
 				restoredNames: ["good_df", "valid_var"],
 				// The runner's actual record shape (rlm_kernel_runner._snapshot_restore; contract SkippedVariableRecord).
-				skipped: [{ name: "corrupted_fn", reason: "UnpicklingError: invalid opcode", error_type: "UnpicklingError" }],
+				skipped: [
+					{ name: "corrupted_fn", reason: "UnpicklingError: invalid opcode", error_type: "UnpicklingError" },
+				],
 			};
 			emitStdout(`${JSON.stringify(wireFrame)}\n`);
 

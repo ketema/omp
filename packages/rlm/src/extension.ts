@@ -741,7 +741,9 @@ export function createRlmExtension(
 							parts.push(`IPython state restored. The following names are available again: ${names.join(", ")}`);
 						}
 						if (skipped.length > 0) {
-							const skippedNames = skipped.map(s => s.name).join(", ");
+							// IP-2: each skipped variable keeps the reason the runner reported, so an operator can tell a refused
+							// file handle from a corrupt blob.
+							const skippedNames = skipped.map(s => `${s.name} (${s.reason})`).join(", ");
 							parts.push(`Warning: The following unpicklable variables were skipped: ${skippedNames}`);
 						}
 						api.sendMessage(
