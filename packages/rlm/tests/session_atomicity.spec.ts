@@ -658,6 +658,32 @@ describe("POST-SESSION-TRANSITION-GEN-1 / POST-SESSION-SHUTDOWN-RACE-1 / ERRORS-
 		fs.writeFileSync(join(dir, "kernel-state.dill"), "SNAPSHOT");
 	}
 
+	test("a kernel requested during transition B is built on B's own directory even when a newer transition C begins before B settles", async () => {
+		const dir = caseDir("gen-construct-under-b");
+		const w = await wire();
+		const dirB = join(dir, "sessions", "B");
+		const dirC = join(dir, "sessions", "C");
+		const holdB = gate();
+		const harness = { registry: w.registry, records: w.records } as unknown as Harness;
+
+		const toB = emit(w.registry, "session_switch", { reason: "new" }, parkedCtx(dir, dirB, holdB));
+		// The cell is issued while B is still resolving: its kernel belongs to B.
+		const cellB = tool(harness).execute("c-b", { code: "in_b = 1" }, undefined, undefined, toolCtx());
+		// One event-loop turn: the cell reaches ensureKernel and parks on B's still-pending resolution.
+		await new Promise<void>(resolve => setImmediate(resolve));
+		const toC = emit(w.registry, "session_switch", { reason: "new" }, hostCtx(dir, dirC));
+		holdB.open();
+		await within(2000, "B, its cell and the newer transition C", Promise.all([toB, cellB, toC]));
+		await tool(harness).execute("c-c", { code: "in_c = 1" }, undefined, undefined, toolCtx());
+
+		expect(
+			w.dirs,
+			"POST-SESSION-TRANSITION-GEN-1 violation: B's in-flight kernel was not built on B's directory, or C's was not built on C's",
+		).toEqual([dirB, dirC]);
+		expect(w.records[0].disposed, "the kernel built for B must be disposed by the switch to C").toBe(true);
+		expect(w.records[1].disposed).toBe(false);
+	});
+
 	test("a slow transition B that settles after a newer transition C neither replaces C's directory nor revives into it", async () => {
 		const dir = caseDir("gen-slow-b");
 		const w = await wire();

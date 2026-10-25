@@ -334,7 +334,7 @@ export function createRlmExtension(
 		let incoming: IncomingArtifacts | null = null;
 		// POST-SESSION-RESOLUTION-GATE-1: the in-flight transition's directory resolution, and the single
 		// in-flight kernel construction. A kernel is only ever built against a resolved directory.
-		let pendingResolution: Promise<void> | null = null;
+		let pendingResolution: Promise<IncomingArtifacts | null> | null = null;
 		let kernelConstruction: Promise<RlmExtensionKernelPort> | null = null;
 		// POST-SESSION-TRANSITION-GEN-1 / POST-SESSION-SHUTDOWN-RACE-1: every lifecycle transition takes a
 		// generation at entry; a transition that is no longer the latest (a newer one began, or shutdown
@@ -369,14 +369,17 @@ export function createRlmExtension(
 				const construction = (async (): Promise<RlmExtensionKernelPort> => {
 					// Wait for the resolution in flight at entry only: a newer transition waits for THIS construction
 					// (to dispose it), so waiting on it here would deadlock.
-					if (resolutionAtStart !== null) await resolutionAtStart;
+					// The kernel belongs to the transition it started under: use THAT transition's resolved directory
+					// even if a newer transition has since begun (it waits for this construction and disposes it).
+					const resolvedAtStart = resolutionAtStart !== null ? await resolutionAtStart : null;
 					// POST-SESSION-NO-OWNED-DIR-ISOLATION-1 / NO-SIDE-EFFECT-1: an unowned session (or first use before
 					// any lifecycle event) allocates its fresh isolated directory - and announces it - only now.
-					const target: IncomingArtifacts = incoming ?? {
-						kind: "unallocated",
-						cwd: process.cwd(),
-						reason: "No session lifecycle event resolved an artifacts directory before first kernel use",
-					};
+					const target: IncomingArtifacts = resolvedAtStart ??
+						incoming ?? {
+							kind: "unallocated",
+							cwd: process.cwd(),
+							reason: "No session lifecycle event resolved an artifacts directory before first kernel use",
+						};
 					const dir =
 						target.kind === "resolved" ? target.dir : allocateIsolatedFallback(target.cwd, target.reason);
 					// Remember it: exactly one directory and one announcement per session.
@@ -629,15 +632,15 @@ export function createRlmExtension(
 		const handleSessionInit = async (_event: unknown, ctx?: unknown) => {
 			const myGeneration = ++generation;
 			const isCurrent = (): boolean => myGeneration === generation;
-			const resolution = (async (): Promise<void> => {
+			const resolution = (async (): Promise<IncomingArtifacts | null> => {
 				// POST-SESSION-RESOLUTION-GATE-1: a construction already in flight targets the outgoing
 				// session; let it finish so it is disposed below instead of surviving into this session.
 				// Its failure is delivered to the caller that requested the kernel, so it is not re-raised here.
 				if (kernelConstruction !== null) await kernelConstruction.catch(() => undefined);
 				// A newer transition (or shutdown) already owns the extension state: do not touch it.
-				if (!isCurrent()) return;
+				if (!isCurrent()) return null;
 				await disposeOutgoingKernel();
-				if (!isCurrent()) return;
+				if (!isCurrent()) return null;
 				// ERRORS-SESSION-RESOLUTION-FAILED-1: forget the outgoing directory before resolving, so a failed
 				// or abandoned resolution can never leave it selectable by the next kernel.
 				incoming = null;
@@ -657,6 +660,7 @@ export function createRlmExtension(
 				}
 				// POST-SESSION-TRANSITION-GEN-1: a stale completion never publishes its directory.
 				if (isCurrent()) incoming = resolved;
+				return resolved;
 			})();
 			pendingResolution = resolution;
 			try {
