@@ -51,6 +51,10 @@ class FakeStartupWorker {
 		return () => this.#errorHandlers.delete(handler);
 	}
 
+	onExit(): () => void {
+		return () => {};
+	}
+
 	async terminate(): Promise<void> {}
 
 	emitReady(info: ReadyInfo): void {
@@ -73,6 +77,7 @@ const initPayload = {
 	mode: "headless" as const,
 	browserWSEndpoint: "ws://127.0.0.1/devtools/browser/test",
 	safeDir: "/tmp/omp-puppeteer",
+	uploadDir: "/tmp/omp-uploads-test",
 };
 
 describe("browser tab worker startup", () => {
@@ -315,6 +320,35 @@ describe("OMP-owned browser evaluation", () => {
 			} finally {
 				await releaseTab(name, { kill: true });
 				if (browser.browser.connected) await releaseBrowser(browser, { kill: true });
+			}
+		},
+		45_000,
+	);
+	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"tells a caller running calls on one tab together to await each one or use one run",
+		async () => {
+			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+			const name = `parallel-calls-${process.pid}`;
+			const session = {
+				cwd: process.cwd(),
+				hasUI: false,
+				settings: Settings.isolated(),
+				getSessionFile: () => null,
+			} as unknown as ToolSession;
+			try {
+				await acquireTab(name, browser, { url: `data:text/html,<title>${name}</title>`, timeoutMs: 30_000 });
+				const results = await Promise.allSettled([
+					runInTab(name, { code: "return await page.title();", timeoutMs: 10_000, session }),
+					runInTab(name, { code: "return await page.title();", timeoutMs: 10_000, session }),
+				]);
+				expect(results[0]?.status).toBe("fulfilled");
+				const refused = String(results[1]?.status === "rejected" ? results[1].reason : "");
+				expect(refused).toContain("is busy");
+				expect(refused).toContain("Await each call before starting the next");
+				expect(refused).toContain("tab.run(");
+			} finally {
+				await releaseTab(name, { kill: true });
+				await releaseBrowser(browser, { kill: true });
 			}
 		},
 		45_000,
@@ -630,16 +664,18 @@ describe("browser tabs whose renderer crashed", () => {
 	it.skipIf(!CHROMIUM_AVAILABLE)(
 		"cancels an inline worker's run whose renderer crashed instead of letting it go on after its caller was told",
 		async () => {
-			let requests = 0;
+			let gateOpen = false;
 			const started = Promise.withResolvers<void>();
-			const ended = Promise.withResolvers<void>();
+			// Whichever the run reaches once the gate opens: `stopped` when its wait was cancelled, `continued` when not.
+			const outcome = Promise.withResolvers<"stopped" | "continued">();
 			const server = Bun.serve({
 				port: 0,
 				fetch: request => {
-					const pathname = new URL(request.url).pathname;
+					const { pathname } = new URL(request.url);
 					if (pathname === "/started") started.resolve();
-					else if (pathname === "/ended") ended.resolve();
-					else requests++;
+					else if (pathname === "/gate") return new Response(null, { status: gateOpen ? 200 : 503 });
+					else if (pathname === "/stopped") outcome.resolve("stopped");
+					else outcome.resolve("continued");
 					return new Response("ok");
 				},
 			});
@@ -663,24 +699,22 @@ describe("browser tabs whose renderer crashed", () => {
 					globalThis.Worker = RealWorker;
 				}
 				expect(getTab(name)).toMatchObject({ worker: { mode: "inline" } });
-				// The run holds a long `wait` and reports to this server when its code ENDS (the `finally`). A cancelled
-				// run's wait rejects as soon as it is cancelled, so its code ends at once; a run left going stays in the
-				// wait and never reports. The observation is an event, not an elapsed-time margin: the only clock is the
-				// bound on how long to wait for an event that is not coming, which cannot fail a passing run.
+				// The run holds at a gate the test opens only once its caller was told of the crash, however long the
+				// crash takes to land; a run left going passes it into the second fetch, a cancelled one reports it stopped.
+				const origin = `http://127.0.0.1:${server.port}`;
 				const run = runInTab(name, {
-					code: `await fetch("http://127.0.0.1:${server.port}/started"); try { await wait(60_000); await fetch("http://127.0.0.1:${server.port}/after-crash"); } finally { await fetch("http://127.0.0.1:${server.port}/ended"); }`,
+					code: `await fetch("${origin}/started"); try { await wait(async () => (await fetch("${origin}/gate")).ok, { timeout: 8_000, interval: 20 }); } catch (error) { await fetch("${origin}/stopped"); throw error; } await fetch("${origin}/after-crash");`,
 					timeoutMs: 10_000,
 					session,
 				}).catch((error: unknown) => error);
 				await started.promise;
 				await crashRenderer(browser, url);
 				expect(String(await run)).toContain("the tab could not be reattached and was closed");
-				const outcome = await Promise.race([
-					ended.promise.then(() => "code ended"),
-					Bun.sleep(15_000).then(() => "code still running"),
-				]);
-				expect(outcome).toBe("code ended");
-				expect(requests).toBe(0);
+				gateOpen = true;
+				// A run left going passes the 20 ms gate poll at once; a run torn down harder than a cancelled wait
+				// (worker terminated, fetches aborted) never reports, which is no less stopped. Only `continued` is the bug.
+				const reported = await Promise.race([outcome.promise, Bun.sleep(2_000).then(() => "no-report" as const)]);
+				expect(["stopped", "no-report"]).toContain(reported);
 			} finally {
 				await releaseTab(name, { kill: true });
 				if ("browser" in browser && browser.browser.connected) await releaseBrowser(browser, { kill: true });
@@ -910,16 +944,54 @@ describe("browser tabs whose renderer crashed", () => {
 				expect(String(failure)).toContain("its page reloaded");
 				await releaseTab(name, { kill: false });
 				const watcher = await browser.browser.target().createCDPSession();
-				// Closing a page completes in the browser after releaseTab returns: re-query (each query is a real CDP round
-				// trip) until the target is gone, bounded by attempts. A page that never closes still fails here.
-				const openTargetIds = async (): Promise<string[]> =>
-					(await watcher.send("Target.getTargets")).targetInfos.map(info => info.targetId);
-				let targetIds = await openTargetIds();
-				for (let attempt = 0; attempt < 200 && targetIds.includes(targetId); attempt++) {
-					targetIds = await openTargetIds();
-				}
+				const { targetInfos } = await watcher.send("Target.getTargets");
 				await watcher.detach();
-				expect(targetIds).not.toContain(targetId);
+				expect(targetInfos.map(info => info.targetId)).not.toContain(targetId);
+			} finally {
+				await releaseTab(name, { kill: true });
+				await releaseBrowser(browser, { kill: true });
+			}
+		},
+		45_000,
+	);
+});
+
+describe("closing an OMP-owned page", () => {
+	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"closes the page by id when its worker reports closed without closing it",
+		async () => {
+			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+			if (!("browser" in browser)) throw new Error("Expected a Puppeteer browser");
+			holdBrowser(browser);
+			const name = `unconfirmed-close-${process.pid}`;
+			try {
+				await acquireTab(name, browser, { timeoutMs: 30_000 });
+				const tab = getTab(name);
+				if (tab?.backend !== "worker") throw new Error("Expected a worker tab");
+				const targetId = tab.targetId;
+				// A worker whose page close failed (its CDP socket broke) still answers `closed`.
+				const handlers = new Set<(msg: WorkerOutbound) => void>();
+				const subscribe = tab.worker.onMessage.bind(tab.worker);
+				spyOn(tab.worker, "onMessage").mockImplementation(handler => {
+					handlers.add(handler);
+					const unsubscribe = subscribe(handler);
+					return () => {
+						handlers.delete(handler);
+						unsubscribe();
+					};
+				});
+				const send = tab.worker.send.bind(tab.worker);
+				spyOn(tab.worker, "send").mockImplementation((msg, transfer) => {
+					if (msg.type !== "close") return send(msg, transfer);
+					queueMicrotask(() => {
+						for (const handler of handlers) handler({ type: "closed" });
+					});
+				});
+				await releaseTab(name, { kill: false });
+				const watcher = await browser.browser.target().createCDPSession();
+				const { targetInfos } = await watcher.send("Target.getTargets");
+				await watcher.detach();
+				expect(targetInfos.map(info => info.targetId)).not.toContain(targetId);
 			} finally {
 				await releaseTab(name, { kill: true });
 				await releaseBrowser(browser, { kill: true });
