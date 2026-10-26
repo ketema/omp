@@ -182,35 +182,39 @@ describe("HTML export template", () => {
 		expect(buildExitCode, `${buildStdout}\n${buildStderr}`).toBe(0);
 		expect(await Bun.file(staleAssetPath).exists()).toBe(false);
 
-		const packDir = path.join(tempRoot, "production-package");
-		// `bun pm pack` resolves `catalog:` and `workspace:` specifiers against the workspace it runs in; this pack dir is a
-		// bare temp directory, so give it the concrete versions those specifiers stand for.
-		const repoRootDir = path.resolve(packageDir, "../..");
-		const rootManifest = (await Bun.file(path.join(repoRootDir, "package.json")).json()) as {
-			workspaces: { catalog: Record<string, string> };
-		};
-		const workspaceVersions = new Map<string, string>();
-		for (const entry of await fs.promises.readdir(path.join(repoRootDir, "packages"), { withFileTypes: true })) {
-			if (!entry.isDirectory()) continue;
-			const manifestFile = Bun.file(path.join(repoRootDir, "packages", entry.name, "package.json"));
-			if (!(await manifestFile.exists())) continue;
-			const parsed = (await manifestFile.json()) as { name?: string; version?: string };
-			if (parsed.name && parsed.version) workspaceVersions.set(parsed.name, parsed.version);
-		}
-		const packManifest = (await Bun.file(path.join(packageDir, "package.json")).json()) as Record<string, unknown>;
+		// `catalog:` versions resolve from the workspace root manifest, so pack inside a workspace that keeps the
+		// repo's catalog but declares only this package (Bun rejects declared workspaces that do not exist).
+		const packWorkspace = path.join(tempRoot, "production-workspace");
+		const repoRoot = path.resolve(packageDir, "../..");
+		const packageRel = path.relative(repoRoot, packageDir).split(path.sep).join("/");
+		const rootManifest = await Bun.file(path.join(repoRoot, "package.json")).json();
+		// Workspace-only dependencies (this fork's `@oh-my-pi/pi-rlm`) must be declared in the pack workspace too, or
+		// `bun pm pack` cannot resolve their `workspace:` versions.
+		const packageManifest = await Bun.file(path.join(packageDir, "package.json")).json();
+		const workspaceDependencyNames = new Set<string>();
 		for (const section of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
-			const deps = packManifest[section] as Record<string, string> | undefined;
-			if (!deps) continue;
-			for (const [name, spec] of Object.entries(deps)) {
-				if (spec === "catalog:" || spec === "catalog:default") {
-					deps[name] = rootManifest.workspaces.catalog[name] ?? spec;
-				} else if (spec.startsWith("workspace:")) {
-					deps[name] = workspaceVersions.get(name) ?? spec;
-				}
+			for (const [name, spec] of Object.entries((packageManifest[section] ?? {}) as Record<string, unknown>)) {
+				if (typeof spec === "string" && spec.startsWith("workspace:")) workspaceDependencyNames.add(name);
 			}
 		}
-		await Bun.write(path.join(packDir, "package.json"), JSON.stringify(packManifest, null, 2));
-		await Bun.write(path.join(packDir, "bun.lock"), Bun.file(path.resolve(packageDir, "../../bun.lock")));
+		const extraWorkspaces: string[] = [];
+		for (const entry of await fs.promises.readdir(path.join(repoRoot, "packages"), { withFileTypes: true })) {
+			if (!entry.isDirectory() || `packages/${entry.name}` === packageRel) continue;
+			const manifestFile = Bun.file(path.join(repoRoot, "packages", entry.name, "package.json"));
+			if (!(await manifestFile.exists())) continue;
+			const parsed = (await manifestFile.json()) as { name?: string };
+			if (parsed.name === undefined || !workspaceDependencyNames.has(parsed.name)) continue;
+			extraWorkspaces.push(`packages/${entry.name}`);
+			await Bun.write(path.join(packWorkspace, "packages", entry.name, "package.json"), manifestFile);
+		}
+		rootManifest.workspaces = {
+			packages: [packageRel, ...extraWorkspaces],
+			catalog: rootManifest.workspaces.catalog,
+		};
+		await Bun.write(path.join(packWorkspace, "package.json"), JSON.stringify(rootManifest));
+		await Bun.write(path.join(packWorkspace, "bun.lock"), Bun.file(path.join(repoRoot, "bun.lock")));
+		const packDir = path.join(packWorkspace, packageRel);
+		await Bun.write(path.join(packDir, "package.json"), Bun.file(path.join(packageDir, "package.json")));
 		for (const entry of await fs.promises.readdir(productionBundleDir)) {
 			await Bun.write(path.join(packDir, "dist", entry), Bun.file(path.join(productionBundleDir, entry)));
 		}
