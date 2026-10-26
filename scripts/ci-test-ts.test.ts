@@ -128,11 +128,14 @@ describe("POST-CI-RLM-SELECTION-1: existing selections are neither broadened nor
 			"packages/agent",
 			"packages/mnemopi",
 		]);
+		// Upstream's project-local TUI debug tool command also rides in 'native'; the packages are unchanged and
+		// packages/rlm is still absent.
 		expect(native).toEqual([
 			"packages/natives",
 			"packages/tui",
 			"packages/collab-web",
 			"packages/typescript-edit-benchmark",
+			".omp/tests (project-local TUI debug tool)",
 		]);
 	}, 60_000);
 
