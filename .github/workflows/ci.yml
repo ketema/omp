@@ -322,8 +322,24 @@ jobs:
               key: ${{ steps.natives-key.outputs.key }}
               restore-keys: |
                  ${{ steps.natives-key.outputs.prefix }}
-         - name: Fetch release native addons (npm)
+         # No main cache entry and no published release for this tree's natives version: build the addons from this
+         # tree's own sources (below) instead of testing against a different version's ABI.
+         - name: Check published native addons (npm)
+           id: npm-natives
            if: github.event_name == 'pull_request' && steps.natives-cache.outputs.cache-matched-key == ''
+           shell: bash
+           run: |
+              set -euo pipefail
+              version="$(node -p "require('./packages/natives/package.json').version")"
+              tarball="$(npm view "@oh-my-pi/pi-natives-linux-x64@${version}" dist.tarball 2>/dev/null || true)"
+              if [ -n "$tarball" ]; then
+                echo "published=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "published=false" >> "$GITHUB_OUTPUT"
+                echo "::notice title=Native addons from source::No published @oh-my-pi/pi-natives-linux-x64@${version}; building the addons from this tree."
+              fi
+         - name: Fetch release native addons (npm)
+           if: github.event_name == 'pull_request' && steps.natives-cache.outputs.cache-matched-key == '' && steps.npm-natives.outputs.published == 'true'
            shell: bash
            run: |
               set -euo pipefail
@@ -359,10 +375,10 @@ jobs:
 
          # ---- main path: bazel build of the linux-x64 pair ----
          - id: cache
-           if: github.event_name != 'pull_request'
+           if: github.event_name != 'pull_request' || (steps.natives-cache.outputs.cache-matched-key == '' && steps.npm-natives.outputs.published != 'true')
            uses: ./.github/actions/bazel-cache
          - name: Build linux-x64 native addons
-           if: github.event_name != 'pull_request'
+           if: github.event_name != 'pull_request' || (steps.natives-cache.outputs.cache-matched-key == '' && steps.npm-natives.outputs.published != 'true')
            run: |
               set -eo pipefail
               if [ "$(ulimit -Sn)" != unlimited ] && [ "$(ulimit -Sn)" -lt 65536 ]; then ulimit -Sn 65536 || true; fi
