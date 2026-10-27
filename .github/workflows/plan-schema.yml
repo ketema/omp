@@ -1,0 +1,19 @@
+# Plan schema gate (neutered placeholder pending self-contained PlanFile validator).
+#
+# Required status check context on the main-requires-pr ruleset: `plan-schema`.
+# Tracked in: https://github.com/ketema/omp/issues/49
+
+name: Plan Schema
+
+on:
+  pull_request:
+
+jobs:
+  plan-schema:
+    name: plan-schema
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate changed plan files (neutered placeholder)
+        run: |
+          echo "::notice title=plan-schema neutered::Plan schema validation is temporarily neutered pending self-contained validator rollout (#49)."
