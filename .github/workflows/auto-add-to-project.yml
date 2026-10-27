@@ -1,0 +1,539 @@
+# Auto-add issues and PRs to Constitutional OS Project (#1)
+#
+# Lifecycle (ST-1):
+#   Issue opened         -> Planning      (skipped if item already has a status)
+#   Issue closed         -> end_date = today
+#   PR opened/reopened   -> In Review
+#   PR closed + merged   -> Done + end_date = today
+#   PR closed + unmerged -> end_date = today (status: allow-escape)
+#
+# Deployed to all registered repos in work-surface.yaml.
+# Secret: ADD_TO_PROJECT_PAT (gh CLI token with project + repo scope).
+#
+# IDs below are the canonical source-of-truth from
+#   ketema/HomeDirectory: .config/ccabdd/work-surface.yaml (fields.status)
+# and auto_add_pr_lifecycle.contract.py. If the GitHub Project is restructured,
+# update work-surface.yaml + the contract module first, then propagate the new
+# option IDs to this workflow in every repo (CL12-C same-commit rule).
+
+name: Auto-add to project
+
+on:
+  issues:
+    types: [opened, closed]
+  pull_request:
+    types: [opened, reopened, closed]
+
+env:
+  # Source of truth: work-surface.yaml (project.node_id, fields.status)
+  # Mirrored in .claude/contracts/auto_add_pr_lifecycle.contract.py constants.
+  PROJECT_ID: "PVT_kwHOAAP5mM4A5Jci"
+  STATUS_FIELD_ID: "PVTSSF_lAHOAAP5mM4A5Jcizgt_tT8"
+  PLANNING_OPTION_ID: "84ca30ac"
+  IN_REVIEW_OPTION_ID: "89576029"
+  DONE_OPTION_ID: "f8e42bdd"
+  END_DATE_FIELD_ID: "PVTF_lAHOAAP5mM4A5JcizguBiGA"
+
+jobs:
+  add-to-project:
+    runs-on: ubuntu-latest
+    steps:
+      # SEQ-AA-1: add-to-project runs first and exposes itemId to downstream steps.
+      - name: Add to project
+        id: add
+        uses: actions/add-to-project@v1.0.2
+        with:
+          project-url: https://github.com/users/ketema/projects/1
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
+
+      # PRE-DS-1 / PRE-DS-2 / INV-DS-2 / ERRORS-DS-1:
+      # Dynamic-start guard. Only runs for issues:opened events where the
+      # add-to-project step produced an itemId. Queries the current Status
+      # field and exposes its optionId (or empty string) via the
+      # `current_status` step output. The Planning mutation step gates on
+      # that output being empty, which preserves any pre-existing status on
+      # dynamically-started issues (INV-DS-1).
+      - name: Dynamic-start guard
+        id: check_status
+        if: github.event_name == 'issues' && steps.add.outputs.itemId != ''
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+          ITEM_ID: ${{ steps.add.outputs.itemId }}
+        run: |
+          set -eu
+          # ERRORS-DS-1 three-branch failure taxonomy:
+          # (1) Network/transport failure — gh api exits non-zero; set -e propagates.
+          # (2) GraphQL API error (permission, rate-limit, invalid ID) — gh api exits non-zero; set -e propagates.
+          # (3) Malformed response (HTTP 200 but .data.node null/missing) — structurally
+          #     distinct from the LEGITIMATE "no status set" condition where
+          #     .data.node is non-null but .data.node.fieldValueByName is null.
+          #     MUST NOT be coerced into empty-string via '// ""' on the full path
+          #     because Planning would then fire as if no status existed (CL15-A).
+          response="$(gh api graphql \
+            -f query='
+              query($itemId: ID!) {
+                node(id: $itemId) {
+                  ... on ProjectV2Item {
+                    fieldValueByName(name: "Status") {
+                      ... on ProjectV2ItemFieldSingleSelectValue {
+                        optionId
+                      }
+                    }
+                  }
+                }
+              }' \
+            -f itemId="$ITEM_ID")"
+          # Structural validation: .data.node MUST be non-null before we trust any leaf.
+          # jq -e exits non-zero if the filter yields false/null — triggers set -e.
+          if ! printf '%s' "$response" | jq -e '.data.node != null' >/dev/null; then
+            echo "::error title=Dynamic-start guard::Malformed GraphQL response: .data.node is null or missing for itemId $ITEM_ID"
+            printf '%s\n' "$response" >&2
+            exit 1
+          fi
+          # .data.node is structurally valid. Now extract optionId, where null on
+          # .fieldValueByName is the LEGITIMATE no-status condition (POST-DS-3).
+          current_status="$(printf '%s' "$response" | jq -r '.data.node.fieldValueByName.optionId // empty')"
+          printf 'current_status=%s\n' "$current_status" >> "$GITHUB_OUTPUT"
+          if [ -n "$current_status" ]; then
+            echo "::notice title=Dynamic-start guard::Item already has status $current_status, skipping Planning override"
+          else
+            echo "::notice title=Dynamic-start guard::Item has no status, Planning default will apply"
+          fi
+
+      # SEQ-AA-3: Query closingIssuesReferences BEFORE any status mutations.
+      # Fetches linked issues via closingIssuesReferences(first: 50) with
+      # totalCount for POST-AA-8 overflow detection. Results are exposed as
+      # step outputs consumed by the fan-out step.
+      - name: Query linked issues
+        id: query_linked
+        if: github.event_name == 'pull_request' && steps.add.outputs.itemId != ''
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_FULL: ${{ github.repository }}
+        run: |
+          set -eu
+          QUERY_RESPONSE="$(gh api graphql -f query='
+            query($prNumber: Int!, $owner: String!, $repo: String!) {
+              repository(owner: $owner, name: $repo) {
+                pullRequest(number: $prNumber) {
+                  closingIssuesReferences(first: 50) {
+                    totalCount
+                    nodes {
+                      id
+                      number
+                    }
+                  }
+                }
+              }
+            }' \
+            -F prNumber="$PR_NUMBER" \
+            -f owner="${REPO_FULL%%/*}" \
+            -f repo="${REPO_FULL##*/}")"
+          # CL15-A structural guard: fail loud if closingIssuesReferences
+          # is missing/null (malformed response ≠ zero linked issues).
+          if ! printf '%s' "$QUERY_RESPONSE" | jq -e '.data.repository.pullRequest.closingIssuesReferences' >/dev/null 2>&1; then
+            echo "::error::Malformed GraphQL response: closingIssuesReferences missing for PR #${PR_NUMBER}"
+            exit 1
+          fi
+          TOTAL_COUNT="$(printf '%s' "$QUERY_RESPONSE" | jq -r '.data.repository.pullRequest.closingIssuesReferences.totalCount // 0')"
+          ISSUE_IDS="$(printf '%s' "$QUERY_RESPONSE" | jq -r '[.data.repository.pullRequest.closingIssuesReferences.nodes[].id] | join(" ")')"
+          printf 'total_count=%s\n' "$TOTAL_COUNT" >> "$GITHUB_OUTPUT"
+          printf 'issue_ids=%s\n' "$ISSUE_IDS" >> "$GITHUB_OUTPUT"
+          printf 'query_response=%s\n' "$(printf '%s' "$QUERY_RESPONSE" | jq -c '.')" >> "$GITHUB_OUTPUT"
+
+      # POST-OD-1 / POST-DS-3 / SEQ-AA-4:
+      # Issues:opened -> Planning, gated by empty current_status so that an
+      # issue that was already moved to In Progress (or any other column) is
+      # NOT overwritten back to Planning. itemId non-empty guard (ERRORS-ATP-1,
+      # PRE-SM-1).
+      #
+      # HEZ-2 ACKNOWLEDGED: A cross-run race window exists between the
+      # check_status read and this Planning mutation. If a concurrent workflow
+      # mutates Status in that window, this step may still write Planning.
+      # Per REQ-2026-ST1 High-Entropy Zone adjudication, this race is
+      # scoped-out: INV-DS-1 enforces empty-status-gated writes at the point
+      # of read, not linearizability across concurrent runners.
+      - name: Set status Planning (issues opened)
+        if: github.event_name == 'issues' && github.event.action == 'opened' && steps.add.outputs.itemId != '' && steps.check_status.outputs.current_status == ''
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+          ITEM_ID: ${{ steps.add.outputs.itemId }}
+          OPTION_ID: ${{ env.PLANNING_OPTION_ID }}
+        run: |
+          set -eu
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId
+                itemId: $itemId
+                fieldId: $fieldId
+                value: { singleSelectOptionId: $optionId }
+              }) {
+                projectV2Item { id }
+              }
+            }' \
+            -f projectId="$PROJECT_ID" \
+            -f itemId="$ITEM_ID" \
+            -f fieldId="$STATUS_FIELD_ID" \
+            -f optionId="$OPTION_ID"
+
+      # POST-AA-6 prerequisite: checkout makes lib/hook_log available for
+      # PR mutation hook_log emissions (In Review, Done, fan-out).
+      - name: Checkout repo (for hook_log)
+        if: github.event_name == 'pull_request' && steps.add.outputs.itemId != ''
+        uses: actions/checkout@v4
+
+      # POST-OD-2 / POST-OD-3 / SEQ-AA-2:
+      # pull_request:opened and pull_request:reopened -> In Review.
+      # itemId non-empty guard (ERRORS-ATP-1, PRE-SM-1).
+      - name: Set status In Review (PR opened or reopened)
+        if: github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'reopened') && steps.add.outputs.itemId != ''
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+          ITEM_ID: ${{ steps.add.outputs.itemId }}
+          OPTION_ID: ${{ env.IN_REVIEW_OPTION_ID }}
+          REPO_FULL: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_ACTION: ${{ github.event.action }}
+        run: |
+          set -eu
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId
+                itemId: $itemId
+                fieldId: $fieldId
+                value: { singleSelectOptionId: $optionId }
+              }) {
+                projectV2Item { id }
+              }
+            }' \
+            -f projectId="$PROJECT_ID" \
+            -f itemId="$ITEM_ID" \
+            -f fieldId="$STATUS_FIELD_ID" \
+            -f optionId="$OPTION_ID"
+          # POST-AA-6: emit central-log event for PR item
+          if [ "$PR_ACTION" = "opened" ]; then
+            _EVENT="auto-add-pr-opened"
+          else
+            _EVENT="auto-add-pr-reopened"
+          fi
+          printf '%s' "{\"repo\": \"$REPO_FULL\", \"pr_number\": $PR_NUMBER, \"item_node_id\": \"$ITEM_ID\", \"item_kind\": \"pr\", \"status_before\": \"unqueried\", \"status_after\": \"$OPTION_ID\"}" | python3 -c "
+          import json, sys; sys.path.insert(0, '.')
+          from lib.hook_log import emit_event, create_event
+          data = json.loads(sys.stdin.read())
+          evt = create_event(component='github-actions', actor='auto-add-to-project', event=sys.argv[1], level='info', data=data)
+          emit_event(evt)
+          " "$_EVENT"
+
+      # POST-OD-4 / POST-OD-5 / SEQ-AA-3 / INV-AE-1:
+      # pull_request:closed -> Done IFF merged == true. Closed-unmerged PRs
+      # fall through with zero mutations (allow-escape). itemId non-empty
+      # guard (ERRORS-ATP-1, PRE-SM-1).
+      - name: Set status Done (PR merged)
+        if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true && steps.add.outputs.itemId != ''
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+          ITEM_ID: ${{ steps.add.outputs.itemId }}
+          OPTION_ID: ${{ env.DONE_OPTION_ID }}
+          REPO_FULL: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId
+                itemId: $itemId
+                fieldId: $fieldId
+                value: { singleSelectOptionId: $optionId }
+              }) {
+                projectV2Item { id }
+              }
+            }' \
+            -f projectId="$PROJECT_ID" \
+            -f itemId="$ITEM_ID" \
+            -f fieldId="$STATUS_FIELD_ID" \
+            -f optionId="$OPTION_ID"
+          # POST-AA-6: emit central-log event for PR item
+          printf '%s' "{\"repo\": \"$REPO_FULL\", \"pr_number\": $PR_NUMBER, \"item_node_id\": \"$ITEM_ID\", \"item_kind\": \"pr\", \"status_before\": \"unqueried\", \"status_after\": \"$OPTION_ID\"}" | python3 -c "
+          import json, sys; sys.path.insert(0, '.')
+          from lib.hook_log import emit_event, create_event
+          data = json.loads(sys.stdin.read())
+          evt = create_event(component='github-actions', actor='auto-add-to-project', event='auto-add-pr-merged', level='info', data=data)
+          emit_event(evt)
+          "
+
+      # POST-ED-1: Set end_date on PR item when PR is closed (merged or rejected).
+      # Fires on ALL pull_request:closed events regardless of merge status.
+      # end_date marks the calendar date the work item reached terminal state.
+      - name: Set end_date (PR closed)
+        if: github.event_name == 'pull_request' && github.event.action == 'closed' && steps.add.outputs.itemId != ''
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+          ITEM_ID: ${{ steps.add.outputs.itemId }}
+        run: |
+          set -eu
+          TODAY="$(TZ=America/New_York date +%Y-%m-%d)"
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $date: Date!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId
+                itemId: $itemId
+                fieldId: $fieldId
+                value: { date: $date }
+              }) {
+                projectV2Item { id }
+              }
+            }' \
+            -f projectId="$PROJECT_ID" \
+            -f itemId="$ITEM_ID" \
+            -f fieldId="$END_DATE_FIELD_ID" \
+            -f date="$TODAY"
+
+      # POST-ED-2: Set end_date on issue item when issue is closed.
+      # Fires on issues:closed events (including issues auto-closed by PR merge).
+      - name: Set end_date (issue closed)
+        if: github.event_name == 'issues' && github.event.action == 'closed' && steps.add.outputs.itemId != ''
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+          ITEM_ID: ${{ steps.add.outputs.itemId }}
+        run: |
+          set -eu
+          TODAY="$(TZ=America/New_York date +%Y-%m-%d)"
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $date: Date!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId
+                itemId: $itemId
+                fieldId: $fieldId
+                value: { date: $date }
+              }) {
+                projectV2Item { id }
+              }
+            }' \
+            -f projectId="$PROJECT_ID" \
+            -f itemId="$ITEM_ID" \
+            -f fieldId="$END_DATE_FIELD_ID" \
+            -f date="$TODAY"
+
+      # SEQ-AA-6 / POST-AA-2 / POST-AA-4 / POST-AA-6 / POST-AA-8
+      # ERRORS-AA-4 / INV-AA-1 / INV-AA-3:
+      # Linked-issue fan-out. Consumes closingIssuesReferences from
+      # the query_linked step (SEQ-AA-3), then loops over each linked
+      # issue and mutates its Status individually. Emits hook_log per
+      # mutation. Handles overflow, terminal-state protection,
+      # idempotency, and per-issue failure continuation.
+      - name: Fan-out linked issues
+        if: github.event_name == 'pull_request' && steps.add.outputs.itemId != ''
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+          ITEM_ID: ${{ steps.add.outputs.itemId }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+          PR_ACTION: ${{ github.event.action }}
+          REPO_FULL: ${{ github.repository }}
+          LINKED_TOTAL_COUNT: ${{ steps.query_linked.outputs.total_count }}
+          LINKED_ISSUE_IDS: ${{ steps.query_linked.outputs.issue_ids }}
+          LINKED_QUERY_RESPONSE: ${{ steps.query_linked.outputs.query_response }}
+        run: |
+          set -eu
+
+          # Helper: emit hook_log event via python3
+          # Usage: hook_log_emit <event> <level> <json_data>
+          # CL9: passes data via stdin to avoid shell injection in python3 -c
+          hook_log_emit() {
+            _hl_event="$1"
+            _hl_level="$2"
+            _hl_data="$3"
+            printf '%s' "$_hl_data" | python3 -c "
+          import json, sys; sys.path.insert(0, '.')
+          from lib.hook_log import emit_event, create_event
+          data = json.loads(sys.stdin.read())
+          evt = create_event(
+              component='github-actions',
+              actor='auto-add-to-project',
+              event=sys.argv[1],
+              level=sys.argv[2],
+              data=data
+          )
+          emit_event(evt)
+          " "$_hl_event" "$_hl_level"
+          }
+
+          # ---------------------------------------------------------------
+          # POST-AA-2 / POST-AA-4: Determine target option ID from event
+          # POST-AA-2: On PR opened, linked issues get In Review
+          # POST-AA-4: On PR closed+merged, linked issues get Done
+          # ---------------------------------------------------------------
+          if [ "$PR_ACTION" = "opened" ] || [ "$PR_ACTION" = "reopened" ]; then
+            TARGET_OPTION_ID="$IN_REVIEW_OPTION_ID"
+            if [ "$PR_ACTION" = "opened" ]; then
+              EVENT_NAME="auto-add-pr-opened"
+            else
+              EVENT_NAME="auto-add-pr-reopened"
+            fi
+          elif [ "$PR_ACTION" = "closed" ]; then
+            # POST-AA-4: Done path MUST be gated on pr.merged == true
+            if [ "$PR_MERGED" = "true" ]; then
+              TARGET_OPTION_ID="$DONE_OPTION_ID"
+              EVENT_NAME="auto-add-pr-merged"
+            else
+              # INV-AA-5: unmerged-close NOOP — zero mutations
+              hook_log_emit "auto-add-unmerged-close-noop" "info" \
+                "{\"repo\": \"$REPO_FULL\", \"pr_number\": $PR_NUMBER}"
+              echo "::notice::Unmerged close — no mutations (INV-AA-5)"
+              exit 0
+            fi
+          else
+            echo "::error::Unexpected PR action: $PR_ACTION"
+            exit 1
+          fi
+
+          # Consume query results from query_linked step (SEQ-AA-3)
+          TOTAL_COUNT="$LINKED_TOTAL_COUNT"
+          ISSUE_IDS="$LINKED_ISSUE_IDS"
+
+          # ---------------------------------------------------------------
+          # POST-AA-8: Overflow detection — compare totalCount against 50
+          # ---------------------------------------------------------------
+          if [ "$TOTAL_COUNT" -gt 50 ]; then
+            # (a) Process the 50 returned (handled by the loop below)
+            # (b) File follow-up issue: "auto-add overflow: PR #<N> linked >50 issues"
+            PROCESSED_IDS="$(printf '%s' "$LINKED_QUERY_RESPONSE" | jq -c '[.data.repository.pullRequest.closingIssuesReferences.nodes[].id]')"
+            FOLLOWUP_BODY="PR: https://github.com/$REPO_FULL/pull/$PR_NUMBER
+          Overflow count: $TOTAL_COUNT (cap: 50)
+          Processed node IDs: $PROCESSED_IDS"
+            # ERRORS-AA-5: capture exit code — silent swallow prohibited
+            set +e
+            FOLLOWUP_RESULT="$(gh issue create \
+              --repo "$REPO_FULL" \
+              --title "auto-add overflow: PR #${PR_NUMBER} linked >50 issues" \
+              --body "$FOLLOWUP_BODY" 2>&1)"
+            FOLLOWUP_EXIT=$?
+            set -e
+            if [ "$FOLLOWUP_EXIT" -ne 0 ]; then
+              hook_log_emit "auto-add-mutation-failure" "error" \
+                "{\"repo\": \"$REPO_FULL\", \"pr_number\": $PR_NUMBER, \"mutation\": \"overflow-followup-issue-create\", \"exit_code\": $FOLLOWUP_EXIT, \"overflow_count\": $TOTAL_COUNT}"
+              echo "::error::Failed to create overflow follow-up issue: $FOLLOWUP_RESULT"
+              exit 1
+            fi
+            FOLLOWUP_NUMBER="$(printf '%s' "$FOLLOWUP_RESULT" | grep -oE '[0-9]+$' || printf '0')"
+
+            # (c) Emit auto-add-fanout-overflow at warn
+            hook_log_emit "auto-add-fanout-overflow" "warn" \
+              "{\"repo\": \"$REPO_FULL\", \"pr_number\": $PR_NUMBER, \"processed_count\": 50, \"overflow_count\": $TOTAL_COUNT, \"followup_issue_number\": $FOLLOWUP_NUMBER}"
+          fi
+
+          # ---------------------------------------------------------------
+          # SEQ-AA-6: Per-issue mutation loop
+          # ERRORS-AA-4: Continue on individual failure, count errors
+          # ---------------------------------------------------------------
+          FAIL_COUNT=0
+
+          for ISSUE_NODE_ID in $ISSUE_IDS; do
+            # Fetch current status for this issue's project item
+            ITEM_RESPONSE="$(gh api graphql -f query='
+              query($issueId: ID!) {
+                node(id: $issueId) {
+                  ... on Issue {
+                    projectItems(first: 10) {
+                      nodes {
+                        id
+                        project { id }
+                        fieldValueByName(name: "Status") {
+                          ... on ProjectV2ItemFieldSingleSelectValue {
+                            optionId
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }' \
+              -f issueId="$ISSUE_NODE_ID" 2>&1)" || {
+              # ERRORS-AA-4: single failure -> continue remaining
+              FAIL_COUNT=$((FAIL_COUNT + 1))
+              hook_log_emit "auto-add-mutation-failure" "error" \
+                "{\"repo\": \"$REPO_FULL\", \"pr_number\": $PR_NUMBER, \"item_node_id\": \"$ISSUE_NODE_ID\", \"reason\": \"query_failed\"}"
+              continue
+            }
+
+            # Extract the project item ID and current status for our project
+            ISSUE_ITEM_ID="$(printf '%s' "$ITEM_RESPONSE" | jq -r --arg pid "$PROJECT_ID" '.data.node.projectItems.nodes[] | select(.project.id == $pid) | .id' 2>/dev/null || printf '')"
+            CURRENT_STATUS="$(printf '%s' "$ITEM_RESPONSE" | jq -r --arg pid "$PROJECT_ID" '.data.node.projectItems.nodes[] | select(.project.id == $pid) | .fieldValueByName.optionId // empty' 2>/dev/null || printf '')"
+
+            # If item not in project yet, add it
+            if [ -z "$ISSUE_ITEM_ID" ]; then
+              ADD_RESULT="$(gh api graphql -f query='
+                mutation($projectId: ID!, $contentId: ID!) {
+                  addProjectV2ItemById(input: {
+                    projectId: $projectId
+                    contentId: $contentId
+                  }) {
+                    item { id }
+                  }
+                }' \
+                -f projectId="$PROJECT_ID" \
+                -f contentId="$ISSUE_NODE_ID" 2>&1)" || {
+                FAIL_COUNT=$((FAIL_COUNT + 1))
+                hook_log_emit "auto-add-mutation-failure" "error" \
+                  "{\"repo\": \"$REPO_FULL\", \"pr_number\": $PR_NUMBER, \"item_node_id\": \"$ISSUE_NODE_ID\", \"reason\": \"add_to_project_failed\"}"
+                continue
+              }
+              ISSUE_ITEM_ID="$(printf '%s' "$ADD_RESULT" | jq -r '.data.addProjectV2ItemById.item.id')"
+              CURRENT_STATUS=""
+            fi
+
+            # INV-AA-1: Terminal-state protection — do NOT mutate Done to
+            # non-terminal. Emit auto-add-terminal-skip at warn.
+            if [ "$CURRENT_STATUS" = "$DONE_OPTION_ID" ] && [ "$TARGET_OPTION_ID" != "$DONE_OPTION_ID" ]; then
+              hook_log_emit "auto-add-terminal-skip" "warn" \
+                "{\"repo\": \"$REPO_FULL\", \"pr_number\": $PR_NUMBER, \"item_node_id\": \"$ISSUE_NODE_ID\", \"item_kind\": \"issue\", \"status_before\": \"$CURRENT_STATUS\", \"status_after\": \"$TARGET_OPTION_ID\"}"
+              continue
+            fi
+
+            # INV-AA-3: Idempotency — target matches current -> zero
+            # mutations, emit auto-add-idempotent-noop at info.
+            if [ "$CURRENT_STATUS" = "$TARGET_OPTION_ID" ]; then
+              hook_log_emit "auto-add-idempotent-noop" "info" \
+                "{\"repo\": \"$REPO_FULL\", \"pr_number\": $PR_NUMBER, \"item_node_id\": \"$ISSUE_NODE_ID\", \"item_kind\": \"issue\", \"status_before\": \"$CURRENT_STATUS\", \"status_after\": \"$TARGET_OPTION_ID\"}"
+              continue
+            fi
+
+            # SEQ-AA-6: Per-issue updateProjectV2ItemFieldValue mutation
+            if ! gh api graphql -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { singleSelectOptionId: $optionId }
+                }) {
+                  projectV2Item { id }
+                }
+              }' \
+              -f projectId="$PROJECT_ID" \
+              -f itemId="$ISSUE_ITEM_ID" \
+              -f fieldId="$STATUS_FIELD_ID" \
+              -f optionId="$TARGET_OPTION_ID" 2>/dev/null; then
+              # ERRORS-AA-4: single mutation failure -> continue remaining,
+              # emit auto-add-mutation-failure per failure
+              FAIL_COUNT=$((FAIL_COUNT + 1))
+              hook_log_emit "auto-add-mutation-failure" "error" \
+                "{\"repo\": \"$REPO_FULL\", \"pr_number\": $PR_NUMBER, \"item_node_id\": \"$ISSUE_NODE_ID\", \"item_kind\": \"issue\", \"reason\": \"mutation_failed\"}"
+              continue
+            fi
+
+            # POST-AA-6: hook_log emission per item — 9-field v1 schema
+            # component=github-actions, actor=auto-add-to-project
+            hook_log_emit "$EVENT_NAME" "info" \
+              "{\"repo\": \"$REPO_FULL\", \"pr_number\": $PR_NUMBER, \"item_node_id\": \"$ISSUE_NODE_ID\", \"item_kind\": \"issue\", \"status_before\": \"$CURRENT_STATUS\", \"status_after\": \"$TARGET_OPTION_ID\"}"
+          done
+
+          # ERRORS-AA-4: exit non-zero if any mutation failed
+          if [ "$FAIL_COUNT" -gt 0 ]; then
+            echo "::error::$FAIL_COUNT linked-issue mutation(s) failed"
+            exit 1
+          fi
