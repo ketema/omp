@@ -178,12 +178,6 @@ jobs:
             -f fieldId="$STATUS_FIELD_ID" \
             -f optionId="$OPTION_ID"
 
-      # POST-AA-6 prerequisite: checkout makes lib/hook_log available for
-      # PR mutation hook_log emissions (In Review, Done, fan-out).
-      - name: Checkout repo (for hook_log)
-        if: github.event_name == 'pull_request' && steps.add.outputs.itemId != ''
-        uses: actions/checkout@v4
-
       # POST-OD-2 / POST-OD-3 / SEQ-AA-2:
       # pull_request:opened and pull_request:reopened -> In Review.
       # itemId non-empty guard (ERRORS-ATP-1, PRE-SM-1).
@@ -219,13 +213,39 @@ jobs:
           else
             _EVENT="auto-add-pr-reopened"
           fi
-          printf '%s' "{\"repo\": \"$REPO_FULL\", \"pr_number\": $PR_NUMBER, \"item_node_id\": \"$ITEM_ID\", \"item_kind\": \"pr\", \"status_before\": \"unqueried\", \"status_after\": \"$OPTION_ID\"}" | python3 -c "
-          import json, sys; sys.path.insert(0, '.')
-          from lib.hook_log import emit_event, create_event
-          data = json.loads(sys.stdin.read())
-          evt = create_event(component='github-actions', actor='auto-add-to-project', event=sys.argv[1], level='info', data=data)
-          emit_event(evt)
-          " "$_EVENT"
+          hook_log_emit() {
+            _hl_event="$1"
+            _hl_level="$2"
+            _hl_data="$3"
+            _hl_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            _hl_proj="${GITHUB_REPOSITORY:-unknown}"
+            _hl_sid="${GITHUB_RUN_ID:-0}"
+            if ! _hl_payload="$(printf '%s' "$_hl_data" | jq -c \
+              --arg ts "$_hl_ts" \
+              --arg component "github-actions" \
+              --arg actor "auto-add-to-project" \
+              --arg event "$_hl_event" \
+              --arg level "$_hl_level" \
+              --arg project "$_hl_proj" \
+              --arg session_id "$_hl_sid" \
+              '{ts: $ts, component: $component, actor: $actor, event: $event, level: $level, project: $project, session_id: $session_id, v: 1, data: .}' 2>/dev/null)"; then
+              echo "::warning title=Observability emission failed::invalid event data JSON (event=${_hl_event})"
+              return 0
+            fi
+            if [ -z "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]; then
+              echo "::notice title=Observability skipped::OTEL_EXPORTER_OTLP_ENDPOINT not configured (event=${_hl_event})"
+              return 0
+            fi
+            if ! curl -fsS -m 5 -X POST "$OTEL_EXPORTER_OTLP_ENDPOINT" \
+              -H "Content-Type: application/json" \
+              ${OTEL_EXPORTER_OTLP_HEADERS:+-H "$OTEL_EXPORTER_OTLP_HEADERS"} \
+              -d "$_hl_payload" >/dev/null 2>&1; then
+              echo "::warning title=Observability emission failed::OTLP POST failed (event=${_hl_event})"
+              return 0
+            fi
+          }
+          hook_log_emit "$_EVENT" "info" \
+            "{\"repo\": \"$REPO_FULL\", \"pr_number\": $PR_NUMBER, \"item_node_id\": \"$ITEM_ID\", \"item_kind\": \"pr\", \"status_before\": \"unqueried\", \"status_after\": \"$OPTION_ID\"}"
 
       # POST-OD-4 / POST-OD-5 / SEQ-AA-3 / INV-AE-1:
       # pull_request:closed -> Done IFF merged == true. Closed-unmerged PRs
@@ -257,13 +277,39 @@ jobs:
             -f fieldId="$STATUS_FIELD_ID" \
             -f optionId="$OPTION_ID"
           # POST-AA-6: emit central-log event for PR item
-          printf '%s' "{\"repo\": \"$REPO_FULL\", \"pr_number\": $PR_NUMBER, \"item_node_id\": \"$ITEM_ID\", \"item_kind\": \"pr\", \"status_before\": \"unqueried\", \"status_after\": \"$OPTION_ID\"}" | python3 -c "
-          import json, sys; sys.path.insert(0, '.')
-          from lib.hook_log import emit_event, create_event
-          data = json.loads(sys.stdin.read())
-          evt = create_event(component='github-actions', actor='auto-add-to-project', event='auto-add-pr-merged', level='info', data=data)
-          emit_event(evt)
-          "
+          hook_log_emit() {
+            _hl_event="$1"
+            _hl_level="$2"
+            _hl_data="$3"
+            _hl_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            _hl_proj="${GITHUB_REPOSITORY:-unknown}"
+            _hl_sid="${GITHUB_RUN_ID:-0}"
+            if ! _hl_payload="$(printf '%s' "$_hl_data" | jq -c \
+              --arg ts "$_hl_ts" \
+              --arg component "github-actions" \
+              --arg actor "auto-add-to-project" \
+              --arg event "$_hl_event" \
+              --arg level "$_hl_level" \
+              --arg project "$_hl_proj" \
+              --arg session_id "$_hl_sid" \
+              '{ts: $ts, component: $component, actor: $actor, event: $event, level: $level, project: $project, session_id: $session_id, v: 1, data: .}' 2>/dev/null)"; then
+              echo "::warning title=Observability emission failed::invalid event data JSON (event=${_hl_event})"
+              return 0
+            fi
+            if [ -z "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]; then
+              echo "::notice title=Observability skipped::OTEL_EXPORTER_OTLP_ENDPOINT not configured (event=${_hl_event})"
+              return 0
+            fi
+            if ! curl -fsS -m 5 -X POST "$OTEL_EXPORTER_OTLP_ENDPOINT" \
+              -H "Content-Type: application/json" \
+              ${OTEL_EXPORTER_OTLP_HEADERS:+-H "$OTEL_EXPORTER_OTLP_HEADERS"} \
+              -d "$_hl_payload" >/dev/null 2>&1; then
+              echo "::warning title=Observability emission failed::OTLP POST failed (event=${_hl_event})"
+              return 0
+            fi
+          }
+          hook_log_emit "auto-add-pr-merged" "info" \
+            "{\"repo\": \"$REPO_FULL\", \"pr_number\": $PR_NUMBER, \"item_node_id\": \"$ITEM_ID\", \"item_kind\": \"pr\", \"status_before\": \"unqueried\", \"status_after\": \"$OPTION_ID\"}"
 
       # POST-ED-1: Set end_date on PR item when PR is closed (merged or rejected).
       # Fires on ALL pull_request:closed events regardless of merge status.
@@ -340,26 +386,39 @@ jobs:
         run: |
           set -eu
 
-          # Helper: emit hook_log event via python3
+          # Helper: emit 9-field v1 central-log event via jq + curl (or ::notice skip)
           # Usage: hook_log_emit <event> <level> <json_data>
-          # CL9: passes data via stdin to avoid shell injection in python3 -c
+          # REQ-AAP-01..06 / INV-AAP-1..2: self-contained, passes data via stdin to jq
           hook_log_emit() {
             _hl_event="$1"
             _hl_level="$2"
             _hl_data="$3"
-            printf '%s' "$_hl_data" | python3 -c "
-          import json, sys; sys.path.insert(0, '.')
-          from lib.hook_log import emit_event, create_event
-          data = json.loads(sys.stdin.read())
-          evt = create_event(
-              component='github-actions',
-              actor='auto-add-to-project',
-              event=sys.argv[1],
-              level=sys.argv[2],
-              data=data
-          )
-          emit_event(evt)
-          " "$_hl_event" "$_hl_level"
+            _hl_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            _hl_proj="${GITHUB_REPOSITORY:-unknown}"
+            _hl_sid="${GITHUB_RUN_ID:-0}"
+            if ! _hl_payload="$(printf '%s' "$_hl_data" | jq -c \
+              --arg ts "$_hl_ts" \
+              --arg component "github-actions" \
+              --arg actor "auto-add-to-project" \
+              --arg event "$_hl_event" \
+              --arg level "$_hl_level" \
+              --arg project "$_hl_proj" \
+              --arg session_id "$_hl_sid" \
+              '{ts: $ts, component: $component, actor: $actor, event: $event, level: $level, project: $project, session_id: $session_id, v: 1, data: .}' 2>/dev/null)"; then
+              echo "::warning title=Observability emission failed::invalid event data JSON (event=${_hl_event})"
+              return 0
+            fi
+            if [ -z "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]; then
+              echo "::notice title=Observability skipped::OTEL_EXPORTER_OTLP_ENDPOINT not configured (event=${_hl_event})"
+              return 0
+            fi
+            if ! curl -fsS -m 5 -X POST "$OTEL_EXPORTER_OTLP_ENDPOINT" \
+              -H "Content-Type: application/json" \
+              ${OTEL_EXPORTER_OTLP_HEADERS:+-H "$OTEL_EXPORTER_OTLP_HEADERS"} \
+              -d "$_hl_payload" >/dev/null 2>&1; then
+              echo "::warning title=Observability emission failed::OTLP POST failed (event=${_hl_event})"
+              return 0
+            fi
           }
 
           # ---------------------------------------------------------------
