@@ -37,6 +37,7 @@ import {
 	LSP_MUX_WORKER_ARG,
 	MNEMOPI_EMBED_SERVER_WORKER_ARG,
 	PARENT_WATCHDOG_WORKER_ARG,
+	RAW_IO_WORKER_ARG,
 	STATS_ACTIVITY_WORKER_ARG,
 	TERMINAL_OUTPUT_WORKER_ARG,
 	TEXT_PREDICT_WORKER_ARG,
@@ -285,6 +286,11 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === STATS_ACTIVITY_WORKER_ARG) {
 		const { startStatsActivityWorker } = await import("./stats/activity-worker");
 		await runIpcSubprocessWorker(startStatsActivityWorker);
+		return true;
+	}
+	if (arg === RAW_IO_WORKER_ARG) {
+		const { startRawIoWorker } = await import("./tools/raw-io-worker");
+		await runIpcSubprocessWorker(startRawIoWorker);
 		return true;
 	}
 	if (arg === TERMINAL_OUTPUT_WORKER_ARG) {
