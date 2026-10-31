@@ -4,7 +4,7 @@ manifest_path: requirements/REQUIREMENT_MANIFEST_15586_LOCK_LOSS.md
 manifest_hash: sha256:471cc71c50b55b773d6ca0ec701169917806073546740a2e8e5ba3b831b59303
 created: '2026-10-31'
 last_updated: '2026-10-31'
-status: DRAFT
+status: ACTIVE
 slices:
 - id: SLICE-1
   requirement_ids:
