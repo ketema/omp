@@ -73,8 +73,8 @@ No contract executes unless all predicates evaluate to TRUE.
 
 | Item | Open Question | Where It Is Settled |
 |:-----|:--------------|:--------------------|
-| Rust bridge | How the Rust code paths (native grep in `crates/pi-natives/src/grep.rs` and walker reads through `BlockingFs`, and `pi-vfs` native routes) reach the Raw-I/O Helper, which today's JavaScript `__omp_worker_*` IPC does not cover | Contract authoring for REQ-15586-04 and REQ-15586-07, before tests |
-| Installer pins | The exact pinned versions and installer commands for `herdr-omp-agent-state` and `moshi-hooks` on each Host | Plan slice for REQ-15586-21, verified on each Host before deployment |
+| Rust bridge | How the Rust code paths (native grep in `crates/pi-natives/src/grep.rs` and walker reads through `BlockingFs`, and `pi-vfs` native routes) reach the Raw-I/O Helper, which today's JavaScript `__omp_worker_*` IPC does not cover | Contract authoring for REQ-L15586-04 and REQ-L15586-07, before tests |
+| Installer pins | The exact pinned versions and installer commands for `herdr-omp-agent-state` and `moshi-hooks` on each Host | Plan slice for REQ-L15586-21, verified on each Host before deployment |
 
 ## 2. The Actor Matrix
 
@@ -82,7 +82,7 @@ No contract executes unless all predicates evaluate to TRUE.
 |:------|:-----------------|:-------------------|
 | Ketema | Approves requirements, plan, slices, deployment and acceptance | — |
 | Claude | Edits, builds, tests and deploys on the Mac within approved slices; relays to oMACarchy | Changing the oMACarchy Host; treating oMACarchy's text as Ketema's approval |
-| oMACarchy | Edits, builds, tests and deploys on the oMACarchy Host within approved slices | Changing the Mac; changing production configuration before REQ-15586-23 passes |
+| oMACarchy | Edits, builds, tests and deploys on the oMACarchy Host within approved slices | Changing the Mac; changing production configuration before REQ-L15586-23 passes |
 | omp | Runs tools for agents | Closing in-process descriptors opened by a Trigger Path |
 | Raw-I/O Helper | Opens, reads and closes files for Trigger Paths | Opening any SQLite database connection |
 | Search Guard Hook | Blocks and redirects defined tool calls | Blocking calls outside its defined rules |
@@ -143,50 +143,50 @@ No contract executes unless all predicates evaluate to TRUE.
 
 | ID | Category | Invariant | Verification | Priority | Rationale |
 |----|----------|-----------|--------------|----------|-----------|
-| INV-15586-01 | Lock safety | omp SHALL NOT close, inside the omp process, a file descriptor opened by a Trigger Path. | Test | High | Closing such a descriptor causes Lock Loss on Linux and macOS. |
-| INV-15586-02 | Helper isolation | Raw-I/O Helper SHALL NOT open a SQLite database connection. | Test | High | A helper holding SQLite connections would reproduce Lock Loss in itself. |
-| INV-15586-12 | No descriptor transfer | omp SHALL NOT receive from another process a file descriptor for a file opened by a Trigger Path. | Test | High | Closing a received descriptor in omp still releases omp's locks (POSIX locks belong to the process). |
-| INV-15586-13 | Process boundary | omp SHALL NOT run the Raw-I/O Helper as a thread or Worker inside the omp process. | Test | High | A thread shares the process lock table. |
-| INV-15586-03 | No fallback | omp SHALL NOT fall back to an in-process open when the Raw-I/O Helper is unavailable. | Test | High | A silent fallback restores the failure mode (CL9). |
-| INV-15586-04 | Scope | omp SHALL NOT change how it stores its own state in SQLite as part of this work. | Inspection | High | SQLite removal is out of scope. |
-| INV-15586-05 | Version floor | Host SHALL NOT run an omp build whose source does not descend from ketema/omp 0f9809c643. | Inspection | High | Ketema: no downgrade below 18.13. |
-| INV-15586-06 | Launcher | Launcher SHALL start only executables that Claude or oMACarchy built from ketema/omp source. | Inspection | High | Ketema: both launchers start only the fork. |
-| INV-15586-07 | Preservation | Host SHALL NOT deploy a build that drops a `requirements/FORK_CUSTOMIZATIONS.md` row from the build, the runtime or its pinning tests. | Test | High | Fork customizations survive every rebuild. |
-| INV-15586-08 | Mac sovereignty | oMACarchy SHALL NOT change the Mac. | Inspection | High | Each agent executes only on its own host. |
-| INV-15586-09 | oMACarchy sovereignty | Claude SHALL NOT change the oMACarchy Host. | Inspection | High | Each agent executes only on its own host. |
-| INV-15586-10 | Production safety | oMACarchy SHALL NOT change his production MCP configuration, launcher default or incumbent session before REQ-15586-23 passes. | Inspection | High | Proof precedes production change. |
-| INV-15586-11 | Excluded scope | Host SHALL NOT receive the native snapshot admission and re-attestation stack, an advisor layer, guards against deliberately disabling our own hooks, or a Linux AGILITY adapter (ketema/HomeDirectory#730) from this work. | Inspection | High | Ketema decisions 2026-10-30 and 2026-10-31. |
-| REQ-15586-01 | Shared build | Host SHALL run omp built from the Shared Commit, which descends from ketema/omp 0f9809c643. | Inspection | High | macOS: Developer ID signed Mach-O. Linux: ELF. |
-| REQ-15586-02 | Preservation | Host SHALL pass the `requirements/FORK_CUSTOMIZATIONS.md` preservation checks for the Shared Commit. | Test | High | Present in build, reachable at runtime, pinned by test. |
-| REQ-15586-03 | Regression baseline | Host SHALL produce a failing-test name set for the Shared Commit equal to its Baseline Failing Set, excluding tests added by this work. | Test | High | Names, not counts, per the fork reconcile procedure; per-OS baselines differ. |
-| REQ-15586-04 | Grep reads | omp SHALL perform native grep content reads, including walker ignore-file reads, in the Raw-I/O Helper, reached from the Rust code paths. | Test | High | Trigger Path 1 (#15586): `crates/pi-natives/src/grep.rs:939`, walker reads through `BlockingFs`. |
-| REQ-15586-05 | Tool classification | omp SHALL obtain from the Raw-I/O Helper the classification of each read-tool and write-tool host-file target before omp opens that target. | Test | High | Trigger Path 2 (#15586, #17478). The read tool otherwise falls through to an in-process `fs.readFile` for `-shm`/`-wal` (`read-sqlite.ts:58`, `read.ts:240-242, :2100`); the write tool has the same exposure (`write.ts:773, :804, :1059`). |
-| REQ-15586-31 | SQLite-Family access | omp SHALL access a target that the Raw-I/O Helper classifies as SQLite-Family only through the Raw-I/O Helper or a SQLite connection. | Test | High | Decision R = C. Ordinary files keep today's in-process path; performance cost accepted. |
-| REQ-15586-06 | Find prefix | omp SHALL perform `InternalUrlFilesystem.readPrefix` reads of host files in the Raw-I/O Helper. | Test | High | Trigger Path 3. |
-| REQ-15586-07 | Shell opens | omp SHALL run each embedded-shell redirect and builtin host-file open in a child process that opens, consumes and closes the file. | Test | High | Trigger Path 4 (#15968). |
-| REQ-15586-08 | Helper failure | When the Raw-I/O Helper cannot start or fails, omp SHALL return an error that names the failed operation and path. | Test | High | CL9 observable failure. |
-| REQ-15586-09 | Builtins switch | Host SHALL set `PI_DISABLE_UUTILS_BUILTINS` in its omp shell configuration. | Inspection | Medium | Defense in depth (Ketema). macOS: BSD utilities from PATH. Linux: GNU utilities from PATH. |
-| REQ-15586-10 | Unbounded search | Search Guard Hook SHALL block a grep, find, glob or ast_grep tool call, or a bash `grep -r`, `rg` or `find` command, whose search root is an Unbounded Root. | Test | High | Constitutional search-boundary rule. macOS home `/Users/<user>`; Linux home `/home/<user>`. |
-| REQ-15586-11 | omp data | Search Guard Hook SHALL block a tool call or bash command whose target is an omp SQLite File or whose directory walk starts at or above a directory that contains one. | Test | High | Keeps agents away from the trigger. |
-| REQ-15586-12 | Git scope | Search Guard Hook SHALL block a grep or find tool call, or a bash `grep -r`, `rg` or `find` command, whose root lies inside a git working tree unless the agent ran `git grep` or `git ls-files` in that working tree earlier in the session. | Test | High | Search hierarchy: git first, then a bounded broader search (decision B). |
-| REQ-15586-13 | Redirect reason | When Search Guard Hook blocks a call, Search Guard Hook SHALL name the bounded alternative tool (`lsp`, `git grep`, `git ls-files`, or a convo tool) in the block reason. | Test | High | Block-and-redirect (Z6). |
-| REQ-15586-14 | Transcripts | Search Guard Hook SHALL block an unbounded raw search of a transcript store. | Test | Medium | Use omp-convos for transcript search. |
-| REQ-15586-15 | Point retrieval | Search Guard Hook SHALL allow retrieval of one exact message from an identified session file. | Test | Medium | Located-episode retrieval stays available. |
-| REQ-15586-16 | LSP discovery | Search Guard Hook SHALL allow `lsp` status and discovery calls. | Test | Medium | Symbol search is the preferred route. |
-| REQ-15586-17 | LSP target | Search Guard Hook SHALL block an `lsp` call whose target file is an omp SQLite File. | Test | Medium | `lsp` may open its target document in-process. |
-| REQ-15586-18 | State independence | Search Guard Hook SHALL apply its rules whether or not a CCABDD state exists. | Test | High | Host administration on oMACarchy runs outside CCABDD. |
-| REQ-15586-19 | URL mention | Skill Adherence Hook SHALL allow a bash, ipython or eval call whose text mentions a skill URL or a `SKILL.md` path. | Test | High | Z7: the current block is a false positive. |
-| REQ-15586-20 | Canonical credit | Skill Adherence Hook SHALL credit a skill as read only after a successful canonical read-tool delivery of that skill. | Test | High | Alternate shell or REPL reads earn no credit. |
-| REQ-15586-21 | Required Set | Host SHALL load every member of the Required Set, taking the Skill Adherence Hook, destructive command blocker and rtk-rewrite from one pinned omp-hooks commit and `herdr-omp-agent-state` and `moshi-hooks` from each tool's installer at a pinned version. | Test | High | Z5. Mac and Linux install paths differ. |
-| REQ-15586-29 | Role extensions | Host SHALL keep loading its existing role extensions alongside the Required Set. | Demonstration | High | oMACarchy Host: `omacarchy-covenant.ts`, `matrix.ts`. Mac: `session.ts`. Roles differ by design. |
-| REQ-15586-22 | OS portability | Host SHALL NOT load Required Set code that hard-codes a path, binary or kernel interface present on only one of macOS and Linux without a defined equivalent for the other. | Inspection | High | macOS `/dev/fd`, `ps`; Linux `/proc/self/fd`, `/proc`. |
-| REQ-15586-23 | State Server proof | oMACarchy SHALL prove, in a development session that uses an isolated agent directory and configuration, that an implicit `get_state` resolves that session's own id, that a CONVERSATION to REQUIREMENTS transition reads back, and that the State Server refuses an unauthorized GREEN transition with state unchanged. | Demonstration | High | Ketema: verify session resolution on his machine. Production `mcp.json` and extensions stay untouched until this passes. |
-| REQ-15586-24 | State Server deploy | WHEN REQ-15586-23 has passed, oMACarchy SHALL configure the oMACarchy Host's omp to declare the State Server and load the Session Bridge Hook. | Demonstration | High | Z1. The Mac already has both. |
-| REQ-15586-25 | Behaviour proof | Host SHALL demonstrate one defined observable behaviour for each Required Set member in the deployed omp. | Demonstration | High | Z4. The Search Guard Hook is a Required Set member. |
-| REQ-15586-30 | Bridge proof | WHEN REQ-15586-24 has passed, oMACarchy SHALL demonstrate that the deployed omp on the oMACarchy Host resolves its own session through the Session Bridge Hook. | Demonstration | High | The Session Bridge Hook joins the oMACarchy Host's proven set after REQ-15586-23. |
-| REQ-15586-26 | CLI flag fix | When a test reproducing rejection of the RLM isolation startup flags fails on the Shared Commit, Claude SHALL include the fix for that rejection in the Shared Commit. | Test | Medium | Only RLM change carried (decision 2026-10-31). |
-| REQ-15586-27 | Candidate selection | Launcher SHALL select a candidate build through the Host's existing selector without changing the default build. | Demonstration | Medium | macOS `OMP_BIN`; Linux `--omp-revision <40hex> --`. |
-| REQ-15586-28 | Reproduction | Host SHALL demonstrate, with throwaway databases, that the pre-change build loses its locks under each Trigger Path and the Shared Commit build does not. | Demonstration | High | Completion Promise. |
+| INV-L15586-01 | Lock safety | omp SHALL NOT close, inside the omp process, a file descriptor opened by a Trigger Path. | Test | High | Closing such a descriptor causes Lock Loss on Linux and macOS. |
+| INV-L15586-02 | Helper isolation | Raw-I/O Helper SHALL NOT open a SQLite database connection. | Test | High | A helper holding SQLite connections would reproduce Lock Loss in itself. |
+| INV-L15586-12 | No descriptor transfer | omp SHALL NOT receive from another process a file descriptor for a file opened by a Trigger Path. | Test | High | Closing a received descriptor in omp still releases omp's locks (POSIX locks belong to the process). |
+| INV-L15586-13 | Process boundary | omp SHALL NOT run the Raw-I/O Helper as a thread or Worker inside the omp process. | Test | High | A thread shares the process lock table. |
+| INV-L15586-03 | No fallback | omp SHALL NOT fall back to an in-process open when the Raw-I/O Helper is unavailable. | Test | High | A silent fallback restores the failure mode (CL9). |
+| INV-L15586-04 | Scope | omp SHALL NOT change how it stores its own state in SQLite as part of this work. | Inspection | High | SQLite removal is out of scope. |
+| INV-L15586-05 | Version floor | Host SHALL NOT run an omp build whose source does not descend from ketema/omp 0f9809c643. | Inspection | High | Ketema: no downgrade below 18.13. |
+| INV-L15586-06 | Launcher | Launcher SHALL start only executables that Claude or oMACarchy built from ketema/omp source. | Inspection | High | Ketema: both launchers start only the fork. |
+| INV-L15586-07 | Preservation | Host SHALL NOT deploy a build that drops a `requirements/FORK_CUSTOMIZATIONS.md` row from the build, the runtime or its pinning tests. | Test | High | Fork customizations survive every rebuild. |
+| INV-L15586-08 | Mac sovereignty | oMACarchy SHALL NOT change the Mac. | Inspection | High | Each agent executes only on its own host. |
+| INV-L15586-09 | oMACarchy sovereignty | Claude SHALL NOT change the oMACarchy Host. | Inspection | High | Each agent executes only on its own host. |
+| INV-L15586-10 | Production safety | oMACarchy SHALL NOT change his production MCP configuration, launcher default or incumbent session before REQ-L15586-23 passes. | Inspection | High | Proof precedes production change. |
+| INV-L15586-11 | Excluded scope | Host SHALL NOT receive the native snapshot admission and re-attestation stack, an advisor layer, guards against deliberately disabling our own hooks, or a Linux AGILITY adapter (ketema/HomeDirectory#730) from this work. | Inspection | High | Ketema decisions 2026-10-30 and 2026-10-31. |
+| REQ-L15586-01 | Shared build | Host SHALL run omp built from the Shared Commit, which descends from ketema/omp 0f9809c643. | Inspection | High | macOS: Developer ID signed Mach-O. Linux: ELF. |
+| REQ-L15586-02 | Preservation | Host SHALL pass the `requirements/FORK_CUSTOMIZATIONS.md` preservation checks for the Shared Commit. | Test | High | Present in build, reachable at runtime, pinned by test. |
+| REQ-L15586-03 | Regression baseline | Host SHALL produce a failing-test name set for the Shared Commit equal to its Baseline Failing Set, excluding tests added by this work. | Test | High | Names, not counts, per the fork reconcile procedure; per-OS baselines differ. |
+| REQ-L15586-04 | Grep reads | omp SHALL perform native grep content reads, including walker ignore-file reads, in the Raw-I/O Helper, reached from the Rust code paths. | Test | High | Trigger Path 1 (#15586): `crates/pi-natives/src/grep.rs:939`, walker reads through `BlockingFs`. |
+| REQ-L15586-05 | Tool classification | omp SHALL obtain from the Raw-I/O Helper the classification of each read-tool and write-tool host-file target before omp opens that target. | Test | High | Trigger Path 2 (#15586, #17478). The read tool otherwise falls through to an in-process `fs.readFile` for `-shm`/`-wal` (`read-sqlite.ts:58`, `read.ts:240-242, :2100`); the write tool has the same exposure (`write.ts:773, :804, :1059`). |
+| REQ-L15586-31 | SQLite-Family access | omp SHALL access a target that the Raw-I/O Helper classifies as SQLite-Family only through the Raw-I/O Helper or a SQLite connection. | Test | High | Decision R = C. Ordinary files keep today's in-process path; performance cost accepted. |
+| REQ-L15586-06 | Find prefix | omp SHALL perform `InternalUrlFilesystem.readPrefix` reads of host files in the Raw-I/O Helper. | Test | High | Trigger Path 3. |
+| REQ-L15586-07 | Shell opens | omp SHALL run each embedded-shell redirect and builtin host-file open in a child process that opens, consumes and closes the file. | Test | High | Trigger Path 4 (#15968). |
+| REQ-L15586-08 | Helper failure | When the Raw-I/O Helper cannot start or fails, omp SHALL return an error that names the failed operation and path. | Test | High | CL9 observable failure. |
+| REQ-L15586-09 | Builtins switch | Host SHALL set `PI_DISABLE_UUTILS_BUILTINS` in its omp shell configuration. | Inspection | Medium | Defense in depth (Ketema). macOS: BSD utilities from PATH. Linux: GNU utilities from PATH. |
+| REQ-L15586-10 | Unbounded search | Search Guard Hook SHALL block a grep, find, glob or ast_grep tool call, or a bash `grep -r`, `rg` or `find` command, whose search root is an Unbounded Root. | Test | High | Constitutional search-boundary rule. macOS home `/Users/<user>`; Linux home `/home/<user>`. |
+| REQ-L15586-11 | omp data | Search Guard Hook SHALL block a tool call or bash command whose target is an omp SQLite File or whose directory walk starts at or above a directory that contains one. | Test | High | Keeps agents away from the trigger. |
+| REQ-L15586-12 | Git scope | Search Guard Hook SHALL block a grep or find tool call, or a bash `grep -r`, `rg` or `find` command, whose root lies inside a git working tree unless the agent ran `git grep` or `git ls-files` in that working tree earlier in the session. | Test | High | Search hierarchy: git first, then a bounded broader search (decision B). |
+| REQ-L15586-13 | Redirect reason | When Search Guard Hook blocks a call, Search Guard Hook SHALL name the bounded alternative tool (`lsp`, `git grep`, `git ls-files`, or a convo tool) in the block reason. | Test | High | Block-and-redirect (Z6). |
+| REQ-L15586-14 | Transcripts | Search Guard Hook SHALL block an unbounded raw search of a transcript store. | Test | Medium | Use omp-convos for transcript search. |
+| REQ-L15586-15 | Point retrieval | Search Guard Hook SHALL allow retrieval of one exact message from an identified session file. | Test | Medium | Located-episode retrieval stays available. |
+| REQ-L15586-16 | LSP discovery | Search Guard Hook SHALL allow `lsp` status and discovery calls. | Test | Medium | Symbol search is the preferred route. |
+| REQ-L15586-17 | LSP target | Search Guard Hook SHALL block an `lsp` call whose target file is an omp SQLite File. | Test | Medium | `lsp` may open its target document in-process. |
+| REQ-L15586-18 | State independence | Search Guard Hook SHALL apply its rules whether or not a CCABDD state exists. | Test | High | Host administration on oMACarchy runs outside CCABDD. |
+| REQ-L15586-19 | URL mention | Skill Adherence Hook SHALL allow a bash, ipython or eval call whose text mentions a skill URL or a `SKILL.md` path. | Test | High | Z7: the current block is a false positive. |
+| REQ-L15586-20 | Canonical credit | Skill Adherence Hook SHALL credit a skill as read only after a successful canonical read-tool delivery of that skill. | Test | High | Alternate shell or REPL reads earn no credit. |
+| REQ-L15586-21 | Required Set | Host SHALL load every member of the Required Set, taking the Skill Adherence Hook, destructive command blocker and rtk-rewrite from one pinned omp-hooks commit and `herdr-omp-agent-state` and `moshi-hooks` from each tool's installer at a pinned version. | Test | High | Z5. Mac and Linux install paths differ. |
+| REQ-L15586-29 | Role extensions | Host SHALL keep loading its existing role extensions alongside the Required Set. | Demonstration | High | oMACarchy Host: `omacarchy-covenant.ts`, `matrix.ts`. Mac: `session.ts`. Roles differ by design. |
+| REQ-L15586-22 | OS portability | Host SHALL NOT load Required Set code that hard-codes a path, binary or kernel interface present on only one of macOS and Linux without a defined equivalent for the other. | Inspection | High | macOS `/dev/fd`, `ps`; Linux `/proc/self/fd`, `/proc`. |
+| REQ-L15586-23 | State Server proof | oMACarchy SHALL prove, in a development session that uses an isolated agent directory and configuration, that an implicit `get_state` resolves that session's own id, that a CONVERSATION to REQUIREMENTS transition reads back, and that the State Server refuses an unauthorized GREEN transition with state unchanged. | Demonstration | High | Ketema: verify session resolution on his machine. Production `mcp.json` and extensions stay untouched until this passes. |
+| REQ-L15586-24 | State Server deploy | WHEN REQ-L15586-23 has passed, oMACarchy SHALL configure the oMACarchy Host's omp to declare the State Server and load the Session Bridge Hook. | Demonstration | High | Z1. The Mac already has both. |
+| REQ-L15586-25 | Behaviour proof | Host SHALL demonstrate one defined observable behaviour for each Required Set member in the deployed omp. | Demonstration | High | Z4. The Search Guard Hook is a Required Set member. |
+| REQ-L15586-30 | Bridge proof | WHEN REQ-L15586-24 has passed, oMACarchy SHALL demonstrate that the deployed omp on the oMACarchy Host resolves its own session through the Session Bridge Hook. | Demonstration | High | The Session Bridge Hook joins the oMACarchy Host's proven set after REQ-L15586-23. |
+| REQ-L15586-26 | CLI flag fix | When a test reproducing rejection of the RLM isolation startup flags fails on the Shared Commit, Claude SHALL include the fix for that rejection in the Shared Commit. | Test | Medium | Only RLM change carried (decision 2026-10-31). |
+| REQ-L15586-27 | Candidate selection | Launcher SHALL select a candidate build through the Host's existing selector without changing the default build. | Demonstration | Medium | macOS `OMP_BIN`; Linux `--omp-revision <40hex> --`. |
+| REQ-L15586-28 | Reproduction | Host SHALL demonstrate, with throwaway databases, that the pre-change build loses its locks under each Trigger Path and the Shared Commit build does not. | Demonstration | High | Completion Promise. |
 
 ## 5. High-Entropy Zones (Adjudicated)
 
@@ -238,14 +238,14 @@ No contract executes unless all predicates evaluate to TRUE.
 
 | Requirement | Failure Condition | Behavior | Notification |
 |:------------|:------------------|:---------|:-------------|
-| REQ-15586-08 | Raw-I/O Helper cannot start, crashes or times out | omp SHALL return the tool call as an error without an in-process open. | omp SHALL name the failed operation and path in the error. |
-| REQ-15586-10 | A call has an Unbounded Root | Search Guard Hook SHALL block the call before execution. | Search Guard Hook SHALL name the bounded alternative tool in the reason. |
-| REQ-15586-11 | A call targets an omp SQLite File | Search Guard Hook SHALL block the call before execution. | Search Guard Hook SHALL name the bounded alternative tool in the reason. |
-| REQ-15586-19 | A command mentions a skill URL | Skill Adherence Hook SHALL allow the call. | Skill Adherence Hook SHALL emit no block. |
-| REQ-15586-21 | A Required Set member fails to load | Host SHALL keep its current default build. | Host SHALL report the missing behaviour in the REQ-15586-25 proof. |
-| REQ-15586-23 | Implicit `get_state` does not resolve the development session | oMACarchy SHALL leave production configuration unchanged. | oMACarchy SHALL report the observed resolution to Claude and Ketema. |
-| REQ-15586-01 | A Host cannot build the Shared Commit | Host SHALL keep its current default build. | Host SHALL report the build error to Claude and Ketema. |
-| REQ-15586-03 | The failing-test name set differs from the Baseline Failing Set | Host SHALL keep its current default build. | Host SHALL report the differing test names. |
+| REQ-L15586-08 | Raw-I/O Helper cannot start, crashes or times out | omp SHALL return the tool call as an error without an in-process open. | omp SHALL name the failed operation and path in the error. |
+| REQ-L15586-10 | A call has an Unbounded Root | Search Guard Hook SHALL block the call before execution. | Search Guard Hook SHALL name the bounded alternative tool in the reason. |
+| REQ-L15586-11 | A call targets an omp SQLite File | Search Guard Hook SHALL block the call before execution. | Search Guard Hook SHALL name the bounded alternative tool in the reason. |
+| REQ-L15586-19 | A command mentions a skill URL | Skill Adherence Hook SHALL allow the call. | Skill Adherence Hook SHALL emit no block. |
+| REQ-L15586-21 | A Required Set member fails to load | Host SHALL keep its current default build. | Host SHALL report the missing behaviour in the REQ-L15586-25 proof. |
+| REQ-L15586-23 | Implicit `get_state` does not resolve the development session | oMACarchy SHALL leave production configuration unchanged. | oMACarchy SHALL report the observed resolution to Claude and Ketema. |
+| REQ-L15586-01 | A Host cannot build the Shared Commit | Host SHALL keep its current default build. | Host SHALL report the build error to Claude and Ketema. |
+| REQ-L15586-03 | The failing-test name set differs from the Baseline Failing Set | Host SHALL keep its current default build. | Host SHALL report the differing test names. |
 
 ## 8. Completion Promise (Ralph Loop Exit)
 

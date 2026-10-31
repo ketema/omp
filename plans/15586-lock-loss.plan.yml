@@ -1,0 +1,173 @@
+schema_version: '1.0'
+feature_name: 15586-in-process-lock-loss
+manifest_path: requirements/REQUIREMENT_MANIFEST_15586_LOCK_LOSS.md
+manifest_hash: sha256:471cc71c50b55b773d6ca0ec701169917806073546740a2e8e5ba3b831b59303
+created: '2026-10-31'
+last_updated: '2026-10-31'
+status: DRAFT
+slices:
+- id: SLICE-1
+  requirement_ids:
+  - REQ-L15586-09
+  - REQ-L15586-10
+  - REQ-L15586-11
+  - REQ-L15586-12
+  - REQ-L15586-13
+  - REQ-L15586-14
+  - REQ-L15586-15
+  - REQ-L15586-16
+  - REQ-L15586-17
+  - REQ-L15586-18
+  - REQ-L15586-22
+  clauses_in_scope: []
+  clauses_deferred: []
+  negative_constraints:
+  - INV-L15586-08
+  - INV-L15586-09
+  - INV-L15586-11
+  status: PENDING
+  depends_on: []
+  issue: TODO
+  pivot_note: Shippable alone with no omp rebuild; the Search Guard Hook and builtins switch run on both hosts, proven by their own behaviour there, and block the search that corrupted oMACarchy's database.
+- id: SLICE-2
+  requirement_ids:
+  - REQ-L15586-01
+  - REQ-L15586-02
+  - REQ-L15586-03
+  - REQ-L15586-21
+  - REQ-L15586-22
+  - REQ-L15586-25
+  - REQ-L15586-27
+  - REQ-L15586-29
+  - REQ-L15586-19
+  - REQ-L15586-20
+  clauses_in_scope: []
+  clauses_deferred: []
+  negative_constraints:
+  - INV-L15586-05
+  - INV-L15586-06
+  - INV-L15586-07
+  - INV-L15586-08
+  - INV-L15586-09
+  status: PENDING
+  depends_on: []
+  issue: TODO
+  pivot_note: Shippable alone; both hosts run one fork commit at or above 0f9809c643 with the Required Set members that exist and their role extensions, and the Skill Adherence Hook is deployed already fixed so it does not block messages that merely mention a skill URL.
+- id: SLICE-3
+  requirement_ids:
+  - REQ-L15586-01
+  - REQ-L15586-04
+  - REQ-L15586-08
+  - REQ-L15586-28
+  clauses_in_scope: []
+  clauses_deferred: []
+  negative_constraints:
+  - INV-L15586-01
+  - INV-L15586-02
+  - INV-L15586-03
+  - INV-L15586-04
+  - INV-L15586-12
+  - INV-L15586-13
+  status: PENDING
+  depends_on: []
+  issue: TODO
+  pivot_note: Shippable alone; native grep content and walker ignore-file reads can no longer release omp's locks, proven on both hosts.
+- id: SLICE-4
+  requirement_ids:
+  - REQ-L15586-01
+  - REQ-L15586-05
+  - REQ-L15586-31
+  - REQ-L15586-08
+  - REQ-L15586-28
+  clauses_in_scope: []
+  clauses_deferred: []
+  negative_constraints:
+  - INV-L15586-01
+  - INV-L15586-02
+  - INV-L15586-03
+  - INV-L15586-04
+  - INV-L15586-12
+  - INV-L15586-13
+  status: PENDING
+  depends_on: []
+  issue: TODO
+  pivot_note: Shippable alone; the read and write tools can no longer release omp's locks on SQLite-Family files, proven on both hosts; built by oMACarchy and audited by Claude.
+- id: SLICE-5
+  requirement_ids:
+  - REQ-L15586-01
+  - REQ-L15586-06
+  - REQ-L15586-08
+  - REQ-L15586-28
+  clauses_in_scope: []
+  clauses_deferred: []
+  negative_constraints:
+  - INV-L15586-01
+  - INV-L15586-02
+  - INV-L15586-03
+  - INV-L15586-04
+  - INV-L15586-12
+  - INV-L15586-13
+  status: PENDING
+  depends_on: []
+  issue: TODO
+  pivot_note: Shippable alone; the find text scan can no longer release omp's locks, proven on both hosts.
+- id: SLICE-6
+  requirement_ids:
+  - REQ-L15586-01
+  - REQ-L15586-07
+  - REQ-L15586-08
+  - REQ-L15586-28
+  clauses_in_scope: []
+  clauses_deferred: []
+  negative_constraints:
+  - INV-L15586-01
+  - INV-L15586-03
+  - INV-L15586-04
+  - INV-L15586-12
+  status: PENDING
+  depends_on: []
+  issue: TODO
+  pivot_note: Shippable alone; embedded-shell redirects and builtin file opens can no longer release omp's locks, proven on both hosts.
+- id: SLICE-7
+  requirement_ids:
+  - REQ-L15586-23
+  - REQ-L15586-24
+  - REQ-L15586-30
+  clauses_in_scope: []
+  clauses_deferred: []
+  negative_constraints:
+  - INV-L15586-08
+  - INV-L15586-09
+  - INV-L15586-10
+  status: PENDING
+  depends_on: []
+  issue: TODO
+  pivot_note: Shippable alone; oMACarchy's own omp work is gated by the CCABDD state machine, proven first in an isolated session.
+- id: SLICE-8
+  requirement_ids:
+  - REQ-L15586-26
+  clauses_in_scope: []
+  clauses_deferred: []
+  negative_constraints:
+  - INV-L15586-11
+  status: PENDING
+  depends_on: []
+  issue: TODO
+  pivot_note: Shippable alone; RLM isolation flags are accepted at startup, carried only if the reproducing test fails on the current fork commit.
+pivot_guidance:
+- 'Independence: no slice depends on another; any order is valid. Infrastructure shared by SLICE-3, SLICE-4 and SLICE-5 (the Raw-I/O Helper) is built by the first of them to ship, only as far as that slice needs; later slices extend it.'
+- 'Required Set: SLICE-2 owns loading and proving every Required Set member that exists (REQ-L15586-21, -25); a slice that adds a member (SLICE-1 adds the Search Guard Hook) proves that member by its own behaviour on both hosts.'
+- 'Convergence: the first slice that deploys an omp build on a host brings that host to the Shared Commit and satisfies REQ-L15586-01, -02, -03 and -27 for it; every later build re-proves them.'
+- 'Proof per slice: each slice ends with its build or hook deployed on both hosts, its REQ-L15586-28 reproduction or REQ-L15586-25 behaviour shown on each host with throwaway databases, the evidence exchanged between Claude and oMACarchy, and Ketema accepting or rejecting the slice.'
+- 'Execution: Claude executes only on the Mac and oMACarchy only on the oMACarchy Host (INV-L15586-08, INV-L15586-09).'
+- 'SLICE-4 builder: oMACarchy authors contracts, tests and code. Before he has the State Server (decision 3-B, 2026-10-31), each of his phase transitions is approved through Claude and recorded in Claude''s session state with his commit hashes. Claude audits the deliverable independently: clause coverage, theater check, and the throwaway-database reproduction on the Mac.'
+- 'Consensus: every artifact Ketema approves also needs oMACarchy''s agreement on the exact SHA-256 of the version approved; any change voids the approval; Ketema is final arbiter.'
+- 'Open ambiguities: the Rust-to-helper bridge is settled in SLICE-3 contracts; the herdr and moshi installer pins are settled in the slice that first deploys them.'
+forgotten_invariants:
+- INV-L15586-01
+- INV-L15586-03
+- INV-L15586-04
+- INV-L15586-08
+- INV-L15586-09
+- INV-L15586-12
+- INV-L15586-13
