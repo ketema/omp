@@ -16,6 +16,14 @@
 
 export const RAW_IO_WORKER_ARG = "__omp_worker_raw_io" as const;
 
+export const RAW_IO_WORKER_SELECTORS_MODULE = "@oh-my-pi/pi-coding-agent/cli/worker-selectors" as const;
+
+export const RAW_IO_CLIENT_MODULE = "@oh-my-pi/pi-coding-agent/tools/raw-io-client" as const;
+
+export const RAW_IO_CLASSIFY_FN_NAME = "classifyRawIoTarget" as const;
+
+export const RAW_IO_STOP_FN_NAME = "stopRawIoHelper" as const;
+
 export const SQLITE_HEADER_MAGIC = new Uint8Array([
 	0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00,
 ]);
@@ -97,6 +105,20 @@ export interface RawIoTargetClassification {
 	readonly helperPid: number;
 }
 
+export interface RawIoClassifyOptions {
+	readonly helperSpawnCommand?: {
+		readonly cmd: readonly string[];
+	};
+}
+
+export interface RawIoClientSurface {
+	readonly classifyRawIoTarget: (
+		targetPath: string,
+		options?: RawIoClassifyOptions,
+	) => Promise<RawIoTargetClassification>;
+	readonly stopRawIoHelper: () => Promise<void>;
+}
+
 export interface ClassifyResolvedTargetInput {
 	readonly targetPath: unknown;
 	readonly resolvedPath: unknown;
@@ -110,11 +132,53 @@ export interface ClassifyResolvedTargetInput {
 // Artifact 4: Pure callable validators
 // =============================================================================
 
+export function isEntryKind(value: unknown): value is EntryKind {
+	return value === "file" || value === "missing" || value === "directory" || value === "special";
+}
+
 export function validateTargetPath(targetPath: unknown): string {
 	if (typeof targetPath !== "string" || targetPath.trim().length === 0 || !targetPath.startsWith("/")) {
 		throw new RawIoInvalidTargetPathError(targetPath);
 	}
 	return targetPath;
+}
+
+export function validateClassifyOptions(options: unknown): RawIoClassifyOptions {
+	if (options === undefined) {
+		return Object.freeze({});
+	}
+	if (typeof options !== "object" || options === null) {
+		throw new RawIoClassificationMismatchError(
+			"POST-RAWIO-2",
+			`options must be an object or undefined; got ${JSON.stringify(options)}`,
+		);
+	}
+	const spawn = Reflect.get(options, "helperSpawnCommand");
+	if (spawn === undefined) {
+		return Object.freeze({});
+	}
+	if (typeof spawn !== "object" || spawn === null) {
+		throw new RawIoClassificationMismatchError(
+			"POST-RAWIO-2",
+			"helperSpawnCommand must be an object with a non-empty 'cmd' array",
+		);
+	}
+	const cmd = Reflect.get(spawn, "cmd");
+	if (
+		!Array.isArray(cmd) ||
+		cmd.length === 0 ||
+		!cmd.every((item): item is string => typeof item === "string" && item.trim().length > 0)
+	) {
+		throw new RawIoClassificationMismatchError(
+			"POST-RAWIO-2",
+			"helperSpawnCommand.cmd must be a non-empty array of non-empty strings",
+		);
+	}
+	return Object.freeze({
+		helperSpawnCommand: Object.freeze({
+			cmd: Object.freeze([...cmd]),
+		}),
+	});
 }
 
 export function hasSqliteHeaderMagic(bytes: Uint8Array): boolean {
@@ -140,18 +204,17 @@ export function validateClassificationRecord(input: ClassifyResolvedTargetInput)
 		);
 	}
 	const rawEntryKind = input.entryKind ?? "file";
-	if (typeof rawEntryKind !== "string" || !(VALID_ENTRY_KINDS as readonly string[]).includes(rawEntryKind)) {
+	if (!isEntryKind(rawEntryKind)) {
 		throw new RawIoClassificationMismatchError(
 			"POST-RAWIO-1",
 			`entryKind must be one of ${JSON.stringify(VALID_ENTRY_KINDS)}; got ${JSON.stringify(rawEntryKind)}`,
 		);
 	}
-	const entryKind = rawEntryKind as EntryKind;
-	if (entryKind === "missing" || entryKind === "directory" || entryKind === "special") {
+	if (rawEntryKind === "missing" || rawEntryKind === "directory" || rawEntryKind === "special") {
 		return Object.freeze({
 			targetPath: validTarget,
 			resolvedPath: validResolved,
-			kind: entryKind,
+			kind: rawEntryKind,
 			isSqliteFamily: false,
 			helperPid: input.helperPid,
 		});
@@ -207,7 +270,15 @@ export const RAW_IO_HELPER_CONTRACT = {
 	},
 	"POST-RAWIO-1": {
 		verification: "test",
-		text: "The Raw-I/O Helper classifies a target as SQLite-Family ('sqlite_sidecar' when its resolved real path ends with '-wal', '-shm', or '-journal'; 'sqlite_db' when its first 16 bytes equal 'SQLite format 3\\0') and as 'non_sqlite' (or 'missing'/'directory'/'special') otherwise, returning only bytes and metadata from a separate OS process (helperPid !== omp.pid) without closing any descriptor for the target inside omp. Source: REQ-L15586-05, INV-L15586-01, SEQ-5, IP-2.",
+		text: "The Raw-I/O Helper classifies a target as SQLite-Family ('sqlite_sidecar' when its resolved real path ends with '-wal', '-shm', or '-journal'; 'sqlite_db' when its first 16 bytes equal 'SQLite format 3\\0') and as 'non_sqlite' (or 'missing'/'directory'/'special') otherwise, returning only bytes and metadata (RawIoTargetClassification) to omp. Source: REQ-L15586-05, IP-2.",
+	},
+	"POST-RAWIO-1b": {
+		verification: "test",
+		text: "Classifying a target through the Raw-I/O Helper closes no file descriptor for that target inside the omp process and retains every POSIX advisory lock omp holds on SQLite database and sidecar inodes. Source: INV-L15586-01, REQ-L15586-05, REQ-L15586-28.",
+	},
+	"POST-RAWIO-2": {
+		verification: "test",
+		text: "The worker-selector module (@oh-my-pi/pi-coding-agent/cli/worker-selectors) exports RAW_IO_WORKER_ARG ('__omp_worker_raw_io'), and the Raw-I/O client module (@oh-my-pi/pi-coding-agent/tools/raw-io-client) exports classifyRawIoTarget(targetPath, options?) -> Promise<RawIoTargetClassification> (where options.helperSpawnCommand.cmd is an optional spawn-command override for fault-injection testing of helper startup failure) and stopRawIoHelper() -> Promise<void> to terminate the helper subprocess. Source: REQ-L15586-05, REQ-L15586-08, SEQ-5, SEQ-6, IP-2.",
 	},
 	"ERRORS-RAWIO-1": {
 		verification: "test",
@@ -223,7 +294,7 @@ export const RAW_IO_HELPER_CONTRACT = {
 	},
 	"FORBIDDEN-RAWIO-2": {
 		verification: "test",
-		text: "omp SHALL NOT run the Raw-I/O Helper as an in-process thread or Worker. Source: INV-L15586-13.",
+		text: "omp SHALL NOT run the Raw-I/O Helper as an in-process thread or Worker (helperPid SHALL be a live OS process ID distinct from omp's process.pid). Source: INV-L15586-13.",
 	},
 	"FORBIDDEN-RAWIO-2b": {
 		verification: "test",

@@ -15,6 +15,12 @@ from typing import Final, Literal
 # =============================================================================
 
 RAW_IO_WORKER_ARG: Final[str] = "__omp_worker_raw_io"
+RAW_IO_WORKER_SELECTORS_MODULE: Final[str] = (
+    "@oh-my-pi/pi-coding-agent/cli/worker-selectors"
+)
+RAW_IO_CLIENT_MODULE: Final[str] = "@oh-my-pi/pi-coding-agent/tools/raw-io-client"
+RAW_IO_CLASSIFY_FN_NAME: Final[str] = "classifyRawIoTarget"
+RAW_IO_STOP_FN_NAME: Final[str] = "stopRawIoHelper"
 SQLITE_HEADER_MAGIC: Final[bytes] = b"SQLite format 3\x00"
 SQLITE_SIDECAR_SUFFIXES: Final[tuple[str, ...]] = ("-wal", "-shm", "-journal")
 SQLITE_FAMILY_CLASSIFICATIONS: Final[tuple[str, ...]] = (
@@ -105,6 +111,13 @@ class RawIoTargetClassification:
     helper_pid: int
 
 
+@dataclass(slots=True, frozen=True)
+class RawIoClassifyOptionsSpec:
+    """Validated optional spawn override for fault-injection testing (POST-RAWIO-2)."""
+
+    helper_spawn_cmd: tuple[str, ...] | None = None
+
+
 # =============================================================================
 # 4. Callable validators (pure; no I/O)
 # =============================================================================
@@ -119,6 +132,36 @@ def validate_target_path(target_path: object) -> str:
     ):
         raise RawIoInvalidTargetPathError(target_path)
     return target_path
+
+
+def validate_classify_options(options: object) -> RawIoClassifyOptionsSpec:
+    """POST-RAWIO-2: optional helperSpawnCommand.cmd is a non-empty string sequence."""
+    if options is None:
+        return RawIoClassifyOptionsSpec(helper_spawn_cmd=None)
+    if not isinstance(options, dict):
+        raise RawIoClassificationMismatchError(
+            "POST-RAWIO-2",
+            f"options must be a mapping or None; got {type(options).__name__}",
+        )
+    spawn = options.get("helperSpawnCommand")
+    if spawn is None:
+        return RawIoClassifyOptionsSpec(helper_spawn_cmd=None)
+    if not isinstance(spawn, dict):
+        raise RawIoClassificationMismatchError(
+            "POST-RAWIO-2",
+            "helperSpawnCommand must be a mapping with a non-empty 'cmd' sequence",
+        )
+    cmd = spawn.get("cmd")
+    if (
+        not isinstance(cmd, (list, tuple))
+        or len(cmd) == 0
+        or not all(isinstance(part, str) and len(part.strip()) > 0 for part in cmd)
+    ):
+        raise RawIoClassificationMismatchError(
+            "POST-RAWIO-2",
+            "helperSpawnCommand.cmd must be a non-empty sequence of non-empty strings",
+        )
+    return RawIoClassifyOptionsSpec(helper_spawn_cmd=tuple(cmd))
 
 
 def classify_resolved_target_pure(
@@ -245,9 +288,32 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "when its resolved real path ends with '-wal', '-shm', or '-journal'; "
             "'sqlite_db' when its first 16 bytes equal 'SQLite format 3\\0') and "
             "as 'non_sqlite' (or 'missing'/'directory'/'special') otherwise, returning "
-            "only bytes and metadata from a separate OS process "
-            "(helper_pid != omp.pid) without closing any descriptor for the target "
-            "inside omp. Source: REQ-L15586-05, INV-L15586-01, SEQ-5, IP-2."
+            "only bytes and metadata (RawIoTargetClassification) to omp. "
+            "Source: REQ-L15586-05, IP-2."
+        ),
+    ),
+    "POST-RAWIO-1b": Clause(
+        verification="test",
+        text=(
+            "Classifying a target through the Raw-I/O Helper closes no file descriptor "
+            "for that target inside the omp process and retains every POSIX advisory "
+            "lock omp holds on SQLite database and sidecar inodes. "
+            "Source: INV-L15586-01, REQ-L15586-05, REQ-L15586-28."
+        ),
+    ),
+    "POST-RAWIO-2": Clause(
+        verification="test",
+        text=(
+            "The worker-selector module "
+            "(@oh-my-pi/pi-coding-agent/cli/worker-selectors) exports "
+            "RAW_IO_WORKER_ARG ('__omp_worker_raw_io'), and the Raw-I/O client "
+            "module (@oh-my-pi/pi-coding-agent/tools/raw-io-client) exports "
+            "classifyRawIoTarget(targetPath, options?) -> "
+            "Promise<RawIoTargetClassification> (where "
+            "options.helperSpawnCommand.cmd is an optional spawn-command "
+            "override for fault-injection testing of helper startup failure) and "
+            "stopRawIoHelper() -> Promise<void> to terminate the helper "
+            "subprocess. Source: REQ-L15586-05, REQ-L15586-08, SEQ-5, SEQ-6, IP-2."
         ),
     ),
     "ERRORS-RAWIO-1": Clause(
@@ -275,8 +341,9 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
     "FORBIDDEN-RAWIO-2": Clause(
         verification="test",
         text=(
-            "omp SHALL NOT run the Raw-I/O Helper as an in-process thread or Worker. "
-            "Source: INV-L15586-13."
+            "omp SHALL NOT run the Raw-I/O Helper as an in-process thread or "
+            "Worker (helperPid SHALL be a live OS process ID distinct from "
+            "omp's process.pid). Source: INV-L15586-13."
         ),
     ),
     "FORBIDDEN-RAWIO-2b": Clause(
