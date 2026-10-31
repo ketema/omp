@@ -1,0 +1,10 @@
+# SLICE-4 Amendments Ledger (QS6 / CL4-A)
+
+## 2026-10-31 — Batch 1 thin contract refinements (`c7d1271e69` → amended)
+
+- **B1 (`python-mastery` compliance):** Removed `from __future__ import annotations`, adopted PEP 695 `type ClassificationKind = ...`, added `slots=True` to all `@dataclass(slots=True, frozen=True)` records, and made `entry_kind` keyword-only in `classify_resolved_target_pure`.
+- **B2 (Fail-fast on unrecognized `entry_kind` / `entryKind`):** Both `classify_resolved_target_pure` and `validateClassificationRecord` now reject any `entry_kind` / `entryKind` outside `("file", "missing", "directory", "special")` by raising `RawIoClassificationMismatchError("POST-RAWIO-1", ...)` (CL9).
+- **B3 (Clause singularity and deduplication):** Split `FORBIDDEN-RAWIO-1` into `FORBIDDEN-RAWIO-1` (`INV-L15586-02`: helper SHALL NOT open a SQLite connection) and `FORBIDDEN-RAWIO-1b` (`INV-L15586-03`, `REQ-L15586-08`: omp SHALL NOT fall back to an in-process file open when the helper is unavailable or fails), and removed the duplicate no-fallback phrase from `ERRORS-RAWIO-1`. Split `FORBIDDEN-RAWIO-2` into `FORBIDDEN-RAWIO-2` (`INV-L15586-13`: helper SHALL NOT run as an in-process thread or Worker) and `FORBIDDEN-RAWIO-2b` (`INV-L15586-12`: omp SHALL NOT receive a file descriptor opened by a Trigger Path from another process).
+- **B4 (POSIX-only path scope):** Removed Windows drive-letter branches from `validate_target_path` / `validateTargetPath`; `PRE-RAWIO-1` requires a non-empty POSIX absolute path starting with `/` (macOS and Linux).
+- **N1 (`REQ-L15586-31` citation alignment):** Removed `REQ-L15586-31` from `POST-RAWIO-1` (which contracts classification only); `REQ-L15586-31` and `SEQ-2`/`IP-2` tool-access ordering will be contracted in Batch 2 when `ReadTool` and `WriteTool` are wired.
+- **N3 (`validate_helper_failure_error` exception class):** Changed empty-message rejection in `validate_helper_failure_error` / `validateHelperFailureError` to raise `RawIoClassificationMismatchError("ERRORS-RAWIO-1", ...)` instead of `RawIoHelperUnavailableError`.
