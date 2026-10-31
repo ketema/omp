@@ -1,50 +1,59 @@
 /**
- * Raw-I/O Helper Contract — specification authority (TypeScript native).
+ * Raw-I/O Helper Contract - specification authority (TypeScript native).
  *
- * Authoritative contract for SLICE-4 (REQ-L15586-05, REQ-L15586-31, REQ-L15586-08,
+ * Authoritative Contract for SLICE-4 (REQ-L15586-05, REQ-L15586-31, REQ-L15586-08,
  * REQ-L15586-28; negative constraints INV-L15586-01, INV-L15586-02, INV-L15586-03,
- * INV-L15586-04, INV-L15586-12, INV-L15586-13) paired with contracts/raw_io_helper.contract.py.
+ * INV-L15586-04, INV-L15586-12, INV-L15586-13; sequence SEQ-2, SEQ-5, SEQ-6;
+ * integration points IP-2).
  *
  * Contract-Implementation Independence (CL11-F):
- *   Production code MUST NOT import from this file; tests import both contract
- *   and implementation to verify constant, type, and behavioral alignment.
+ *   Tests in packages/coding-agent/test/tools/ import this contract;
+ *   production code under packages/coding-agent/src/ MUST NOT import this file.
  */
 
 // =============================================================================
-// Artifact 1: Importable constants
+// Artifact 1: Exported Constants
 // =============================================================================
-
-export const RAW_IO_WORKER_ARG = "__omp_worker_raw_io" as const;
-
-export const RAW_IO_WORKER_SELECTORS_MODULE = "@oh-my-pi/pi-coding-agent/cli/worker-selectors" as const;
-
-export const RAW_IO_CLIENT_MODULE = "@oh-my-pi/pi-coding-agent/tools/raw-io-client" as const;
-
-export const RAW_IO_CLASSIFY_FN_NAME = "classifyRawIoTarget" as const;
-
-export const RAW_IO_STOP_FN_NAME = "stopRawIoHelper" as const;
 
 export const SQLITE_HEADER_MAGIC = new Uint8Array([
 	0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00,
 ]);
 
-export const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"] as const;
+export const SQLITE_SIDECAR_SUFFIXES = Object.freeze(["-wal", "-shm", "-journal"] as const);
 
-export const SQLITE_FAMILY_CLASSIFICATIONS = [
+export const SQLITE_FAMILY_CLASSIFICATIONS = Object.freeze([
 	"sqlite_db",
 	"sqlite_sidecar",
 	"non_sqlite",
 	"missing",
 	"directory",
 	"special",
-] as const;
+] as const);
 
-export const SQLITE_FAMILY_ACTIVE_KINDS = ["sqlite_db", "sqlite_sidecar"] as const;
+export const VALID_ENTRY_KINDS = Object.freeze(["file", "missing", "directory", "special"] as const);
 
-export const VALID_ENTRY_KINDS = ["file", "missing", "directory", "special"] as const;
+export const VALID_TOOL_NAMES = Object.freeze(["read", "write"] as const);
+
+export const VALID_ACCESS_CHANNELS = Object.freeze(["raw_io_helper", "sqlite_connection", "in_process"] as const);
+
+export const RAW_IO_WORKER_ARG = "__omp_worker_raw_io" as const;
+export const RAW_IO_WORKER_SELECTORS_MODULE = "@oh-my-pi/pi-coding-agent/cli/worker-selectors" as const;
+export const RAW_IO_CLIENT_MODULE = "@oh-my-pi/pi-coding-agent/tools/raw-io-client" as const;
+export const RAW_IO_CLASSIFY_FN_NAME = "classifyRawIoTarget" as const;
+export const RAW_IO_READ_BYTES_FN_NAME = "readRawIoBytes" as const;
+export const RAW_IO_WRITE_BYTES_FN_NAME = "writeRawIoBytes" as const;
+export const RAW_IO_STOP_FN_NAME = "stopRawIoHelper" as const;
+export const RAW_IO_DEFAULT_TIMEOUT_MS = 5000 as const;
+
+export type SqliteSidecarSuffix = (typeof SQLITE_SIDECAR_SUFFIXES)[number];
+export type ClassificationKind = (typeof SQLITE_FAMILY_CLASSIFICATIONS)[number];
+export type EntryKind = (typeof VALID_ENTRY_KINDS)[number];
+export type ToolName = (typeof VALID_TOOL_NAMES)[number];
+export type AccessChannel = (typeof VALID_ACCESS_CHANNELS)[number];
+export type VerificationMethod = "test" | "execution" | "tool";
 
 // =============================================================================
-// Artifact 2: Exception classes
+// Artifact 2: Exception Hierarchy
 // =============================================================================
 
 export class RawIoHelperContractError extends Error {
@@ -72,30 +81,17 @@ export class RawIoClassificationMismatchError extends RawIoHelperContractError {
 export class RawIoHelperUnavailableError extends RawIoHelperContractError {
 	readonly operation: string;
 	readonly targetPath: string;
-	readonly reason: string;
 
 	constructor(operation: string, targetPath: string, reason: string, options?: ErrorOptions) {
 		super("ERRORS-RAWIO-1", `Raw-I/O Helper failed during ${operation} for '${targetPath}': ${reason}`, options);
 		this.operation = operation;
 		this.targetPath = targetPath;
-		this.reason = reason;
 	}
 }
 
 // =============================================================================
-// Artifact 3: Immutable records / structural types
+// Artifact 3: Structural Interfaces (Typed Records)
 // =============================================================================
-
-export type ClauseVerification = "test" | "execution" | "tool";
-
-export interface Clause {
-	readonly verification: ClauseVerification;
-	readonly text: string;
-}
-
-export type ClassificationKind = (typeof SQLITE_FAMILY_CLASSIFICATIONS)[number];
-
-export type EntryKind = (typeof VALID_ENTRY_KINDS)[number];
 
 export interface RawIoTargetClassification {
 	readonly targetPath: string;
@@ -103,12 +99,29 @@ export interface RawIoTargetClassification {
 	readonly kind: ClassificationKind;
 	readonly isSqliteFamily: boolean;
 	readonly helperPid: number;
+	readonly headerBytes?: Uint8Array | undefined;
+	readonly entryKind?: EntryKind | undefined;
+}
+
+export interface ClassifyResolvedTargetInput {
+	readonly targetPath: unknown;
+	readonly resolvedPath: unknown;
+	readonly headerBytes: unknown;
+	readonly helperPid: unknown;
+	readonly parentPid: number;
+	readonly entryKind?: unknown;
 }
 
 export interface RawIoClassifyOptions {
 	readonly helperSpawnCommand?: {
 		readonly cmd: readonly string[];
 	};
+	readonly timeoutMs?: number;
+}
+
+export interface RawIoClassifyOptionsSpec {
+	readonly helperSpawnCmd: readonly string[] | undefined;
+	readonly timeoutMs: number;
 }
 
 export interface RawIoClientSurface {
@@ -116,69 +129,94 @@ export interface RawIoClientSurface {
 		targetPath: string,
 		options?: RawIoClassifyOptions,
 	) => Promise<RawIoTargetClassification>;
+	readonly readRawIoBytes: (
+		targetPath: string,
+		offset?: number,
+		length?: number,
+		options?: RawIoClassifyOptions,
+	) => Promise<Uint8Array>;
+	readonly writeRawIoBytes: (targetPath: string, data: Uint8Array, options?: RawIoClassifyOptions) => Promise<void>;
 	readonly stopRawIoHelper: () => Promise<void>;
 }
 
-export interface ClassifyResolvedTargetInput {
-	readonly targetPath: unknown;
-	readonly resolvedPath: unknown;
-	readonly headerBytes?: Uint8Array | undefined;
-	readonly helperPid: unknown;
-	readonly parentPid: number;
-	readonly entryKind?: unknown;
+export interface RawIoToolAccessRecord {
+	readonly toolName: ToolName;
+	readonly classification: RawIoTargetClassification;
+	readonly accessChannel: AccessChannel;
+	readonly classifiedBeforeOpen: true;
+}
+
+export interface Clause {
+	readonly verification: VerificationMethod;
+	readonly text: string;
 }
 
 // =============================================================================
-// Artifact 4: Pure callable validators
+// Artifact 4: Pure Validators
 // =============================================================================
 
 export function isEntryKind(value: unknown): value is EntryKind {
 	return value === "file" || value === "missing" || value === "directory" || value === "special";
 }
 
+export function isToolName(value: unknown): value is ToolName {
+	return value === "read" || value === "write";
+}
+
+export function isAccessChannel(value: unknown): value is AccessChannel {
+	return value === "raw_io_helper" || value === "sqlite_connection" || value === "in_process";
+}
+
 export function validateTargetPath(targetPath: unknown): string {
-	if (typeof targetPath !== "string" || targetPath.trim().length === 0 || !targetPath.startsWith("/")) {
+	if (typeof targetPath !== "string") {
+		throw new RawIoInvalidTargetPathError(targetPath);
+	}
+	const trimmed = targetPath.trim();
+	if (trimmed.length === 0 || !trimmed.startsWith("/")) {
 		throw new RawIoInvalidTargetPathError(targetPath);
 	}
 	return targetPath;
 }
 
-export function validateClassifyOptions(options: unknown): RawIoClassifyOptions {
-	if (options === undefined) {
-		return Object.freeze({});
+export function validateClassifyOptions(options: unknown): RawIoClassifyOptionsSpec {
+	if (options === undefined || options === null) {
+		return Object.freeze({ helperSpawnCmd: undefined, timeoutMs: RAW_IO_DEFAULT_TIMEOUT_MS });
 	}
-	if (typeof options !== "object" || options === null) {
+	if (typeof options !== "object" || Array.isArray(options)) {
 		throw new RawIoClassificationMismatchError(
-			"POST-RAWIO-2",
-			`options must be an object or undefined; got ${JSON.stringify(options)}`,
+			"POST-RAWIO-2b",
+			`options must be an object or undefined; got ${typeof options}`,
+		);
+	}
+	const rawTimeout = Reflect.get(options, "timeoutMs") ?? RAW_IO_DEFAULT_TIMEOUT_MS;
+	if (typeof rawTimeout !== "number" || !Number.isInteger(rawTimeout) || rawTimeout <= 0) {
+		throw new RawIoClassificationMismatchError(
+			"ERRORS-RAWIO-1",
+			`timeoutMs must be a positive integer (> 0); got ${JSON.stringify(rawTimeout)}`,
 		);
 	}
 	const spawn = Reflect.get(options, "helperSpawnCommand");
-	if (spawn === undefined) {
-		return Object.freeze({});
+	if (spawn === undefined || spawn === null) {
+		return Object.freeze({ helperSpawnCmd: undefined, timeoutMs: rawTimeout });
 	}
-	if (typeof spawn !== "object" || spawn === null) {
+	if (typeof spawn !== "object" || Array.isArray(spawn)) {
 		throw new RawIoClassificationMismatchError(
-			"POST-RAWIO-2",
-			"helperSpawnCommand must be an object with a non-empty 'cmd' array",
+			"POST-RAWIO-2b",
+			`helperSpawnCommand must be an object; got ${typeof spawn}`,
 		);
 	}
 	const cmd = Reflect.get(spawn, "cmd");
 	if (
 		!Array.isArray(cmd) ||
 		cmd.length === 0 ||
-		!cmd.every((item): item is string => typeof item === "string" && item.trim().length > 0)
+		!cmd.every(part => typeof part === "string" && part.trim().length > 0)
 	) {
 		throw new RawIoClassificationMismatchError(
-			"POST-RAWIO-2",
+			"POST-RAWIO-2b",
 			"helperSpawnCommand.cmd must be a non-empty array of non-empty strings",
 		);
 	}
-	return Object.freeze({
-		helperSpawnCommand: Object.freeze({
-			cmd: Object.freeze([...cmd]),
-		}),
-	});
+	return Object.freeze({ helperSpawnCmd: Object.freeze([...cmd]), timeoutMs: rawTimeout });
 }
 
 export function hasSqliteHeaderMagic(bytes: Uint8Array): boolean {
@@ -200,7 +238,7 @@ export function validateClassificationRecord(input: ClassifyResolvedTargetInput)
 	) {
 		throw new RawIoClassificationMismatchError(
 			"FORBIDDEN-RAWIO-2",
-			`helperPid (${String(input.helperPid)}) must be a positive OS PID distinct from omp parentPid (${input.parentPid})`,
+			`helperPid (${String(input.helperPid)}) must be a positive OS PID distinct from omp parentPid (${String(input.parentPid)})`,
 		);
 	}
 	const rawEntryKind = input.entryKind ?? "file";
@@ -210,19 +248,21 @@ export function validateClassificationRecord(input: ClassifyResolvedTargetInput)
 			`entryKind must be one of ${JSON.stringify(VALID_ENTRY_KINDS)}; got ${JSON.stringify(rawEntryKind)}`,
 		);
 	}
-	if (rawEntryKind === "missing" || rawEntryKind === "directory" || rawEntryKind === "special") {
+	if (rawEntryKind !== "file") {
 		return Object.freeze({
 			targetPath: validTarget,
 			resolvedPath: validResolved,
 			kind: rawEntryKind,
 			isSqliteFamily: false,
 			helperPid: input.helperPid,
+			headerBytes: new Uint8Array(0),
+			entryKind: rawEntryKind,
 		});
 	}
 	if (!(input.headerBytes instanceof Uint8Array)) {
 		throw new RawIoClassificationMismatchError(
 			"POST-RAWIO-1",
-			"headerBytes must be a Uint8Array when entryKind is 'file'",
+			`headerBytes must be a Uint8Array for regular files; got ${typeof input.headerBytes}`,
 		);
 	}
 	const kind: ClassificationKind = SQLITE_SIDECAR_SUFFIXES.some(suffix => validResolved.endsWith(suffix))
@@ -236,6 +276,8 @@ export function validateClassificationRecord(input: ClassifyResolvedTargetInput)
 		kind,
 		isSqliteFamily: kind === "sqlite_db" || kind === "sqlite_sidecar",
 		helperPid: input.helperPid,
+		headerBytes: input.headerBytes.slice(0, SQLITE_HEADER_MAGIC.byteLength),
+		entryKind: "file",
 	});
 }
 
@@ -253,36 +295,102 @@ export function validateHelperFailureError(
 	if (!errorMessage.includes(expectedOperation) || !errorMessage.includes(expectedPath)) {
 		throw new RawIoClassificationMismatchError(
 			"ERRORS-RAWIO-1",
-			`error message '${errorMessage}' must name operation '${expectedOperation}' and path '${expectedPath}'`,
+			`error message ${JSON.stringify(errorMessage)} must include operation '${expectedOperation}' and target path '${expectedPath}'`,
 		);
 	}
 	return errorMessage;
 }
 
+export function validateToolAccessRoute(
+	toolName: unknown,
+	classification: RawIoTargetClassification,
+	accessChannel: unknown,
+	classifiedBeforeOpen: unknown,
+): RawIoToolAccessRecord {
+	if (!isToolName(toolName)) {
+		throw new RawIoClassificationMismatchError(
+			"POST-RAWIO-3",
+			`toolName must be one of ${JSON.stringify(VALID_TOOL_NAMES)}; got ${JSON.stringify(toolName)}`,
+		);
+	}
+	const clauseId = toolName === "read" ? "POST-RAWIO-3" : "POST-RAWIO-3b";
+	if (classifiedBeforeOpen !== true) {
+		throw new RawIoClassificationMismatchError(
+			clauseId,
+			`${toolName} tool must classify target via Raw-I/O Helper before any open`,
+		);
+	}
+	if (!isAccessChannel(accessChannel)) {
+		throw new RawIoClassificationMismatchError(
+			clauseId,
+			`accessChannel must be one of ${JSON.stringify(VALID_ACCESS_CHANNELS)}; got ${JSON.stringify(accessChannel)}`,
+		);
+	}
+	if (classification.isSqliteFamily) {
+		if (accessChannel === "in_process") {
+			throw new RawIoClassificationMismatchError(
+				"FORBIDDEN-RAWIO-3",
+				`${toolName} tool accessed SQLite-Family target '${classification.resolvedPath}' in-process`,
+			);
+		}
+	} else if (classification.kind === "non_sqlite" && accessChannel !== "in_process") {
+		throw new RawIoClassificationMismatchError(
+			"POST-RAWIO-3c",
+			`${toolName} tool must keep non_sqlite target '${classification.resolvedPath}' on the in_process fast path; got ${JSON.stringify(accessChannel)}`,
+		);
+	}
+	return Object.freeze({
+		toolName,
+		classification,
+		accessChannel,
+		classifiedBeforeOpen: true,
+	});
+}
+
 // =============================================================================
-// Artifact 5: Traceability map
+// Artifact 5: Traceability Registry
 // =============================================================================
 
-export const RAW_IO_HELPER_CONTRACT = {
+export const RAW_IO_HELPER_CONTRACT = Object.freeze({
 	"PRE-RAWIO-1": {
 		verification: "test",
-		text: "Target path supplied to the Raw-I/O Helper classifier or reader is a non-empty POSIX absolute filesystem path starting with '/'. Source: REQ-L15586-05, IP-2.",
+		text: "Target path passed to the Raw-I/O Helper classifier is a non-empty POSIX absolute path starting with '/'. Source: REQ-L15586-05, IP-2.",
 	},
 	"POST-RAWIO-1": {
 		verification: "test",
-		text: "The Raw-I/O Helper classifies a target as SQLite-Family ('sqlite_sidecar' when its resolved real path ends with '-wal', '-shm', or '-journal'; 'sqlite_db' when its first 16 bytes equal 'SQLite format 3\\0') and as 'non_sqlite' (or 'missing'/'directory'/'special') otherwise, returning only bytes and metadata (RawIoTargetClassification) to omp. Source: REQ-L15586-05, IP-2.",
+		text: "The Raw-I/O Helper resolves the target path in a separate OS process and returns kind='missing', 'directory', or 'special' (with isSqliteFamily=false) when the resolved target is not an existing regular file, even if its path ends in -wal, -shm, or -journal; for an existing regular file, it classifies the target as 'sqlite_sidecar' when resolvedPath (not targetPath alone) ends in -wal, -shm, or -journal, 'sqlite_db' when its first 16 bytes equal 'SQLite format 3\\x00', and 'non_sqlite' otherwise. Source: REQ-L15586-05, IP-2.",
 	},
 	"POST-RAWIO-1b": {
 		verification: "test",
-		text: "Classifying a target through the Raw-I/O Helper closes no file descriptor for that target inside the omp process and retains every POSIX advisory lock omp holds on SQLite database and sidecar inodes. Source: INV-L15586-01, REQ-L15586-05, REQ-L15586-28.",
+		text: "Classifying a target through the Raw-I/O Helper closes no file descriptor inside the omp process and retains every POSIX advisory lock omp holds on SQLite database and sidecar inodes. Source: INV-L15586-01, REQ-L15586-05, REQ-L15586-28.",
 	},
 	"POST-RAWIO-2": {
 		verification: "test",
-		text: "The worker-selector module (@oh-my-pi/pi-coding-agent/cli/worker-selectors) exports RAW_IO_WORKER_ARG ('__omp_worker_raw_io'), and the Raw-I/O client module (@oh-my-pi/pi-coding-agent/tools/raw-io-client) exports classifyRawIoTarget(targetPath, options?) -> Promise<RawIoTargetClassification> (where options.helperSpawnCommand.cmd is an optional spawn-command override for fault-injection testing of helper startup failure) and stopRawIoHelper() -> Promise<void> to terminate the helper subprocess. Source: REQ-L15586-05, REQ-L15586-08, SEQ-5, SEQ-6, IP-2.",
+		text: "The worker-selector module (@oh-my-pi/pi-coding-agent/cli/worker-selectors) exports RAW_IO_WORKER_ARG ('__omp_worker_raw_io'), and omp's CLI entrypoint dispatches RAW_IO_WORKER_ARG to the Raw-I/O Helper worker. Source: REQ-L15586-05, SEQ-5, IP-2.",
+	},
+	"POST-RAWIO-2b": {
+		verification: "test",
+		text: "The Raw-I/O client module (@oh-my-pi/pi-coding-agent/tools/raw-io-client) exports classifyRawIoTarget(targetPath, options?) -> Promise<RawIoTargetClassification>, readRawIoBytes(targetPath, offset?, length?, options?) -> Promise<Uint8Array>, and writeRawIoBytes(targetPath, data, options?) -> Promise<void>, where options.helperSpawnCommand is an optional spawn-command override and options.timeoutMs is an optional positive integer timeout defaulting to RAW_IO_DEFAULT_TIMEOUT_MS (5000ms). Source: REQ-L15586-05, REQ-L15586-08, REQ-L15586-31, SEQ-2, SEQ-5, IP-2.",
+	},
+	"POST-RAWIO-2c": {
+		verification: "test",
+		text: "The Raw-I/O client module (@oh-my-pi/pi-coding-agent/tools/raw-io-client) exports stopRawIoHelper() -> Promise<void> to terminate the helper subprocess. Source: SEQ-6, IP-2.",
+	},
+	"POST-RAWIO-3": {
+		verification: "test",
+		text: "When ReadTool receives a host file path, it classifies the target out of process through the Raw-I/O Helper before any in-process file open and accesses a SQLite-Family target only through the Raw-I/O Helper or a SQLite connection while retaining every POSIX advisory lock omp holds on that inode. Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, INV-L15586-01, INV-L15586-04.",
+	},
+	"POST-RAWIO-3b": {
+		verification: "test",
+		text: "When WriteTool receives a host file path, it classifies the target out of process through the Raw-I/O Helper before any in-process file open and accesses a SQLite-Family target only through the Raw-I/O Helper or a SQLite connection while retaining every POSIX advisory lock omp holds on that inode. Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, INV-L15586-01, INV-L15586-04.",
+	},
+	"POST-RAWIO-3c": {
+		verification: "test",
+		text: "When a host file is classified as 'non_sqlite', ReadTool and WriteTool access that ordinary file on the in-process fast path without routing its payload through the Raw-I/O Helper. Source: REQ-L15586-31, SEQ-2, IP-2.",
 	},
 	"ERRORS-RAWIO-1": {
 		verification: "test",
-		text: "When the Raw-I/O Helper cannot start, crashes, or fails during a classification or byte-read request, omp surfaces an error that names both the failed operation and the target path. Source: REQ-L15586-08.",
+		text: "IF the Raw-I/O Helper cannot start, crashes, fails, or times out (exceeding options.timeoutMs, default RAW_IO_DEFAULT_TIMEOUT_MS = 5000ms), THEN omp SHALL surface an error naming the operation and target path and SHALL NOT fall back to an in-process file open. Source: REQ-L15586-08, INV-L15586-03.",
 	},
 	"FORBIDDEN-RAWIO-1": {
 		verification: "test",
@@ -300,6 +408,10 @@ export const RAW_IO_HELPER_CONTRACT = {
 		verification: "test",
 		text: "omp SHALL NOT receive from another process a file descriptor for a file opened by a Trigger Path. Source: INV-L15586-12.",
 	},
-} as const satisfies Record<string, Clause>;
+	"FORBIDDEN-RAWIO-3": {
+		verification: "test",
+		text: "ReadTool and WriteTool SHALL NOT open or close a raw in-process file descriptor on a SQLite-Family File (including during SQLite header sniffing, WAL-version inspection, editable-file header checks, or byte reads/writes). Source: REQ-L15586-05, REQ-L15586-31, INV-L15586-01, INV-L15586-04.",
+	},
+} as const satisfies Record<string, Clause>);
 
 export type RawIoHelperClauseId = keyof typeof RAW_IO_HELPER_CONTRACT;

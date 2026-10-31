@@ -84,11 +84,17 @@ slices:
   - POST-RAWIO-1
   - POST-RAWIO-1b
   - POST-RAWIO-2
+  - POST-RAWIO-2b
+  - POST-RAWIO-2c
+  - POST-RAWIO-3
+  - POST-RAWIO-3b
+  - POST-RAWIO-3c
   - ERRORS-RAWIO-1
   - FORBIDDEN-RAWIO-1
   - FORBIDDEN-RAWIO-1b
   - FORBIDDEN-RAWIO-2
   - FORBIDDEN-RAWIO-2b
+  - FORBIDDEN-RAWIO-3
   clauses_deferred: []
   negative_constraints:
   - INV-L15586-01
