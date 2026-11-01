@@ -25,6 +25,7 @@ export const SQLITE_FAMILY_CLASSIFICATIONS = [
 ] as const;
 
 export const RAW_IO_DEFAULT_TIMEOUT_MS = 5000;
+export const RAW_IO_KILL_WAIT_TIMEOUT_MS = 5000;
 export const RAW_IO_PROGRESS_CHUNK_BYTES = 65536;
 
 export type ClassificationKind = (typeof SQLITE_FAMILY_CLASSIFICATIONS)[number];

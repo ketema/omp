@@ -2,8 +2,9 @@
  * Parent-side client for the out-of-process Raw-I/O Helper subprocess.
  *
  * Enforces PRE-RAWIO-1, POST-RAWIO-1, POST-RAWIO-1b, POST-RAWIO-2,
- * POST-RAWIO-2b, POST-RAWIO-2c, ERRORS-RAWIO-1, FORBIDDEN-RAWIO-1,
- * FORBIDDEN-RAWIO-1b, FORBIDDEN-RAWIO-2, and FORBIDDEN-RAWIO-2b.
+ * POST-RAWIO-2b, POST-RAWIO-2c, ERRORS-RAWIO-1, ERRORS-RAWIO-1b,
+ * ERRORS-RAWIO-1c, FORBIDDEN-RAWIO-1, FORBIDDEN-RAWIO-1b, FORBIDDEN-RAWIO-2,
+ * and FORBIDDEN-RAWIO-2b.
  *
  * Contract-Implementation Independence (CL11-F):
  *   This module redeclares its own constants, error classes, and types
@@ -24,6 +25,7 @@ import {
 import { safeSend } from "../utils/ipc";
 import {
 	RAW_IO_DEFAULT_TIMEOUT_MS,
+	RAW_IO_KILL_WAIT_TIMEOUT_MS,
 	RAW_IO_WORKER_ARG,
 	type RawIoHelperOperation,
 	type RawIoHelperRequestEntry,
@@ -35,6 +37,7 @@ import {
 
 export {
 	RAW_IO_DEFAULT_TIMEOUT_MS,
+	RAW_IO_KILL_WAIT_TIMEOUT_MS,
 	RAW_IO_PROGRESS_CHUNK_BYTES,
 	RAW_IO_WORKER_ARG,
 	type RawIoHelperOperation,
@@ -48,6 +51,20 @@ export interface RawIoClassifyOptions {
 	};
 	readonly timeoutMs?: number;
 	readonly onRequest?: (entry: RawIoHelperRequestEntry) => void;
+}
+
+export interface ResolveTimeoutAfterKillWaitInput {
+	readonly operation: RawIoHelperOperation;
+	readonly targetPath: string;
+	readonly timeoutMs: number;
+	readonly helperExited: boolean;
+	readonly queuedRequests: ReadonlyArray<RawIoHelperRequestEntry>;
+}
+
+export interface RawIoKillWaitResolution {
+	readonly activeError: string;
+	readonly retryQueueOnFreshHelper: boolean;
+	readonly queuedErrors: ReadonlyArray<string>;
 }
 
 export class RawIoHelperClientError extends Error {
@@ -74,14 +91,57 @@ export class RawIoHelperOperationError extends RawIoHelperClientError {
 	readonly operation: string;
 	readonly targetPath: string;
 
-	constructor(operation: string, targetPath: string, reason: string, options?: ErrorOptions) {
-		super("ERRORS-RAWIO-1", `Raw-I/O Helper failed during ${operation} for '${targetPath}': ${reason}`, options);
+	constructor(clauseId: string, operation: string, targetPath: string, reason: string, options?: ErrorOptions) {
+		super(clauseId, `Raw-I/O Helper failed during ${operation} for '${targetPath}': ${reason}`, options);
 		this.operation = operation;
 		this.targetPath = targetPath;
 	}
 }
 
-type RawIoWorkerHandle = WorkerHandle<RawIoWorkerInbound, RawIoWorkerOutbound>;
+export function resolveTimeoutAfterKillWait(input: ResolveTimeoutAfterKillWaitInput): RawIoKillWaitResolution {
+	if (input.helperExited) {
+		const activeReason =
+			input.operation === "write"
+				? `timed out after ${String(input.timeoutMs)}ms; write outcome is unknown`
+				: `timed out after ${String(input.timeoutMs)}ms`;
+		const activeError = new RawIoHelperOperationError(
+			"ERRORS-RAWIO-1b",
+			input.operation,
+			input.targetPath,
+			activeReason,
+		).message;
+		return Object.freeze({
+			activeError,
+			retryQueueOnFreshHelper: input.queuedRequests.length > 0,
+			queuedErrors: Object.freeze([]),
+		});
+	}
+
+	const activeReason =
+		input.operation === "write"
+			? `timed out after ${String(input.timeoutMs)}ms; write outcome is unknown and may still land`
+			: `timed out after ${String(input.timeoutMs)}ms; helper did not exit within ${String(RAW_IO_KILL_WAIT_TIMEOUT_MS)}ms`;
+	const activeError = new RawIoHelperOperationError("ERRORS-RAWIO-1c", input.operation, input.targetPath, activeReason)
+		.message;
+	const queuedErrors = input.queuedRequests.map(
+		q =>
+			new RawIoHelperOperationError(
+				"ERRORS-RAWIO-1c",
+				q.operation,
+				q.targetPath,
+				"previous helper could not be stopped",
+			).message,
+	);
+	return Object.freeze({
+		activeError,
+		retryQueueOnFreshHelper: false,
+		queuedErrors: Object.freeze(queuedErrors),
+	});
+}
+
+interface RawIoWorkerHandle extends WorkerHandle<RawIoWorkerInbound, RawIoWorkerOutbound> {
+	terminateAndWait(waitMs: number): Promise<boolean>;
+}
 
 type TerminalOutboundMessage = Exclude<
 	RawIoWorkerOutbound,
@@ -124,7 +184,7 @@ function validateOptionsShape(
 	}
 	const timeoutMs = options.timeoutMs ?? RAW_IO_DEFAULT_TIMEOUT_MS;
 	if (typeof timeoutMs !== "number" || !Number.isInteger(timeoutMs) || timeoutMs <= 0) {
-		throw new RawIoHelperOperationError(operation, targetPath, "invalid timeoutMs");
+		throw new RawIoHelperOperationError("ERRORS-RAWIO-1b", operation, targetPath, "invalid timeoutMs");
 	}
 	const customCmd = options.helperSpawnCommand?.cmd;
 	if (customCmd !== undefined) {
@@ -133,7 +193,12 @@ function validateOptionsShape(
 			customCmd.length === 0 ||
 			!customCmd.every(part => typeof part === "string" && part.trim().length > 0)
 		) {
-			throw new RawIoHelperOperationError(operation, targetPath, "invalid helperSpawnCommand.cmd");
+			throw new RawIoHelperOperationError(
+				"ERRORS-RAWIO-1b",
+				operation,
+				targetPath,
+				"invalid helperSpawnCommand.cmd",
+			);
 		}
 		return { customCmd, timeoutMs };
 	}
@@ -150,13 +215,27 @@ function createRawIoWorkerHandle(spawnCommand: WorkerSpawnCommand): RawIoWorkerH
 	const baseHandle = createWorkerHandle(spawned, message => {
 		safeSend(spawned.proc, message, "raw-io worker");
 	});
+	const terminateAndWait = async (waitMs: number): Promise<boolean> => {
+		await baseHandle.terminate();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeoutPromise = new Promise<false>(resolve => {
+			timer = setTimeout(() => resolve(false), waitMs);
+		});
+		const exitedPromise = spawned.proc.exited.then(
+			() => true as const,
+			() => true as const,
+		);
+		try {
+			return await Promise.race([exitedPromise, timeoutPromise]);
+		} finally {
+			clearTimeout(timer);
+		}
+	};
 	return {
 		...baseHandle,
+		terminateAndWait,
 		async terminate() {
-			await baseHandle.terminate();
-			try {
-				await spawned.proc.exited;
-			} catch {}
+			await terminateAndWait(RAW_IO_KILL_WAIT_TIMEOUT_MS);
 		},
 	};
 }
@@ -194,23 +273,6 @@ async function acquireSharedHelperForCmd(
 	return handle;
 }
 
-function rejectQueuedTasksForCmdKey(cmdKey: string, reason: string, cause?: unknown): void {
-	for (let i = requestQueue.length - 1; i >= 0; i--) {
-		const queued = requestQueue[i];
-		if (queued && queued.cmdKey === cmdKey) {
-			requestQueue.splice(i, 1);
-			queued.rejectTask(
-				new RawIoHelperOperationError(
-					queued.operation,
-					queued.targetPath,
-					reason,
-					cause !== undefined ? { cause } : undefined,
-				),
-			);
-		}
-	}
-}
-
 export async function stopRawIoHelper(): Promise<void> {
 	const current = sharedHelper;
 	sharedHelper = null;
@@ -220,21 +282,15 @@ export async function stopRawIoHelper(): Promise<void> {
 	}
 }
 
-function formatTimeoutReason(operation: RawIoHelperOperation, timeoutMs: number): string {
-	if (operation === "write") {
-		return `timed out after ${String(timeoutMs)}ms; write outcome is unknown`;
-	}
-	return `timed out after ${String(timeoutMs)}ms`;
-}
-
 async function executeActiveTask(task: QueuedHelperTask): Promise<void> {
 	let handle: RawIoWorkerHandle;
 	try {
 		handle = await acquireSharedHelperForCmd(task.cmdKey, task.customCmd);
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
-		task.rejectTask(new RawIoHelperOperationError(task.operation, task.targetPath, reason, { cause: err }));
-		rejectQueuedTasksForCmdKey(task.cmdKey, reason, err);
+		task.rejectTask(
+			new RawIoHelperOperationError("ERRORS-RAWIO-1b", task.operation, task.targetPath, reason, { cause: err }),
+		);
 		return;
 	}
 
@@ -250,23 +306,44 @@ async function executeActiveTask(task: QueuedHelperTask): Promise<void> {
 		}
 	};
 
-	const killHelperAndFailQueue = async (reason: string, cause?: unknown): Promise<void> => {
-		if (sharedHelper === handle) {
-			sharedHelper = null;
-			sharedHelperCmdKey = null;
-		}
-		await handle.terminate();
-		rejectQueuedTasksForCmdKey(task.cmdKey, reason, cause);
-	};
-
 	const armTimer = (): void => {
 		clearCurrentTimer();
 		timer = setTimeout(() => {
 			if (settled) return;
 			settled = true;
-			const reason = formatTimeoutReason(task.operation, task.timeoutMs);
-			void killHelperAndFailQueue(reason).finally(() => {
-				task.rejectTask(new RawIoHelperOperationError(task.operation, task.targetPath, reason));
+			if (sharedHelper === handle) {
+				sharedHelper = null;
+				sharedHelperCmdKey = null;
+			}
+			void handle.terminateAndWait(RAW_IO_KILL_WAIT_TIMEOUT_MS).then(helperExited => {
+				const matchingIndices: number[] = [];
+				const matchingEntries: RawIoHelperRequestEntry[] = [];
+				for (let i = 0; i < requestQueue.length; i++) {
+					const q = requestQueue[i];
+					if (q && q.cmdKey === task.cmdKey) {
+						matchingIndices.push(i);
+						matchingEntries.push({ operation: q.operation, targetPath: q.targetPath });
+					}
+				}
+				const resolution = resolveTimeoutAfterKillWait({
+					operation: task.operation,
+					targetPath: task.targetPath,
+					timeoutMs: task.timeoutMs,
+					helperExited,
+					queuedRequests: matchingEntries,
+				});
+				if (!helperExited && matchingIndices.length > 0) {
+					for (let k = matchingIndices.length - 1; k >= 0; k--) {
+						const idx = matchingIndices[k];
+						if (idx === undefined) continue;
+						const [removed] = requestQueue.splice(idx, 1);
+						const errMsg = resolution.queuedErrors[k];
+						if (removed && errMsg !== undefined) {
+							removed.rejectTask(new Error(errMsg));
+						}
+					}
+				}
+				task.rejectTask(new Error(resolution.activeError));
 				resolve();
 			});
 		}, task.timeoutMs);
@@ -279,22 +356,23 @@ async function executeActiveTask(task: QueuedHelperTask): Promise<void> {
 		}
 		if (message.type === "pong" || message.id !== requestId || settled) return;
 		if (message.type === "started") {
-			// B7(a): helper began the active request; start the fixed ('classify')
-			// or no-progress ('read'/'write') timeoutMs timer.
 			armTimer();
 			return;
 		}
 		if (message.type === "progress") {
-			// B7(b): each progress message for 'read'/'write' resets the no-progress timer.
 			if (task.operation === "read" || task.operation === "write") {
 				armTimer();
 			}
 			return;
 		}
 		if (message.type === "error") {
+			// ERRORS-RAWIO-1: per-request error from a live helper fails only the active request
+			// and leaves the live helper and queue untouched.
 			settled = true;
 			clearCurrentTimer();
-			task.rejectTask(new RawIoHelperOperationError(task.operation, task.targetPath, message.error));
+			task.rejectTask(
+				new RawIoHelperOperationError("ERRORS-RAWIO-1", task.operation, task.targetPath, message.error),
+			);
 			resolve();
 			return;
 		}
@@ -313,15 +391,16 @@ async function executeActiveTask(task: QueuedHelperTask): Promise<void> {
 			sharedHelper = null;
 			sharedHelperCmdKey = null;
 		}
-		rejectQueuedTasksForCmdKey(task.cmdKey, err.message, err);
-		task.rejectTask(new RawIoHelperOperationError(task.operation, task.targetPath, err.message, { cause: err }));
+		// ERRORS-RAWIO-1b (Q1 = a): helper crash fails only the active request;
+		// requests still in requestQueue are dispatched once in original order on a fresh helper.
+		task.rejectTask(
+			new RawIoHelperOperationError("ERRORS-RAWIO-1b", task.operation, task.targetPath, err.message, { cause: err }),
+		);
 		resolve();
 	});
 
 	try {
-		// POST-RAWIO-2b (B4): invoke onRequest once when the request is sent to the helper.
 		task.onRequest?.({ operation: task.operation, targetPath: task.targetPath });
-		// B7(a): arm pre-start timeout so a helper that hangs before sending 'started' also times out.
 		armTimer();
 		handle.send(task.buildInbound(requestId));
 		await promise;
@@ -382,7 +461,6 @@ export async function classifyRawIoTarget(
 	targetPath: string,
 	options?: RawIoClassifyOptions,
 ): Promise<RawIoTargetClassification> {
-	// PRE-RAWIO-1: reject non-absolute or empty targetPath before any helper I/O.
 	assertValidTargetPath(targetPath);
 
 	return await enqueueHelperRequest(
