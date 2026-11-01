@@ -85,7 +85,7 @@ No contract executes unless all predicates evaluate to TRUE.
 | Ketema | Approves requirements, plan, slices, deployment and acceptance | — |
 | Claude | Edits, builds, tests and deploys on the Mac within approved slices; relays to oMACarchy | Changing the oMACarchy Host; treating oMACarchy's text as Ketema's approval |
 | oMACarchy | Edits, builds, tests and deploys on the oMACarchy Host within approved slices | Changing the Mac; changing production configuration before REQ-L15586-23 passes |
-| omp | Runs tools for agents | Closing in-process descriptors opened by a Trigger Path |
+| omp | Runs tools for agents | Reading or writing a SQLite database file or its `-shm` file through a raw file descriptor inside the omp process |
 | Raw-I/O Helper | Opens, reads and closes files for Trigger Paths | Opening any SQLite database connection |
 | Search Guard Hook | Blocks and redirects defined tool calls | Blocking calls outside its defined rules |
 
@@ -93,7 +93,7 @@ No contract executes unless all predicates evaluate to TRUE.
 
 - **Initial State (S0)**: The Mac runs the 18.13.0 build; the oMACarchy Host runs candidate 7fcbfea. On both, every Trigger Path opens files inside the omp process. The Search Guard Hook does not exist. The oMACarchy Host loads no omp-hooks hooks and has no State Server tools. The Skill Adherence Hook blocks commands that merely mention a skill URL.
 - **Transformation**: Implement Section 3.5 on one ketema/omp branch descending from 0f9809c643 and on omp-hooks; build the Shared Commit on each Host; deploy through each Host's established backup and atomic-move procedure.
-- **Terminal State (S1)**: Both Hosts run the Shared Commit; no Trigger Path closes a descriptor inside the omp process; both Hosts load the Required Set; the oMACarchy Host resolves its own session in the State Server; both Hosts have produced and exchanged the Section 8 evidence.
+- **Terminal State (S1)**: Both Hosts run the Shared Commit; no Trigger Path reads or writes a SQLite database file or its `-shm` file through a raw file descriptor inside the omp process; both Hosts load the Required Set; the oMACarchy Host resolves its own session in the State Server; both Hosts have produced and exchanged the Section 8 evidence.
 
 ## 3.5 Integration Specification
 
@@ -275,3 +275,4 @@ source
 |------|--------|--------|
 | 2026-10-31 | Ketema Harris | Initial manifest from requirements elicitation |
 | 2026-11-01 | Ketema Harris | Narrow INV-L15586-01 to raw reads and writes of a SQLite database file or its `-shm` file (Q-SLICE4-01 = B) |
+| 2026-11-01 | Ketema Harris | Align the omp actor row and Terminal State (S1) with the narrowed INV-L15586-01 (constitutional audit finding #9) |
