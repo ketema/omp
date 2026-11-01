@@ -847,9 +847,9 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 				path: symlinkToJournalTxt,
 				content: "updated-journal-line\n",
 			});
-			const updatedJournalText = await fs.readFile(journalPath, "utf8");
 			const afterWriteDbLock = peerWriteBlocked(dbPath);
 			const afterWriteJournalLock = peerPosixWriteLockBlocked(journalPath);
+			const updatedJournalText = await fs.readFile(journalPath, "utf8");
 			if (
 				updatedJournalText !== "updated-journal-line\n" ||
 				!afterWriteDbLock.blocked ||
