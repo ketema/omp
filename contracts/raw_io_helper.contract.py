@@ -55,7 +55,7 @@ RAW_IO_READ_BYTES_FN_NAME: Final[str] = "readRawIoBytes"
 RAW_IO_WRITE_BYTES_FN_NAME: Final[str] = "writeRawIoBytes"
 RAW_IO_STOP_FN_NAME: Final[str] = "stopRawIoHelper"
 RAW_IO_DEFAULT_TIMEOUT_MS: Final[int] = 5000
-
+RAW_IO_PROGRESS_CHUNK_BYTES: Final[int] = 65536
 type ClassificationKind = Literal[
     "sqlite_db",
     "sqlite_sidecar",
@@ -163,11 +163,13 @@ class RawIoHelperRequestEntry:
 
 @dataclass(slots=True, frozen=True)
 class RawIoTimeoutEvaluation:
-    """Validated timeout evaluation for a Raw-I/O Helper request (T4/R1 = A)."""
+    """Validated timeout evaluation for a Raw-I/O Helper request (T4/R1 = A, B7)."""
 
     operation: HelperOperation
     timeout_ms: int
     queued_wait_ms: int
+    started_received: bool
+    elapsed_before_start_ms: int
     elapsed_since_start_ms: int
     elapsed_since_progress_ms: int
     timed_out: bool
@@ -378,11 +380,13 @@ def evaluate_timeout_semantics(
     timeout_ms: object,
     *,
     queued_wait_ms: object = 0,
+    started_received: object = True,
+    elapsed_before_start_ms: object = 0,
     elapsed_since_start_ms: object,
     elapsed_since_progress_ms: object,
     helper_killed: object,
 ) -> RawIoTimeoutEvaluation:
-    """POST-RAWIO-2b / ERRORS-RAWIO-1: pure validator for T4/R1 = A timeout rules."""
+    """POST-RAWIO-2b / ERRORS-RAWIO-1: pure validator for T4/R1 = A & B7 rules."""
     if not isinstance(operation, str) or operation not in VALID_HELPER_OPERATIONS:
         raise RawIoClassificationMismatchError(
             "POST-RAWIO-2b",
@@ -397,10 +401,18 @@ def evaluate_timeout_semantics(
             "ERRORS-RAWIO-1",
             f"timeout_ms must be a positive integer (> 0); got {timeout_ms!r}",
         )
+    if not isinstance(started_received, bool):
+        raise RawIoClassificationMismatchError(
+            "POST-RAWIO-2b",
+            f"started_received must be a bool; got {started_received!r}",
+        )
     if (
         not isinstance(queued_wait_ms, int)
         or isinstance(queued_wait_ms, bool)
         or queued_wait_ms < 0
+        or not isinstance(elapsed_before_start_ms, int)
+        or isinstance(elapsed_before_start_ms, bool)
+        or elapsed_before_start_ms < 0
         or not isinstance(elapsed_since_start_ms, int)
         or isinstance(elapsed_since_start_ms, bool)
         or elapsed_since_start_ms < 0
@@ -410,8 +422,8 @@ def evaluate_timeout_semantics(
     ):
         raise RawIoClassificationMismatchError(
             "POST-RAWIO-2b",
-            "queued_wait_ms, elapsed_since_start_ms, and elapsed_since_progress_ms "
-            "must be non-negative integers",
+            "queued_wait_ms, elapsed_before_start_ms, elapsed_since_start_ms, and "
+            "elapsed_since_progress_ms must be non-negative integers",
         )
     if not isinstance(helper_killed, bool):
         raise RawIoClassificationMismatchError(
@@ -425,11 +437,12 @@ def evaluate_timeout_semantics(
         if operation == "read"
         else "write"
     )
-    timed_out = (
-        elapsed_since_start_ms >= timeout_ms
-        if typed_op == "classify"
-        else elapsed_since_progress_ms >= timeout_ms
-    )
+    if not started_received:
+        timed_out = elapsed_before_start_ms >= timeout_ms
+    elif typed_op == "classify":
+        timed_out = elapsed_since_start_ms >= timeout_ms
+    else:
+        timed_out = elapsed_since_progress_ms >= timeout_ms
     if timed_out and not helper_killed:
         raise RawIoClassificationMismatchError(
             "ERRORS-RAWIO-1",
@@ -439,6 +452,8 @@ def evaluate_timeout_semantics(
         operation=typed_op,
         timeout_ms=timeout_ms,
         queued_wait_ms=queued_wait_ms,
+        started_received=started_received,
+        elapsed_before_start_ms=elapsed_before_start_ms,
         elapsed_since_start_ms=elapsed_since_start_ms,
         elapsed_since_progress_ms=elapsed_since_progress_ms,
         timed_out=timed_out,
@@ -684,13 +699,18 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "targetPath, data, options?) -> Promise<void>, where "
             "options.helperSpawnCommand is an optional spawn-command override, "
             "options.timeoutMs is an optional positive integer timeout bound "
-            "defaulting to RAW_IO_DEFAULT_TIMEOUT_MS (5000ms) whose clock starts "
-            "when the helper begins the request (not while queued) and applies as a "
-            "fixed limit for 'classify' and a no-progress limit for 'read' and "
-            "'write', and options.onRequest is invoked exactly once for each "
-            "request the Raw-I/O Helper receives across every operation "
-            "('classify', 'read', 'write') with that request's operation and "
-            "targetPath. "
+            "defaulting to RAW_IO_DEFAULT_TIMEOUT_MS (5000ms), and options.onRequest "
+            "is invoked exactly once for each request sent to the Raw-I/O Helper "
+            "across every operation ('classify', 'read', 'write') with that "
+            "request's operation and targetPath; requests on a shared helper are "
+            "dispatched serially (queued requests have no running timeout while "
+            "waiting behind an earlier active request), the helper emits a "
+            "{type: 'started', id} message when it begins the active request (which "
+            "starts the fixed options.timeoutMs timer for 'classify' and the "
+            "no-progress options.timeoutMs timer for 'read' and 'write'), and for "
+            "'read' and 'write' the helper transfers in bounded chunks "
+            "(RAW_IO_PROGRESS_CHUNK_BYTES = 65536) and emits {type: 'progress', id, "
+            "bytesProcessed} after each chunk to reset the no-progress timer. "
             "Source: REQ-L15586-05, REQ-L15586-08, REQ-L15586-31, SEQ-2, SEQ-5, IP-2."
         ),
     ),
@@ -743,15 +763,18 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
         verification="test",
         text=(
             "IF the Raw-I/O Helper cannot start, crashes, fails, or times out "
-            "(when 'classify' exceeds options.timeoutMs after helper start, or "
-            "'read'/'write' makes no progress for options.timeoutMs after helper "
-            "start, default RAW_IO_DEFAULT_TIMEOUT_MS = 5000ms), THEN omp SHALL "
-            "kill the helper subprocess (so a timed-out write cannot land late and "
-            "any other in-flight or queued requests on the shared helper also fail "
-            "closed naming their operation and target path), surface an error naming "
-            "the operation and target path (and for a timed-out 'write', stating "
-            "that its outcome is unknown), and SHALL NOT fall back to an in-process "
-            "file open. Source: REQ-L15586-08, INV-L15586-03."
+            "(when the active request does not receive {type: 'started', id} within "
+            "options.timeoutMs of being sent to the helper, when 'classify' exceeds "
+            "options.timeoutMs after {type: 'started', id}, or when 'read'/'write' "
+            "receives no {type: 'progress', id} or completion message for "
+            "options.timeoutMs after {type: 'started', id}, default "
+            "RAW_IO_DEFAULT_TIMEOUT_MS = 5000ms), THEN omp SHALL kill the helper "
+            "subprocess (so a timed-out write cannot land late and any other "
+            "in-flight or queued requests on the shared helper also fail closed "
+            "naming their operation and target path), surface an error naming the "
+            "operation and target path (and for a timed-out 'write', stating that "
+            "its outcome is unknown), and SHALL NOT fall back to an in-process file "
+            "open. Source: REQ-L15586-08, INV-L15586-03."
         ),
     ),
     "FORBIDDEN-RAWIO-1": Clause(
