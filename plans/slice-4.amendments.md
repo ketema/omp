@@ -43,3 +43,22 @@
 - **`POST-RAWIO-3`, `POST-RAWIO-3b`, `FORBIDDEN-RAWIO-3`:**
   - Aligned `POST-RAWIO-3` and `POST-RAWIO-3b` with `INV-L15586-01` and Ketema's `1a`/`2a` direction: `ReadTool` and `WriteTool` keep helper routing for every `SQLite-Family` target (including `-wal`, `-shm`, and `-journal` sidecars) as built, explicitly state that closing the tool's own SQLite connection is permitted (because SQLite retains `.db` and `-shm` locks across secondary connection closes), and retain every POSIX advisory lock SQLite holds on the database file and its `-shm` file, and every POSIX advisory lock `omp` holds on a `SQLite-Family` target that the tool accesses through the Raw-I/O Helper (`B9`).
   - Aligned `FORBIDDEN-RAWIO-3` to keep forbidding raw in-process descriptor opens/closes on `SQLite-Family` files during header sniffing, WAL-version inspection, editable-file header checks, and byte reads/writes while stating explicitly that a SQLite connection's own descriptors managed by SQLite are not raw descriptors (`INV-L15586-01`, `Q-SLICE4-01`).
+
+## 2026-11-01 — Queued requests behind a timed-out request (`fb0e6862a2` → `CONTRACTS`)
+
+- Decided By: User (Ketema, 2026-11-01, verbatim: "queued requests should be retried. b.")
+- **`ERRORS-RAWIO-1` & `POST-RAWIO-2b`:**
+  - When a timeout kills the shared helper, only the active request that timed out fails (naming its operation and target path, and for a `write` stating that its outcome is unknown).
+  - Requests still queued at the kill (which were never sent to the killed helper because requests are dispatched strictly serially) are dispatched once, in their original order, to a newly spawned helper (and `options.onRequest` fires once for each queued request when it is sent to the fresh helper).
+  - A retried request that then fails or times out on the fresh helper fails with the usual error naming its operation and target path, with no second retry and no in-process fallback (`evaluate_timeout_semantics` / `evaluateTimeoutSemantics` validates `queued_requests_count` and `queued_action='retry_on_fresh_helper'`).
+
+## 2026-11-01 - Acceptance of values no requirement names. Decided By: User (Ketema, verbatim: "read each. approved").
+
+- `RAW_IO_DEFAULT_TIMEOUT_MS = 5000` (5,000 ms default timeout bound).
+- `RAW_IO_PROGRESS_CHUNK_BYTES = 65536` (64 KiB chunk size for `read`/`write` progress).
+- `{type: 'started', id}` and `{type: 'progress', id, bytesProcessed}` IPC messages and the pre-start timeout when `{type: 'started', id}` does not arrive within `options.timeoutMs`.
+- Module specifiers (`RAW_IO_WORKER_SELECTORS_MODULE = '@oh-my-pi/pi-coding-agent/cli/worker-selectors'`, `RAW_IO_CLIENT_MODULE = '@oh-my-pi/pi-coding-agent/tools/raw-io-client'`), function names (`classifyRawIoTarget`, `readRawIoBytes`, `writeRawIoBytes`, `stopRawIoHelper`), and the worker selector `RAW_IO_WORKER_ARG = '__omp_worker_raw_io'`.
+- The test seams (`options.helperSpawnCommand`, `options.timeoutMs`, `options.onRequest`, and `session.rawIoHelperOptions`).
+- The classification labels (`'sqlite_db'`, `'sqlite_sidecar'`, `'non_sqlite'`, `'missing'`, `'directory'`, `'special'`), entry-kind labels (`'file'`, `'missing'`, `'directory'`, `'special'`), and the `R3` missing-target rule (non-regular/missing paths return `kind=entryKind`, `isSqliteFamily=false` even when ending in `-wal`/`-shm`/`-journal`).
+- The POSIX absolute-path precondition (`PRE-RAWIO-1`: non-empty string starting with `/`).
+- Retention of `omp`'s POSIX advisory locks on helper-accessed `SQLite-Family` targets (`B9` in `POST-RAWIO-3` / `POST-RAWIO-3b`).

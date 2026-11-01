@@ -45,6 +45,10 @@ VALID_ACCESS_CHANNELS: Final[tuple[str, ...]] = (
     "in_process",
 )
 VALID_HELPER_OPERATIONS: Final[tuple[str, ...]] = ("classify", "read", "write")
+VALID_QUEUED_TIMEOUT_ACTIONS: Final[tuple[str, ...]] = (
+    "none",
+    "retry_on_fresh_helper",
+)
 RAW_IO_WORKER_ARG: Final[str] = "__omp_worker_raw_io"
 RAW_IO_WORKER_SELECTORS_MODULE: Final[str] = (
     "@oh-my-pi/pi-coding-agent/cli/worker-selectors"
@@ -68,7 +72,7 @@ type EntryKind = Literal["file", "missing", "directory", "special"]
 type ToolName = Literal["read", "write"]
 type AccessChannel = Literal["raw_io_helper", "sqlite_connection", "in_process"]
 type HelperOperation = Literal["classify", "read", "write"]
-
+type QueuedTimeoutAction = Literal["none", "retry_on_fresh_helper"]
 # ==============================================================================
 # Artifact 2: Exception Hierarchy
 # ==============================================================================
@@ -174,6 +178,8 @@ class RawIoTimeoutEvaluation:
     elapsed_since_progress_ms: int
     timed_out: bool
     helper_killed: bool
+    queued_requests_count: int = 0
+    queued_action: QueuedTimeoutAction = "none"
 
 
 @dataclass(slots=True, frozen=True)
@@ -385,6 +391,8 @@ def evaluate_timeout_semantics(
     elapsed_since_start_ms: object,
     elapsed_since_progress_ms: object,
     helper_killed: object,
+    queued_requests_count: object = 0,
+    queued_action: object = None,
 ) -> RawIoTimeoutEvaluation:
     """POST-RAWIO-2b / ERRORS-RAWIO-1: pure validator for T4/R1 = A & B7 rules."""
     if not isinstance(operation, str) or operation not in VALID_HELPER_OPERATIONS:
@@ -419,11 +427,15 @@ def evaluate_timeout_semantics(
         or not isinstance(elapsed_since_progress_ms, int)
         or isinstance(elapsed_since_progress_ms, bool)
         or elapsed_since_progress_ms < 0
+        or not isinstance(queued_requests_count, int)
+        or isinstance(queued_requests_count, bool)
+        or queued_requests_count < 0
     ):
         raise RawIoClassificationMismatchError(
             "POST-RAWIO-2b",
-            "queued_wait_ms, elapsed_before_start_ms, elapsed_since_start_ms, and "
-            "elapsed_since_progress_ms must be non-negative integers",
+            "queued_wait_ms, elapsed_before_start_ms, elapsed_since_start_ms, "
+            "elapsed_since_progress_ms, and queued_requests_count must be "
+            "non-negative integers",
         )
     if not isinstance(helper_killed, bool):
         raise RawIoClassificationMismatchError(
@@ -448,6 +460,25 @@ def evaluate_timeout_semantics(
             "ERRORS-RAWIO-1",
             "omp must kill the helper subprocess when a request times out",
         )
+    expected_queued_action: QueuedTimeoutAction = (
+        "retry_on_fresh_helper" if timed_out and queued_requests_count > 0 else "none"
+    )
+    resolved_queued_action = (
+        expected_queued_action if queued_action is None else queued_action
+    )
+    if (
+        not isinstance(resolved_queued_action, str)
+        or resolved_queued_action not in VALID_QUEUED_TIMEOUT_ACTIONS
+        or resolved_queued_action != expected_queued_action
+    ):
+        raise RawIoClassificationMismatchError(
+            "ERRORS-RAWIO-1",
+            (
+                f"queued_action must be {expected_queued_action!r} when "
+                f"timed_out={timed_out} and queued_requests_count="
+                f"{queued_requests_count}; got {queued_action!r}"
+            ),
+        )
     return RawIoTimeoutEvaluation(
         operation=typed_op,
         timeout_ms=timeout_ms,
@@ -458,6 +489,8 @@ def evaluate_timeout_semantics(
         elapsed_since_progress_ms=elapsed_since_progress_ms,
         timed_out=timed_out,
         helper_killed=helper_killed,
+        queued_requests_count=queued_requests_count,
+        queued_action=expected_queued_action,
     )
 
 
@@ -703,12 +736,15 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "is invoked exactly once for each request sent to the Raw-I/O Helper "
             "across every operation ('classify', 'read', 'write') with that "
             "request's operation and targetPath; requests on a shared helper are "
-            "dispatched serially (queued requests have no running timeout while "
-            "waiting behind an earlier active request), the helper emits a "
-            "{type: 'started', id} message when it begins the active request (which "
-            "starts the fixed options.timeoutMs timer for 'classify' and the "
-            "no-progress options.timeoutMs timer for 'read' and 'write'), and for "
-            "'read' and 'write' the helper transfers in bounded chunks "
+            "dispatched strictly serially (a queued request is never sent to the "
+            "helper before the active request settles and has no running timeout "
+            "while waiting in the queue, so a request queued behind a timed-out "
+            "request is sent—and logged via onRequest—exactly once, when dispatched "
+            "to the fresh helper), the helper emits a {type: 'started', id} message "
+            "when it begins the active request (which starts the fixed "
+            "options.timeoutMs timer for 'classify' and the no-progress "
+            "options.timeoutMs timer for 'read' and 'write'), and for 'read' and "
+            "'write' the helper transfers in bounded chunks "
             "(RAW_IO_PROGRESS_CHUNK_BYTES = 65536) and emits {type: 'progress', id, "
             "bytesProcessed} after each chunk to reset the no-progress timer. "
             "Source: REQ-L15586-05, REQ-L15586-08, REQ-L15586-31, SEQ-2, SEQ-5, IP-2."
@@ -779,12 +815,15 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "receives no {type: 'progress', id} or completion message for "
             "options.timeoutMs after {type: 'started', id}, default "
             "RAW_IO_DEFAULT_TIMEOUT_MS = 5000ms), THEN omp SHALL kill the helper "
-            "subprocess (so a timed-out write cannot land late and any other "
-            "in-flight or queued requests on the shared helper also fail closed "
-            "naming their operation and target path), surface an error naming the "
-            "operation and target path (and for a timed-out 'write', stating that "
-            "its outcome is unknown), and SHALL NOT fall back to an in-process file "
-            "open. Source: REQ-L15586-08, INV-L15586-03."
+            "subprocess (so a timed-out write cannot land late), fail only the "
+            "active request naming its operation and target path (and for a "
+            "timed-out 'write', stating that its outcome is unknown), dispatch "
+            "requests still queued at the kill (which were never sent to the killed "
+            "helper) once in their original order to a newly spawned helper (a "
+            "retried request that then fails or times out fails with the usual "
+            "error naming its operation and target path, with no second retry), "
+            "and SHALL NOT fall back to an in-process file open. "
+            "Source: REQ-L15586-08, INV-L15586-03."
         ),
     ),
     "FORBIDDEN-RAWIO-1": Clause(
