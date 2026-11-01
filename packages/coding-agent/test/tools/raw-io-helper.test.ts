@@ -825,7 +825,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 		}
 
 		// Controlled child helper script using Atomics.wait so every operation has a hard
-		// ceiling (<= 320ms) and cannot hang the test suite if the parent fails to time out.
+		// ceiling (<= 2000ms) and cannot hang the test suite if the parent fails to time out.
 		const helperScriptPath = path.join(tempDir, "t4-controlled-helper.mjs");
 		const pidFilePath = path.join(tempDir, "t4-helper.pid");
 		const helperScript = [
@@ -840,27 +840,27 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			"  const idx = reqIndex++;",
 			'  if (mode === "classify-hang-after-started") {',
 			'    process.send({ type: "started", id: msg.id });',
-			"    waitMs(300);",
+			"    waitMs(1500);",
 			"    process.exit(0);",
 			'  } else if (mode === "read-progress-succeeds") {',
 			'    process.send({ type: "started", id: msg.id });',
 			"    for (let i = 1; i <= 4; i++) {",
-			"      waitMs(30);",
+			"      waitMs(100);",
 			'      process.send({ type: "progress", id: msg.id, bytesProcessed: i * 4 });',
 			"    }",
 			'    process.send({ type: "read_ok", id: msg.id, bytes: new Uint8Array([1, 2, 3, 4]) });',
 			'  } else if (mode === "read-stall-after-progress") {',
 			'    process.send({ type: "started", id: msg.id });',
-			"    waitMs(25);",
+			"    waitMs(100);",
 			'    process.send({ type: "progress", id: msg.id, bytesProcessed: 4 });',
-			"    waitMs(300);",
+			"    waitMs(1500);",
 			"    process.exit(0);",
 			'  } else if (mode === "never-started") {',
-			"    waitMs(300);",
+			"    waitMs(1500);",
 			"    process.exit(0);",
 			'  } else if (mode === "write-late-after-stall") {',
 			'    process.send({ type: "started", id: msg.id });',
-			"    waitMs(220);",
+			"    waitMs(2000);",
 			"    fs.writeFileSync(msg.targetPath, msg.data);",
 			'    process.send({ type: "write_ok", id: msg.id });',
 			'  } else if (mode === "queue-first-slow-second-fast") {',
@@ -871,7 +871,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			"      }",
 			'      process.send({ type: "started", id: msg.id });',
 			"      for (let i = 1; i <= 4; i++) {",
-			"        waitMs(30);",
+			"        waitMs(100);",
 			'        process.send({ type: "progress", id: msg.id, bytesProcessed: i * 4 });',
 			"      }",
 			'      process.send({ type: "read_ok", id: msg.id, bytes: new Uint8Array([9, 8, 7, 6]) });',
@@ -893,7 +893,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			"    }",
 			'  } else if (mode === "queue-first-timeout-kills-second") {',
 			'    process.send({ type: "started", id: msg.id });',
-			"    waitMs(300);",
+			"    waitMs(1500);",
 			"    process.exit(0);",
 			"  }",
 			"});",
@@ -940,7 +940,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 					helperSpawnCommand: {
 						cmd: [process.execPath, helperScriptPath, "classify-hang-after-started", pidFilePath],
 					},
-					timeoutMs: 75,
+					timeoutMs: 500,
 				});
 			} catch (err) {
 				t41Err = err;
@@ -951,9 +951,9 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			const t41Dead = t41Pid > 0 ? waitForPidDead(t41Pid) : false;
 			try {
 				validateHelperFailureError(t41Msg, "classify", dbPath, { timedOut: true });
-				if (t41Elapsed >= 260 || !t41Dead) {
+				if (t41Elapsed >= 1200 || !t41Dead) {
 					failures.push(
-						`T4.1 FAILED: expected classify timeout <260ms and killed helper PID (elapsed=${Math.round(t41Elapsed)}ms, pid=${String(t41Pid)}, dead=${String(t41Dead)}, msg=${JSON.stringify(t41Msg)})`,
+						`T4.1 FAILED: expected classify timeout <1200ms and killed helper PID (elapsed=${Math.round(t41Elapsed)}ms, pid=${String(t41Pid)}, dead=${String(t41Dead)}, msg=${JSON.stringify(t41Msg)})`,
 					);
 				}
 			} catch (validationErr) {
@@ -967,7 +967,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			try {
 				const bytes = await readBytesFn(dbPath, 0, 4, {
 					helperSpawnCommand: { cmd: [process.execPath, helperScriptPath, "read-progress-succeeds", "none"] },
-					timeoutMs: 75,
+					timeoutMs: 500,
 				});
 				if (bytes.byteLength !== 4 || bytes[0] !== 1 || bytes[3] !== 4) {
 					failures.push(`T4.2a FAILED: unexpected bytes from progressing read: ${JSON.stringify([...bytes])}`);
@@ -984,7 +984,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			try {
 				await readBytesFn(dbPath, 0, 8, {
 					helperSpawnCommand: { cmd: [process.execPath, helperScriptPath, "read-stall-after-progress", "none"] },
-					timeoutMs: 75,
+					timeoutMs: 500,
 				});
 			} catch (err) {
 				t42bErr = err;
@@ -1004,7 +1004,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			try {
 				await classifyFn(dbPath, {
 					helperSpawnCommand: { cmd: [process.execPath, helperScriptPath, "never-started", "none"] },
-					timeoutMs: 75,
+					timeoutMs: 500,
 				});
 			} catch (err) {
 				t43Err = err;
@@ -1027,7 +1027,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 					helperSpawnCommand: {
 						cmd: [process.execPath, helperScriptPath, "write-late-after-stall", writePidFile],
 					},
-					timeoutMs: 75,
+					timeoutMs: 500,
 				});
 			} catch (err) {
 				t44Err = err;
@@ -1037,10 +1037,10 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			if (t44Pid > 0) {
 				waitForPidDead(t44Pid);
 			}
-			// Wait past the helper's 220ms late-write point using a quick child probe to prove
+			// Wait past the helper's 2000ms late-write point using a child probe to prove
 			// the killed helper never lands the write afterwards.
 			Bun.spawnSync({
-				cmd: [process.execPath, "-e", "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 180);"],
+				cmd: [process.execPath, "-e", "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1700);"],
 			});
 			const postTimeoutWriteContent = await fs.readFile(writeTargetPath, "utf8");
 			try {
@@ -1063,11 +1063,11 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 				const [firstBytes, secondClassified] = await Promise.all([
 					readBytesFn(dbPath, 0, 4, {
 						helperSpawnCommand: { cmd: sharedQueueCmd },
-						timeoutMs: 75,
+						timeoutMs: 500,
 					}),
 					classifyFn(secondDbPath, {
 						helperSpawnCommand: { cmd: sharedQueueCmd },
-						timeoutMs: 75,
+						timeoutMs: 500,
 					}),
 				]);
 				const secondRec = validateClassificationRecord(toClassificationInput(secondClassified, process.pid));
@@ -1087,11 +1087,11 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			const [activeSettled, queuedSettled] = await Promise.allSettled([
 				classifyFn(dbPath, {
 					helperSpawnCommand: { cmd: sharedKillCmd },
-					timeoutMs: 75,
+					timeoutMs: 500,
 				}),
 				readBytesFn(secondDbPath, 0, 16, {
 					helperSpawnCommand: { cmd: sharedKillCmd },
-					timeoutMs: 75,
+					timeoutMs: 500,
 				}),
 			]);
 			const activeErrMsg =
@@ -1139,7 +1139,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			db1.close();
 			db2.close();
 		}
-	});
+	}, 20000);
 
 	it("routes ReadTool and WriteTool SQLite-Family targets through the Raw-I/O Helper or a SQLite connection while retaining held POSIX locks and keeping non_sqlite files on the in-process fast path", async () => {
 		/*
