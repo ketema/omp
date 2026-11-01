@@ -91,7 +91,7 @@ function peerHeaderBytes(target: string): Uint8Array {
 // =============================================================================
 
 describe("raw_io_helper.contract - contract validator verification (supporting, not RED)", () => {
-	it("enforces PRE-RAWIO-1, POST-RAWIO-1, POST-RAWIO-2/2b/2c, POST-RAWIO-3/3b/3c, ERRORS-RAWIO-1, FORBIDDEN-RAWIO-2, and FORBIDDEN-RAWIO-3 on pure inputs", () => {
+	it("enforces PRE-RAWIO-1, POST-RAWIO-1, POST-RAWIO-2/2b/2c, POST-RAWIO-3/3b/3c, ERRORS-RAWIO-1b/1c, FORBIDDEN-RAWIO-2, and FORBIDDEN-RAWIO-3 on pure inputs", () => {
 		expect(RAW_IO_HELPER_CONTRACT["PRE-RAWIO-1"].verification, assertionContext("PRE-RAWIO-1", 'toBe("test")')).toBe(
 			"test",
 		);
@@ -1042,12 +1042,12 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 		/*
 		 * CONTRACT TRACEABILITY:
 		 *   - Contract: contracts/raw_io_helper.contract.ts (RAW_IO_HELPER_CONTRACT)
-		 *   - Enforces: POST-RAWIO-2b, ERRORS-RAWIO-1, FORBIDDEN-RAWIO-1b
+		 *   - Enforces: POST-RAWIO-2b, ERRORS-RAWIO-1b/1c/1d, FORBIDDEN-RAWIO-1b
 		 *   - Category: timeout & queue lifecycle boundary (T4.1 - T4.5)
 		 *   - Risk tier: HIGH - hung helper or late-landing write after timeout corrupts state or drops POSIX locks (#15586)
 		 *   - Adversarial: Contract-governed, implementation-aware
 		 *   - FOUR-CRITERIA TEST VALIDITY GATE:
-		 *     [v] C1 VALID: cites POST-RAWIO-2b, ERRORS-RAWIO-1, FORBIDDEN-RAWIO-1b
+		 *     [v] C1 VALID: cites POST-RAWIO-2b, ERRORS-RAWIO-1b/1c/1d, FORBIDDEN-RAWIO-1b
 		 *     [v] C2 VALUABLE: verifies classify fixed timeout + PID kill, read no-progress vs total duration, missing started timeout, write outcome-unknown + no late write, and queue survival + fail-closed
 		 *     [v] C3 NON-DUPLICATIVE: sole test of T4/R1 = A & B7 timeout and queue semantics
 		 *     [v] C4 NOT FUTURE-EDIT: enforces current SLICE-4 contracted timeout behavior
@@ -1079,8 +1079,11 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 		const helperScriptPath = path.join(tempDir, "t4-controlled-helper.mjs");
 		const pidFilePath = path.join(tempDir, "t4-helper.pid");
 		const spawnCountPath = path.join(tempDir, "t4-spawn-count.txt");
+		// Normal responses come from the real worker, not a parallel protocol.
+		// This wrapper injects only the specific crash/stall/delay under test.
 		const helperScript = [
 			'import * as fs from "node:fs";',
+			`import { startRawIoWorker } from ${JSON.stringify(new URL("../../src/tools/raw-io-worker.ts", import.meta.url).pathname)};`,
 			"const mode = process.argv[2];",
 			"const auxFile = process.argv[3];",
 			"let spawnNumber = 1;",
@@ -1095,108 +1098,39 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			"  }",
 			"}",
 			"const waitMs = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };",
-			"let reqIndex = 0;",
-			'process.on("message", (msg) => {',
-			'  if (!msg || typeof msg !== "object") return;',
-			"  const idx = reqIndex++;",
-			'  if (mode === "classify-hang-after-started") {',
-			'    process.send({ type: "started", id: msg.id });',
-			"    waitMs(1500);",
-			"    process.exit(0);",
-			'  } else if (mode === "read-progress-succeeds") {',
-			'    process.send({ type: "started", id: msg.id });',
-			"    for (let i = 1; i <= 4; i++) {",
-			"      waitMs(100);",
-			'      process.send({ type: "progress", id: msg.id, bytesProcessed: i * 4 });',
-			"    }",
-			'    process.send({ type: "read_ok", id: msg.id, bytes: new Uint8Array([1, 2, 3, 4]) });',
-			'  } else if (mode === "read-stall-after-progress") {',
-			'    process.send({ type: "started", id: msg.id });',
-			"    waitMs(100);",
-			'    process.send({ type: "progress", id: msg.id, bytesProcessed: 4 });',
-			"    waitMs(1500);",
-			"    process.exit(0);",
-			'  } else if (mode === "never-started") {',
-			"    waitMs(1500);",
-			"    process.exit(0);",
-			'  } else if (mode === "write-late-after-stall") {',
-			'    process.send({ type: "started", id: msg.id });',
-			"    waitMs(2000);",
-			"    fs.writeFileSync(msg.targetPath, msg.data);",
-			'    process.send({ type: "write_ok", id: msg.id });',
-			'  } else if (mode === "queue-first-slow-second-fast") {',
-			"    if (idx === 0) {",
-			'      if (msg.type !== "read") {',
-			'        process.send({ type: "error", id: msg.id, operation: msg.type, targetPath: msg.targetPath, error: "second request was not queued on shared helper" });',
+			"startRawIoWorker({",
+			"  send(message) {",
+			'    if (message.type === "progress" && (mode === "read-progress-succeeds" || mode === "queue-first-slow-second-fast")) waitMs(100);',
+			"    process.send(message);",
+			"  },",
+			"  onMessage(handler) {",
+			'    process.on("message", (msg) => {',
+			'      if (!msg || typeof msg !== "object") return;',
+			'      if (mode === "never-started") { waitMs(1500); process.exit(0); }',
+			'      if (mode === "classify-hang-after-started" || mode === "queue-retry-timeout-both-fail" ||',
+			'          (spawnNumber === 1 && (mode === "queue-retry-timeout-then-succeed" || mode === "queue-retry-readtool-classify-timeout"))) {',
+			'        process.send({ type: "started", id: msg.id });',
+			"        waitMs(1500); process.exit(0);",
+			"      }",
+			'      if (mode === "read-stall-after-progress") {',
+			'        process.send({ type: "started", id: msg.id });',
+			"        waitMs(100);",
+			'        process.send({ type: "progress", id: msg.id, bytesProcessed: 4 });',
+			"        waitMs(1500); process.exit(0);",
+			"      }",
+			'      if (mode === "write-late-after-stall") {',
+			'        process.send({ type: "started", id: msg.id });',
+			"        waitMs(2000); fs.writeFileSync(msg.targetPath, msg.data);",
+			'        process.send({ type: "write_ok", id: msg.id });',
 			"        return;",
 			"      }",
-			'      process.send({ type: "started", id: msg.id });',
-			"      for (let i = 1; i <= 4; i++) {",
-			"        waitMs(100);",
-			'        process.send({ type: "progress", id: msg.id, bytesProcessed: i * 4 });',
+			'      if (mode === "queue-retry-crash-then-succeed" && spawnNumber === 1) {',
+			'        process.send({ type: "started", id: msg.id });',
+			"        process.exit(1);",
 			"      }",
-			'      process.send({ type: "read_ok", id: msg.id, bytes: new Uint8Array([9, 8, 7, 6]) });',
-			"    } else {",
-			'      process.send({ type: "started", id: msg.id });',
-			"      process.send({",
-			'        type: "classified",',
-			"        id: msg.id,",
-			"        classification: {",
-			"          targetPath: msg.targetPath,",
-			"          resolvedPath: msg.targetPath,",
-			'          kind: "sqlite_db",',
-			"          isSqliteFamily: true,",
-			"          helperPid: process.pid,",
-			"          headerBytes: new Uint8Array(16),",
-			'          entryKind: "file",',
-			"        },",
-			"      });",
-			"    }",
-			'  } else if (mode === "queue-retry-timeout-then-succeed") {',
-			"    if (spawnNumber === 1) {",
-			'      process.send({ type: "started", id: msg.id });',
-			"      waitMs(1500);",
-			"      process.exit(0);",
-			"    } else {",
-			'      process.send({ type: "started", id: msg.id });',
-			'      process.send({ type: "progress", id: msg.id, bytesProcessed: 4 });',
-			'      process.send({ type: "read_ok", id: msg.id, bytes: new Uint8Array([42, 43, 44, 45]) });',
-			"    }",
-			'  } else if (mode === "queue-retry-timeout-both-fail") {',
-			'    process.send({ type: "started", id: msg.id });',
-			"    waitMs(1500);",
-			"    process.exit(0);",
-			'  } else if (mode === "queue-retry-crash-then-succeed") {',
-			"    if (spawnNumber === 1) {",
-			'      process.send({ type: "started", id: msg.id });',
-			"      process.exit(1);",
-			"    } else {",
-			'      process.send({ type: "started", id: msg.id });',
-			'      process.send({ type: "progress", id: msg.id, bytesProcessed: 4 });',
-			'      process.send({ type: "read_ok", id: msg.id, bytes: new Uint8Array([7, 8, 9, 10]) });',
-			"    }",
-			'  } else if (mode === "queue-retry-readtool-classify-timeout") {',
-			"    if (spawnNumber === 1) {",
-			'      process.send({ type: "started", id: msg.id });',
-			"      waitMs(1500);",
-			"      process.exit(0);",
-			"    } else {",
-			'      process.send({ type: "started", id: msg.id });',
-			"      process.send({",
-			'        type: "classified",',
-			"        id: msg.id,",
-			"        classification: {",
-			"          targetPath: msg.targetPath,",
-			"          resolvedPath: msg.targetPath,",
-			'          kind: "non_sqlite",',
-			"          isSqliteFamily: false,",
-			"          helperPid: process.pid,",
-			"          headerBytes: new Uint8Array([65, 66, 67, 68]),",
-			'          entryKind: "file",',
-			"        },",
-			"      });",
-			"    }",
-			"  }",
+			"      handler(msg);",
+			"    });",
+			"  },",
 			"});",
 		].join("\n");
 		await fs.writeFile(helperScriptPath, helperScript, "utf8");
@@ -1205,7 +1139,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			const probeScript = [
 				"const pid = Number(process.argv[1]);",
 				"const waitMs = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };",
-				"for (let i = 0; i < 20; i++) {",
+				"for (let i = 0; i < 200; i++) {",
 				"  try { process.kill(pid, 0); } catch { console.log('DEAD'); process.exit(0); }",
 				"  waitMs(10);",
 				"}",
@@ -1222,6 +1156,9 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 		const secondDbPath = path.join(tempDir, "t4-second-locked.db");
 		const writeTargetPath = path.join(tempDir, "t4-write-target.db-journal");
 		await fs.writeFile(writeTargetPath, "original-safe-bytes\n", "utf8");
+		const progressPath = path.join(tempDir, "t4-progress.db-journal");
+		const progressData = new Uint8Array(12 * RAW_IO_PROGRESS_CHUNK_BYTES).fill(73);
+		await fs.writeFile(progressPath, progressData);
 
 		const db1 = new Database(dbPath);
 		const db2 = new Database(secondDbPath);
@@ -1266,12 +1203,14 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			// T4.2a: read that keeps sending 'progress' for longer than timeoutMs in total MUST NOT time out.
 			await stopFn();
 			try {
-				const bytes = await readBytesFn(dbPath, 0, 4, {
+				const bytes = await readBytesFn(progressPath, 0, progressData.byteLength, {
 					helperSpawnCommand: { cmd: [process.execPath, helperScriptPath, "read-progress-succeeds", "none"] },
 					timeoutMs: 500,
 				});
-				if (bytes.byteLength !== 4 || bytes[0] !== 1 || bytes[3] !== 4) {
-					failures.push(`T4.2a FAILED: unexpected bytes from progressing read: ${JSON.stringify([...bytes])}`);
+				if (bytes.byteLength !== progressData.byteLength || !bytes.every(byte => byte === 73)) {
+					failures.push(
+						`T4.2a FAILED: real progressing read returned incorrect bytes (length=${bytes.byteLength})`,
+					);
 				}
 			} catch (err) {
 				failures.push(
@@ -1362,7 +1301,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			const sharedQueueCmd = [process.execPath, helperScriptPath, "queue-first-slow-second-fast", "none"];
 			try {
 				const [firstBytes, secondClassified] = await Promise.all([
-					readBytesFn(dbPath, 0, 4, {
+					readBytesFn(progressPath, 0, progressData.byteLength, {
 						helperSpawnCommand: { cmd: sharedQueueCmd },
 						timeoutMs: 500,
 					}),
@@ -1372,7 +1311,11 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 					}),
 				]);
 				const secondRec = validateClassificationRecord(toClassificationInput(secondClassified, process.pid));
-				if (firstBytes.byteLength !== 4 || secondRec.kind !== "sqlite_db") {
+				if (
+					firstBytes.byteLength !== progressData.byteLength ||
+					!firstBytes.every(byte => byte === 73) ||
+					secondRec.kind !== "sqlite_db"
+				) {
 					failures.push(`T4.5a FAILED: unexpected queued results`);
 				}
 			} catch (err) {
@@ -1418,7 +1361,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 				if (
 					queuedRetriedSettled.status !== "fulfilled" ||
 					queuedRetriedSettled.value.byteLength !== 4 ||
-					queuedRetriedSettled.value[0] !== 42 ||
+					queuedRetriedSettled.value[0] !== SQLITE_HEADER_MAGIC[0] ||
 					retrySuccessLog.length !== 2 ||
 					retrySuccessLog[0]?.operation !== "classify" ||
 					retrySuccessLog[1]?.operation !== "read"
@@ -1509,7 +1452,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 				if (
 					crashQueuedSettled.status !== "fulfilled" ||
 					crashQueuedSettled.value.byteLength !== 4 ||
-					crashQueuedSettled.value[0] !== 7
+					crashQueuedSettled.value[0] !== SQLITE_HEADER_MAGIC[0]
 				) {
 					const qCrashDetail =
 						crashQueuedSettled.status === "rejected"
@@ -1693,7 +1636,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 				throw new Error(
 					[
 						"1. WHAT: Raw-I/O Helper T4 timeout, crash-retry, kill-wait, and unexited-write guard semantics FAILED",
-						"2. WHY: POST-RAWIO-2b / ERRORS-RAWIO-1 / ERRORS-RAWIO-1b / ERRORS-RAWIO-1c / ERRORS-RAWIO-1d / FORBIDDEN-RAWIO-1b violation",
+						"2. WHY: POST-RAWIO-2b / ERRORS-RAWIO-1b / ERRORS-RAWIO-1c / ERRORS-RAWIO-1d / FORBIDDEN-RAWIO-1b violation",
 						"3. EXPECTED: All T4 sub-scenarios (T4.1-T4.9) pass",
 						`4. ACTUAL:\n${failures.map(f => `  - ${f}`).join("\n")}`,
 						"5. GUIDANCE: Enforce timeout, crash-retry, resolveTimeoutAfterKillWait, and registerUnexitedWriteTarget write refusal and lift",
