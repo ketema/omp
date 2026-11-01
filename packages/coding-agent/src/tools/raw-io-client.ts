@@ -96,6 +96,17 @@ export class RawIoHelperOperationError extends RawIoHelperClientError {
 		this.operation = operation;
 		this.targetPath = targetPath;
 	}
+
+	static fromFormattedMessage(
+		clauseId: string,
+		operation: string,
+		targetPath: string,
+		formattedMessage: string,
+	): RawIoHelperOperationError {
+		const err = new RawIoHelperOperationError(clauseId, operation, targetPath, "");
+		err.message = formattedMessage;
+		return err;
+	}
 }
 
 export function resolveTimeoutAfterKillWait(input: ResolveTimeoutAfterKillWaitInput): RawIoKillWaitResolution {
@@ -332,18 +343,33 @@ async function executeActiveTask(task: QueuedHelperTask): Promise<void> {
 					helperExited,
 					queuedRequests: matchingEntries,
 				});
-				if (!helperExited && matchingIndices.length > 0) {
+				const activeClauseId = helperExited ? "ERRORS-RAWIO-1b" : "ERRORS-RAWIO-1c";
+				if (!resolution.retryQueueOnFreshHelper && matchingIndices.length > 0) {
 					for (let k = matchingIndices.length - 1; k >= 0; k--) {
 						const idx = matchingIndices[k];
 						if (idx === undefined) continue;
 						const [removed] = requestQueue.splice(idx, 1);
 						const errMsg = resolution.queuedErrors[k];
 						if (removed && errMsg !== undefined) {
-							removed.rejectTask(new Error(errMsg));
+							removed.rejectTask(
+								RawIoHelperOperationError.fromFormattedMessage(
+									"ERRORS-RAWIO-1c",
+									removed.operation,
+									removed.targetPath,
+									errMsg,
+								),
+							);
 						}
 					}
 				}
-				task.rejectTask(new Error(resolution.activeError));
+				task.rejectTask(
+					RawIoHelperOperationError.fromFormattedMessage(
+						activeClauseId,
+						task.operation,
+						task.targetPath,
+						resolution.activeError,
+					),
+				);
 				resolve();
 			});
 		}, task.timeoutMs);
