@@ -100,3 +100,7 @@
   - (1) Keyed the unexited-write target block on the target's resolved real path (falling back to `targetPath` on `ENOENT`/`ENOTDIR`, matching `R2`) so symlink aliases or alternate spellings of the same file cannot bypass the refusal.
   - (2) Contracted `registerUnexitedWriteTarget(targetPath, exitPromise) -> void` explicitly in `POST-RAWIO-2b`'s exported client surface so tests can drive the refusal and its lift when `exitPromise` settles.
   - (3) Stated the inspection gap in `ERRORS-RAWIO-1d` (matching `ERRORS-RAWIO-1c`): the wiring that calls `registerUnexitedWriteTarget` when the 5s kill wait ends with `helperExited=false` is checked by reading the code during the slice audit, because no unprivileged test can create a process that survives `SIGKILL`.
+
+## 2026-11-01 — `resolveTargetKey` `lstat`/`readlink` resolver (`babad38823` → `CONTRACTS`)
+
+- `resolveTargetKey` walks `lstat`/`readlink`, never `realpath`: macOS `realpath` opens the file and drops POSIX locks (proven on the Mac, Bun 1.4.4). Decided By: Claude + oMACarchy.
