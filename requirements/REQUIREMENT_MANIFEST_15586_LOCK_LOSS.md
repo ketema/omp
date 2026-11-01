@@ -68,6 +68,7 @@ No contract executes unless all predicates evaluate to TRUE.
   > - On the RLM admission stack: "yes I do." (agreement that it is YAGNI and is not merged)
   > - On Q-SLICE4-01 (2026-11-01): "research first. is this type of read mentioned in the upstream issue ?  what is the risk factor? is this needed to prevent the error we experienced?" / "B. is correct."
   > - "my text for the requirement we discussed: Only cover reads that cause the error state we are trying to prevent. Make sense? do not e" / "expand scope" / "1- a" / "2 - a" / "Approved text."
+  > - On constitutional audit finding #18 (2026-11-01): "D2 -> yes. tool it is."
 - **Our Understanding**: omp's own in-process tools open and close omp's SQLite files inside the omp process. On Linux and macOS that releases every POSIX advisory lock the process holds on those files; a peer omp process then believes it is the last connection, checkpoints and unlinks the shared `-wal`/`-shm`, and two writers corrupt the database (upstream issue #15586). This work makes the minimum changes to Ketema's fork so the observed Trigger Paths can no longer release omp's own locks, adds a search-discipline hook that keeps agents away from the trigger in the first place, fixes one false positive in the Skill Adherence Hook, gives oMACarchy a working State Server, and puts the Mac and the oMACarchy Host on one Shared Commit at or above the 18.13 line with the Required Set. It does not promise that corruption can never happen.
 - **Ambiguity Score**: 2
 
@@ -147,7 +148,7 @@ No contract executes unless all predicates evaluate to TRUE.
 |----|----------|-----------|--------------|----------|-----------|
 | INV-L15586-01 | Lock safety | omp SHALL NOT read or write a SQLite database file or its `-shm` file through a raw file descriptor inside the omp process. | Test | High | SQLite holds POSIX locks only on the database file and its `-shm` file; closing a raw descriptor on either causes Lock Loss on Linux and macOS (#15586), while closing a SQLite connection does not (Q-SLICE4-01 = B, Decided By: User). |
 | INV-L15586-02 | Helper isolation | Raw-I/O Helper SHALL NOT open a SQLite database connection. | Test | High | A helper holding SQLite connections would reproduce Lock Loss in itself. |
-| INV-L15586-12 | No descriptor transfer | omp SHALL NOT receive from another process a file descriptor for a file opened by a Trigger Path. | Test | High | Closing a received descriptor in omp still releases omp's locks (POSIX locks belong to the process). |
+| INV-L15586-12 | No descriptor transfer | omp SHALL NOT receive from another process a file descriptor for a file opened by a Trigger Path. | Tool | High | Closing a received descriptor in omp still releases omp's locks (POSIX locks belong to the process). Guaranteed by Bun's IPC channel between omp and the Raw-I/O Helper, which carries only serialized data and cannot transfer a file descriptor (Decided By: User, 2026-11-01). |
 | INV-L15586-13 | Process boundary | omp SHALL NOT run the Raw-I/O Helper as a thread or Worker inside the omp process. | Test | High | A thread shares the process lock table. |
 | INV-L15586-03 | No fallback | omp SHALL NOT fall back to an in-process open when the Raw-I/O Helper is unavailable. | Test | High | A silent fallback restores the failure mode (CL9). |
 | INV-L15586-04 | Scope | omp SHALL NOT change how it stores its own state in SQLite as part of this work. | Inspection | High | SQLite removal is out of scope. |
@@ -276,3 +277,4 @@ source
 | 2026-10-31 | Ketema Harris | Initial manifest from requirements elicitation |
 | 2026-11-01 | Ketema Harris | Narrow INV-L15586-01 to raw reads and writes of a SQLite database file or its `-shm` file (Q-SLICE4-01 = B) |
 | 2026-11-01 | Ketema Harris | Align the omp actor row and Terminal State (S1) with the narrowed INV-L15586-01 (constitutional audit finding #9) |
+| 2026-11-01 | Ketema Harris | INV-L15586-12 verified by Tool (Bun IPC carries only serialized data) instead of Test (constitutional audit finding #18) |
