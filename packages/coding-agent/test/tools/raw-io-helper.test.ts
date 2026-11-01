@@ -463,7 +463,6 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 		const fakeWalSymlinkToPlainPath = path.join(tempDir, "fake.db-wal");
 
 		await fs.writeFile(plainPath, "ordinary plain text file\n", "utf8");
-		await fs.writeFile(existingJournalPath, "journal-header-bytes", "utf8");
 
 		const db = new Database(dbPath);
 		try {
@@ -472,7 +471,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			db.run("INSERT INTO items (name) VALUES ('alpha');");
 			db.run("BEGIN IMMEDIATE;");
 			db.run("INSERT INTO items (name) VALUES ('held-in-wal');");
-
+			await fs.writeFile(existingJournalPath, "journal-header-bytes", "utf8");
 			await fs.symlink(walPath, symlinkToWalPath);
 			await fs.symlink(plainPath, fakeWalSymlinkToPlainPath);
 
