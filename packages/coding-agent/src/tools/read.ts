@@ -166,6 +166,7 @@ import {
 import { splitAddressableFileLines } from "@oh-my-pi/pi-tui/tools/hashline-format";
 import { readBinary, resolveBinaryViewPath } from "./read-binary";
 import { readSqlite, resolveSqliteReadPath } from "./read-sqlite";
+import { classifyRawIoTarget, readRawIoBytes } from "./raw-io-client";
 import { readJson, resolveJsonReadPath, splitJsonQueryTarget } from "./read-json";
 import {
 	getReadTextFileBridge,
@@ -1912,7 +1913,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 
 			const sqlitePath = await resolveSqliteReadPath(this.session, readPath, suffixCache, signal);
 			if (sqlitePath) {
-				return readSqlite(sqlitePath, signal);
+				return readSqlite(sqlitePath, signal, this.session.rawIoHelperOptions);
 			}
 			// local:// and artifact:// locate backing files without their URL query;
 			// restore it only for JSON reads, leaving other schemes' query semantics alone.
@@ -2056,6 +2057,22 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			}
 			return dirResult;
 		}
+		// REQ-L15586-05 / REQ-L15586-31 / SEQ-2 (POST-RAWIO-3, POST-RAWIO-3c, FORBIDDEN-RAWIO-3):
+		// Classify every regular host file out of process via the Raw-I/O Helper
+		// before any in-process file open.
+		const rawIoClassification = await classifyRawIoTarget(absolutePath, this.session.rawIoHelperOptions);
+		if (rawIoClassification.kind === "sqlite_db" && !isRawSelector(parsed) && parsed.kind !== "conflicts") {
+			return readSqlite(
+				{
+					absolutePath,
+					sqliteSubPath: localTarget.sel ?? "",
+					queryString: "",
+					suffixResolution,
+				},
+				signal,
+				this.session.rawIoHelperOptions,
+			);
+		}
 
 		if (parsed.kind === "conflicts") {
 			return this.#readFileConflicts(absolutePath, suffixResolution, signal);
@@ -2097,7 +2114,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		// so a PNG stored as `.txt` still resolves at any size under the cap;
 		// unbuffered files keep one centralized 256KB peek regardless of
 		// extension, since only magic bytes — never the name — decide.
-		const wholeFileBytes = fileSize <= SNAPSHOT_MAX_BYTES ? await readWholeFile(absolutePath) : undefined;
+		const wholeFileBytes = rawIoClassification.isSqliteFamily
+			? Buffer.from(await readRawIoBytes(absolutePath, undefined, undefined, this.session.rawIoHelperOptions))
+			: fileSize <= SNAPSHOT_MAX_BYTES
+				? await readWholeFile(absolutePath)
+				: undefined;
 		const imageHeader =
 			isRawSelector(parsed) && !rawImages
 				? undefined

@@ -33,7 +33,7 @@ import {
 import { throwIfAborted } from "./tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { toolResult } from "./tool-result";
-
+import { type RawIoClassifyOptions, RawIoHelperClientError } from "./raw-io-client";
 interface ResolvedSqliteReadPath {
 	absolutePath: string;
 	sqliteSubPath: string;
@@ -55,7 +55,7 @@ export async function resolveSqliteReadPath(
 			const stat = await Bun.file(absolutePath).stat();
 			// Sniffing a FIFO or device can block; leave it to the read tool's rejection.
 			if (!stat.isFile()) continue;
-			if (!(await isSqliteFile(absolutePath))) continue;
+			if (!(await isSqliteFile(absolutePath, session.rawIoHelperOptions))) continue;
 
 			return {
 				absolutePath,
@@ -64,15 +64,15 @@ export async function resolveSqliteReadPath(
 				suffixResolution,
 			};
 		} catch (error) {
+			if (error instanceof RawIoHelperClientError) throw error;
 			if (!isNotFoundError(error) || isRemoteMountPath(absolutePath)) continue;
-
 			const suffixMatch = await findSuffixMatchCached(session, suffixCache, candidate.sqlitePath, signal);
 			if (!suffixMatch) continue;
 
 			try {
 				const retryStat = await Bun.file(suffixMatch.absolutePath).stat();
 				if (!retryStat.isFile()) continue;
-				if (!(await isSqliteFile(suffixMatch.absolutePath))) continue;
+				if (!(await isSqliteFile(suffixMatch.absolutePath, session.rawIoHelperOptions))) continue;
 
 				absolutePath = suffixMatch.absolutePath;
 				suffixResolution = { from: candidate.sqlitePath, to: suffixMatch.displayPath };
@@ -83,7 +83,7 @@ export async function resolveSqliteReadPath(
 					suffixResolution,
 				};
 			} catch (retryError) {
-				if (!isNotFoundError(retryError)) {
+				if (retryError instanceof RawIoHelperClientError || !isNotFoundError(retryError)) {
 					throw retryError;
 				}
 			}
@@ -95,6 +95,7 @@ export async function resolveSqliteReadPath(
 export async function readSqlite(
 	resolvedSqlitePath: ResolvedSqliteReadPath,
 	signal?: AbortSignal,
+	rawIoHelperOptions?: RawIoClassifyOptions,
 ): Promise<AgentToolResult<ReadToolDetails>> {
 	throwIfAborted(signal);
 
@@ -110,7 +111,7 @@ export async function readSqlite(
 
 	let db: Database | null = null;
 	try {
-		db = await openSqliteReadConnection(resolvedSqlitePath.absolutePath);
+		db = await openSqliteReadConnection(resolvedSqlitePath.absolutePath, rawIoHelperOptions);
 		throwIfAborted(signal);
 
 		switch (selector.kind) {

@@ -71,7 +71,7 @@ import {
 import { decodeUtf8Text } from "./read-format";
 import { routeReadThroughBridge } from "./read-summary";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
-
+import { classifyRawIoTarget, writeRawIoBytes } from "./raw-io-client";
 import {
 	deleteRowByKey,
 	deleteRowByRowId,
@@ -801,7 +801,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 						`Cannot write '${candidate.sqlitePath}': it is a ${kind}, not a regular file or directory.`,
 					);
 				}
-				if (!(await isSqliteFile(absolutePath))) {
+				if (!(await isSqliteFile(absolutePath, this.session.rawIoHelperOptions))) {
 					sawExistingNonSqlite = true;
 					continue;
 				}
@@ -1088,6 +1088,39 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			const kind = existing && specialFileKind(existing);
 			if (kind) {
 				throw new ToolError(`Cannot write '${path}': it is a ${kind}, not a regular file or directory.`);
+			}
+			// REQ-L15586-05 / REQ-L15586-31 / SEQ-2 (POST-RAWIO-3b, POST-RAWIO-3c, FORBIDDEN-RAWIO-3):
+			// Classify every host file target out of process via the Raw-I/O Helper
+			// before any in-process open, and write SQLite-Family targets through
+			// the helper so omp never closes an in-process descriptor on that inode.
+			const rawIoClassification = await classifyRawIoTarget(absolutePath, this.session.rawIoHelperOptions);
+			if (rawIoClassification.isSqliteFamily) {
+				await assertNotTruncatedFileReadProjection(
+					this.session,
+					path,
+					absolutePath,
+					displayPath,
+					content,
+					cleanContent,
+				);
+				emitWriteProgress(onUpdate, cleanBytes, displayPath, absolutePath);
+				await writeRawIoBytes(
+					absolutePath,
+					new Uint8Array(Buffer.from(cleanContent, "utf8")),
+					this.session.rawIoHelperOptions,
+				);
+				invalidateFsScanAfterWrite(absolutePath);
+				this.session.bumpFileMutationVersion?.(absolutePath);
+				const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent, displayPath);
+				const writeLine = `Successfully wrote ${cleanBytes} bytes to ${displayPath}`;
+				let resultText = header ? `${header}\n${writeLine}` : writeLine;
+				if (stripped) {
+					resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
+				}
+				return {
+					content: [{ type: "text", text: resultText }],
+					details: { resolvedPath: absolutePath },
+				};
 			}
 			// Check if file exists and is auto-generated before overwriting.
 			if (existing) {

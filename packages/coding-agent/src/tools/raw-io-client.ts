@@ -2,8 +2,8 @@
  * Parent-side client for the out-of-process Raw-I/O Helper subprocess.
  *
  * Enforces PRE-RAWIO-1, POST-RAWIO-1, POST-RAWIO-1b, POST-RAWIO-2,
- * ERRORS-RAWIO-1, FORBIDDEN-RAWIO-1, FORBIDDEN-RAWIO-1b, FORBIDDEN-RAWIO-2,
- * and FORBIDDEN-RAWIO-2b.
+ * POST-RAWIO-2b, POST-RAWIO-2c, ERRORS-RAWIO-1, FORBIDDEN-RAWIO-1,
+ * FORBIDDEN-RAWIO-1b, FORBIDDEN-RAWIO-2, and FORBIDDEN-RAWIO-2b.
  *
  * Contract-Implementation Independence (CL11-F):
  *   This module redeclares its own constants, error classes, and types
@@ -24,17 +24,26 @@ import {
 import { safeSend } from "../utils/ipc";
 import {
 	RAW_IO_WORKER_ARG,
+	type RawIoHelperOperation,
+	type RawIoHelperRequestEntry,
 	type RawIoTargetClassification,
 	type RawIoWorkerInbound,
 	type RawIoWorkerOutbound,
 } from "./raw-io-protocol";
 
-export { RAW_IO_WORKER_ARG, type RawIoTargetClassification } from "./raw-io-protocol";
+export {
+	RAW_IO_WORKER_ARG,
+	type RawIoHelperOperation,
+	type RawIoHelperRequestEntry,
+	type RawIoTargetClassification,
+} from "./raw-io-protocol";
 
 export interface RawIoClassifyOptions {
 	readonly helperSpawnCommand?: {
 		readonly cmd: readonly string[];
 	};
+	readonly timeoutMs?: number;
+	readonly onRequest?: (entry: RawIoHelperRequestEntry) => void;
 }
 
 export class RawIoHelperClientError extends Error {
@@ -79,6 +88,33 @@ function assertValidTargetPath(targetPath: unknown): asserts targetPath is strin
 	}
 }
 
+function validateOptionsShape(
+	operation: RawIoHelperOperation,
+	targetPath: string,
+	options?: RawIoClassifyOptions,
+): readonly string[] | undefined {
+	if (options === undefined) {
+		return undefined;
+	}
+	if (options.timeoutMs !== undefined) {
+		if (typeof options.timeoutMs !== "number" || !Number.isInteger(options.timeoutMs) || options.timeoutMs <= 0) {
+			throw new RawIoHelperOperationError(operation, targetPath, "invalid timeoutMs");
+		}
+	}
+	const customCmd = options.helperSpawnCommand?.cmd;
+	if (customCmd !== undefined) {
+		if (
+			!Array.isArray(customCmd) ||
+			customCmd.length === 0 ||
+			!customCmd.every(part => typeof part === "string" && part.trim().length > 0)
+		) {
+			throw new RawIoHelperOperationError(operation, targetPath, "invalid helperSpawnCommand.cmd");
+		}
+		return customCmd;
+	}
+	return undefined;
+}
+
 function createRawIoWorkerHandle(spawnCommand: WorkerSpawnCommand): RawIoWorkerHandle {
 	const spawned: SpawnedSubprocess<RawIoWorkerOutbound> = createWorkerSubprocess({
 		spawnCommand,
@@ -121,35 +157,71 @@ export async function stopRawIoHelper(): Promise<void> {
 	}
 }
 
-async function runClassifyOnHandle(
-	handle: RawIoWorkerHandle,
+function acquireHandleForRequest(
+	operation: RawIoHelperOperation,
 	targetPath: string,
-	disposeAfter: boolean,
-): Promise<RawIoTargetClassification> {
+	options?: RawIoClassifyOptions,
+): { readonly handle: RawIoWorkerHandle; readonly disposeAfter: boolean } {
+	const customCmd = validateOptionsShape(operation, targetPath, options);
+	if (customCmd !== undefined) {
+		try {
+			return {
+				handle: createRawIoWorkerHandle({ cmd: [...customCmd] }),
+				disposeAfter: true,
+			};
+		} catch (err) {
+			const reason = err instanceof Error ? err.message : String(err);
+			throw new RawIoHelperOperationError(operation, targetPath, reason, { cause: err });
+		}
+	}
+	try {
+		return {
+			handle: acquireSharedHelper(),
+			disposeAfter: false,
+		};
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		throw new RawIoHelperOperationError(operation, targetPath, reason, { cause: err });
+	}
+}
+
+async function runHelperRequest<Result>(
+	operation: RawIoHelperOperation,
+	targetPath: string,
+	options: RawIoClassifyOptions | undefined,
+	buildInbound: (id: string) => RawIoWorkerInbound,
+	extractResult: (
+		message: Exclude<RawIoWorkerOutbound, { readonly type: "log" | "pong" | "error" }>,
+	) => Result | undefined,
+): Promise<Result> {
+	const { handle, disposeAfter } = acquireHandleForRequest(operation, targetPath, options);
 	const requestId = crypto.randomUUID();
-	const { promise, resolve, reject } = Promise.withResolvers<RawIoTargetClassification>();
+	const { promise, resolve, reject } = Promise.withResolvers<Result>();
 
 	const unsubscribeMessage = handle.onMessage(message => {
 		if (message.type === "log") {
 			logWorkerMessage(message);
 			return;
 		}
-		if (message.id !== requestId) return;
-		if (message.type === "classified") {
-			resolve(message.classification);
+		if (message.type === "pong" || message.id !== requestId) return;
+		if (message.type === "error") {
+			reject(new RawIoHelperOperationError(operation, targetPath, message.error));
 			return;
 		}
-		if (message.type === "error") {
-			reject(new RawIoHelperOperationError("classify", targetPath, message.error));
+		const result = extractResult(message);
+		if (result !== undefined) {
+			resolve(result);
 		}
 	});
 
 	const unsubscribeError = handle.onError(err => {
-		reject(new RawIoHelperOperationError("classify", targetPath, err.message, { cause: err }));
+		reject(new RawIoHelperOperationError(operation, targetPath, err.message, { cause: err }));
 	});
 
 	try {
-		handle.send({ type: "classify", id: requestId, targetPath });
+		// POST-RAWIO-2b (B4): invoke onRequest exactly once for each request sent to the helper.
+		options?.onRequest?.({ operation, targetPath });
+		handle.send(buildInbound(requestId));
 		return await promise;
 	} finally {
 		unsubscribeMessage();
@@ -167,32 +239,44 @@ export async function classifyRawIoTarget(
 	// PRE-RAWIO-1: reject non-absolute or empty targetPath before any helper I/O.
 	assertValidTargetPath(targetPath);
 
-	const customCmd = options?.helperSpawnCommand?.cmd;
-	if (customCmd !== undefined) {
-		if (
-			!Array.isArray(customCmd) ||
-			customCmd.length === 0 ||
-			!customCmd.every(part => typeof part === "string" && part.trim().length > 0)
-		) {
-			throw new RawIoHelperOperationError("classify", targetPath, "invalid helperSpawnCommand.cmd");
-		}
-		// ERRORS-RAWIO-1 / FORBIDDEN-RAWIO-1b: fail closed naming operation and targetPath; never open in-process.
-		let customHandle: RawIoWorkerHandle;
-		try {
-			customHandle = createRawIoWorkerHandle({ cmd: [...customCmd] });
-		} catch (err) {
-			const reason = err instanceof Error ? err.message : String(err);
-			throw new RawIoHelperOperationError("classify", targetPath, reason, { cause: err });
-		}
-		return await runClassifyOnHandle(customHandle, targetPath, true);
-	}
+	return await runHelperRequest(
+		"classify",
+		targetPath,
+		options,
+		id => ({ type: "classify", id, targetPath }),
+		message => (message.type === "classified" ? message.classification : undefined),
+	);
+}
 
-	let handle: RawIoWorkerHandle;
-	try {
-		handle = acquireSharedHelper();
-	} catch (err) {
-		const reason = err instanceof Error ? err.message : String(err);
-		throw new RawIoHelperOperationError("classify", targetPath, reason, { cause: err });
-	}
-	return await runClassifyOnHandle(handle, targetPath, false);
+export async function readRawIoBytes(
+	targetPath: string,
+	offset?: number,
+	length?: number,
+	options?: RawIoClassifyOptions,
+): Promise<Uint8Array> {
+	assertValidTargetPath(targetPath);
+
+	return await runHelperRequest(
+		"read",
+		targetPath,
+		options,
+		id => ({ type: "read", id, targetPath, offset, length }),
+		message => (message.type === "read_ok" ? message.bytes : undefined),
+	);
+}
+
+export async function writeRawIoBytes(
+	targetPath: string,
+	data: Uint8Array,
+	options?: RawIoClassifyOptions,
+): Promise<void> {
+	assertValidTargetPath(targetPath);
+
+	await runHelperRequest<true>(
+		"write",
+		targetPath,
+		options,
+		id => ({ type: "write", id, targetPath, data }),
+		message => (message.type === "write_ok" ? true : undefined),
+	);
 }
