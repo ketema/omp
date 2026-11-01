@@ -227,8 +227,7 @@ def validate_target_path(target_path: object) -> str:
     """PRE-RAWIO-1: target_path is a non-empty POSIX absolute path starting with '/'."""
     if not isinstance(target_path, str):
         raise RawIoInvalidTargetPathError(target_path)
-    stripped = target_path.strip()
-    if not stripped or not stripped.startswith("/"):
+    if not target_path or not target_path.startswith("/"):
         raise RawIoInvalidTargetPathError(target_path)
     return target_path
 
@@ -968,9 +967,13 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "targetPath; requests on a shared helper are dispatched strictly "
             "serially (a queued request is never sent to the helper before the "
             "active request settles and has no running timeout while waiting in "
-            "the queue, so a request queued behind a timed-out request is sent—and "
-            "logged via onRequest—exactly once, when dispatched to the fresh "
-            "helper), the helper emits a {type: 'started', id} message when it "
+            "the queue; a request queued behind a timed-out request is sent—and "
+            "logged via onRequest—exactly once to the fresh helper only when the "
+            "old helper is confirmed exited, as specified by ERRORS-RAWIO-1b; "
+            "if the old helper has not exited within RAW_IO_KILL_WAIT_TIMEOUT_MS, "
+            "ERRORS-RAWIO-1c takes precedence: queued requests fail without "
+            "dispatch, retry, or an onRequest entry), the helper emits a "
+            "{type: 'started', id} message when it "
             "begins the active request (which starts the fixed options.timeoutMs "
             "timer for 'classify' and the no-progress options.timeoutMs timer for "
             "'read' and 'write'), and for 'read' and 'write' the helper transfers "
@@ -986,6 +989,33 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "The Raw-I/O client module (@oh-my-pi/pi-coding-agent/tools/raw-io-client) "
             "exports stopRawIoHelper() -> Promise<void> to terminate the helper "
             "subprocess. Source: SEQ-6, IP-2."
+        ),
+    ),
+    "SEQ-RAWIO-1": Clause(
+        verification="test",
+        text=(
+            "On the first ReadTool or WriteTool request requiring the Raw-I/O "
+            "Helper, the Raw-I/O client SHALL start the helper as a child OS "
+            "process from omp's own executable with RAW_IO_WORKER_ARG before "
+            "serving that request; an explicitly supplied "
+            "options.helperSpawnCommand remains the contracted spawn-command "
+            "override. Source: REQ-L15586-05, SEQ-5, IP-2."
+        ),
+    ),
+    "SEQ-RAWIO-2": Clause(
+        verification="test",
+        text=(
+            "At omp process exit, omp SHALL invoke stopRawIoHelper after its "
+            "last Raw-I/O request to terminate the helper subprocess. "
+            "Source: SEQ-6, IP-2."
+        ),
+    ),
+    "SEQ-RAWIO-3": Clause(
+        verification="test",
+        text=(
+            "When the Raw-I/O Helper's parent IPC pipe closes, the helper SHALL "
+            "exit rather than remain as an orphan process. Source: SEQ-6, IP-2, "
+            "manifest Raw-I/O Helper lifecycle cleanup."
         ),
     ),
     "POST-RAWIO-3": Clause(
@@ -1043,6 +1073,11 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "only that active request with an error naming its operation and target "
             "path, leave the live helper subprocess and any queued requests "
             "untouched, and SHALL NOT fall back to an in-process file open. "
+            "The public async operation's returned promise SHALL reject with "
+            "RawIoHelperOperationError carrying clauseId='ERRORS-RAWIO-1', "
+            "operation, and targetPath for that request; this helper failure "
+            "SHALL NOT be thrown synchronously. PRE-RAWIO-1 violations remain "
+            "distinct RawIoInvalidTargetPathError failures. "
             "Source: REQ-L15586-08, INV-L15586-03."
         ),
     ),
@@ -1064,7 +1099,13 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "(which were never sent to the failed helper) once in their original "
             "order to a newly spawned helper (with no second retry if that fresh "
             "helper also fails or times out), and SHALL NOT fall back to an "
-            "in-process file open. Source: REQ-L15586-08, INV-L15586-03."
+            "in-process file open. Each public async operation failed under this "
+            "clause SHALL reject its returned promise with "
+            "RawIoHelperOperationError carrying clauseId='ERRORS-RAWIO-1b', "
+            "operation, and targetPath for that request; this helper failure "
+            "SHALL NOT be thrown synchronously. PRE-RAWIO-1 violations remain "
+            "distinct RawIoInvalidTargetPathError failures. "
+            "Source: REQ-L15586-08, INV-L15586-03."
         ),
     ),
     "ERRORS-RAWIO-1c": Clause(
@@ -1079,7 +1120,12 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "(retryQueueOnFreshHelper=false), SHALL fail each queued request "
             "naming its operation and target path with an error stating that the "
             "previous helper could not be stopped, and SHALL NOT fall back to an "
-            "in-process file open. (Verified by unit test on the exported "
+            "in-process file open. Each affected public async operation's returned "
+            "promise SHALL reject with RawIoHelperOperationError carrying "
+            "clauseId='ERRORS-RAWIO-1c', operation, and targetPath for that active "
+            "or queued request; this helper failure SHALL NOT be thrown "
+            "synchronously. PRE-RAWIO-1 violations remain distinct "
+            "RawIoInvalidTargetPathError failures. (Verified by unit test on the exported "
             "resolveTimeoutAfterKillWait production function with "
             "helperExited=false; the wiring that passes helperExited=false after "
             "the 5s wait is checked by reading the code during the slice audit, "
@@ -1101,6 +1147,12 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "restart omp, while allowing read and classify requests and write "
             "requests to other files to proceed on a fresh helper, and SHALL lift "
             "the block when exitPromise (the old helper's exit) settles. "
+            "The refused public async write operation's returned promise SHALL "
+            "reject with RawIoHelperOperationError carrying "
+            "clauseId='ERRORS-RAWIO-1d', operation='write', and targetPath for "
+            "that refused request; this helper failure SHALL NOT be thrown "
+            "synchronously. PRE-RAWIO-1 violations remain distinct "
+            "RawIoInvalidTargetPathError failures. "
             "(Verified by test driving registerUnexitedWriteTarget(targetPath, "
             "exitPromise), writeRawIoBytes, readRawIoBytes, and "
             "classifyRawIoTarget, including symlink-alias refusal and lift when "
@@ -1115,6 +1167,10 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
         verification="test",
         text=(
             "The Raw-I/O Helper SHALL NOT open a SQLite database connection. "
+            "Rationale: do not add the SQLite library (bun:sqlite or any SQLite "
+            "binding) as a dependency of the Raw-I/O Helper. Verified by existing "
+            "tests executing the real helper's normal classify, read, write, "
+            "start, and stop operations (Ketema D1). "
             "Source: INV-L15586-02."
         ),
     ),
@@ -1134,10 +1190,14 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
         ),
     ),
     "FORBIDDEN-RAWIO-2b": Clause(
-        verification="test",
+        verification="tool",
         text=(
             "omp SHALL NOT receive from another process a file descriptor for a file "
-            "opened by a Trigger Path. Source: INV-L15586-12."
+            "opened by a Trigger Path. Tool guarantee: Bun's IPC channel between "
+            "omp and the Raw-I/O Helper carries serialized data only and cannot "
+            "carry a file descriptor. This proof applies only while omp and the "
+            "helper communicate over that channel (Ketema D2). "
+            "Source: INV-L15586-12."
         ),
     ),
     "FORBIDDEN-RAWIO-3": Clause(

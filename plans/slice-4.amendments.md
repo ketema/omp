@@ -104,3 +104,21 @@
 ## 2026-11-01 — `resolveTargetKey` `lstat`/`readlink` resolver (`babad38823` → `CONTRACTS`)
 
 - `resolveTargetKey` walks `lstat`/`readlink`, never `realpath`: macOS `realpath` opens the file and drops POSIX locks (proven on the Mac, Bun 1.4.4). Decided By: Claude + oMACarchy.
+
+## 2026-11-01 — Audit refinements #5, #6, #7, #15 (`8b873c68dd` → `CONTRACTS`)
+
+- Decided By: Claude + oMACarchy — thin refinements preserve existing requirement IDs and guarantees; they do not adjudicate #18.
+- **#5 (`POST-RAWIO-2b`):** Explicitly defer to `ERRORS-RAWIO-1c` when the old helper has not exited within the kill-wait bound: queued requests fail without dispatch, retry, or an `onRequest` entry. Fresh-helper dispatch remains conditional on confirmed old-helper exit.
+- **#6 (`PRE-RAWIO-1`):** `validateTargetPath` and `validate_target_path` check the supplied string, without trimming, and return that same string. Before editing the Python twin, oMACarchy read the Mac's `python-mastery/SKILL.md` and every reference file in full over SSH as explicitly authorized.
+- **#7 (`ERRORS-RAWIO-1/1b/1c/1d`):** Both twins name `RawIoHelperOperationError`, its scenario-specific `clauseId`, `operation`, and `targetPath`, and rejection of each affected public async operation's returned promise rather than synchronous helper-failure throws. `PRE-RAWIO-1` remains a distinct `RawIoInvalidTargetPathError` boundary.
+- **#15 (`SEQ-RAWIO-1/2/3`):** Both twins bind first-request same-executable helper startup (preserving the existing explicit spawn-command override), at-exit teardown after the last request, and helper exit on parent IPC-pipe closure to manifest `SEQ-5`, `SEQ-6`, and `IP-2`; the plan's `SLICE-4.clauses_in_scope` includes all three IDs.
+
+## 2026-11-01 — Audit #18 assurance decisions D1 and D2
+
+- Decided By: User (Ketema, 2026-11-01; verbatim D1 relayed by Claude):
+
+> This class of negative future prediction error is impossible to cover and we should not attempt to. All we can do is "prove that given our current capabilities we are not able to open a database connection. we should have proof via config and asserted tested code that is also proven through execution of all normal operations. do not waste time trying to generate exhaustive edge cases especially cases that could occur if we sabotaged ourselves. your recommedned solution is a waste of time. just place a note to not add the sqlite libaray as a dependency and be done with it. again we do not waste time tryign to test and prevent things that we would have to manually sabotage ourselves to produce the failure mode. that is just a stupid condition and if someone wanted to do it then we have bigger problems.
+
+- **D1 (`INV-L15586-02`, `FORBIDDEN-RAWIO-1`):** Keep `verification='test'`; use the existing tests executing the real helper's normal classify, read, write, start, and stop operations. Add only a short note in the clause rationale and worker header not to add `bun:sqlite` or any SQLite binding as a Raw-I/O Helper dependency. No new test, dependency-graph check, exhaustive edge-case matrix, or deliberate future-capability sabotage.
+- Decided By: User (Ketema, 2026-11-01; verbatim D2: "D2 -> yes. tool it is.").
+- **D2 (`INV-L15586-12`, `FORBIDDEN-RAWIO-2b`):** The approved REQUIREMENTS commit `8b873c68dd` changes the requirement verification to Tool. Both contract twins now declare `verification='tool'`, naming Bun's serialized-data-only IPC channel, which cannot carry a file descriptor. The proof holds only while omp and the helper communicate over that channel.

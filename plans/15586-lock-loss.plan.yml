@@ -86,6 +86,9 @@ slices:
   - POST-RAWIO-2
   - POST-RAWIO-2b
   - POST-RAWIO-2c
+  - SEQ-RAWIO-1
+  - SEQ-RAWIO-2
+  - SEQ-RAWIO-3
   - POST-RAWIO-3
   - POST-RAWIO-3b
   - POST-RAWIO-3c

@@ -10,6 +10,8 @@
  * Contract-Implementation Independence (CL11-F):
  *   This module MUST NOT import from `contracts/raw_io_helper.contract.ts` and
  *   MUST NOT open any SQLite database connection (`FORBIDDEN-RAWIO-1`).
+ * Do not add the SQLite library (bun:sqlite or any SQLite binding) as a dependency
+ * of the Raw-I/O Helper (Ketema D1).
  */
 import type { Stats } from "node:fs";
 import * as fs from "node:fs/promises";
