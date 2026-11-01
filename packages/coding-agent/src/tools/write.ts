@@ -71,7 +71,7 @@ import {
 import { decodeUtf8Text } from "./read-format";
 import { routeReadThroughBridge } from "./read-summary";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
-import { classifyRawIoTarget, writeRawIoBytes } from "./raw-io-client";
+import { classifyRawIoTarget, readRawIoBytes, writeRawIoBytes } from "./raw-io-client";
 import {
 	deleteRowByKey,
 	deleteRowByRowId,
@@ -338,9 +338,13 @@ async function assertNotTruncatedFileReadProjection(
 	displayPath: string,
 	rawContent: string,
 	writeContent: string,
+	isSqliteFamily = false,
 ): Promise<void> {
 	if (!endsWithReadTruncationNotice(rawContent)) return;
-	const currentContent = await readCurrentWriteSource(session, requestedPath, absolutePath);
+	// POST-RAWIO-3b / FORBIDDEN-RAWIO-3: refusing a projection must retain locks too.
+	const currentContent = isSqliteFamily
+		? new TextDecoder().decode(await readRawIoBytes(absolutePath, undefined, undefined, session.rawIoHelperOptions))
+		: await readCurrentWriteSource(session, requestedPath, absolutePath);
 	assertNotShorterReadProjection(displayPath, rawContent, currentContent, writeContent);
 }
 
@@ -1102,6 +1106,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					displayPath,
 					content,
 					cleanContent,
+					true,
 				);
 				emitWriteProgress(onUpdate, cleanBytes, displayPath, absolutePath);
 				await writeRawIoBytes(

@@ -2075,7 +2075,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 
 		if (parsed.kind === "conflicts") {
-			return this.#readFileConflicts(absolutePath, suffixResolution, signal);
+			return this.#readFileConflicts(absolutePath, suffixResolution, rawIoClassification.isSqliteFamily, signal);
 		}
 
 		if (pdfImageRead) {
@@ -2878,10 +2878,17 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	async #readFileConflicts(
 		absolutePath: string,
 		suffixResolution: { from: string; to: string } | undefined,
+		isSqliteFamily: boolean,
 		signal: AbortSignal | undefined,
 	): Promise<AgentToolResult<ReadToolDetails>> {
 		throwIfAborted(signal);
-		const scan = await scanFileForConflicts(absolutePath);
+		// POST-RAWIO-3 / FORBIDDEN-RAWIO-3 also cover auxiliary conflict scans.
+		const scan = await scanFileForConflicts(
+			absolutePath,
+			isSqliteFamily
+				? { readBytes: length => readRawIoBytes(absolutePath, 0, length, this.session.rawIoHelperOptions) }
+				: {},
+		);
 		const displayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
 		const history = getConflictHistory(this.session);
 		const entries = scan.blocks.map(block =>
