@@ -12,10 +12,12 @@ import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import {
 	type ClassifyResolvedTargetInput,
+	evaluateTimeoutSemantics,
 	RAW_IO_CLASSIFY_FN_NAME,
 	RAW_IO_CLIENT_MODULE,
-	// RAW_IO_DEFAULT_TIMEOUT_MS held pending Ketema's T4 timeout semantics decision
+	RAW_IO_DEFAULT_TIMEOUT_MS,
 	RAW_IO_HELPER_CONTRACT,
+	RAW_IO_PROGRESS_CHUNK_BYTES,
 	RAW_IO_READ_BYTES_FN_NAME,
 	RAW_IO_STOP_FN_NAME,
 	RAW_IO_WORKER_ARG,
@@ -164,6 +166,71 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 					{ operation: "read", targetPath: "/tmp/ordinary.txt" },
 				],
 				"/tmp/ordinary.txt",
+			),
+		).toThrow(RawIoClassificationMismatchError);
+
+		expect(RAW_IO_DEFAULT_TIMEOUT_MS).toBe(5000);
+		expect(RAW_IO_PROGRESS_CHUNK_BYTES).toBe(65536);
+		expect(
+			evaluateTimeoutSemantics({
+				operation: "classify",
+				timeoutMs: 100,
+				queuedWaitMs: 500,
+				startedReceived: true,
+				elapsedBeforeStartMs: 10,
+				elapsedSinceStartMs: 100,
+				elapsedSinceProgressMs: 20,
+				helperKilled: true,
+			}).timedOut,
+		).toBe(true);
+		expect(
+			evaluateTimeoutSemantics({
+				operation: "read",
+				timeoutMs: 100,
+				queuedWaitMs: 500,
+				startedReceived: true,
+				elapsedBeforeStartMs: 10,
+				elapsedSinceStartMs: 250,
+				elapsedSinceProgressMs: 40,
+				helperKilled: false,
+			}).timedOut,
+		).toBe(false);
+		expect(
+			evaluateTimeoutSemantics({
+				operation: "classify",
+				timeoutMs: 100,
+				queuedWaitMs: 0,
+				startedReceived: false,
+				elapsedBeforeStartMs: 100,
+				elapsedSinceStartMs: 0,
+				elapsedSinceProgressMs: 0,
+				helperKilled: true,
+			}).timedOut,
+		).toBe(true);
+		expect(() =>
+			evaluateTimeoutSemantics({
+				operation: "write",
+				timeoutMs: 100,
+				startedReceived: true,
+				elapsedSinceStartMs: 120,
+				elapsedSinceProgressMs: 120,
+				helperKilled: false,
+			}),
+		).toThrow(RawIoClassificationMismatchError);
+		expect(
+			validateHelperFailureError(
+				"Raw-I/O Helper failed during write for '/tmp/a.db-journal': timed out after 100ms; write outcome is unknown",
+				"write",
+				"/tmp/a.db-journal",
+				{ timedOut: true },
+			),
+		).toContain("outcome is unknown");
+		expect(() =>
+			validateHelperFailureError(
+				"Raw-I/O Helper failed during write for '/tmp/a.db-journal': timed out after 100ms",
+				"write",
+				"/tmp/a.db-journal",
+				{ timedOut: true },
 			),
 		).toThrow(RawIoClassificationMismatchError);
 	});
@@ -701,7 +768,6 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 					].join("\n"),
 				);
 			}
-			// T4 timeout test held pending Ketema's timeout semantics decision.
 			const postFailureLockProbe = peerWriteBlocked(dbPath);
 			if (!postFailureLockProbe.blocked) {
 				throw new Error(
@@ -719,6 +785,359 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 				db.run("ROLLBACK;");
 			} catch {}
 			db.close();
+		}
+	});
+
+	it("enforces T4 timeout semantics: started signal, classify fixed limit, read/write no-progress limit, helper kill on timeout, write outcome-unknown error, and queued request survival/fail-closed", async () => {
+		/*
+		 * CONTRACT TRACEABILITY:
+		 *   - Contract: contracts/raw_io_helper.contract.ts (RAW_IO_HELPER_CONTRACT)
+		 *   - Enforces: POST-RAWIO-2b, ERRORS-RAWIO-1, FORBIDDEN-RAWIO-1b
+		 *   - Category: timeout & queue lifecycle boundary (T4.1 - T4.5)
+		 *   - Risk tier: HIGH - hung helper or late-landing write after timeout corrupts state or drops POSIX locks (#15586)
+		 *   - Adversarial: Contract-governed, implementation-aware
+		 *   - FOUR-CRITERIA TEST VALIDITY GATE:
+		 *     [v] C1 VALID: cites POST-RAWIO-2b, ERRORS-RAWIO-1, FORBIDDEN-RAWIO-1b
+		 *     [v] C2 VALUABLE: verifies classify fixed timeout + PID kill, read no-progress vs total duration, missing started timeout, write outcome-unknown + no late write, and queue survival + fail-closed
+		 *     [v] C3 NON-DUPLICATIVE: sole test of T4/R1 = A & B7 timeout and queue semantics
+		 *     [v] C4 NOT FUTURE-EDIT: enforces current SLICE-4 contracted timeout behavior
+		 */
+		const loaded = await tryLoadRawIoClient();
+		const classifyFn = loaded.module?.[RAW_IO_CLASSIFY_FN_NAME];
+		const readBytesFn = loaded.module?.[RAW_IO_READ_BYTES_FN_NAME];
+		const writeBytesFn = loaded.module?.[RAW_IO_WRITE_BYTES_FN_NAME];
+		const stopFn = loaded.module?.[RAW_IO_STOP_FN_NAME];
+		if (
+			typeof classifyFn !== "function" ||
+			typeof readBytesFn !== "function" ||
+			typeof writeBytesFn !== "function" ||
+			typeof stopFn !== "function"
+		) {
+			throw new Error(
+				[
+					"1. WHAT: Raw-I/O Helper client functions FAILED to load for T4 timeout test",
+					"2. WHY: POST-RAWIO-2b / POST-RAWIO-2c violation - required exports missing on raw-io-client",
+					"3. EXPECTED: classifyRawIoTarget, readRawIoBytes, writeRawIoBytes, and stopRawIoHelper exported as functions",
+					`4. ACTUAL: classify=${typeof classifyFn}, read=${typeof readBytesFn}, write=${typeof writeBytesFn}, stop=${typeof stopFn}`,
+					"5. GUIDANCE: The contracted client surface must export all four functions with T4 timeout support",
+				].join("\n"),
+			);
+		}
+
+		// Controlled child helper script using Atomics.wait so every operation has a hard
+		// ceiling (<= 320ms) and cannot hang the test suite if the parent fails to time out.
+		const helperScriptPath = path.join(tempDir, "t4-controlled-helper.mjs");
+		const pidFilePath = path.join(tempDir, "t4-helper.pid");
+		const helperScript = [
+			'import * as fs from "node:fs";',
+			"const mode = process.argv[2];",
+			"const pidFile = process.argv[3];",
+			'if (pidFile && pidFile !== "none") fs.writeFileSync(pidFile, String(process.pid), "utf8");',
+			"const waitMs = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };",
+			"let reqIndex = 0;",
+			'process.on("message", (msg) => {',
+			'  if (!msg || typeof msg !== "object") return;',
+			"  const idx = reqIndex++;",
+			'  if (mode === "classify-hang-after-started") {',
+			'    process.send({ type: "started", id: msg.id });',
+			"    waitMs(300);",
+			"    process.exit(0);",
+			'  } else if (mode === "read-progress-succeeds") {',
+			'    process.send({ type: "started", id: msg.id });',
+			"    for (let i = 1; i <= 4; i++) {",
+			"      waitMs(30);",
+			'      process.send({ type: "progress", id: msg.id, bytesProcessed: i * 4 });',
+			"    }",
+			'    process.send({ type: "read_ok", id: msg.id, bytes: new Uint8Array([1, 2, 3, 4]) });',
+			'  } else if (mode === "read-stall-after-progress") {',
+			'    process.send({ type: "started", id: msg.id });',
+			"    waitMs(25);",
+			'    process.send({ type: "progress", id: msg.id, bytesProcessed: 4 });',
+			"    waitMs(300);",
+			"    process.exit(0);",
+			'  } else if (mode === "never-started") {',
+			"    waitMs(300);",
+			"    process.exit(0);",
+			'  } else if (mode === "write-late-after-stall") {',
+			'    process.send({ type: "started", id: msg.id });',
+			"    waitMs(220);",
+			"    fs.writeFileSync(msg.targetPath, msg.data);",
+			'    process.send({ type: "write_ok", id: msg.id });',
+			'  } else if (mode === "queue-first-slow-second-fast") {',
+			"    if (idx === 0) {",
+			'      if (msg.type !== "read") {',
+			'        process.send({ type: "error", id: msg.id, operation: msg.type, targetPath: msg.targetPath, error: "second request was not queued on shared helper" });',
+			"        return;",
+			"      }",
+			'      process.send({ type: "started", id: msg.id });',
+			"      for (let i = 1; i <= 4; i++) {",
+			"        waitMs(30);",
+			'        process.send({ type: "progress", id: msg.id, bytesProcessed: i * 4 });',
+			"      }",
+			'      process.send({ type: "read_ok", id: msg.id, bytes: new Uint8Array([9, 8, 7, 6]) });',
+			"    } else {",
+			'      process.send({ type: "started", id: msg.id });',
+			"      process.send({",
+			'        type: "classified",',
+			"        id: msg.id,",
+			"        classification: {",
+			"          targetPath: msg.targetPath,",
+			"          resolvedPath: msg.targetPath,",
+			'          kind: "sqlite_db",',
+			"          isSqliteFamily: true,",
+			"          helperPid: process.pid,",
+			"          headerBytes: new Uint8Array(16),",
+			'          entryKind: "file",',
+			"        },",
+			"      });",
+			"    }",
+			'  } else if (mode === "queue-first-timeout-kills-second") {',
+			'    process.send({ type: "started", id: msg.id });',
+			"    waitMs(300);",
+			"    process.exit(0);",
+			"  }",
+			"});",
+		].join("\n");
+		await fs.writeFile(helperScriptPath, helperScript, "utf8");
+
+		const waitForPidDead = (pid: number): boolean => {
+			const probeScript = [
+				"const pid = Number(process.argv[1]);",
+				"const waitMs = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };",
+				"for (let i = 0; i < 20; i++) {",
+				"  try { process.kill(pid, 0); } catch { console.log('DEAD'); process.exit(0); }",
+				"  waitMs(10);",
+				"}",
+				"console.log('ALIVE');",
+			].join("\n");
+			const proc = Bun.spawnSync({
+				cmd: [process.execPath, "-e", probeScript, String(pid)],
+				stdout: "pipe",
+			});
+			return new TextDecoder().decode(proc.stdout).trim() === "DEAD";
+		};
+
+		const dbPath = path.join(tempDir, "t4-locked.db");
+		const secondDbPath = path.join(tempDir, "t4-second-locked.db");
+		const writeTargetPath = path.join(tempDir, "t4-write-target.db-journal");
+		await fs.writeFile(writeTargetPath, "original-safe-bytes\n", "utf8");
+
+		const db1 = new Database(dbPath);
+		const db2 = new Database(secondDbPath);
+		const failures: string[] = [];
+
+		try {
+			db1.run("PRAGMA journal_mode = WAL; CREATE TABLE t (id INT); BEGIN IMMEDIATE; INSERT INTO t VALUES (1);");
+			db2.run("PRAGMA journal_mode = WAL; CREATE TABLE t (id INT); BEGIN IMMEDIATE; INSERT INTO t VALUES (1);");
+
+			// T4.1: classify sends 'started' and never answers -> times out within bounded time,
+			// names 'classify' and dbPath, and kills the helper PID.
+			await stopFn();
+			const t41Start = performance.now();
+			let t41Err: unknown;
+			try {
+				await classifyFn(dbPath, {
+					helperSpawnCommand: {
+						cmd: [process.execPath, helperScriptPath, "classify-hang-after-started", pidFilePath],
+					},
+					timeoutMs: 75,
+				});
+			} catch (err) {
+				t41Err = err;
+			}
+			const t41Elapsed = performance.now() - t41Start;
+			const t41Msg = t41Err instanceof Error ? t41Err.message : "";
+			const t41Pid = Number((await fs.readFile(pidFilePath, "utf8").catch(() => "0")).trim());
+			const t41Dead = t41Pid > 0 ? waitForPidDead(t41Pid) : false;
+			try {
+				validateHelperFailureError(t41Msg, "classify", dbPath, { timedOut: true });
+				if (t41Elapsed >= 260 || !t41Dead) {
+					failures.push(
+						`T4.1 FAILED: expected classify timeout <260ms and killed helper PID (elapsed=${Math.round(t41Elapsed)}ms, pid=${String(t41Pid)}, dead=${String(t41Dead)}, msg=${JSON.stringify(t41Msg)})`,
+					);
+				}
+			} catch (validationErr) {
+				failures.push(
+					`T4.1 FAILED (classify fixed timeout & helper kill): ${validationErr instanceof Error ? validationErr.message : String(validationErr)} (elapsed=${Math.round(t41Elapsed)}ms, msg=${JSON.stringify(t41Msg)})`,
+				);
+			}
+
+			// T4.2a: read that keeps sending 'progress' for longer than timeoutMs in total MUST NOT time out.
+			await stopFn();
+			try {
+				const bytes = await readBytesFn(dbPath, 0, 4, {
+					helperSpawnCommand: { cmd: [process.execPath, helperScriptPath, "read-progress-succeeds", "none"] },
+					timeoutMs: 75,
+				});
+				if (bytes.byteLength !== 4 || bytes[0] !== 1 || bytes[3] !== 4) {
+					failures.push(`T4.2a FAILED: unexpected bytes from progressing read: ${JSON.stringify([...bytes])}`);
+				}
+			} catch (err) {
+				failures.push(
+					`T4.2a FAILED (progressing read should not time out): ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+
+			// T4.2b: read that stops sending 'progress' MUST time out.
+			await stopFn();
+			let t42bErr: unknown;
+			try {
+				await readBytesFn(dbPath, 0, 8, {
+					helperSpawnCommand: { cmd: [process.execPath, helperScriptPath, "read-stall-after-progress", "none"] },
+					timeoutMs: 75,
+				});
+			} catch (err) {
+				t42bErr = err;
+			}
+			const t42bMsg = t42bErr instanceof Error ? t42bErr.message : "";
+			try {
+				validateHelperFailureError(t42bMsg, "read", dbPath, { timedOut: true });
+			} catch (validationErr) {
+				failures.push(
+					`T4.2b FAILED (stalled read after progress must time out): ${validationErr instanceof Error ? validationErr.message : String(validationErr)} (msg=${JSON.stringify(t42bMsg)})`,
+				);
+			}
+
+			// T4.3: helper that never sends 'started' MUST time out.
+			await stopFn();
+			let t43Err: unknown;
+			try {
+				await classifyFn(dbPath, {
+					helperSpawnCommand: { cmd: [process.execPath, helperScriptPath, "never-started", "none"] },
+					timeoutMs: 75,
+				});
+			} catch (err) {
+				t43Err = err;
+			}
+			const t43Msg = t43Err instanceof Error ? t43Err.message : "";
+			try {
+				validateHelperFailureError(t43Msg, "classify", dbPath, { timedOut: true });
+			} catch (validationErr) {
+				failures.push(
+					`T4.3 FAILED (missing 'started' signal must time out): ${validationErr instanceof Error ? validationErr.message : String(validationErr)} (msg=${JSON.stringify(t43Msg)})`,
+				);
+			}
+
+			// T4.4: write timeout states outcome is unknown and kills helper before late write lands.
+			await stopFn();
+			const writePidFile = path.join(tempDir, "t4-write.pid");
+			let t44Err: unknown;
+			try {
+				await writeBytesFn(writeTargetPath, new TextEncoder().encode("CORRUPTED-LATE-WRITE\n"), {
+					helperSpawnCommand: {
+						cmd: [process.execPath, helperScriptPath, "write-late-after-stall", writePidFile],
+					},
+					timeoutMs: 75,
+				});
+			} catch (err) {
+				t44Err = err;
+			}
+			const t44Msg = t44Err instanceof Error ? t44Err.message : "";
+			const t44Pid = Number((await fs.readFile(writePidFile, "utf8").catch(() => "0")).trim());
+			if (t44Pid > 0) {
+				waitForPidDead(t44Pid);
+			}
+			// Wait past the helper's 220ms late-write point using a quick child probe to prove
+			// the killed helper never lands the write afterwards.
+			Bun.spawnSync({
+				cmd: [process.execPath, "-e", "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 180);"],
+			});
+			const postTimeoutWriteContent = await fs.readFile(writeTargetPath, "utf8");
+			try {
+				validateHelperFailureError(t44Msg, "write", writeTargetPath, { timedOut: true });
+				if (postTimeoutWriteContent !== "original-safe-bytes\n") {
+					failures.push(
+						`T4.4 FAILED: late write landed after timeout (content=${JSON.stringify(postTimeoutWriteContent)})`,
+					);
+				}
+			} catch (validationErr) {
+				failures.push(
+					`T4.4 FAILED (write timeout unknown-outcome & no late write): ${validationErr instanceof Error ? validationErr.message : String(validationErr)} (msg=${JSON.stringify(t44Msg)}, content=${JSON.stringify(postTimeoutWriteContent)})`,
+				);
+			}
+
+			// T4.5a: request queued behind a slow-but-progressing active request does NOT time out while waiting.
+			await stopFn();
+			const sharedQueueCmd = [process.execPath, helperScriptPath, "queue-first-slow-second-fast", "none"];
+			try {
+				const [firstBytes, secondClassified] = await Promise.all([
+					readBytesFn(dbPath, 0, 4, {
+						helperSpawnCommand: { cmd: sharedQueueCmd },
+						timeoutMs: 75,
+					}),
+					classifyFn(secondDbPath, {
+						helperSpawnCommand: { cmd: sharedQueueCmd },
+						timeoutMs: 75,
+					}),
+				]);
+				const secondRec = validateClassificationRecord(toClassificationInput(secondClassified, process.pid));
+				if (firstBytes.byteLength !== 4 || secondRec.kind !== "sqlite_db") {
+					failures.push(`T4.5a FAILED: unexpected queued results`);
+				}
+			} catch (err) {
+				failures.push(
+					`T4.5a FAILED (queued request behind slow active request must not time out while waiting): ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+
+			// T4.5b: when the active request times out and kills the shared helper, the queued request
+			// fails naming its own operation and target path and never falls back to an in-process open.
+			await stopFn();
+			const sharedKillCmd = [process.execPath, helperScriptPath, "queue-first-timeout-kills-second", "none"];
+			const [activeSettled, queuedSettled] = await Promise.allSettled([
+				classifyFn(dbPath, {
+					helperSpawnCommand: { cmd: sharedKillCmd },
+					timeoutMs: 75,
+				}),
+				readBytesFn(secondDbPath, 0, 16, {
+					helperSpawnCommand: { cmd: sharedKillCmd },
+					timeoutMs: 75,
+				}),
+			]);
+			const activeErrMsg =
+				activeSettled.status === "rejected" && activeSettled.reason instanceof Error
+					? activeSettled.reason.message
+					: "";
+			const queuedErrMsg =
+				queuedSettled.status === "rejected" && queuedSettled.reason instanceof Error
+					? queuedSettled.reason.message
+					: "";
+			try {
+				validateHelperFailureError(activeErrMsg, "classify", dbPath, { timedOut: true });
+				validateHelperFailureError(queuedErrMsg, "read", secondDbPath);
+			} catch (validationErr) {
+				failures.push(
+					`T4.5b FAILED (queued request must fail naming its own operation and path when active request times out): ${validationErr instanceof Error ? validationErr.message : String(validationErr)} (active=${JSON.stringify(activeErrMsg)}, queued=${JSON.stringify(queuedErrMsg)})`,
+				);
+			}
+
+			const db1LockAfter = peerWriteBlocked(dbPath);
+			const db2LockAfter = peerWriteBlocked(secondDbPath);
+			if (!db1LockAfter.blocked || !db2LockAfter.blocked) {
+				failures.push(`T4.5b lock retention FAILED: db1=${db1LockAfter.detail}, db2=${db2LockAfter.detail}`);
+			}
+
+			if (failures.length > 0) {
+				throw new Error(
+					[
+						"1. WHAT: Raw-I/O Helper T4 timeout and queue semantics FAILED",
+						"2. WHY: POST-RAWIO-2b / ERRORS-RAWIO-1 / FORBIDDEN-RAWIO-1b violation",
+						"3. EXPECTED: All 5 T4 sub-scenarios (T4.1 classify fixed limit & PID kill, T4.2a/b read progress vs stall, T4.3 missing started, T4.4 write unknown-outcome & no late write, T4.5a/b queue wait survival & fail-closed) pass",
+						`4. ACTUAL:\n${failures.map(f => `  - ${f}`).join("\n")}`,
+						"5. GUIDANCE: Enforce started/progress IPC signals, fixed classify timeout, no-progress read/write timeout, helper termination on timeout, unknown-outcome write timeout errors, and serial queue clock start without in-process fallback",
+					].join("\n"),
+				);
+			}
+		} finally {
+			await stopFn();
+			try {
+				db1.run("ROLLBACK;");
+			} catch {}
+			try {
+				db2.run("ROLLBACK;");
+			} catch {}
+			db1.close();
+			db2.close();
 		}
 	});
 
