@@ -734,7 +734,8 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "(whose own connection close is permitted because SQLite retains .db "
             "and -shm locks across secondary connection closes), retaining every "
             "POSIX advisory lock SQLite holds on the database file and its -shm "
-            "file (and on any sidecar accessed through the helper). "
+            "file, and every POSIX advisory lock omp holds on a SQLite-Family "
+            "target that the tool accesses through the Raw-I/O Helper. "
             "Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, INV-L15586-01, "
             "INV-L15586-04, Q-SLICE4-01."
         ),
@@ -751,7 +752,8 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "(whose own connection close is permitted because SQLite retains .db "
             "and -shm locks across secondary connection closes), retaining every "
             "POSIX advisory lock SQLite holds on the database file and its -shm "
-            "file (and on any sidecar accessed through the helper). "
+            "file, and every POSIX advisory lock omp holds on a SQLite-Family "
+            "target that the tool accesses through the Raw-I/O Helper. "
             "Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, INV-L15586-01, "
             "INV-L15586-04, Q-SLICE4-01."
         ),
