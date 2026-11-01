@@ -192,13 +192,61 @@ function assertValidTargetPath(targetPath: unknown): asserts targetPath is strin
 	}
 }
 
+const MAX_SYMLINK_HOPS = 40;
+
+/**
+ * Resolve symlinks and relative segments using only `lstatSync` and
+ * `readlinkSync` (never `realpathSync`, which on macOS opens the file and
+ * closes the descriptor, releasing in-process POSIX locks).
+ */
 function resolveTargetKey(targetPath: string): string {
-	const normalized = path.posix.resolve(targetPath);
-	try {
-		return fs.realpathSync(normalized);
-	} catch {
-		return normalized;
+	let pending = path.posix.resolve(targetPath);
+	let hops = 0;
+	while (hops <= MAX_SYMLINK_HOPS) {
+		const segments = pending.split("/").filter(seg => seg.length > 0);
+		let current = "/";
+		let followedSymlink = false;
+		for (let i = 0; i < segments.length; i++) {
+			const seg = segments[i];
+			if (!seg || seg === ".") continue;
+			if (seg === "..") {
+				current = path.posix.dirname(current);
+				continue;
+			}
+			const candidate = current === "/" ? `/${seg}` : `${current}/${seg}`;
+			let stat: fs.Stats;
+			try {
+				stat = fs.lstatSync(candidate);
+			} catch {
+				const rest = segments.slice(i).join("/");
+				return current === "/" ? `/${rest}` : `${current}/${rest}`;
+			}
+			if (stat.isSymbolicLink()) {
+				hops++;
+				if (hops > MAX_SYMLINK_HOPS) {
+					return candidate;
+				}
+				let linkTarget: string;
+				try {
+					linkTarget = fs.readlinkSync(candidate);
+				} catch {
+					return candidate;
+				}
+				const resolvedLink = linkTarget.startsWith("/")
+					? path.posix.normalize(linkTarget)
+					: path.posix.resolve(current, linkTarget);
+				const tail = segments.slice(i + 1).join("/");
+				pending = tail.length > 0 ? path.posix.join(resolvedLink, tail) : resolvedLink;
+				followedSymlink = true;
+				break;
+			}
+			current = candidate;
+		}
+		if (!followedSymlink) {
+			return current;
+		}
 	}
+	return pending;
 }
 
 export function registerUnexitedWriteTarget(targetPath: string, exitPromise: Promise<unknown>): void {
@@ -572,7 +620,7 @@ export async function writeRawIoBytes(
 	options?: RawIoClassifyOptions,
 ): Promise<void> {
 	assertValidTargetPath(targetPath);
-	if (unexitedWriteTargets.has(resolveTargetKey(targetPath))) {
+	if (unexitedWriteTargets.size > 0 && unexitedWriteTargets.has(resolveTargetKey(targetPath))) {
 		throw new RawIoHelperOperationError(
 			"ERRORS-RAWIO-1d",
 			"write",
