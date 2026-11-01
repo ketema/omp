@@ -92,3 +92,11 @@
 - **`ERRORS-RAWIO-1d` (`G3 = a`, unbounded in-memory write block until old helper exits):**
   - While a timed-out `write`'s Raw-I/O Helper has not been observed to exit (tracked in-memory for the life of the `omp` process with no time cap; does not survive an `omp` restart), `omp` refuses any new `write` request to that same target path with an error naming `'write'` and the target path and stating that the previous helper is still alive and to fix the mount or restart `omp`, while allowing `read` and `classify` requests and `write` requests to other files to proceed on a fresh helper, and lifts the block when the old helper's exit is observed (`REQ-L15586-08`, `INV-L15586-03`).
   - `RAW_IO_REGISTER_UNEXITED_WRITE_FN_NAME = 'registerUnexitedWriteTarget'` and `blockFutureWritesToTarget` on `RawIoKillWaitResolution` (Decided By: Claude + oMACarchy — exported seam so tests can register an unexited write target with a controlled exit promise and verify the refusal and lift without mocking `omp` internals).
+
+## 2026-11-01 — Key unexited write block on resolved real path, contract `registerUnexitedWriteTarget` in `POST-RAWIO-2b`, and state `ERRORS-RAWIO-1d` audit gap (`f3330f73f4` → `CONTRACTS`)
+
+- Decided By: Claude + oMACarchy (middle-layer contract refinements implementing Ketema's `G3 = a` decision).
+- **`POST-RAWIO-2b` & `ERRORS-RAWIO-1d`:**
+  - (1) Keyed the unexited-write target block on the target's resolved real path (falling back to `targetPath` on `ENOENT`/`ENOTDIR`, matching `R2`) so symlink aliases or alternate spellings of the same file cannot bypass the refusal.
+  - (2) Contracted `registerUnexitedWriteTarget(targetPath, exitPromise) -> void` explicitly in `POST-RAWIO-2b`'s exported client surface so tests can drive the refusal and its lift when `exitPromise` settles.
+  - (3) Stated the inspection gap in `ERRORS-RAWIO-1d` (matching `ERRORS-RAWIO-1c`): the wiring that calls `registerUnexitedWriteTarget` when the 5s kill wait ends with `helperExited=false` is checked by reading the code during the slice audit, because no unprivileged test can create a process that survives `SIGKILL`.
