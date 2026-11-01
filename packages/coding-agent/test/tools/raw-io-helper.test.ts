@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { dlopen, FFIType, ptr } from "bun:ffi";
+import { dlopen, FFIType, read } from "bun:ffi";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
@@ -286,62 +286,72 @@ function peerWriteBlocked(dbPath: string): PeerWriteProbeResult {
 }
 
 const libcName = process.platform === "darwin" ? "libSystem.B.dylib" : "libc.so.6";
+const isDarwin = process.platform === "darwin";
+const errnoSymbolName = isDarwin ? "__error" : "__errno_location";
 const libc = dlopen(libcName, {
-	fcntl: { args: [FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 },
+	lockf: { args: [FFIType.i32, FFIType.i32, FFIType.i64], returns: FFIType.i32 },
+	[errnoSymbolName]: { args: [], returns: FFIType.ptr },
 });
+const F_TLOCK = 2;
 
-function buildFlockStruct(lockType: number): Uint8Array {
-	const buf = new ArrayBuffer(32);
-	const dv = new DataView(buf);
-	if (process.platform === "darwin") {
-		dv.setInt16(20, lockType, true);
-		dv.setInt16(22, 0, true);
-	} else {
-		dv.setInt16(0, lockType, true);
-		dv.setInt16(2, 0, true);
-	}
-	return new Uint8Array(buf);
+function currentErrno(): number {
+	const errnoFn = libc.symbols[errnoSymbolName];
+	if (typeof errnoFn !== "function") return -1;
+	const errnoPtr = errnoFn();
+	return errnoPtr ? read.i32(errnoPtr, 0) : -1;
 }
 
 /**
- * Acquire a real POSIX `fcntl(F_SETLK, F_WRLCK)` advisory lock on `filePath`
- * inside the current `omp` process and return the open file descriptor.
- * Closing *any* file descriptor for the same inode inside `omp` will cause the
+ * Acquire a real POSIX `lockf(fd, F_TLOCK, 0n)` advisory record lock (backed by
+ * kernel `fcntl` record locks on both Linux and macOS, with fixed 3-argument
+ * C ABI on darwin-arm64 and linux-x64) inside the current `omp` process.
+ * Closing *any* file descriptor for the same inode inside `omp` causes the
  * kernel to release this lock immediately.
  */
 function acquireInProcessPosixWriteLock(filePath: string): number {
 	const fd = fsSync.openSync(filePath, "r+");
-	const fSetlk = process.platform === "darwin" ? 8 : 6;
-	const fWrlck = process.platform === "darwin" ? 3 : 1;
-	const flockBytes = buildFlockStruct(fWrlck);
-	const rc = libc.symbols.fcntl(fd, fSetlk, ptr(flockBytes));
+	const rc = libc.symbols.lockf(fd, F_TLOCK, 0n);
 	if (rc !== 0) {
+		const errnoVal = currentErrno();
 		fsSync.closeSync(fd);
-		throw new Error(`Failed to acquire in-process POSIX fcntl write lock on ${filePath} (rc=${String(rc)})`);
+		throw new Error(
+			`Failed to acquire in-process POSIX lockf write lock on ${filePath} (rc=${String(rc)}, errno=${String(errnoVal)})`,
+		);
 	}
 	return fd;
 }
 
 /**
  * Probe from a separate OS child process whether `filePath` currently holds a
- * conflicting POSIX `fcntl` write lock. Returns `blocked: true` iff the child's
- * non-blocking `fcntl(F_SETLK, F_WRLCK)` fails (`rc === -1`).
+ * conflicting POSIX record lock via `lockf(fd, F_TLOCK=2, 0n)`.
+ * Only `EAGAIN` or `EACCES` counts as `LOCKED`; any other non-zero result throws
+ * with `errno` so a broken probe can never masquerade as locked.
  */
 function peerPosixWriteLockBlocked(filePath: string): PeerWriteProbeResult {
 	const script = [
-		'import { dlopen, FFIType, ptr } from "bun:ffi";',
+		'import { dlopen, FFIType, read } from "bun:ffi";',
 		'import * as fs from "node:fs";',
-		'const libcName = process.platform === "darwin" ? "libSystem.B.dylib" : "libc.so.6";',
-		"const libc = dlopen(libcName, { fcntl: { args: [FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 } });",
-		'const fSetlk = process.platform === "darwin" ? 8 : 6;',
-		'const fWrlck = process.platform === "darwin" ? 3 : 1;',
-		"const buf = new ArrayBuffer(32);",
-		"const dv = new DataView(buf);",
-		'if (process.platform === "darwin") { dv.setInt16(20, fWrlck, true); } else { dv.setInt16(0, fWrlck, true); }',
+		'import * as os from "node:os";',
+		'const isDarwin = process.platform === "darwin";',
+		'const libcName = isDarwin ? "libSystem.B.dylib" : "libc.so.6";',
+		'const errnoSym = isDarwin ? "__error" : "__errno_location";',
+		"const libc = dlopen(libcName, {",
+		"  lockf: { args: [FFIType.i32, FFIType.i32, FFIType.i64], returns: FFIType.i32 },",
+		"  [errnoSym]: { args: [], returns: FFIType.ptr },",
+		"});",
 		'const fd = fs.openSync(process.argv[1], "r+");',
-		"const rc = libc.symbols.fcntl(fd, fSetlk, ptr(new Uint8Array(buf)));",
+		"const rc = libc.symbols.lockf(fd, 2, 0n);",
+		"const errPtr = libc.symbols[errnoSym]();",
+		"const errno = rc === 0 ? 0 : (errPtr ? read.i32(errPtr, 0) : -1);",
 		"fs.closeSync(fd);",
-		'console.log(rc === -1 ? "LOCKED" : "ACQUIRED:" + String(rc));',
+		"if (rc === 0) {",
+		'  console.log("ACQUIRED");',
+		"} else if (rc === -1 && (errno === os.constants.errno.EAGAIN || errno === os.constants.errno.EACCES)) {",
+		'  console.log("LOCKED:" + String(errno));',
+		"} else {",
+		'  console.log("UNEXPECTED_ERRNO:" + String(rc) + ":" + String(errno));',
+		"  process.exit(2);",
+		"}",
 	].join("\n");
 	const proc = Bun.spawnSync({
 		cmd: [process.execPath, "-e", script, filePath],
@@ -351,8 +361,11 @@ function peerPosixWriteLockBlocked(filePath: string): PeerWriteProbeResult {
 	const stdout = new TextDecoder().decode(proc.stdout).trim();
 	const stderr = new TextDecoder().decode(proc.stderr).trim();
 	const detail = `exit=${String(proc.exitCode)} stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`;
+	if (proc.exitCode !== 0 || (!stdout.startsWith("LOCKED:") && stdout !== "ACQUIRED")) {
+		throw new Error(`POSIX lockf probe failed on ${filePath}: ${detail}`);
+	}
 	return {
-		blocked: proc.exitCode === 0 && stdout === "LOCKED",
+		blocked: stdout.startsWith("LOCKED:"),
 		detail,
 	};
 }
@@ -757,18 +770,26 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			await fs.symlink(dbPath, symlinkToDbTxt);
 			await fs.symlink(journalPath, symlinkToJournalTxt);
 
-			// Hold real POSIX fcntl write locks inside omp on walPath and journalPath
+			// B5 self-check before locking: unlocked files MUST report ACQUIRED (blocked === false).
+			const unlockedWalProbe = peerPosixWriteLockBlocked(walPath);
+			const unlockedJournalProbe = peerPosixWriteLockBlocked(journalPath);
+			if (unlockedWalProbe.blocked || unlockedJournalProbe.blocked) {
+				throw new Error(
+					`Test setup self-check failed: expected unlocked files to report ACQUIRED (wal=${unlockedWalProbe.detail}, journal=${unlockedJournalProbe.detail})`,
+				);
+			}
+
+			// Hold real POSIX record write locks inside omp on walPath and journalPath
 			// in addition to SQLite's WAL locks on dbPath and shmPath.
 			walLockFd = acquireInProcessPosixWriteLock(walPath);
 			journalLockFd = acquireInProcessPosixWriteLock(journalPath);
 
-			if (
-				!peerWriteBlocked(dbPath).blocked ||
-				!peerPosixWriteLockBlocked(walPath).blocked ||
-				!peerPosixWriteLockBlocked(journalPath).blocked
-			) {
+			const lockedDbProbe = peerWriteBlocked(dbPath);
+			const lockedWalProbe = peerPosixWriteLockBlocked(walPath);
+			const lockedJournalProbe = peerPosixWriteLockBlocked(journalPath);
+			if (!lockedDbProbe.blocked || !lockedWalProbe.blocked || !lockedJournalProbe.blocked) {
 				throw new Error(
-					"Test setup precondition failed: expected WAL and POSIX fcntl locks to be held before tool execution",
+					`Test setup self-check failed: expected held locks to report LOCKED before tool execution (db=${lockedDbProbe.detail}, wal=${lockedWalProbe.detail}, journal=${lockedJournalProbe.detail})`,
 				);
 			}
 
