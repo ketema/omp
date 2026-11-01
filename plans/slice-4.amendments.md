@@ -84,4 +84,4 @@
 - **`POST-RAWIO-2b` & `ERRORS-RAWIO-1c` (`verification='test'`):**
   - Contracted `resolveTimeoutAfterKillWait(input: { operation, targetPath, timeoutMs, helperExited, queuedRequests }) -> { activeError, retryQueueOnFreshHelper, queuedErrors }` (`RAW_IO_RESOLVE_KILL_WAIT_FN_NAME = 'resolveTimeoutAfterKillWait'`) on `@oh-my-pi/pi-coding-agent/tools/raw-io-client`, plus pure validator `validate_kill_wait_resolution` / `validateKillWaitResolution`.
   - Changed `ERRORS-RAWIO-1c` to `verification='test'` (verified by unit test calling the real exported `resolveTimeoutAfterKillWait` production function with `helperExited=false`, while `ERRORS-RAWIO-1b`'s tests exercise `helperExited=true` live; the wiring that passes `helperExited=false` after the 5s `RAW_IO_KILL_WAIT_TIMEOUT_MS` wait is checked by reading the code during the slice audit, because no unprivileged test can create a process that survives `SIGKILL`).
-  - Identifier `RAW_IO_RESOLVE_KILL_WAIT_FN_NAME = 'resolveTimeoutAfterKillWait'`: PENDING Ketema review.
+  - Identifier `RAW_IO_RESOLVE_KILL_WAIT_FN_NAME = 'resolveTimeoutAfterKillWait'`: Approved by Ketema 2026-11-01, verbatim: "Yes the name is fine."
