@@ -534,7 +534,23 @@ async function drainRequestQueue(): Promise<void> {
 		while (requestQueue.length > 0) {
 			const nextTask = requestQueue.shift();
 			if (!nextTask) break;
-			await executeActiveTask(nextTask);
+			try {
+				await executeActiveTask(nextTask);
+			} catch (err: unknown) {
+				// POST-RAWIO-2b: observer/dispatch exceptions reject this request,
+				// not the floating queue-drain promise; later requests still run.
+				nextTask.rejectTask(
+					err instanceof Error
+						? err
+						: new RawIoHelperOperationError(
+								"POST-RAWIO-2b",
+								nextTask.operation,
+								nextTask.targetPath,
+								String(err),
+								{ cause: err },
+							),
+				);
+			}
 		}
 	} finally {
 		activeTaskRunning = false;
@@ -579,25 +595,30 @@ export async function classifyRawIoTarget(
 ): Promise<RawIoTargetClassification> {
 	assertValidTargetPath(targetPath);
 
-	return await enqueueHelperRequest(
+	const raw = await enqueueHelperRequest(
 		"classify",
 		targetPath,
 		options,
 		id => ({ type: "classify", id, targetPath }),
-		message => {
-			if (message.type !== "classified") return undefined;
-			const raw = message.classification;
-			if (
-				raw.kind === "sqlite_db" &&
-				(!(raw.headerBytes instanceof Uint8Array) ||
-					raw.headerBytes.byteLength < SQLITE_HEADER_MAGIC.byteLength ||
-					raw.headerBytes[0] !== SQLITE_HEADER_MAGIC[0])
-			) {
-				return { ...raw, headerBytes: SQLITE_HEADER_MAGIC };
-			}
-			return raw;
-		},
+		message => (message.type === "classified" ? message.classification : undefined),
 	);
+	const headerBytes = raw.headerBytes;
+	// POST-RAWIO-1: validate the actual evidence without synthesizing bytes.
+	// Reject from the public async operation, never from an IPC event callback.
+	if (
+		raw.kind === "sqlite_db" &&
+		(!(headerBytes instanceof Uint8Array) ||
+			headerBytes.byteLength < SQLITE_HEADER_MAGIC.byteLength ||
+			!SQLITE_HEADER_MAGIC.every((byte, index) => headerBytes[index] === byte))
+	) {
+		throw new RawIoHelperOperationError(
+			"POST-RAWIO-1",
+			"classify",
+			targetPath,
+			"sqlite_db classification did not include the actual SQLite header bytes",
+		);
+	}
+	return raw;
 }
 
 export async function readRawIoBytes(
