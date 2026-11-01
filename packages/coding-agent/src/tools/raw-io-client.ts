@@ -200,7 +200,8 @@ const MAX_SYMLINK_HOPS = 40;
  * closes the descriptor, releasing in-process POSIX locks).
  */
 function resolveTargetKey(targetPath: string): string {
-	let pending = path.posix.resolve(targetPath);
+	// ERRORS-RAWIO-1d: expand symlinks before consuming later '..' components.
+	let pending = targetPath;
 	let hops = 0;
 	while (hops <= MAX_SYMLINK_HOPS) {
 		const segments = pending.split("/").filter(seg => seg.length > 0);
@@ -217,9 +218,11 @@ function resolveTargetKey(targetPath: string): string {
 			let stat: fs.Stats;
 			try {
 				stat = fs.lstatSync(candidate);
-			} catch {
-				const rest = segments.slice(i).join("/");
-				return current === "/" ? `/${rest}` : `${current}/${rest}`;
+			} catch (err: unknown) {
+				const code = err instanceof Error && "code" in err ? err.code : undefined;
+				if (code !== "ENOENT" && code !== "ENOTDIR") throw err;
+				// POST-RAWIO-2b: only a missing/non-directory path uses the supplied key.
+				return targetPath;
 			}
 			if (stat.isSymbolicLink()) {
 				hops++;
@@ -229,14 +232,14 @@ function resolveTargetKey(targetPath: string): string {
 				let linkTarget: string;
 				try {
 					linkTarget = fs.readlinkSync(candidate);
-				} catch {
-					return candidate;
+				} catch (err: unknown) {
+					const code = err instanceof Error && "code" in err ? err.code : undefined;
+					if (code !== "ENOENT" && code !== "ENOTDIR") throw err;
+					return targetPath;
 				}
-				const resolvedLink = linkTarget.startsWith("/")
-					? path.posix.normalize(linkTarget)
-					: path.posix.resolve(current, linkTarget);
+				const resolvedLink = linkTarget.startsWith("/") ? linkTarget : `${current}/${linkTarget}`;
 				const tail = segments.slice(i + 1).join("/");
-				pending = tail.length > 0 ? path.posix.join(resolvedLink, tail) : resolvedLink;
+				pending = tail.length > 0 ? `${resolvedLink}/${tail}` : resolvedLink;
 				followedSymlink = true;
 				break;
 			}
