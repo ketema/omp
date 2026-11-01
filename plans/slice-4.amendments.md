@@ -62,3 +62,12 @@
 - The classification labels (`'sqlite_db'`, `'sqlite_sidecar'`, `'non_sqlite'`, `'missing'`, `'directory'`, `'special'`), entry-kind labels (`'file'`, `'missing'`, `'directory'`, `'special'`), and the `R3` missing-target rule (non-regular/missing paths return `kind=entryKind`, `isSqliteFamily=false` even when ending in `-wal`/`-shm`/`-journal`).
 - The POSIX absolute-path precondition (`PRE-RAWIO-1`: non-empty string starting with `/`).
 - Retention of `omp`'s POSIX advisory locks on helper-accessed `SQLite-Family` targets (`B9` in `POST-RAWIO-3` / `POST-RAWIO-3b`).
+
+## 2026-11-01 — Split `ERRORS-RAWIO-1` / `ERRORS-RAWIO-1b` (`B10`/`B11`), crash queue retry (`Q1 = a`), and 5s post-`SIGKILL` bound (`Q2 = b`) (`da88b9e34c` → `CONTRACTS`)
+
+- Decided By: User (Ketema, 2026-11-01, verbatim: "1-a, 2-b : 5 sec")
+- **`B10` / `B11` (`ERRORS-RAWIO-1` split into `ERRORS-RAWIO-1` and `ERRORS-RAWIO-1b`):**
+  - `ERRORS-RAWIO-1` (per-request error from a live helper): IF a live Raw-I/O Helper returns a per-request error for the active request, `omp` fails only that active request naming its operation and target path, leaves the live helper subprocess and any queued requests untouched, and does not fall back to an in-process open.
+  - `ERRORS-RAWIO-1b` (helper-level failure: cannot start, crash, or timeout): covers helper-level failures with kill/replace and queued-request retry.
+- **`Q1 = a` (Helper crash vs. queued requests):** When the helper crashes (exits or errors at the helper level while a request is active), only the active request fails; requests still queued behind it (which were never sent to the crashed helper) are retried once, in their original order, on a fresh helper, exactly as after a timeout.
+- **`Q2 = b` (`RAW_IO_KILL_WAIT_TIMEOUT_MS = 5000`):** After sending `SIGKILL` to the helper on a timeout, `omp` waits at most `options.killWaitTimeoutMs` (default `RAW_IO_KILL_WAIT_TIMEOUT_MS = 5000` ms) for the helper to exit. If the helper exits within `killWaitTimeoutMs`, `omp` reports the timeout error as before; if the helper is still alive after `killWaitTimeoutMs`, `omp` reports the error anyway, and for a `write` states both that its outcome is unknown and that it may still land (`validate_helper_failure_error(..., helper_still_alive_after_kill=True)` / `validateHelperFailureError(..., { helperStillAliveAfterKill: true })` and `evaluate_timeout_semantics` / `evaluateTimeoutSemantics`).

@@ -37,6 +37,7 @@ export const VALID_TOOL_NAMES = Object.freeze(["read", "write"] as const);
 export const VALID_ACCESS_CHANNELS = Object.freeze(["raw_io_helper", "sqlite_connection", "in_process"] as const);
 export const VALID_HELPER_OPERATIONS = Object.freeze(["classify", "read", "write"] as const);
 export const VALID_QUEUED_TIMEOUT_ACTIONS = Object.freeze(["none", "retry_on_fresh_helper"] as const);
+export const VALID_FAILURE_KINDS = Object.freeze(["none", "per_request_error", "helper_crash", "timeout"] as const);
 export const RAW_IO_WORKER_ARG = "__omp_worker_raw_io" as const;
 export const RAW_IO_WORKER_SELECTORS_MODULE = "@oh-my-pi/pi-coding-agent/cli/worker-selectors" as const;
 export const RAW_IO_CLIENT_MODULE = "@oh-my-pi/pi-coding-agent/tools/raw-io-client" as const;
@@ -45,6 +46,7 @@ export const RAW_IO_READ_BYTES_FN_NAME = "readRawIoBytes" as const;
 export const RAW_IO_WRITE_BYTES_FN_NAME = "writeRawIoBytes" as const;
 export const RAW_IO_STOP_FN_NAME = "stopRawIoHelper" as const;
 export const RAW_IO_DEFAULT_TIMEOUT_MS = 5000 as const;
+export const RAW_IO_KILL_WAIT_TIMEOUT_MS = 5000 as const;
 export const RAW_IO_PROGRESS_CHUNK_BYTES = 65536 as const;
 export type SqliteSidecarSuffix = (typeof SQLITE_SIDECAR_SUFFIXES)[number];
 export type ClassificationKind = (typeof SQLITE_FAMILY_CLASSIFICATIONS)[number];
@@ -53,6 +55,7 @@ export type ToolName = (typeof VALID_TOOL_NAMES)[number];
 export type AccessChannel = (typeof VALID_ACCESS_CHANNELS)[number];
 export type HelperOperation = (typeof VALID_HELPER_OPERATIONS)[number];
 export type QueuedTimeoutAction = (typeof VALID_QUEUED_TIMEOUT_ACTIONS)[number];
+export type FailureKind = (typeof VALID_FAILURE_KINDS)[number];
 export type VerificationMethod = "test" | "execution" | "tool";
 
 // =============================================================================
@@ -125,12 +128,14 @@ export interface RawIoClassifyOptions {
 		readonly cmd: readonly string[];
 	};
 	readonly timeoutMs?: number;
+	readonly killWaitTimeoutMs?: number;
 	readonly onRequest?: (entry: RawIoHelperRequestEntry) => void;
 }
 
 export interface RawIoClassifyOptionsSpec {
 	readonly helperSpawnCmd: readonly string[] | undefined;
 	readonly timeoutMs: number;
+	readonly killWaitTimeoutMs: number;
 }
 
 export interface RawIoClientSurface {
@@ -166,6 +171,10 @@ export interface RawIoTimeoutEvaluation {
 	readonly helperKilled: boolean;
 	readonly queuedRequestsCount: number;
 	readonly queuedAction: QueuedTimeoutAction;
+	readonly failureKind: FailureKind;
+	readonly killWaitTimeoutMs: number;
+	readonly killWaitElapsedMs: number;
+	readonly helperExitedWithinKillWait: boolean;
 }
 
 export interface EvaluateTimeoutSemanticsInput {
@@ -179,6 +188,9 @@ export interface EvaluateTimeoutSemanticsInput {
 	readonly helperKilled: unknown;
 	readonly queuedRequestsCount?: unknown;
 	readonly queuedAction?: unknown;
+	readonly failureKind?: unknown;
+	readonly killWaitTimeoutMs?: unknown;
+	readonly killWaitElapsedMs?: unknown;
 }
 export interface Clause {
 	readonly verification: VerificationMethod;
@@ -217,7 +229,11 @@ export function validateTargetPath(targetPath: unknown): string {
 
 export function validateClassifyOptions(options: unknown): RawIoClassifyOptionsSpec {
 	if (options === undefined || options === null) {
-		return Object.freeze({ helperSpawnCmd: undefined, timeoutMs: RAW_IO_DEFAULT_TIMEOUT_MS });
+		return Object.freeze({
+			helperSpawnCmd: undefined,
+			timeoutMs: RAW_IO_DEFAULT_TIMEOUT_MS,
+			killWaitTimeoutMs: RAW_IO_KILL_WAIT_TIMEOUT_MS,
+		});
 	}
 	if (typeof options !== "object" || Array.isArray(options)) {
 		throw new RawIoClassificationMismatchError(
@@ -228,13 +244,24 @@ export function validateClassifyOptions(options: unknown): RawIoClassifyOptionsS
 	const rawTimeout = Reflect.get(options, "timeoutMs") ?? RAW_IO_DEFAULT_TIMEOUT_MS;
 	if (typeof rawTimeout !== "number" || !Number.isInteger(rawTimeout) || rawTimeout <= 0) {
 		throw new RawIoClassificationMismatchError(
-			"ERRORS-RAWIO-1",
+			"ERRORS-RAWIO-1b",
 			`timeoutMs must be a positive integer (> 0); got ${JSON.stringify(rawTimeout)}`,
+		);
+	}
+	const rawKillWait = Reflect.get(options, "killWaitTimeoutMs") ?? RAW_IO_KILL_WAIT_TIMEOUT_MS;
+	if (typeof rawKillWait !== "number" || !Number.isInteger(rawKillWait) || rawKillWait <= 0) {
+		throw new RawIoClassificationMismatchError(
+			"ERRORS-RAWIO-1b",
+			`killWaitTimeoutMs must be a positive integer (> 0); got ${JSON.stringify(rawKillWait)}`,
 		);
 	}
 	const spawn = Reflect.get(options, "helperSpawnCommand");
 	if (spawn === undefined || spawn === null) {
-		return Object.freeze({ helperSpawnCmd: undefined, timeoutMs: rawTimeout });
+		return Object.freeze({
+			helperSpawnCmd: undefined,
+			timeoutMs: rawTimeout,
+			killWaitTimeoutMs: rawKillWait,
+		});
 	}
 	if (typeof spawn !== "object" || Array.isArray(spawn)) {
 		throw new RawIoClassificationMismatchError(
@@ -253,7 +280,11 @@ export function validateClassifyOptions(options: unknown): RawIoClassifyOptionsS
 			"helperSpawnCommand.cmd must be a non-empty array of non-empty strings",
 		);
 	}
-	return Object.freeze({ helperSpawnCmd: Object.freeze([...cmd]), timeoutMs: rawTimeout });
+	return Object.freeze({
+		helperSpawnCmd: Object.freeze([...cmd]),
+		timeoutMs: rawTimeout,
+		killWaitTimeoutMs: rawKillWait,
+	});
 }
 
 export function hasSqliteHeaderMagic(bytes: Uint8Array): boolean {
@@ -322,37 +353,43 @@ export function validateHelperFailureError(
 	errorMessage: unknown,
 	expectedOperation: string,
 	expectedPath: string,
-	options?: { readonly timedOut?: boolean },
+	options?: { readonly timedOut?: boolean; readonly helperStillAliveAfterKill?: boolean },
 ): string {
+	const isTimeoutOrUnexited = options?.timedOut === true || options?.helperStillAliveAfterKill === true;
+	const clauseId = isTimeoutOrUnexited ? "ERRORS-RAWIO-1b" : "ERRORS-RAWIO-1";
 	if (typeof errorMessage !== "string" || errorMessage.trim().length === 0) {
 		throw new RawIoClassificationMismatchError(
-			"ERRORS-RAWIO-1",
+			clauseId,
 			`error message must be a non-empty string naming operation '${expectedOperation}' and path '${expectedPath}'`,
 		);
 	}
 	if (!errorMessage.includes(expectedOperation) || !errorMessage.includes(expectedPath)) {
 		throw new RawIoClassificationMismatchError(
-			"ERRORS-RAWIO-1",
+			clauseId,
 			`error message ${JSON.stringify(errorMessage)} must include operation '${expectedOperation}' and target path '${expectedPath}'`,
 		);
 	}
-	if (options?.timedOut === true) {
+	if (isTimeoutOrUnexited) {
 		const lower = errorMessage.toLowerCase();
 		if (!lower.includes("timed out") && !lower.includes("timeout")) {
 			throw new RawIoClassificationMismatchError(
-				"ERRORS-RAWIO-1",
+				"ERRORS-RAWIO-1b",
 				`timed-out error message ${JSON.stringify(errorMessage)} must indicate a timeout`,
 			);
 		}
-		if (
-			expectedOperation === "write" &&
-			!lower.includes("outcome is unknown") &&
-			!lower.includes("outcome unknown")
-		) {
-			throw new RawIoClassificationMismatchError(
-				"ERRORS-RAWIO-1",
-				`timed-out write error ${JSON.stringify(errorMessage)} must state that the write outcome is unknown`,
-			);
+		if (expectedOperation === "write") {
+			if (!lower.includes("outcome is unknown") && !lower.includes("outcome unknown")) {
+				throw new RawIoClassificationMismatchError(
+					"ERRORS-RAWIO-1b",
+					`timed-out write error ${JSON.stringify(errorMessage)} must state that the write outcome is unknown`,
+				);
+			}
+			if (options?.helperStillAliveAfterKill === true && !lower.includes("may still land")) {
+				throw new RawIoClassificationMismatchError(
+					"ERRORS-RAWIO-1b",
+					`timed-out write error ${JSON.stringify(errorMessage)} when helper did not exit within killWaitTimeoutMs must state that the write may still land`,
+				);
+			}
 		}
 	}
 	return errorMessage;
@@ -362,6 +399,10 @@ export function isQueuedTimeoutAction(value: unknown): value is QueuedTimeoutAct
 	return value === "none" || value === "retry_on_fresh_helper";
 }
 
+export function isFailureKind(value: unknown): value is FailureKind {
+	return value === "none" || value === "per_request_error" || value === "helper_crash" || value === "timeout";
+}
+
 export function evaluateTimeoutSemantics(input: EvaluateTimeoutSemanticsInput): RawIoTimeoutEvaluation {
 	if (!isHelperOperation(input.operation)) {
 		throw new RawIoClassificationMismatchError(
@@ -369,10 +410,18 @@ export function evaluateTimeoutSemantics(input: EvaluateTimeoutSemanticsInput): 
 			`operation must be one of ${JSON.stringify(VALID_HELPER_OPERATIONS)}; got ${JSON.stringify(input.operation)}`,
 		);
 	}
-	if (typeof input.timeoutMs !== "number" || !Number.isInteger(input.timeoutMs) || input.timeoutMs <= 0) {
+	const killWaitTimeoutMs = input.killWaitTimeoutMs ?? RAW_IO_KILL_WAIT_TIMEOUT_MS;
+	if (
+		typeof input.timeoutMs !== "number" ||
+		!Number.isInteger(input.timeoutMs) ||
+		input.timeoutMs <= 0 ||
+		typeof killWaitTimeoutMs !== "number" ||
+		!Number.isInteger(killWaitTimeoutMs) ||
+		killWaitTimeoutMs <= 0
+	) {
 		throw new RawIoClassificationMismatchError(
-			"ERRORS-RAWIO-1",
-			`timeoutMs must be a positive integer (> 0); got ${JSON.stringify(input.timeoutMs)}`,
+			"ERRORS-RAWIO-1b",
+			"timeoutMs and killWaitTimeoutMs must be positive integers (> 0)",
 		);
 	}
 	const startedReceived = input.startedReceived ?? true;
@@ -385,6 +434,7 @@ export function evaluateTimeoutSemantics(input: EvaluateTimeoutSemanticsInput): 
 	const queuedWaitMs = input.queuedWaitMs ?? 0;
 	const elapsedBeforeStartMs = input.elapsedBeforeStartMs ?? 0;
 	const queuedRequestsCount = input.queuedRequestsCount ?? 0;
+	const killWaitElapsedMs = input.killWaitElapsedMs ?? 0;
 	if (
 		typeof queuedWaitMs !== "number" ||
 		!Number.isInteger(queuedWaitMs) ||
@@ -400,16 +450,19 @@ export function evaluateTimeoutSemantics(input: EvaluateTimeoutSemanticsInput): 
 		input.elapsedSinceProgressMs < 0 ||
 		typeof queuedRequestsCount !== "number" ||
 		!Number.isInteger(queuedRequestsCount) ||
-		queuedRequestsCount < 0
+		queuedRequestsCount < 0 ||
+		typeof killWaitElapsedMs !== "number" ||
+		!Number.isInteger(killWaitElapsedMs) ||
+		killWaitElapsedMs < 0
 	) {
 		throw new RawIoClassificationMismatchError(
 			"POST-RAWIO-2b",
-			"queuedWaitMs, elapsedBeforeStartMs, elapsedSinceStartMs, elapsedSinceProgressMs, and queuedRequestsCount must be non-negative integers",
+			"elapsed and queue counts must be non-negative integers",
 		);
 	}
 	if (typeof input.helperKilled !== "boolean") {
 		throw new RawIoClassificationMismatchError(
-			"ERRORS-RAWIO-1",
+			"ERRORS-RAWIO-1b",
 			`helperKilled must be a boolean; got ${JSON.stringify(input.helperKilled)}`,
 		);
 	}
@@ -418,21 +471,37 @@ export function evaluateTimeoutSemantics(input: EvaluateTimeoutSemanticsInput): 
 		: input.operation === "classify"
 			? input.elapsedSinceStartMs >= input.timeoutMs
 			: input.elapsedSinceProgressMs >= input.timeoutMs;
-	if (timedOut && !input.helperKilled) {
+	const rawFailure = input.failureKind ?? (timedOut ? "timeout" : "none");
+	if (!isFailureKind(rawFailure)) {
 		throw new RawIoClassificationMismatchError(
 			"ERRORS-RAWIO-1",
+			`failureKind must be one of ${JSON.stringify(VALID_FAILURE_KINDS)}; got ${JSON.stringify(input.failureKind)}`,
+		);
+	}
+	if (rawFailure === "per_request_error" && input.helperKilled) {
+		throw new RawIoClassificationMismatchError(
+			"ERRORS-RAWIO-1",
+			"a per-request error from a live helper must not kill the helper",
+		);
+	}
+	if ((timedOut || rawFailure === "timeout") && !input.helperKilled) {
+		throw new RawIoClassificationMismatchError(
+			"ERRORS-RAWIO-1b",
 			"omp must kill the helper subprocess when a request times out",
 		);
 	}
+	const isHelperLevelFailure = timedOut || rawFailure === "helper_crash" || rawFailure === "timeout";
 	const expectedQueuedAction: QueuedTimeoutAction =
-		timedOut && queuedRequestsCount > 0 ? "retry_on_fresh_helper" : "none";
+		isHelperLevelFailure && queuedRequestsCount > 0 ? "retry_on_fresh_helper" : "none";
 	const resolvedQueuedAction = input.queuedAction ?? expectedQueuedAction;
 	if (!isQueuedTimeoutAction(resolvedQueuedAction) || resolvedQueuedAction !== expectedQueuedAction) {
+		const clauseForQueue = rawFailure === "per_request_error" ? "ERRORS-RAWIO-1" : "ERRORS-RAWIO-1b";
 		throw new RawIoClassificationMismatchError(
-			"ERRORS-RAWIO-1",
-			`queuedAction must be '${expectedQueuedAction}' when timedOut=${String(timedOut)} and queuedRequestsCount=${String(queuedRequestsCount)}; got ${JSON.stringify(input.queuedAction)}`,
+			clauseForQueue,
+			`queuedAction must be '${expectedQueuedAction}' when failureKind='${rawFailure}', timedOut=${String(timedOut)}, and queuedRequestsCount=${String(queuedRequestsCount)}; got ${JSON.stringify(input.queuedAction)}`,
 		);
 	}
+	const helperExitedWithinKillWait = !timedOut || killWaitElapsedMs < killWaitTimeoutMs;
 	return Object.freeze({
 		operation: input.operation,
 		timeoutMs: input.timeoutMs,
@@ -445,6 +514,10 @@ export function evaluateTimeoutSemantics(input: EvaluateTimeoutSemanticsInput): 
 		helperKilled: input.helperKilled,
 		queuedRequestsCount,
 		queuedAction: expectedQueuedAction,
+		failureKind: rawFailure,
+		killWaitTimeoutMs,
+		killWaitElapsedMs,
+		helperExitedWithinKillWait,
 	});
 }
 export function validateToolAccessRoute(
@@ -627,7 +700,11 @@ export const RAW_IO_HELPER_CONTRACT = Object.freeze({
 	},
 	"ERRORS-RAWIO-1": {
 		verification: "test",
-		text: "IF the Raw-I/O Helper cannot start, crashes, fails, or times out (when the active request does not receive {type: 'started', id} within options.timeoutMs of being sent to the helper, when 'classify' exceeds options.timeoutMs after {type: 'started', id}, or when 'read'/'write' receives no {type: 'progress', id} or completion message for options.timeoutMs after {type: 'started', id}, default RAW_IO_DEFAULT_TIMEOUT_MS = 5000ms), THEN omp SHALL kill the helper subprocess (so a timed-out write cannot land late), fail only the active request naming its operation and target path (and for a timed-out 'write', stating that its outcome is unknown), dispatch requests still queued at the kill (which were never sent to the killed helper) once in their original order to a newly spawned helper (a retried request that then fails or times out fails with the usual error naming its operation and target path, with no second retry), and SHALL NOT fall back to an in-process file open. Source: REQ-L15586-08, INV-L15586-03.",
+		text: "IF a live Raw-I/O Helper returns a per-request error for the active request (such as a target read or write error), THEN omp SHALL fail only that active request with an error naming its operation and target path, leave the live helper subprocess and any queued requests untouched, and SHALL NOT fall back to an in-process file open. Source: REQ-L15586-08, INV-L15586-03.",
+	},
+	"ERRORS-RAWIO-1b": {
+		verification: "test",
+		text: "IF the Raw-I/O Helper cannot start, crashes (exiting or erroring at the helper level while a request is active), or times out (when the active request does not receive {type: 'started', id} within options.timeoutMs of being sent to the helper, when 'classify' exceeds options.timeoutMs after {type: 'started', id}, or when 'read'/'write' receives no {type: 'progress', id} or completion message for options.timeoutMs after {type: 'started', id}, default RAW_IO_DEFAULT_TIMEOUT_MS = 5000ms), THEN omp SHALL kill the helper subprocess on timeout and wait at most options.killWaitTimeoutMs (default RAW_IO_KILL_WAIT_TIMEOUT_MS = 5000ms) for it to exit, fail only the active request naming its operation and target path (for a timed-out 'write', stating that its outcome is unknown, and if the helper has not exited within killWaitTimeoutMs, also stating that the write may still land), dispatch requests still queued behind it (which were never sent to the failed helper) once in their original order to a newly spawned helper (with no second retry if that fresh helper also fails or times out), and SHALL NOT fall back to an in-process file open. Source: REQ-L15586-08, INV-L15586-03.",
 	},
 	"FORBIDDEN-RAWIO-1": {
 		verification: "test",

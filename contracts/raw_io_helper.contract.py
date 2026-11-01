@@ -49,6 +49,12 @@ VALID_QUEUED_TIMEOUT_ACTIONS: Final[tuple[str, ...]] = (
     "none",
     "retry_on_fresh_helper",
 )
+VALID_FAILURE_KINDS: Final[tuple[str, ...]] = (
+    "none",
+    "per_request_error",
+    "helper_crash",
+    "timeout",
+)
 RAW_IO_WORKER_ARG: Final[str] = "__omp_worker_raw_io"
 RAW_IO_WORKER_SELECTORS_MODULE: Final[str] = (
     "@oh-my-pi/pi-coding-agent/cli/worker-selectors"
@@ -59,6 +65,7 @@ RAW_IO_READ_BYTES_FN_NAME: Final[str] = "readRawIoBytes"
 RAW_IO_WRITE_BYTES_FN_NAME: Final[str] = "writeRawIoBytes"
 RAW_IO_STOP_FN_NAME: Final[str] = "stopRawIoHelper"
 RAW_IO_DEFAULT_TIMEOUT_MS: Final[int] = 5000
+RAW_IO_KILL_WAIT_TIMEOUT_MS: Final[int] = 5000
 RAW_IO_PROGRESS_CHUNK_BYTES: Final[int] = 65536
 type ClassificationKind = Literal[
     "sqlite_db",
@@ -73,6 +80,7 @@ type ToolName = Literal["read", "write"]
 type AccessChannel = Literal["raw_io_helper", "sqlite_connection", "in_process"]
 type HelperOperation = Literal["classify", "read", "write"]
 type QueuedTimeoutAction = Literal["none", "retry_on_fresh_helper"]
+type FailureKind = Literal["none", "per_request_error", "helper_crash", "timeout"]
 # ==============================================================================
 # Artifact 2: Exception Hierarchy
 # ==============================================================================
@@ -145,6 +153,7 @@ class RawIoClassifyOptionsSpec:
 
     helper_spawn_cmd: tuple[str, ...] | None = None
     timeout_ms: int = RAW_IO_DEFAULT_TIMEOUT_MS
+    kill_wait_timeout_ms: int = RAW_IO_KILL_WAIT_TIMEOUT_MS
 
 
 @dataclass(slots=True, frozen=True)
@@ -167,7 +176,7 @@ class RawIoHelperRequestEntry:
 
 @dataclass(slots=True, frozen=True)
 class RawIoTimeoutEvaluation:
-    """Validated timeout evaluation for a Raw-I/O Helper request (T4/R1 = A, B7)."""
+    """Validated timeout/failure evaluation for a Raw-I/O Helper request."""
 
     operation: HelperOperation
     timeout_ms: int
@@ -180,6 +189,10 @@ class RawIoTimeoutEvaluation:
     helper_killed: bool
     queued_requests_count: int = 0
     queued_action: QueuedTimeoutAction = "none"
+    failure_kind: FailureKind = "none"
+    kill_wait_timeout_ms: int = RAW_IO_KILL_WAIT_TIMEOUT_MS
+    kill_wait_elapsed_ms: int = 0
+    helper_exited_within_kill_wait: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -221,12 +234,28 @@ def validate_classify_options(options: object) -> RawIoClassifyOptionsSpec:
         or timeout_raw <= 0
     ):
         raise RawIoClassificationMismatchError(
-            "ERRORS-RAWIO-1",
+            "ERRORS-RAWIO-1b",
             f"timeoutMs must be a positive integer (> 0); got {timeout_raw!r}",
+        )
+    kill_wait_raw = options.get("killWaitTimeoutMs", RAW_IO_KILL_WAIT_TIMEOUT_MS)
+    if (
+        not isinstance(kill_wait_raw, int)
+        or isinstance(kill_wait_raw, bool)
+        or kill_wait_raw <= 0
+    ):
+        raise RawIoClassificationMismatchError(
+            "ERRORS-RAWIO-1b",
+            (
+                "killWaitTimeoutMs must be a positive integer (> 0); "
+                f"got {kill_wait_raw!r}"
+            ),
         )
     spawn = options.get("helperSpawnCommand")
     if spawn is None:
-        return RawIoClassifyOptionsSpec(timeout_ms=timeout_raw)
+        return RawIoClassifyOptionsSpec(
+            timeout_ms=timeout_raw,
+            kill_wait_timeout_ms=kill_wait_raw,
+        )
     if not isinstance(spawn, dict):
         raise RawIoClassificationMismatchError(
             "POST-RAWIO-2b",
@@ -245,6 +274,7 @@ def validate_classify_options(options: object) -> RawIoClassifyOptionsSpec:
     return RawIoClassifyOptionsSpec(
         helper_spawn_cmd=tuple(cmd),
         timeout_ms=timeout_raw,
+        kill_wait_timeout_ms=kill_wait_raw,
     )
 
 
@@ -341,11 +371,17 @@ def validate_helper_failure_error(
     expected_path: str,
     *,
     timed_out: bool = False,
+    helper_still_alive_after_kill: bool = False,
 ) -> str:
-    """ERRORS-RAWIO-1: failure error names operation/path and timeout/write-unknown."""
+    """ERRORS-RAWIO-1 / ERRORS-RAWIO-1b: validate error message for operation/path."""
+    clause_id = (
+        "ERRORS-RAWIO-1b"
+        if timed_out or helper_still_alive_after_kill
+        else "ERRORS-RAWIO-1"
+    )
     if not isinstance(error_message, str) or not error_message.strip():
         raise RawIoClassificationMismatchError(
-            "ERRORS-RAWIO-1",
+            clause_id,
             (
                 "error message must be a non-empty string naming operation "
                 f"{expected_operation!r} and path {expected_path!r}"
@@ -353,31 +389,37 @@ def validate_helper_failure_error(
         )
     if expected_operation not in error_message or expected_path not in error_message:
         raise RawIoClassificationMismatchError(
-            "ERRORS-RAWIO-1",
+            clause_id,
             (
                 f"error message {error_message!r} must include operation "
                 f"{expected_operation!r} and target path {expected_path!r}"
             ),
         )
-    if timed_out:
+    if timed_out or helper_still_alive_after_kill:
         lower = error_message.lower()
         if "timed out" not in lower and "timeout" not in lower:
             raise RawIoClassificationMismatchError(
-                "ERRORS-RAWIO-1",
+                "ERRORS-RAWIO-1b",
                 f"timed-out error message {error_message!r} must indicate a timeout",
             )
-        if (
-            expected_operation == "write"
-            and "outcome is unknown" not in lower
-            and "outcome unknown" not in lower
-        ):
-            raise RawIoClassificationMismatchError(
-                "ERRORS-RAWIO-1",
-                (
-                    f"timed-out write error {error_message!r} must state that "
-                    "the write outcome is unknown"
-                ),
-            )
+        if expected_operation == "write":
+            if "outcome is unknown" not in lower and "outcome unknown" not in lower:
+                raise RawIoClassificationMismatchError(
+                    "ERRORS-RAWIO-1b",
+                    (
+                        f"timed-out write error {error_message!r} must state that "
+                        "the write outcome is unknown"
+                    ),
+                )
+            if helper_still_alive_after_kill and "may still land" not in lower:
+                raise RawIoClassificationMismatchError(
+                    "ERRORS-RAWIO-1b",
+                    (
+                        f"timed-out write error {error_message!r} when helper "
+                        "did not exit within killWaitTimeoutMs must state that "
+                        "the write may still land"
+                    ),
+                )
     return error_message
 
 
@@ -393,8 +435,11 @@ def evaluate_timeout_semantics(
     helper_killed: object,
     queued_requests_count: object = 0,
     queued_action: object = None,
+    failure_kind: object = None,
+    kill_wait_timeout_ms: object = RAW_IO_KILL_WAIT_TIMEOUT_MS,
+    kill_wait_elapsed_ms: object = 0,
 ) -> RawIoTimeoutEvaluation:
-    """POST-RAWIO-2b / ERRORS-RAWIO-1: pure validator for T4/R1 = A & B7 rules."""
+    """POST-RAWIO-2b / ERRORS-RAWIO-1 / ERRORS-RAWIO-1b pure validator."""
     if not isinstance(operation, str) or operation not in VALID_HELPER_OPERATIONS:
         raise RawIoClassificationMismatchError(
             "POST-RAWIO-2b",
@@ -404,10 +449,13 @@ def evaluate_timeout_semantics(
         not isinstance(timeout_ms, int)
         or isinstance(timeout_ms, bool)
         or timeout_ms <= 0
+        or not isinstance(kill_wait_timeout_ms, int)
+        or isinstance(kill_wait_timeout_ms, bool)
+        or kill_wait_timeout_ms <= 0
     ):
         raise RawIoClassificationMismatchError(
-            "ERRORS-RAWIO-1",
-            f"timeout_ms must be a positive integer (> 0); got {timeout_ms!r}",
+            "ERRORS-RAWIO-1b",
+            "timeout_ms and kill_wait_timeout_ms must be positive integers (> 0)",
         )
     if not isinstance(started_received, bool):
         raise RawIoClassificationMismatchError(
@@ -430,16 +478,17 @@ def evaluate_timeout_semantics(
         or not isinstance(queued_requests_count, int)
         or isinstance(queued_requests_count, bool)
         or queued_requests_count < 0
+        or not isinstance(kill_wait_elapsed_ms, int)
+        or isinstance(kill_wait_elapsed_ms, bool)
+        or kill_wait_elapsed_ms < 0
     ):
         raise RawIoClassificationMismatchError(
             "POST-RAWIO-2b",
-            "queued_wait_ms, elapsed_before_start_ms, elapsed_since_start_ms, "
-            "elapsed_since_progress_ms, and queued_requests_count must be "
-            "non-negative integers",
+            "elapsed and queue counts must be non-negative integers",
         )
     if not isinstance(helper_killed, bool):
         raise RawIoClassificationMismatchError(
-            "ERRORS-RAWIO-1",
+            "ERRORS-RAWIO-1b",
             f"helper_killed must be a bool; got {helper_killed!r}",
         )
     typed_op: HelperOperation = (
@@ -455,13 +504,44 @@ def evaluate_timeout_semantics(
         timed_out = elapsed_since_start_ms >= timeout_ms
     else:
         timed_out = elapsed_since_progress_ms >= timeout_ms
-    if timed_out and not helper_killed:
+    raw_failure = (
+        ("timeout" if timed_out else "none") if failure_kind is None else failure_kind
+    )
+    if not isinstance(raw_failure, str) or raw_failure not in VALID_FAILURE_KINDS:
         raise RawIoClassificationMismatchError(
             "ERRORS-RAWIO-1",
+            (
+                f"failure_kind must be one of {VALID_FAILURE_KINDS!r}; "
+                f"got {failure_kind!r}"
+            ),
+        )
+    resolved_failure_kind: FailureKind = (
+        "per_request_error"
+        if raw_failure == "per_request_error"
+        else "helper_crash"
+        if raw_failure == "helper_crash"
+        else "timeout"
+        if raw_failure == "timeout"
+        else "none"
+    )
+    if resolved_failure_kind == "per_request_error" and helper_killed:
+        raise RawIoClassificationMismatchError(
+            "ERRORS-RAWIO-1",
+            "a per-request error from a live helper must not kill the helper",
+        )
+    if (timed_out or resolved_failure_kind == "timeout") and not helper_killed:
+        raise RawIoClassificationMismatchError(
+            "ERRORS-RAWIO-1b",
             "omp must kill the helper subprocess when a request times out",
         )
+    is_helper_level_failure = timed_out or resolved_failure_kind in (
+        "helper_crash",
+        "timeout",
+    )
     expected_queued_action: QueuedTimeoutAction = (
-        "retry_on_fresh_helper" if timed_out and queued_requests_count > 0 else "none"
+        "retry_on_fresh_helper"
+        if is_helper_level_failure and queued_requests_count > 0
+        else "none"
     )
     resolved_queued_action = (
         expected_queued_action if queued_action is None else queued_action
@@ -471,14 +551,21 @@ def evaluate_timeout_semantics(
         or resolved_queued_action not in VALID_QUEUED_TIMEOUT_ACTIONS
         or resolved_queued_action != expected_queued_action
     ):
+        clause_for_queue = (
+            "ERRORS-RAWIO-1"
+            if resolved_failure_kind == "per_request_error"
+            else "ERRORS-RAWIO-1b"
+        )
         raise RawIoClassificationMismatchError(
-            "ERRORS-RAWIO-1",
+            clause_for_queue,
             (
                 f"queued_action must be {expected_queued_action!r} when "
-                f"timed_out={timed_out} and queued_requests_count="
-                f"{queued_requests_count}; got {queued_action!r}"
+                f"failure_kind={resolved_failure_kind!r}, timed_out={timed_out}, "
+                f"and queued_requests_count={queued_requests_count}; "
+                f"got {queued_action!r}"
             ),
         )
+    helper_exited = (not timed_out) or (kill_wait_elapsed_ms < kill_wait_timeout_ms)
     return RawIoTimeoutEvaluation(
         operation=typed_op,
         timeout_ms=timeout_ms,
@@ -491,6 +578,10 @@ def evaluate_timeout_semantics(
         helper_killed=helper_killed,
         queued_requests_count=queued_requests_count,
         queued_action=expected_queued_action,
+        failure_kind=resolved_failure_kind,
+        kill_wait_timeout_ms=kill_wait_timeout_ms,
+        kill_wait_elapsed_ms=kill_wait_elapsed_ms,
+        helper_exited_within_kill_wait=helper_exited,
     )
 
 
@@ -808,22 +899,35 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
     "ERRORS-RAWIO-1": Clause(
         verification="test",
         text=(
-            "IF the Raw-I/O Helper cannot start, crashes, fails, or times out "
-            "(when the active request does not receive {type: 'started', id} within "
+            "IF a live Raw-I/O Helper returns a per-request error for the active "
+            "request (such as a target read or write error), THEN omp SHALL fail "
+            "only that active request with an error naming its operation and target "
+            "path, leave the live helper subprocess and any queued requests "
+            "untouched, and SHALL NOT fall back to an in-process file open. "
+            "Source: REQ-L15586-08, INV-L15586-03."
+        ),
+    ),
+    "ERRORS-RAWIO-1b": Clause(
+        verification="test",
+        text=(
+            "IF the Raw-I/O Helper cannot start, crashes (exiting or erroring at "
+            "the helper level while a request is active), or times out (when the "
+            "active request does not receive {type: 'started', id} within "
             "options.timeoutMs of being sent to the helper, when 'classify' exceeds "
             "options.timeoutMs after {type: 'started', id}, or when 'read'/'write' "
             "receives no {type: 'progress', id} or completion message for "
             "options.timeoutMs after {type: 'started', id}, default "
             "RAW_IO_DEFAULT_TIMEOUT_MS = 5000ms), THEN omp SHALL kill the helper "
-            "subprocess (so a timed-out write cannot land late), fail only the "
-            "active request naming its operation and target path (and for a "
-            "timed-out 'write', stating that its outcome is unknown), dispatch "
-            "requests still queued at the kill (which were never sent to the killed "
-            "helper) once in their original order to a newly spawned helper (a "
-            "retried request that then fails or times out fails with the usual "
-            "error naming its operation and target path, with no second retry), "
-            "and SHALL NOT fall back to an in-process file open. "
-            "Source: REQ-L15586-08, INV-L15586-03."
+            "subprocess on timeout and wait at most options.killWaitTimeoutMs "
+            "(default RAW_IO_KILL_WAIT_TIMEOUT_MS = 5000ms) for it to exit, fail "
+            "only the active request naming its operation and target path (for a "
+            "timed-out 'write', stating that its outcome is unknown, and if the "
+            "helper has not exited within killWaitTimeoutMs, also stating that the "
+            "write may still land), dispatch requests still queued behind it (which "
+            "were never sent to the failed helper) once in their original order to "
+            "a newly spawned helper (with no second retry if that fresh helper "
+            "also fails or times out), and SHALL NOT fall back to an in-process "
+            "file open. Source: REQ-L15586-08, INV-L15586-03."
         ),
     ),
     "FORBIDDEN-RAWIO-1": Clause(
