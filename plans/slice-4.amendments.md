@@ -57,7 +57,7 @@
 - `RAW_IO_DEFAULT_TIMEOUT_MS = 5000` (5,000 ms default timeout bound).
 - `RAW_IO_PROGRESS_CHUNK_BYTES = 65536` (64 KiB chunk size for `read`/`write` progress).
 - `{type: 'started', id}` and `{type: 'progress', id, bytesProcessed}` IPC messages and the pre-start timeout when `{type: 'started', id}` does not arrive within `options.timeoutMs`.
-- Module specifiers (`RAW_IO_WORKER_SELECTORS_MODULE = '@oh-my-pi/pi-coding-agent/cli/worker-selectors'`, `RAW_IO_CLIENT_MODULE = '@oh-my-pi/pi-coding-agent/tools/raw-io-client'`), function names (`classifyRawIoTarget`, `readRawIoBytes`, `writeRawIoBytes`, `stopRawIoHelper`, `resolveTimeoutAfterKillWait`), and the worker selector `RAW_IO_WORKER_ARG = '__omp_worker_raw_io'`.
+- Module specifiers (`RAW_IO_WORKER_SELECTORS_MODULE = '@oh-my-pi/pi-coding-agent/cli/worker-selectors'`, `RAW_IO_CLIENT_MODULE = '@oh-my-pi/pi-coding-agent/tools/raw-io-client'`), function names (`classifyRawIoTarget`, `readRawIoBytes`, `writeRawIoBytes`, `stopRawIoHelper`), and the worker selector `RAW_IO_WORKER_ARG = '__omp_worker_raw_io'`.
 - The test seams (`options.helperSpawnCommand`, `options.timeoutMs`, `options.onRequest`, and `session.rawIoHelperOptions`).
 - The classification labels (`'sqlite_db'`, `'sqlite_sidecar'`, `'non_sqlite'`, `'missing'`, `'directory'`, `'special'`), entry-kind labels (`'file'`, `'missing'`, `'directory'`, `'special'`), and the `R3` missing-target rule (non-regular/missing paths return `kind=entryKind`, `isSqliteFamily=false` even when ending in `-wal`/`-shm`/`-journal`).
 - The POSIX absolute-path precondition (`PRE-RAWIO-1`: non-empty string starting with `/`).
@@ -84,4 +84,4 @@
 - **`POST-RAWIO-2b` & `ERRORS-RAWIO-1c` (`verification='test'`):**
   - Contracted `resolveTimeoutAfterKillWait(input: { operation, targetPath, timeoutMs, helperExited, queuedRequests }) -> { activeError, retryQueueOnFreshHelper, queuedErrors }` (`RAW_IO_RESOLVE_KILL_WAIT_FN_NAME = 'resolveTimeoutAfterKillWait'`) on `@oh-my-pi/pi-coding-agent/tools/raw-io-client`, plus pure validator `validate_kill_wait_resolution` / `validateKillWaitResolution`.
   - Changed `ERRORS-RAWIO-1c` to `verification='test'` (verified by unit test calling the real exported `resolveTimeoutAfterKillWait` production function with `helperExited=false`, while `ERRORS-RAWIO-1b`'s tests exercise `helperExited=true` live; the wiring that passes `helperExited=false` after the 5s `RAW_IO_KILL_WAIT_TIMEOUT_MS` wait is checked by reading the code during the slice audit, because no unprivileged test can create a process that survives `SIGKILL`).
-  - Added `resolveTimeoutAfterKillWait` (`RAW_IO_RESOLVE_KILL_WAIT_FN_NAME`) to the accepted-values list above.
+  - Identifier `RAW_IO_RESOLVE_KILL_WAIT_FN_NAME = 'resolveTimeoutAfterKillWait'`: PENDING Ketema review.
