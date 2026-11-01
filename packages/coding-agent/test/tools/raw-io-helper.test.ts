@@ -940,6 +940,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 
 		const dbPath = path.join(tempDir, "fail-closed.db");
 		const db = new Database(dbPath);
+		const heldInodeFds: number[] = [];
 		try {
 			db.run("PRAGMA journal_mode = WAL;");
 			db.run("CREATE TABLE t (id INTEGER PRIMARY KEY);");
@@ -964,29 +965,58 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 				);
 			}
 
-			// Crash / immediate exit failure
-			let crashErr: unknown;
-			try {
-				await classifyFn(dbPath, {
-					helperSpawnCommand: { cmd: ["/bin/false"] },
+			// Probe the exact inode on both failure paths. SQLite's WAL writer
+			// oracle alone can stay blocked after a parent open/close drops this lock.
+			const inodeTarget = path.join(tempDir, "inode-proof.db-journal");
+			await fs.writeFile(inodeTarget, "held-inode-proof\n");
+			expect(
+				peerPosixWriteLockBlocked(inodeTarget).blocked,
+				assertionContext("FORBIDDEN-RAWIO-1b", "the independent inode-lock control starts unlocked"),
+			).toBe(false);
+			const observations: { mode: string; clauseId: unknown; lockRetained: boolean }[] = [];
+			const messageFailures: string[] = [];
+			for (const [mode, executable] of [
+				["cannot-start", path.join(tempDir, "missing-helper-executable")],
+				["crash", "/bin/false"],
+			]) {
+				heldInodeFds.push(acquireInProcessPosixWriteLock(inodeTarget));
+				expect(
+					peerPosixWriteLockBlocked(inodeTarget).blocked,
+					assertionContext("FORBIDDEN-RAWIO-1b", `${mode}: the actual caller-owned inode lock is held`),
+				).toBe(true);
+				let failure: unknown;
+				try {
+					await classifyFn(inodeTarget, { helperSpawnCommand: { cmd: [executable] } });
+				} catch (err) {
+					failure = err;
+				}
+				// Observe before closing any parent descriptor, including when a
+				// preceding case failed; each case independently reacquires its lock.
+				observations.push({
+					mode,
+					clauseId: failure instanceof Error ? Reflect.get(failure, "clauseId") : undefined,
+					lockRetained: peerPosixWriteLockBlocked(inodeTarget).blocked,
 				});
-			} catch (err) {
-				crashErr = err;
+				try {
+					validateHelperFailureError(failure instanceof Error ? failure.message : "", "classify", inodeTarget);
+				} catch (err) {
+					messageFailures.push(`${mode}: ${String(err)}`);
+				}
 			}
-			const crashMessage = crashErr instanceof Error ? crashErr.message : "";
-			try {
-				validateHelperFailureError(crashMessage, "classify", dbPath);
-			} catch (validationErr) {
-				throw new Error(
-					[
-						"1. WHAT: Raw-I/O Helper crash propagation FAILED",
-						`2. WHY: ERRORS-RAWIO-1b violation - ${validationErr instanceof Error ? validationErr.message : String(validationErr)}`,
-						`3. EXPECTED: Error message containing operation 'classify' and target path ${JSON.stringify(dbPath)}`,
-						`4. ACTUAL: ${JSON.stringify(crashMessage)}`,
-						"5. GUIDANCE: When the helper cannot start or crashes, an error naming the operation and target path must be surfaced",
-					].join("\n"),
-				);
-			}
+			expect(
+				messageFailures,
+				assertionContext("ERRORS-RAWIO-1b", "both startup and crash failures name the operation and target"),
+			).toEqual([]);
+			expect(
+				observations,
+				assertionContext(
+					"FORBIDDEN-RAWIO-1b / ERRORS-RAWIO-1b",
+					"each helper failure retains the exact held inode lock",
+				),
+			).toEqual([
+				{ mode: "cannot-start", clauseId: "ERRORS-RAWIO-1b", lockRetained: true },
+				{ mode: "crash", clauseId: "ERRORS-RAWIO-1b", lockRetained: true },
+			]);
 			const postFailureLockProbe = peerWriteBlocked(dbPath);
 			if (!postFailureLockProbe.blocked) {
 				throw new Error(
@@ -1000,6 +1030,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 				);
 			}
 		} finally {
+			for (const fd of heldInodeFds) fsSync.closeSync(fd);
 			try {
 				db.run("ROLLBACK;");
 			} catch {}
