@@ -973,6 +973,27 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			'      process.send({ type: "progress", id: msg.id, bytesProcessed: 4 });',
 			'      process.send({ type: "read_ok", id: msg.id, bytes: new Uint8Array([7, 8, 9, 10]) });',
 			"    }",
+			'  } else if (mode === "queue-retry-readtool-classify-timeout") {',
+			"    if (spawnNumber === 1) {",
+			'      process.send({ type: "started", id: msg.id });',
+			"      waitMs(1500);",
+			"      process.exit(0);",
+			"    } else {",
+			'      process.send({ type: "started", id: msg.id });',
+			"      process.send({",
+			'        type: "classified",',
+			"        id: msg.id,",
+			"        classification: {",
+			"          targetPath: msg.targetPath,",
+			"          resolvedPath: msg.targetPath,",
+			'          kind: "non_sqlite",',
+			"          isSqliteFamily: false,",
+			"          helperPid: process.pid,",
+			"          headerBytes: new Uint8Array([65, 66, 67, 68]),",
+			'          entryKind: "file",',
+			"        },",
+			"      });",
+			"    }",
 			"  }",
 			"});",
 		].join("\n");
@@ -1347,13 +1368,49 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 					);
 				}
 			}
-
+			// T4.8 (G1): ReadTool on a real .db whose classify times out must reject on the first
+			// classify attempt naming 'classify' and dbPath without isSqliteFile swallowing the
+			// timeout error into false and falling through to an in-process read.
+			await stopFn();
+			await fs.rm(spawnCountPath, { force: true });
+			const g1Requests: RawIoHelperRequestEntry[] = [];
+			const g1Session = createTestToolSession(tempDir, {
+				helperSpawnCommand: {
+					cmd: [process.execPath, helperScriptPath, "queue-retry-readtool-classify-timeout", spawnCountPath],
+				},
+				timeoutMs: 500,
+				onRequest(entry) {
+					g1Requests.push(entry);
+				},
+			});
+			const g1ReadTool = new ReadTool(g1Session);
+			let g1Err: unknown;
+			let g1ReturnedText: string | undefined;
+			try {
+				const g1Result = await g1ReadTool.execute("call-g1-read-db-timeout", { path: dbPath });
+				g1ReturnedText = extractToolText(g1Result);
+			} catch (err) {
+				g1Err = err;
+			}
+			const g1ErrMsg = g1Err instanceof Error ? g1Err.message : "";
 			const db1LockAfter = peerWriteBlocked(dbPath);
 			const db2LockAfter = peerWriteBlocked(secondDbPath);
+			try {
+				validateHelperFailureError(g1ErrMsg, "classify", dbPath, { timedOut: true });
+				if (g1Requests.length !== 1 || g1ReturnedText !== undefined || !db1LockAfter.blocked) {
+					failures.push(
+						`T4.8 FAILED (ReadTool classify timeout must fail on 1st classify without falling through in-process): requests=${g1Requests.length}, text=${JSON.stringify(g1ReturnedText)}, db1Lock=${db1LockAfter.detail}`,
+					);
+				}
+			} catch (validationErr) {
+				failures.push(
+					`T4.8 FAILED (G1 ReadTool classify timeout): ${validationErr instanceof Error ? validationErr.message : String(validationErr)} (err=${JSON.stringify(g1ErrMsg)}, text=${JSON.stringify(g1ReturnedText)}, requests=${g1Requests.length}, db1Lock=${db1LockAfter.detail})`,
+				);
+			}
+
 			if (!db1LockAfter.blocked || !db2LockAfter.blocked) {
 				failures.push(`T4 lock retention FAILED: db1=${db1LockAfter.detail}, db2=${db2LockAfter.detail}`);
 			}
-
 			if (failures.length > 0) {
 				throw new Error(
 					[
