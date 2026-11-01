@@ -728,11 +728,15 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "When ReadTool receives a host file path, it forwards "
             "session.rawIoHelperOptions on every helper request, classifies the "
             "target out of process through the Raw-I/O Helper before any in-process "
-            "file open, and accesses a SQLite-Family target only through the Raw-I/O "
-            "Helper (recording a 'read' entry in onRequest) or a SQLite connection "
-            "while retaining every POSIX advisory lock omp holds on that inode. "
+            "file open, and accesses every SQLite-Family target (including -wal, "
+            "-shm, and -journal sidecars) only through the Raw-I/O Helper "
+            "(recording a 'read' entry in onRequest) or a SQLite connection "
+            "(whose own connection close is permitted because SQLite retains .db "
+            "and -shm locks across secondary connection closes), retaining every "
+            "POSIX advisory lock SQLite holds on the database file and its -shm "
+            "file (and on any sidecar accessed through the helper). "
             "Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, INV-L15586-01, "
-            "INV-L15586-04."
+            "INV-L15586-04, Q-SLICE4-01."
         ),
     ),
     "POST-RAWIO-3b": Clause(
@@ -741,11 +745,15 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "When WriteTool receives a host file path, it forwards "
             "session.rawIoHelperOptions on every helper request, classifies the "
             "target out of process through the Raw-I/O Helper before any in-process "
-            "file open, and accesses a SQLite-Family target only through the Raw-I/O "
-            "Helper (recording a 'write' entry in onRequest) or a SQLite connection "
-            "while retaining every POSIX advisory lock omp holds on that inode. "
+            "file open, and accesses every SQLite-Family target (including -wal, "
+            "-shm, and -journal sidecars) only through the Raw-I/O Helper "
+            "(recording a 'write' entry in onRequest) or a SQLite connection "
+            "(whose own connection close is permitted because SQLite retains .db "
+            "and -shm locks across secondary connection closes), retaining every "
+            "POSIX advisory lock SQLite holds on the database file and its -shm "
+            "file (and on any sidecar accessed through the helper). "
             "Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, INV-L15586-01, "
-            "INV-L15586-04."
+            "INV-L15586-04, Q-SLICE4-01."
         ),
     ),
     "POST-RAWIO-3c": Clause(
@@ -812,8 +820,9 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "ReadTool and WriteTool SHALL NOT open or close a raw in-process file "
             "descriptor on a SQLite-Family File (including during SQLite header "
             "sniffing, WAL-version inspection, editable-file header checks, or "
-            "byte reads/writes). Source: REQ-L15586-05, REQ-L15586-31, "
-            "INV-L15586-01, INV-L15586-04."
+            "byte reads/writes; a SQLite connection's own descriptors managed by "
+            "SQLite are not raw descriptors). Source: REQ-L15586-05, REQ-L15586-31, "
+            "INV-L15586-01, INV-L15586-04, Q-SLICE4-01."
         ),
     ),
 }
