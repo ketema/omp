@@ -1,7 +1,7 @@
 schema_version: '1.0'
 feature_name: 15586-in-process-lock-loss
 manifest_path: requirements/REQUIREMENT_MANIFEST_15586_LOCK_LOSS.md
-manifest_hash: sha256:471cc71c50b55b773d6ca0ec701169917806073546740a2e8e5ba3b831b59303
+manifest_hash: sha256:864d90616b2176293150547d3e44af553580225de6b1e00bf97503b6eef8a96d
 created: '2026-10-31'
 last_updated: '2026-10-31'
 status: ACTIVE

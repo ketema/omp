@@ -2,8 +2,9 @@
 
 ## Q-SLICE4-01 — In-process `bun:sqlite` connection close vs `INV-L15586-01` lock retention on `-wal`
 
-- **Status:** PARKED (awaiting Ketema's decision)
-- **Date:** 2026-10-31
+- **Status:** RESOLVED — Option B
+- **Decided By:** User (Ketema, 2026-11-01, verbatim: `'B. is correct.'`)
+- **Date:** 2026-10-31 (resolved 2026-11-01)
 - **Dependent Clause IDs:** `POST-RAWIO-3`, `POST-RAWIO-3b`, `FORBIDDEN-RAWIO-3`
 - **Dependent Test Assertion:** `afterReadWalLock.blocked === true` (`peerPosixWriteLockBlocked(walPath)`) after `ReadTool` executes structured SQLite reads on `dbPath` and `symlinkToDbTxt` in `packages/coding-agent/test/tools/raw-io-helper.test.ts` (Test 3).
 
@@ -33,6 +34,12 @@
 - **Option B: Keep the in-process `bun:sqlite` connection for structured SQLite reads/writes and narrow the requirement/contract guarantee to the target's own inode / SQLite's `.db` and `-shm` locks.**
   - *Effect:* Preserves `REQ-L15586-31`'s in-process SQLite connection branch, amends `INV-L15586-01` / `POST-RAWIO-3` to permit `sqlite3WalClose()` closing the companion `-wal` fd when a secondary in-process SQLite connection closes, and reorders Test 3's `-wal` lock acquisition to after the `.db` reads.
 
-### Recommendation
+### Resolution (2026-11-01)
 
-**Option A** — running structured SQLite tool reads/writes in the out-of-process helper subprocess eliminates the last in-process descriptor close (`sqlite3WalClose`) on `-wal` without relaxing `INV-L15586-01`.
+- **Decision:** **Option B** (`Decided By: User`, Ketema, 2026-11-01, verbatim: `'B. is correct.'`; additional direction: `'Only cover reads that cause the error state we are trying to prevent'`, `1a` cover reads and writes, `2a` leave the `-wal`/`-journal` helper routing as built).
+- **Supporting Evidence:**
+  1. Upstream issue `#15586` states that opening and closing a second `bun:sqlite` connection in the same process does not drop the locks (`libsqlite3`'s `unixInodeInfo` retains `.db` and `-shm` descriptors and locks across secondary connection closes).
+  2. Upstream PR `#15591` intentionally keeps the read tool's second `bun:sqlite` connection in-process.
+  3. Live Mac and Linux probes confirm that SQLite holds POSIX `fcntl` locks only on `.db` and `-shm`, never on `-wal` or `-journal`.
+  4. No `omp` source takes its own `lockf`, `fcntl`, or `flock` POSIX advisory lock on `-wal` or `-journal`.
+- **Action Taken:** Narrowed `INV-L15586-01` in `requirements/REQUIREMENT_MANIFEST_15586_LOCK_LOSS.md` (`sha256:864d90616b2176293150547d3e44af553580225de6b1e00bf97503b6eef8a96d`) to prohibit reading or writing a SQLite database file or its `-shm` file through a raw file descriptor inside the `omp` process while keeping the `-wal`/`-journal` helper routing as built.
