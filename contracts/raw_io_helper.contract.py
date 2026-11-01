@@ -65,6 +65,7 @@ RAW_IO_CLASSIFY_FN_NAME: Final[str] = "classifyRawIoTarget"
 RAW_IO_READ_BYTES_FN_NAME: Final[str] = "readRawIoBytes"
 RAW_IO_WRITE_BYTES_FN_NAME: Final[str] = "writeRawIoBytes"
 RAW_IO_STOP_FN_NAME: Final[str] = "stopRawIoHelper"
+RAW_IO_RESOLVE_KILL_WAIT_FN_NAME: Final[str] = "resolveTimeoutAfterKillWait"
 RAW_IO_DEFAULT_TIMEOUT_MS: Final[int] = 5000
 RAW_IO_KILL_WAIT_TIMEOUT_MS: Final[int] = 5000
 RAW_IO_PROGRESS_CHUNK_BYTES: Final[int] = 65536
@@ -196,6 +197,15 @@ class RawIoTimeoutEvaluation:
     failure_kind: FailureKind = "none"
     kill_wait_elapsed_ms: int = 0
     helper_exited_within_kill_wait: bool = True
+
+
+@dataclass(slots=True, frozen=True)
+class RawIoKillWaitResolution:
+    """Validated result of resolveTimeoutAfterKillWait (POST-RAWIO-2b / 1b / 1c)."""
+
+    active_error: str
+    retry_queue_on_fresh_helper: bool
+    queued_errors: tuple[str, ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -779,6 +789,85 @@ def validate_sqlite_family_helper_log(
     return tuple(validated)
 
 
+def validate_kill_wait_resolution(
+    resolution: object,
+    *,
+    operation: HelperOperation,
+    target_path: str,
+    helper_exited: bool,
+    queued_requests: tuple[RawIoHelperRequestEntry, ...],
+) -> RawIoKillWaitResolution:
+    """POST-RAWIO-2b / ERRORS-RAWIO-1b / ERRORS-RAWIO-1c kill-wait validator."""
+    clause_id = "ERRORS-RAWIO-1b" if helper_exited else "ERRORS-RAWIO-1c"
+    if not isinstance(resolution, dict):
+        raise RawIoClassificationMismatchError(
+            clause_id,
+            f"resolution must be a mapping; got {type(resolution).__name__}",
+        )
+    active_err = validate_helper_failure_error(
+        resolution.get("activeError"),
+        operation,
+        target_path,
+        timed_out=True,
+        helper_still_alive_after_kill=not helper_exited,
+    )
+    retry_flag = resolution.get("retryQueueOnFreshHelper")
+    expected_retry = helper_exited and len(queued_requests) > 0
+    if not isinstance(retry_flag, bool) or retry_flag != expected_retry:
+        raise RawIoClassificationMismatchError(
+            clause_id,
+            (
+                f"retryQueueOnFreshHelper must be {expected_retry} when "
+                f"helper_exited={helper_exited} and len(queued_requests)="
+                f"{len(queued_requests)}; got {retry_flag!r}"
+            ),
+        )
+    raw_queued_errors = resolution.get("queuedErrors")
+    if not isinstance(raw_queued_errors, (list, tuple)):
+        raise RawIoClassificationMismatchError(
+            clause_id,
+            f"queuedErrors must be a sequence; got {type(raw_queued_errors).__name__}",
+        )
+    if helper_exited:
+        if len(raw_queued_errors) != 0:
+            raise RawIoClassificationMismatchError(
+                "ERRORS-RAWIO-1b",
+                (
+                    "queuedErrors must be empty when helper_exited=True; "
+                    f"got {raw_queued_errors!r}"
+                ),
+            )
+        return RawIoKillWaitResolution(
+            active_error=active_err,
+            retry_queue_on_fresh_helper=expected_retry,
+            queued_errors=(),
+        )
+    if len(raw_queued_errors) != len(queued_requests):
+        raise RawIoClassificationMismatchError(
+            "ERRORS-RAWIO-1c",
+            (
+                f"queuedErrors length ({len(raw_queued_errors)}) must equal "
+                f"queued_requests length ({len(queued_requests)}) when "
+                "helper_exited=False"
+            ),
+        )
+    validated_queued: list[str] = []
+    for q_req, q_err in zip(queued_requests, raw_queued_errors, strict=True):
+        validated_queued.append(
+            validate_helper_failure_error(
+                q_err,
+                q_req.operation,
+                q_req.target_path,
+                queued_behind_unstopped_helper=True,
+            )
+        )
+    return RawIoKillWaitResolution(
+        active_error=active_err,
+        retry_queue_on_fresh_helper=False,
+        queued_errors=tuple(validated_queued),
+    )
+
+
 # ==============================================================================
 # Artifact 5: Traceability Registry
 # ==============================================================================
@@ -830,8 +919,10 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "The Raw-I/O client module (@oh-my-pi/pi-coding-agent/tools/raw-io-client) "
             "exports classifyRawIoTarget(targetPath, options?) -> "
             "Promise<RawIoTargetClassification>, readRawIoBytes(targetPath, offset?, "
-            "length?, options?) -> Promise<Uint8Array>, and writeRawIoBytes("
-            "targetPath, data, options?) -> Promise<void>, where "
+            "length?, options?) -> Promise<Uint8Array>, writeRawIoBytes("
+            "targetPath, data, options?) -> Promise<void>, and "
+            "resolveTimeoutAfterKillWait(input) -> {activeError, "
+            "retryQueueOnFreshHelper, queuedErrors}, where "
             "options.helperSpawnCommand is an optional spawn-command override, "
             "options.timeoutMs is an optional positive integer timeout bound "
             "defaulting to RAW_IO_DEFAULT_TIMEOUT_MS (5000ms), and options.onRequest "
@@ -940,17 +1031,23 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
         ),
     ),
     "ERRORS-RAWIO-1c": Clause(
-        verification="tool",
+        verification="test",
         text=(
             "IF a timed-out Raw-I/O Helper has not exited within "
-            "RAW_IO_KILL_WAIT_TIMEOUT_MS (5000ms) after SIGKILL, THEN omp SHALL "
+            "RAW_IO_KILL_WAIT_TIMEOUT_MS (5000ms) after SIGKILL "
+            "(helperExited=false in resolveTimeoutAfterKillWait), THEN omp SHALL "
             "report the active request's timeout error anyway (for a 'write', "
             "stating both that its outcome is unknown and that it may still land), "
-            "SHALL NOT retry queued requests on a fresh helper, SHALL fail each "
-            "queued request naming its operation and target path with an error "
-            "stating that the previous helper could not be stopped, and SHALL NOT "
-            "fall back to an in-process file open. "
-            "Source: REQ-L15586-08, INV-L15586-03."
+            "SHALL NOT retry queued requests on a fresh helper "
+            "(retryQueueOnFreshHelper=false), SHALL fail each queued request "
+            "naming its operation and target path with an error stating that the "
+            "previous helper could not be stopped, and SHALL NOT fall back to an "
+            "in-process file open. (Verified by unit test on the exported "
+            "resolveTimeoutAfterKillWait production function with "
+            "helperExited=false; the wiring that passes helperExited=false after "
+            "the 5s wait is checked by reading the code during the slice audit, "
+            "because no unprivileged test can create a process that survives "
+            "SIGKILL.) Source: REQ-L15586-08, INV-L15586-03."
         ),
     ),
     "FORBIDDEN-RAWIO-1": Clause(

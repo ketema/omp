@@ -49,6 +49,7 @@ export const RAW_IO_CLASSIFY_FN_NAME = "classifyRawIoTarget" as const;
 export const RAW_IO_READ_BYTES_FN_NAME = "readRawIoBytes" as const;
 export const RAW_IO_WRITE_BYTES_FN_NAME = "writeRawIoBytes" as const;
 export const RAW_IO_STOP_FN_NAME = "stopRawIoHelper" as const;
+export const RAW_IO_RESOLVE_KILL_WAIT_FN_NAME = "resolveTimeoutAfterKillWait" as const;
 export const RAW_IO_DEFAULT_TIMEOUT_MS = 5000 as const;
 export const RAW_IO_KILL_WAIT_TIMEOUT_MS = 5000 as const;
 export const RAW_IO_PROGRESS_CHUNK_BYTES = 65536 as const;
@@ -153,6 +154,21 @@ export interface RawIoClientSurface {
 	) => Promise<Uint8Array>;
 	readonly writeRawIoBytes: (targetPath: string, data: Uint8Array, options?: RawIoClassifyOptions) => Promise<void>;
 	readonly stopRawIoHelper: () => Promise<void>;
+	readonly resolveTimeoutAfterKillWait: (input: ResolveTimeoutAfterKillWaitInput) => RawIoKillWaitResolution;
+}
+
+export interface ResolveTimeoutAfterKillWaitInput {
+	readonly operation: HelperOperation;
+	readonly targetPath: string;
+	readonly timeoutMs: number;
+	readonly helperExited: boolean;
+	readonly queuedRequests: ReadonlyArray<RawIoHelperRequestEntry>;
+}
+
+export interface RawIoKillWaitResolution {
+	readonly activeError: string;
+	readonly retryQueueOnFreshHelper: boolean;
+	readonly queuedErrors: ReadonlyArray<string>;
 }
 
 export interface RawIoToolAccessRecord {
@@ -660,6 +676,79 @@ export function validateSqliteFamilyHelperLog(
 	return Object.freeze(validated);
 }
 
+export function validateKillWaitResolution(
+	resolution: unknown,
+	expected: {
+		readonly operation: HelperOperation;
+		readonly targetPath: string;
+		readonly helperExited: boolean;
+		readonly queuedRequests: ReadonlyArray<RawIoHelperRequestEntry>;
+	},
+): RawIoKillWaitResolution {
+	const clauseId = expected.helperExited ? "ERRORS-RAWIO-1b" : "ERRORS-RAWIO-1c";
+	if (typeof resolution !== "object" || resolution === null || Array.isArray(resolution)) {
+		throw new RawIoClassificationMismatchError(clauseId, `resolution must be an object; got ${typeof resolution}`);
+	}
+	const activeError = validateHelperFailureError(
+		Reflect.get(resolution, "activeError"),
+		expected.operation,
+		expected.targetPath,
+		{
+			timedOut: true,
+			helperStillAliveAfterKill: !expected.helperExited,
+		},
+	);
+	const retryFlag = Reflect.get(resolution, "retryQueueOnFreshHelper");
+	const expectedRetry = expected.helperExited && expected.queuedRequests.length > 0;
+	if (typeof retryFlag !== "boolean" || retryFlag !== expectedRetry) {
+		throw new RawIoClassificationMismatchError(
+			clauseId,
+			`retryQueueOnFreshHelper must be ${String(expectedRetry)} when helperExited=${String(expected.helperExited)} and queuedRequests.length=${String(expected.queuedRequests.length)}; got ${JSON.stringify(retryFlag)}`,
+		);
+	}
+	const rawQueuedErrors = Reflect.get(resolution, "queuedErrors");
+	if (!Array.isArray(rawQueuedErrors)) {
+		throw new RawIoClassificationMismatchError(
+			clauseId,
+			`queuedErrors must be an array; got ${typeof rawQueuedErrors}`,
+		);
+	}
+	if (expected.helperExited) {
+		if (rawQueuedErrors.length !== 0) {
+			throw new RawIoClassificationMismatchError(
+				"ERRORS-RAWIO-1b",
+				`queuedErrors must be empty when helperExited=true; got ${JSON.stringify(rawQueuedErrors)}`,
+			);
+		}
+		return Object.freeze({
+			activeError,
+			retryQueueOnFreshHelper: expectedRetry,
+			queuedErrors: Object.freeze([]),
+		});
+	}
+	if (rawQueuedErrors.length !== expected.queuedRequests.length) {
+		throw new RawIoClassificationMismatchError(
+			"ERRORS-RAWIO-1c",
+			`queuedErrors length (${String(rawQueuedErrors.length)}) must equal queuedRequests length (${String(expected.queuedRequests.length)}) when helperExited=false`,
+		);
+	}
+	const validatedQueued: string[] = [];
+	for (let i = 0; i < expected.queuedRequests.length; i++) {
+		const qReq = expected.queuedRequests[i];
+		if (!qReq) continue;
+		validatedQueued.push(
+			validateHelperFailureError(rawQueuedErrors[i], qReq.operation, qReq.targetPath, {
+				queuedBehindUnstoppedHelper: true,
+			}),
+		);
+	}
+	return Object.freeze({
+		activeError,
+		retryQueueOnFreshHelper: false,
+		queuedErrors: Object.freeze(validatedQueued),
+	});
+}
+
 // =============================================================================
 // Artifact 5: Traceability Registry
 // =============================================================================
@@ -683,7 +772,7 @@ export const RAW_IO_HELPER_CONTRACT = Object.freeze({
 	},
 	"POST-RAWIO-2b": {
 		verification: "test",
-		text: "The Raw-I/O client module (@oh-my-pi/pi-coding-agent/tools/raw-io-client) exports classifyRawIoTarget(targetPath, options?) -> Promise<RawIoTargetClassification>, readRawIoBytes(targetPath, offset?, length?, options?) -> Promise<Uint8Array>, and writeRawIoBytes(targetPath, data, options?) -> Promise<void>, where options.helperSpawnCommand is an optional spawn-command override, options.timeoutMs is an optional positive integer timeout bound defaulting to RAW_IO_DEFAULT_TIMEOUT_MS (5000ms), and options.onRequest is invoked exactly once for each request sent to the Raw-I/O Helper across every operation ('classify', 'read', 'write') with that request's operation and targetPath; requests on a shared helper are dispatched strictly serially (a queued request is never sent to the helper before the active request settles and has no running timeout while waiting in the queue, so a request queued behind a timed-out request is sent—and logged via onRequest—exactly once, when dispatched to the fresh helper), the helper emits a {type: 'started', id} message when it begins the active request (which starts the fixed options.timeoutMs timer for 'classify' and the no-progress options.timeoutMs timer for 'read' and 'write'), and for 'read' and 'write' the helper transfers in bounded chunks (RAW_IO_PROGRESS_CHUNK_BYTES = 65536) and emits {type: 'progress', id, bytesProcessed} after each chunk to reset the no-progress timer. Source: REQ-L15586-05, REQ-L15586-08, REQ-L15586-31, SEQ-2, SEQ-5, IP-2.",
+		text: "The Raw-I/O client module (@oh-my-pi/pi-coding-agent/tools/raw-io-client) exports classifyRawIoTarget(targetPath, options?) -> Promise<RawIoTargetClassification>, readRawIoBytes(targetPath, offset?, length?, options?) -> Promise<Uint8Array>, writeRawIoBytes(targetPath, data, options?) -> Promise<void>, and resolveTimeoutAfterKillWait(input) -> {activeError, retryQueueOnFreshHelper, queuedErrors}, where options.helperSpawnCommand is an optional spawn-command override, options.timeoutMs is an optional positive integer timeout bound defaulting to RAW_IO_DEFAULT_TIMEOUT_MS (5000ms), and options.onRequest is invoked exactly once for each request sent to the Raw-I/O Helper across every operation ('classify', 'read', 'write') with that request's operation and targetPath; requests on a shared helper are dispatched strictly serially (a queued request is never sent to the helper before the active request settles and has no running timeout while waiting in the queue, so a request queued behind a timed-out request is sent—and logged via onRequest—exactly once, when dispatched to the fresh helper), the helper emits a {type: 'started', id} message when it begins the active request (which starts the fixed options.timeoutMs timer for 'classify' and the no-progress options.timeoutMs timer for 'read' and 'write'), and for 'read' and 'write' the helper transfers in bounded chunks (RAW_IO_PROGRESS_CHUNK_BYTES = 65536) and emits {type: 'progress', id, bytesProcessed} after each chunk to reset the no-progress timer. Source: REQ-L15586-05, REQ-L15586-08, REQ-L15586-31, SEQ-2, SEQ-5, IP-2.",
 	},
 	"POST-RAWIO-2c": {
 		verification: "test",
@@ -710,8 +799,8 @@ export const RAW_IO_HELPER_CONTRACT = Object.freeze({
 		text: "IF the Raw-I/O Helper cannot start, crashes (exiting or erroring at the helper level while a request is active), or times out (when the active request does not receive {type: 'started', id} within options.timeoutMs of being sent to the helper, when 'classify' exceeds options.timeoutMs after {type: 'started', id}, or when 'read'/'write' receives no {type: 'progress', id} or completion message for options.timeoutMs after {type: 'started', id}, default RAW_IO_DEFAULT_TIMEOUT_MS = 5000ms) and the failed or killed helper exits within RAW_IO_KILL_WAIT_TIMEOUT_MS (5000ms), THEN omp SHALL kill the helper subprocess on timeout, fail only the active request naming its operation and target path (and for a timed-out 'write', stating that its outcome is unknown), dispatch requests still queued behind it (which were never sent to the failed helper) once in their original order to a newly spawned helper (with no second retry if that fresh helper also fails or times out), and SHALL NOT fall back to an in-process file open. Source: REQ-L15586-08, INV-L15586-03.",
 	},
 	"ERRORS-RAWIO-1c": {
-		verification: "tool",
-		text: "IF a timed-out Raw-I/O Helper has not exited within RAW_IO_KILL_WAIT_TIMEOUT_MS (5000ms) after SIGKILL, THEN omp SHALL report the active request's timeout error anyway (for a 'write', stating both that its outcome is unknown and that it may still land), SHALL NOT retry queued requests on a fresh helper, SHALL fail each queued request naming its operation and target path with an error stating that the previous helper could not be stopped, and SHALL NOT fall back to an in-process file open. Source: REQ-L15586-08, INV-L15586-03.",
+		verification: "test",
+		text: "IF a timed-out Raw-I/O Helper has not exited within RAW_IO_KILL_WAIT_TIMEOUT_MS (5000ms) after SIGKILL (helperExited=false in resolveTimeoutAfterKillWait), THEN omp SHALL report the active request's timeout error anyway (for a 'write', stating both that its outcome is unknown and that it may still land), SHALL NOT retry queued requests on a fresh helper (retryQueueOnFreshHelper=false), SHALL fail each queued request naming its operation and target path with an error stating that the previous helper could not be stopped, and SHALL NOT fall back to an in-process file open. (Verified by unit test on the exported resolveTimeoutAfterKillWait production function with helperExited=false; the wiring that passes helperExited=false after the 5s wait is checked by reading the code during the slice audit, because no unprivileged test can create a process that survives SIGKILL.) Source: REQ-L15586-08, INV-L15586-03.",
 	},
 	"FORBIDDEN-RAWIO-1": {
 		verification: "test",
