@@ -11,6 +11,8 @@
  *   independently; it MUST NOT import from `contracts/raw_io_helper.contract.ts`.
  */
 import * as crypto from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { postmortem } from "@oh-my-pi/pi-utils";
 import {
 	createWorkerHandle,
@@ -65,6 +67,7 @@ export interface RawIoKillWaitResolution {
 	readonly activeError: string;
 	readonly retryQueueOnFreshHelper: boolean;
 	readonly queuedErrors: ReadonlyArray<string>;
+	readonly blockFutureWritesToTarget?: string | undefined;
 }
 
 export class RawIoHelperClientError extends Error {
@@ -125,6 +128,7 @@ export function resolveTimeoutAfterKillWait(input: ResolveTimeoutAfterKillWaitIn
 			activeError,
 			retryQueueOnFreshHelper: input.queuedRequests.length > 0,
 			queuedErrors: Object.freeze([]),
+			blockFutureWritesToTarget: undefined,
 		});
 	}
 
@@ -147,10 +151,12 @@ export function resolveTimeoutAfterKillWait(input: ResolveTimeoutAfterKillWaitIn
 		activeError,
 		retryQueueOnFreshHelper: false,
 		queuedErrors: Object.freeze(queuedErrors),
+		blockFutureWritesToTarget: input.operation === "write" ? input.targetPath : undefined,
 	});
 }
 
 interface RawIoWorkerHandle extends WorkerHandle<RawIoWorkerInbound, RawIoWorkerOutbound> {
+	readonly exited: Promise<unknown>;
 	terminateAndWait(waitMs: number): Promise<boolean>;
 }
 
@@ -178,11 +184,40 @@ let sharedHelperCmdKey: string | null = null;
 let cleanupRegistered = false;
 let activeTaskRunning = false;
 const requestQueue: QueuedHelperTask[] = [];
+const unexitedWriteTargets = new Map<string, Set<Promise<unknown>>>();
 
 function assertValidTargetPath(targetPath: unknown): asserts targetPath is string {
 	if (typeof targetPath !== "string" || targetPath.trim().length === 0 || !targetPath.startsWith("/")) {
 		throw new RawIoInvalidTargetPathError(targetPath);
 	}
+}
+
+function resolveTargetKey(targetPath: string): string {
+	const normalized = path.posix.resolve(targetPath);
+	try {
+		return fs.realpathSync(normalized);
+	} catch {
+		return normalized;
+	}
+}
+
+export function registerUnexitedWriteTarget(targetPath: string, exitPromise: Promise<unknown>): void {
+	assertValidTargetPath(targetPath);
+	const key = resolveTargetKey(targetPath);
+	let pendingSet = unexitedWriteTargets.get(key);
+	if (!pendingSet) {
+		pendingSet = new Set<Promise<unknown>>();
+		unexitedWriteTargets.set(key, pendingSet);
+	}
+	pendingSet.add(exitPromise);
+	void exitPromise.finally(() => {
+		const currentSet = unexitedWriteTargets.get(key);
+		if (!currentSet) return;
+		currentSet.delete(exitPromise);
+		if (currentSet.size === 0) {
+			unexitedWriteTargets.delete(key);
+		}
+	});
 }
 
 function validateOptionsShape(
@@ -244,6 +279,7 @@ function createRawIoWorkerHandle(spawnCommand: WorkerSpawnCommand): RawIoWorkerH
 	};
 	return {
 		...baseHandle,
+		exited: spawned.proc.exited,
 		terminateAndWait,
 		async terminate() {
 			await terminateAndWait(RAW_IO_KILL_WAIT_TIMEOUT_MS);
@@ -343,6 +379,9 @@ async function executeActiveTask(task: QueuedHelperTask): Promise<void> {
 					helperExited,
 					queuedRequests: matchingEntries,
 				});
+				if (resolution.blockFutureWritesToTarget !== undefined) {
+					registerUnexitedWriteTarget(resolution.blockFutureWritesToTarget, handle.exited);
+				}
 				const activeClauseId = helperExited ? "ERRORS-RAWIO-1b" : "ERRORS-RAWIO-1c";
 				if (!resolution.retryQueueOnFreshHelper && matchingIndices.length > 0) {
 					for (let k = matchingIndices.length - 1; k >= 0; k--) {
@@ -533,6 +572,14 @@ export async function writeRawIoBytes(
 	options?: RawIoClassifyOptions,
 ): Promise<void> {
 	assertValidTargetPath(targetPath);
+	if (unexitedWriteTargets.has(resolveTargetKey(targetPath))) {
+		throw new RawIoHelperOperationError(
+			"ERRORS-RAWIO-1d",
+			"write",
+			targetPath,
+			"previous helper is still alive; fix the mount or restart omp",
+		);
+	}
 
 	await enqueueHelperRequest<true>(
 		"write",
