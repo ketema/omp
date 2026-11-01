@@ -17,8 +17,10 @@ import {
 	RAW_IO_CLIENT_MODULE,
 	RAW_IO_DEFAULT_TIMEOUT_MS,
 	RAW_IO_HELPER_CONTRACT,
+	RAW_IO_KILL_WAIT_TIMEOUT_MS,
 	RAW_IO_PROGRESS_CHUNK_BYTES,
 	RAW_IO_READ_BYTES_FN_NAME,
+	RAW_IO_RESOLVE_KILL_WAIT_FN_NAME,
 	RAW_IO_STOP_FN_NAME,
 	RAW_IO_WORKER_ARG,
 	RAW_IO_WRITE_BYTES_FN_NAME,
@@ -26,11 +28,13 @@ import {
 	RawIoClassificationMismatchError,
 	type RawIoHelperRequestEntry,
 	RawIoInvalidTargetPathError,
+	type ResolveTimeoutAfterKillWaitInput,
 	SQLITE_HEADER_MAGIC,
 	SQLITE_SIDECAR_SUFFIXES,
 	validateClassificationRecord,
 	validateClassifyOptions,
 	validateHelperFailureError,
+	validateKillWaitResolution,
 	validateNonSqliteHelperLog,
 	validateSqliteFamilyHelperLog,
 	validateTargetPath,
@@ -233,6 +237,49 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 				{ timedOut: true },
 			),
 		).toThrow(RawIoClassificationMismatchError);
+		expect(RAW_IO_KILL_WAIT_TIMEOUT_MS).toBe(5000);
+		expect(
+			evaluateTimeoutSemantics({
+				operation: "classify",
+				timeoutMs: 500,
+				startedReceived: true,
+				elapsedSinceStartMs: 500,
+				elapsedSinceProgressMs: 500,
+				helperKilled: true,
+				queuedRequestsCount: 2,
+				killWaitElapsedMs: 50,
+			}).queuedAction,
+		).toBe("retry_on_fresh_helper");
+		expect(
+			evaluateTimeoutSemantics({
+				operation: "write",
+				timeoutMs: 500,
+				startedReceived: true,
+				elapsedSinceStartMs: 500,
+				elapsedSinceProgressMs: 500,
+				helperKilled: true,
+				queuedRequestsCount: 2,
+				killWaitElapsedMs: 5000,
+			}).queuedAction,
+		).toBe("fail_queued_helper_not_stopped");
+		expect(
+			validateKillWaitResolution(
+				{
+					activeError:
+						"ERRORS-RAWIO-1b violation: Raw-I/O Helper failed during write for '/tmp/a.db-journal': timed out after 500ms; write outcome is unknown and may still land",
+					retryQueueOnFreshHelper: false,
+					queuedErrors: [
+						"ERRORS-RAWIO-1c violation: Raw-I/O Helper failed during read for '/tmp/b.db': previous helper could not be stopped",
+					],
+				},
+				{
+					operation: "write",
+					targetPath: "/tmp/a.db-journal",
+					helperExited: false,
+					queuedRequests: [{ operation: "read", targetPath: "/tmp/b.db" }],
+				},
+			).retryQueueOnFreshHelper,
+		).toBe(false);
 	});
 });
 
@@ -251,6 +298,7 @@ interface RawIoClientModule {
 	) => Promise<Uint8Array>;
 	readonly writeRawIoBytes?: (targetPath: string, data: Uint8Array, options?: RawIoClassifyOptions) => Promise<void>;
 	readonly stopRawIoHelper?: () => Promise<void>;
+	readonly resolveTimeoutAfterKillWait?: (input: ResolveTimeoutAfterKillWaitInput) => unknown;
 }
 
 interface RawIoClientLoadResult {
@@ -828,11 +876,22 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 		// ceiling (<= 2000ms) and cannot hang the test suite if the parent fails to time out.
 		const helperScriptPath = path.join(tempDir, "t4-controlled-helper.mjs");
 		const pidFilePath = path.join(tempDir, "t4-helper.pid");
+		const spawnCountPath = path.join(tempDir, "t4-spawn-count.txt");
 		const helperScript = [
 			'import * as fs from "node:fs";',
 			"const mode = process.argv[2];",
-			"const pidFile = process.argv[3];",
-			'if (pidFile && pidFile !== "none") fs.writeFileSync(pidFile, String(process.pid), "utf8");',
+			"const auxFile = process.argv[3];",
+			"let spawnNumber = 1;",
+			'if (auxFile && auxFile !== "none") {',
+			'  if (mode.startsWith("queue-retry-")) {',
+			"    let prev = 0;",
+			'    try { prev = Number(fs.readFileSync(auxFile, "utf8").trim()) || 0; } catch {}',
+			"    spawnNumber = prev + 1;",
+			'    fs.writeFileSync(auxFile, String(spawnNumber), "utf8");',
+			"  } else {",
+			'    fs.writeFileSync(auxFile, String(process.pid), "utf8");',
+			"  }",
+			"}",
 			"const waitMs = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };",
 			"let reqIndex = 0;",
 			'process.on("message", (msg) => {',
@@ -891,10 +950,29 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			"        },",
 			"      });",
 			"    }",
-			'  } else if (mode === "queue-first-timeout-kills-second") {',
+			'  } else if (mode === "queue-retry-timeout-then-succeed") {',
+			"    if (spawnNumber === 1) {",
+			'      process.send({ type: "started", id: msg.id });',
+			"      waitMs(1500);",
+			"      process.exit(0);",
+			"    } else {",
+			'      process.send({ type: "started", id: msg.id });',
+			'      process.send({ type: "progress", id: msg.id, bytesProcessed: 4 });',
+			'      process.send({ type: "read_ok", id: msg.id, bytes: new Uint8Array([42, 43, 44, 45]) });',
+			"    }",
+			'  } else if (mode === "queue-retry-timeout-both-fail") {',
 			'    process.send({ type: "started", id: msg.id });',
 			"    waitMs(1500);",
 			"    process.exit(0);",
+			'  } else if (mode === "queue-retry-crash-then-succeed") {',
+			"    if (spawnNumber === 1) {",
+			'      process.send({ type: "started", id: msg.id });',
+			"      process.exit(1);",
+			"    } else {",
+			'      process.send({ type: "started", id: msg.id });',
+			'      process.send({ type: "progress", id: msg.id, bytesProcessed: 4 });',
+			'      process.send({ type: "read_ok", id: msg.id, bytes: new Uint8Array([7, 8, 9, 10]) });',
+			"    }",
 			"  }",
 			"});",
 		].join("\n");
@@ -1081,50 +1159,209 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			}
 
 			// T4.5b: when the active request times out and kills the shared helper, the queued request
-			// fails naming its own operation and target path and never falls back to an in-process open.
+			// (never sent to the killed helper) is retried once on a fresh helper and succeeds, with
+			// onRequest firing once for each request sent.
 			await stopFn();
-			const sharedKillCmd = [process.execPath, helperScriptPath, "queue-first-timeout-kills-second", "none"];
-			const [activeSettled, queuedSettled] = await Promise.allSettled([
+			await fs.rm(spawnCountPath, { force: true });
+			const retrySuccessLog: RawIoHelperRequestEntry[] = [];
+			const sharedRetrySuccessCmd = [
+				process.execPath,
+				helperScriptPath,
+				"queue-retry-timeout-then-succeed",
+				spawnCountPath,
+			];
+			const [activeTimeoutSettled, queuedRetriedSettled] = await Promise.allSettled([
 				classifyFn(dbPath, {
-					helperSpawnCommand: { cmd: sharedKillCmd },
+					helperSpawnCommand: { cmd: sharedRetrySuccessCmd },
+					timeoutMs: 500,
+					onRequest(entry) {
+						retrySuccessLog.push(entry);
+					},
+				}),
+				readBytesFn(secondDbPath, 0, 4, {
+					helperSpawnCommand: { cmd: sharedRetrySuccessCmd },
+					timeoutMs: 500,
+					onRequest(entry) {
+						retrySuccessLog.push(entry);
+					},
+				}),
+			]);
+			const activeTimeoutMsg =
+				activeTimeoutSettled.status === "rejected" && activeTimeoutSettled.reason instanceof Error
+					? activeTimeoutSettled.reason.message
+					: "";
+			try {
+				validateHelperFailureError(activeTimeoutMsg, "classify", dbPath, { timedOut: true });
+				if (
+					queuedRetriedSettled.status !== "fulfilled" ||
+					queuedRetriedSettled.value.byteLength !== 4 ||
+					queuedRetriedSettled.value[0] !== 42 ||
+					retrySuccessLog.length !== 2 ||
+					retrySuccessLog[0]?.operation !== "classify" ||
+					retrySuccessLog[1]?.operation !== "read"
+				) {
+					const qDetail =
+						queuedRetriedSettled.status === "rejected"
+							? String(queuedRetriedSettled.reason)
+							: JSON.stringify([...queuedRetriedSettled.value]);
+					failures.push(
+						`T4.5b FAILED (queued request behind timed-out active request must succeed on fresh helper with 1 onRequest each): queued=${qDetail}, log=${JSON.stringify(retrySuccessLog)}`,
+					);
+				}
+			} catch (validationErr) {
+				failures.push(
+					`T4.5b FAILED (active timeout error validation): ${validationErr instanceof Error ? validationErr.message : String(validationErr)} (active=${JSON.stringify(activeTimeoutMsg)})`,
+				);
+			}
+
+			// T4.5c: when the fresh helper ALSO times out on the retried request, the retried request
+			// fails naming its own operation and target path, with no second retry (spawnCount === 2).
+			await stopFn();
+			await fs.rm(spawnCountPath, { force: true });
+			const sharedRetryBothFailCmd = [
+				process.execPath,
+				helperScriptPath,
+				"queue-retry-timeout-both-fail",
+				spawnCountPath,
+			];
+			const [firstFailSettled, secondFailSettled] = await Promise.allSettled([
+				classifyFn(dbPath, {
+					helperSpawnCommand: { cmd: sharedRetryBothFailCmd },
 					timeoutMs: 500,
 				}),
 				readBytesFn(secondDbPath, 0, 16, {
-					helperSpawnCommand: { cmd: sharedKillCmd },
+					helperSpawnCommand: { cmd: sharedRetryBothFailCmd },
 					timeoutMs: 500,
 				}),
 			]);
-			const activeErrMsg =
-				activeSettled.status === "rejected" && activeSettled.reason instanceof Error
-					? activeSettled.reason.message
+			const firstFailMsg =
+				firstFailSettled.status === "rejected" && firstFailSettled.reason instanceof Error
+					? firstFailSettled.reason.message
 					: "";
-			const queuedErrMsg =
-				queuedSettled.status === "rejected" && queuedSettled.reason instanceof Error
-					? queuedSettled.reason.message
+			const secondFailMsg =
+				secondFailSettled.status === "rejected" && secondFailSettled.reason instanceof Error
+					? secondFailSettled.reason.message
 					: "";
+			const bothFailSpawns = Number((await fs.readFile(spawnCountPath, "utf8").catch(() => "0")).trim());
 			try {
-				validateHelperFailureError(activeErrMsg, "classify", dbPath, { timedOut: true });
-				validateHelperFailureError(queuedErrMsg, "read", secondDbPath);
+				validateHelperFailureError(firstFailMsg, "classify", dbPath, { timedOut: true });
+				validateHelperFailureError(secondFailMsg, "read", secondDbPath, { timedOut: true });
+				if (bothFailSpawns !== 2) {
+					failures.push(
+						`T4.5c FAILED: expected exactly 2 helper spawns (initial + 1 retry, no second retry); got ${String(bothFailSpawns)}`,
+					);
+				}
 			} catch (validationErr) {
 				failures.push(
-					`T4.5b FAILED (queued request must fail naming its own operation and path when active request times out): ${validationErr instanceof Error ? validationErr.message : String(validationErr)} (active=${JSON.stringify(activeErrMsg)}, queued=${JSON.stringify(queuedErrMsg)})`,
+					`T4.5c FAILED (retried request on fresh helper that also times out must fail naming its own operation and path): ${validationErr instanceof Error ? validationErr.message : String(validationErr)} (first=${JSON.stringify(firstFailMsg)}, second=${JSON.stringify(secondFailMsg)}, spawns=${String(bothFailSpawns)})`,
 				);
+			}
+
+			// T4.6 (Q1 = a): when the active helper CRASHES, only the active request fails and the
+			// queued request is retried once on a fresh helper and succeeds.
+			await stopFn();
+			await fs.rm(spawnCountPath, { force: true });
+			const sharedCrashRetryCmd = [
+				process.execPath,
+				helperScriptPath,
+				"queue-retry-crash-then-succeed",
+				spawnCountPath,
+			];
+			const [crashActiveSettled, crashQueuedSettled] = await Promise.allSettled([
+				classifyFn(dbPath, {
+					helperSpawnCommand: { cmd: sharedCrashRetryCmd },
+					timeoutMs: 500,
+				}),
+				readBytesFn(secondDbPath, 0, 4, {
+					helperSpawnCommand: { cmd: sharedCrashRetryCmd },
+					timeoutMs: 500,
+				}),
+			]);
+			const crashActiveMsg =
+				crashActiveSettled.status === "rejected" && crashActiveSettled.reason instanceof Error
+					? crashActiveSettled.reason.message
+					: "";
+			try {
+				validateHelperFailureError(crashActiveMsg, "classify", dbPath);
+				if (
+					crashQueuedSettled.status !== "fulfilled" ||
+					crashQueuedSettled.value.byteLength !== 4 ||
+					crashQueuedSettled.value[0] !== 7
+				) {
+					const qCrashDetail =
+						crashQueuedSettled.status === "rejected"
+							? String(crashQueuedSettled.reason)
+							: JSON.stringify([...crashQueuedSettled.value]);
+					failures.push(
+						`T4.6 FAILED (queued request behind crashed helper must succeed on fresh helper): queued=${qCrashDetail}`,
+					);
+				}
+			} catch (validationErr) {
+				failures.push(
+					`T4.6 FAILED (crash active error validation): ${validationErr instanceof Error ? validationErr.message : String(validationErr)} (active=${JSON.stringify(crashActiveMsg)})`,
+				);
+			}
+
+			// T4.7 (ERRORS-RAWIO-1c & POST-RAWIO-2b): unit test of exported resolveTimeoutAfterKillWait
+			// production function with helperExited=false and helperExited=true.
+			const resolveKillWaitFn = loaded.module?.[RAW_IO_RESOLVE_KILL_WAIT_FN_NAME];
+			if (typeof resolveKillWaitFn !== "function") {
+				failures.push(
+					`T4.7 FAILED (ERRORS-RAWIO-1c / POST-RAWIO-2b): ${RAW_IO_RESOLVE_KILL_WAIT_FN_NAME} is not exported as a function on ${RAW_IO_CLIENT_MODULE} (got ${typeof resolveKillWaitFn})`,
+				);
+			} else {
+				try {
+					const sampleQueued: RawIoHelperRequestEntry[] = [
+						{ operation: "read", targetPath: secondDbPath },
+						{ operation: "classify", targetPath: dbPath },
+					];
+					const unexitedRes = resolveKillWaitFn({
+						operation: "write",
+						targetPath: writeTargetPath,
+						timeoutMs: 500,
+						helperExited: false,
+						queuedRequests: sampleQueued,
+					});
+					validateKillWaitResolution(unexitedRes, {
+						operation: "write",
+						targetPath: writeTargetPath,
+						helperExited: false,
+						queuedRequests: sampleQueued,
+					});
+					const exitedRes = resolveKillWaitFn({
+						operation: "write",
+						targetPath: writeTargetPath,
+						timeoutMs: 500,
+						helperExited: true,
+						queuedRequests: sampleQueued,
+					});
+					validateKillWaitResolution(exitedRes, {
+						operation: "write",
+						targetPath: writeTargetPath,
+						helperExited: true,
+						queuedRequests: sampleQueued,
+					});
+				} catch (validationErr) {
+					failures.push(
+						`T4.7 FAILED (resolveTimeoutAfterKillWait validation): ${validationErr instanceof Error ? validationErr.message : String(validationErr)}`,
+					);
+				}
 			}
 
 			const db1LockAfter = peerWriteBlocked(dbPath);
 			const db2LockAfter = peerWriteBlocked(secondDbPath);
 			if (!db1LockAfter.blocked || !db2LockAfter.blocked) {
-				failures.push(`T4.5b lock retention FAILED: db1=${db1LockAfter.detail}, db2=${db2LockAfter.detail}`);
+				failures.push(`T4 lock retention FAILED: db1=${db1LockAfter.detail}, db2=${db2LockAfter.detail}`);
 			}
 
 			if (failures.length > 0) {
 				throw new Error(
 					[
-						"1. WHAT: Raw-I/O Helper T4 timeout and queue semantics FAILED",
-						"2. WHY: POST-RAWIO-2b / ERRORS-RAWIO-1 / FORBIDDEN-RAWIO-1b violation",
-						"3. EXPECTED: All 5 T4 sub-scenarios (T4.1 classify fixed limit & PID kill, T4.2a/b read progress vs stall, T4.3 missing started, T4.4 write unknown-outcome & no late write, T4.5a/b queue wait survival & fail-closed) pass",
+						"1. WHAT: Raw-I/O Helper T4 timeout, crash-retry, and kill-wait semantics FAILED",
+						"2. WHY: POST-RAWIO-2b / ERRORS-RAWIO-1 / ERRORS-RAWIO-1b / ERRORS-RAWIO-1c / FORBIDDEN-RAWIO-1b violation",
+						"3. EXPECTED: All T4 sub-scenarios (T4.1-T4.4, T4.5a/b/c queue retry on fresh helper & single retry bound, T4.6 crash retry on fresh helper, T4.7 resolveTimeoutAfterKillWait helperExited=false/true) pass",
 						`4. ACTUAL:\n${failures.map(f => `  - ${f}`).join("\n")}`,
-						"5. GUIDANCE: Enforce started/progress IPC signals, fixed classify timeout, no-progress read/write timeout, helper termination on timeout, unknown-outcome write timeout errors, and serial queue clock start without in-process fallback",
+						"5. GUIDANCE: Retry queued requests once on a fresh helper after timeout or crash when the failed helper exited, and export resolveTimeoutAfterKillWait enforcing ERRORS-RAWIO-1b and ERRORS-RAWIO-1c",
 					].join("\n"),
 				);
 			}
@@ -1188,30 +1425,27 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			await fs.symlink(dbPath, symlinkToDbTxt);
 			await fs.symlink(journalPath, symlinkToJournalTxt);
 
-			// B5 self-check before locking: unlocked files MUST report ACQUIRED (blocked === false).
-			const unlockedWalProbe = peerPosixWriteLockBlocked(walPath);
+			// B5 self-check before locking journalPath: unlocked file MUST report ACQUIRED.
 			const unlockedJournalProbe = peerPosixWriteLockBlocked(journalPath);
-			if (unlockedWalProbe.blocked || unlockedJournalProbe.blocked) {
+			if (unlockedJournalProbe.blocked) {
 				throw new Error(
-					`Test setup self-check failed: expected unlocked files to report ACQUIRED (wal=${unlockedWalProbe.detail}, journal=${unlockedJournalProbe.detail})`,
+					`Test setup self-check failed: expected unlocked journal file to report ACQUIRED (journal=${unlockedJournalProbe.detail})`,
 				);
 			}
 
-			// Hold real POSIX record write locks inside omp on walPath and journalPath
+			// Hold a real POSIX record write lock inside omp on journalPath
 			// in addition to SQLite's WAL locks on dbPath and shmPath.
-			walLockFd = acquireInProcessPosixWriteLock(walPath);
 			journalLockFd = acquireInProcessPosixWriteLock(journalPath);
 
 			const lockedDbProbe = peerWriteBlocked(dbPath);
-			const lockedWalProbe = peerPosixWriteLockBlocked(walPath);
 			const lockedJournalProbe = peerPosixWriteLockBlocked(journalPath);
-			if (!lockedDbProbe.blocked || !lockedWalProbe.blocked || !lockedJournalProbe.blocked) {
+			if (!lockedDbProbe.blocked || !lockedJournalProbe.blocked) {
 				throw new Error(
-					`Test setup self-check failed: expected held locks to report LOCKED before tool execution (db=${lockedDbProbe.detail}, wal=${lockedWalProbe.detail}, journal=${lockedJournalProbe.detail})`,
+					`Test setup self-check failed: expected held locks to report LOCKED before tool execution (db=${lockedDbProbe.detail}, journal=${lockedJournalProbe.detail})`,
 				);
 			}
 
-			// T1 & T2 (ReadTool): Read dbPath, symlinkToDbTxt (.txt alias to SQLite DB), walPath, shmPath, and symlinkToJournalTxt (.txt alias to sidecar)
+			// T1 & T2 (ReadTool): Read dbPath and symlinkToDbTxt (.txt alias to SQLite DB)
 			const dbReadResult = await readTool.execute("call-read-db", { path: dbPath });
 			const dbReadText = extractToolText(dbReadResult);
 			if (!dbReadText.includes("items")) {
@@ -1231,6 +1465,22 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 						`4. ACTUAL: ${JSON.stringify(symlinkDbReadText)}`,
 						"5. GUIDANCE: ReadTool must classify every host file target via the Raw-I/O Helper before any in-process open and route sqlite_db targets through the SQLite reader or helper",
 					].join("\n"),
+				);
+			}
+
+			// Q-SLICE4-01 = B: Acquire the POSIX record lock on walPath after the .db SQLite
+			// connection reads and before the raw helper read of walPath:raw (B9).
+			const unlockedWalProbe = peerPosixWriteLockBlocked(walPath);
+			if (unlockedWalProbe.blocked) {
+				throw new Error(
+					`Test setup self-check failed: expected unlocked walPath to report ACQUIRED (wal=${unlockedWalProbe.detail})`,
+				);
+			}
+			walLockFd = acquireInProcessPosixWriteLock(walPath);
+			const lockedWalProbe = peerPosixWriteLockBlocked(walPath);
+			if (!lockedWalProbe.blocked) {
+				throw new Error(
+					`Test setup self-check failed: expected held walPath lock to report LOCKED (wal=${lockedWalProbe.detail})`,
 				);
 			}
 
