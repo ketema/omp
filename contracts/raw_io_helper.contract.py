@@ -66,6 +66,7 @@ RAW_IO_READ_BYTES_FN_NAME: Final[str] = "readRawIoBytes"
 RAW_IO_WRITE_BYTES_FN_NAME: Final[str] = "writeRawIoBytes"
 RAW_IO_STOP_FN_NAME: Final[str] = "stopRawIoHelper"
 RAW_IO_RESOLVE_KILL_WAIT_FN_NAME: Final[str] = "resolveTimeoutAfterKillWait"
+RAW_IO_REGISTER_UNEXITED_WRITE_FN_NAME: Final[str] = "registerUnexitedWriteTarget"
 RAW_IO_DEFAULT_TIMEOUT_MS: Final[int] = 5000
 RAW_IO_KILL_WAIT_TIMEOUT_MS: Final[int] = 5000
 RAW_IO_PROGRESS_CHUNK_BYTES: Final[int] = 65536
@@ -206,6 +207,7 @@ class RawIoKillWaitResolution:
     active_error: str
     retry_queue_on_fresh_helper: bool
     queued_errors: tuple[str, ...]
+    block_future_writes_to_target: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -369,10 +371,13 @@ def validate_helper_failure_error(
     timed_out: bool = False,
     helper_still_alive_after_kill: bool = False,
     queued_behind_unstopped_helper: bool = False,
+    unexited_write_target_refusal: bool = False,
 ) -> str:
-    """ERRORS-RAWIO-1 / ERRORS-RAWIO-1b / ERRORS-RAWIO-1c error validator."""
+    """ERRORS-RAWIO-1 / 1b / 1c / 1d error message validator."""
     clause_id = (
-        "ERRORS-RAWIO-1c"
+        "ERRORS-RAWIO-1d"
+        if unexited_write_target_refusal
+        else "ERRORS-RAWIO-1c"
         if helper_still_alive_after_kill or queued_behind_unstopped_helper
         else "ERRORS-RAWIO-1b"
         if timed_out
@@ -395,6 +400,19 @@ def validate_helper_failure_error(
             ),
         )
     lower = error_message.lower()
+    if unexited_write_target_refusal and (
+        "still alive" not in lower
+        or "fix the mount" not in lower
+        or "restart omp" not in lower
+    ):
+        raise RawIoClassificationMismatchError(
+            "ERRORS-RAWIO-1d",
+            (
+                f"unexited-write refusal {error_message!r} must state that "
+                "the previous helper is still alive and to fix the mount "
+                "or restart omp"
+            ),
+        )
     if queued_behind_unstopped_helper and "could not be stopped" not in lower:
         raise RawIoClassificationMismatchError(
             "ERRORS-RAWIO-1c",
@@ -828,6 +846,19 @@ def validate_kill_wait_resolution(
             clause_id,
             f"queuedErrors must be a sequence; got {type(raw_queued_errors).__name__}",
         )
+    block_target = resolution.get("blockFutureWritesToTarget")
+    expected_block = (
+        target_path if (not helper_exited and operation == "write") else None
+    )
+    if block_target != expected_block:
+        raise RawIoClassificationMismatchError(
+            "ERRORS-RAWIO-1d",
+            (
+                f"blockFutureWritesToTarget must be {expected_block!r} when "
+                f"helper_exited={helper_exited} and operation={operation!r}; "
+                f"got {block_target!r}"
+            ),
+        )
     if helper_exited:
         if len(raw_queued_errors) != 0:
             raise RawIoClassificationMismatchError(
@@ -841,6 +872,7 @@ def validate_kill_wait_resolution(
             active_error=active_err,
             retry_queue_on_fresh_helper=expected_retry,
             queued_errors=(),
+            block_future_writes_to_target=None,
         )
     if len(raw_queued_errors) != len(queued_requests):
         raise RawIoClassificationMismatchError(
@@ -865,6 +897,7 @@ def validate_kill_wait_resolution(
         active_error=active_err,
         retry_queue_on_fresh_helper=False,
         queued_errors=tuple(validated_queued),
+        block_future_writes_to_target=expected_block,
     )
 
 
@@ -1048,6 +1081,21 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "the 5s wait is checked by reading the code during the slice audit, "
             "because no unprivileged test can create a process that survives "
             "SIGKILL.) Source: REQ-L15586-08, INV-L15586-03."
+        ),
+    ),
+    "ERRORS-RAWIO-1d": Clause(
+        verification="test",
+        text=(
+            "WHILE a timed-out write's Raw-I/O Helper has not been observed to "
+            "exit (tracked in-memory via registerUnexitedWriteTarget for the "
+            "life of the omp process with no time cap; does not survive an omp "
+            "restart), omp SHALL refuse any new write request to that same "
+            "target path with an error naming the operation ('write') and "
+            "target path and stating that the previous helper is still alive "
+            "and to fix the mount or restart omp, while allowing read and "
+            "classify requests and write requests to other files to proceed on "
+            "a fresh helper, and SHALL lift the block when the old helper's "
+            "exit is observed. Source: REQ-L15586-08, INV-L15586-03."
         ),
     ),
     "FORBIDDEN-RAWIO-1": Clause(

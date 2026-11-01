@@ -50,6 +50,7 @@ export const RAW_IO_READ_BYTES_FN_NAME = "readRawIoBytes" as const;
 export const RAW_IO_WRITE_BYTES_FN_NAME = "writeRawIoBytes" as const;
 export const RAW_IO_STOP_FN_NAME = "stopRawIoHelper" as const;
 export const RAW_IO_RESOLVE_KILL_WAIT_FN_NAME = "resolveTimeoutAfterKillWait" as const;
+export const RAW_IO_REGISTER_UNEXITED_WRITE_FN_NAME = "registerUnexitedWriteTarget" as const;
 export const RAW_IO_DEFAULT_TIMEOUT_MS = 5000 as const;
 export const RAW_IO_KILL_WAIT_TIMEOUT_MS = 5000 as const;
 export const RAW_IO_PROGRESS_CHUNK_BYTES = 65536 as const;
@@ -155,6 +156,7 @@ export interface RawIoClientSurface {
 	readonly writeRawIoBytes: (targetPath: string, data: Uint8Array, options?: RawIoClassifyOptions) => Promise<void>;
 	readonly stopRawIoHelper: () => Promise<void>;
 	readonly resolveTimeoutAfterKillWait: (input: ResolveTimeoutAfterKillWaitInput) => RawIoKillWaitResolution;
+	readonly registerUnexitedWriteTarget: (targetPath: string, exitPromise: Promise<unknown>) => void;
 }
 
 export interface ResolveTimeoutAfterKillWaitInput {
@@ -169,6 +171,7 @@ export interface RawIoKillWaitResolution {
 	readonly activeError: string;
 	readonly retryQueueOnFreshHelper: boolean;
 	readonly queuedErrors: ReadonlyArray<string>;
+	readonly blockFutureWritesToTarget?: string | undefined;
 }
 
 export interface RawIoToolAccessRecord {
@@ -363,11 +366,19 @@ export function validateHelperFailureError(
 		readonly timedOut?: boolean;
 		readonly helperStillAliveAfterKill?: boolean;
 		readonly queuedBehindUnstoppedHelper?: boolean;
+		readonly unexitedWriteTargetRefusal?: boolean;
 	},
 ): string {
+	const isUnexitedRefusal = options?.unexitedWriteTargetRefusal === true;
 	const isUnstopped = options?.helperStillAliveAfterKill === true || options?.queuedBehindUnstoppedHelper === true;
 	const isTimeout = options?.timedOut === true || options?.helperStillAliveAfterKill === true;
-	const clauseId = isUnstopped ? "ERRORS-RAWIO-1c" : isTimeout ? "ERRORS-RAWIO-1b" : "ERRORS-RAWIO-1";
+	const clauseId = isUnexitedRefusal
+		? "ERRORS-RAWIO-1d"
+		: isUnstopped
+			? "ERRORS-RAWIO-1c"
+			: isTimeout
+				? "ERRORS-RAWIO-1b"
+				: "ERRORS-RAWIO-1";
 	if (typeof errorMessage !== "string" || errorMessage.trim().length === 0) {
 		throw new RawIoClassificationMismatchError(
 			clauseId,
@@ -381,6 +392,14 @@ export function validateHelperFailureError(
 		);
 	}
 	const lower = errorMessage.toLowerCase();
+	if (isUnexitedRefusal) {
+		if (!lower.includes("still alive") || !lower.includes("fix the mount") || !lower.includes("restart omp")) {
+			throw new RawIoClassificationMismatchError(
+				"ERRORS-RAWIO-1d",
+				`unexited-write refusal ${JSON.stringify(errorMessage)} must state that the previous helper is still alive and to fix the mount or restart omp`,
+			);
+		}
+	}
 	if (options?.queuedBehindUnstoppedHelper === true && !lower.includes("could not be stopped")) {
 		throw new RawIoClassificationMismatchError(
 			"ERRORS-RAWIO-1c",
@@ -713,6 +732,14 @@ export function validateKillWaitResolution(
 			`queuedErrors must be an array; got ${typeof rawQueuedErrors}`,
 		);
 	}
+	const blockTarget = Reflect.get(resolution, "blockFutureWritesToTarget");
+	const expectedBlock = !expected.helperExited && expected.operation === "write" ? expected.targetPath : undefined;
+	if (blockTarget !== expectedBlock) {
+		throw new RawIoClassificationMismatchError(
+			"ERRORS-RAWIO-1d",
+			`blockFutureWritesToTarget must be ${JSON.stringify(expectedBlock)} when helperExited=${String(expected.helperExited)} and operation='${expected.operation}'; got ${JSON.stringify(blockTarget)}`,
+		);
+	}
 	if (expected.helperExited) {
 		if (rawQueuedErrors.length !== 0) {
 			throw new RawIoClassificationMismatchError(
@@ -724,6 +751,7 @@ export function validateKillWaitResolution(
 			activeError,
 			retryQueueOnFreshHelper: expectedRetry,
 			queuedErrors: Object.freeze([]),
+			blockFutureWritesToTarget: undefined,
 		});
 	}
 	if (rawQueuedErrors.length !== expected.queuedRequests.length) {
@@ -746,6 +774,7 @@ export function validateKillWaitResolution(
 		activeError,
 		retryQueueOnFreshHelper: false,
 		queuedErrors: Object.freeze(validatedQueued),
+		blockFutureWritesToTarget: expectedBlock,
 	});
 }
 
@@ -801,6 +830,10 @@ export const RAW_IO_HELPER_CONTRACT = Object.freeze({
 	"ERRORS-RAWIO-1c": {
 		verification: "test",
 		text: "IF a timed-out Raw-I/O Helper has not exited within RAW_IO_KILL_WAIT_TIMEOUT_MS (5000ms) after SIGKILL (helperExited=false in resolveTimeoutAfterKillWait), THEN omp SHALL report the active request's timeout error anyway (for a 'write', stating both that its outcome is unknown and that it may still land), SHALL NOT retry queued requests on a fresh helper (retryQueueOnFreshHelper=false), SHALL fail each queued request naming its operation and target path with an error stating that the previous helper could not be stopped, and SHALL NOT fall back to an in-process file open. (Verified by unit test on the exported resolveTimeoutAfterKillWait production function with helperExited=false; the wiring that passes helperExited=false after the 5s wait is checked by reading the code during the slice audit, because no unprivileged test can create a process that survives SIGKILL.) Source: REQ-L15586-08, INV-L15586-03.",
+	},
+	"ERRORS-RAWIO-1d": {
+		verification: "test",
+		text: "WHILE a timed-out write's Raw-I/O Helper has not been observed to exit (tracked in-memory via registerUnexitedWriteTarget for the life of the omp process with no time cap; does not survive an omp restart), omp SHALL refuse any new write request to that same target path with an error naming the operation ('write') and target path and stating that the previous helper is still alive and to fix the mount or restart omp, while allowing read and classify requests and write requests to other files to proceed on a fresh helper, and SHALL lift the block when the old helper's exit is observed. Source: REQ-L15586-08, INV-L15586-03.",
 	},
 	"FORBIDDEN-RAWIO-1": {
 		verification: "test",
