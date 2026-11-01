@@ -152,12 +152,29 @@ export interface RawIoToolAccessRecord {
 	readonly accessChannel: AccessChannel;
 	readonly classifiedBeforeOpen: true;
 }
+export interface RawIoTimeoutEvaluation {
+	readonly operation: HelperOperation;
+	readonly timeoutMs: number;
+	readonly queuedWaitMs: number;
+	readonly elapsedSinceStartMs: number;
+	readonly elapsedSinceProgressMs: number;
+	readonly timedOut: boolean;
+	readonly helperKilled: boolean;
+}
+
+export interface EvaluateTimeoutSemanticsInput {
+	readonly operation: unknown;
+	readonly timeoutMs: unknown;
+	readonly queuedWaitMs?: unknown;
+	readonly elapsedSinceStartMs: unknown;
+	readonly elapsedSinceProgressMs: unknown;
+	readonly helperKilled: unknown;
+}
 
 export interface Clause {
 	readonly verification: VerificationMethod;
 	readonly text: string;
 }
-
 // =============================================================================
 // Artifact 4: Pure Validators
 // =============================================================================
@@ -296,6 +313,7 @@ export function validateHelperFailureError(
 	errorMessage: unknown,
 	expectedOperation: string,
 	expectedPath: string,
+	options?: { readonly timedOut?: boolean },
 ): string {
 	if (typeof errorMessage !== "string" || errorMessage.trim().length === 0) {
 		throw new RawIoClassificationMismatchError(
@@ -309,9 +327,84 @@ export function validateHelperFailureError(
 			`error message ${JSON.stringify(errorMessage)} must include operation '${expectedOperation}' and target path '${expectedPath}'`,
 		);
 	}
+	if (options?.timedOut === true) {
+		const lower = errorMessage.toLowerCase();
+		if (!lower.includes("timed out") && !lower.includes("timeout")) {
+			throw new RawIoClassificationMismatchError(
+				"ERRORS-RAWIO-1",
+				`timed-out error message ${JSON.stringify(errorMessage)} must indicate a timeout`,
+			);
+		}
+		if (
+			expectedOperation === "write" &&
+			!lower.includes("outcome is unknown") &&
+			!lower.includes("outcome unknown")
+		) {
+			throw new RawIoClassificationMismatchError(
+				"ERRORS-RAWIO-1",
+				`timed-out write error ${JSON.stringify(errorMessage)} must state that the write outcome is unknown`,
+			);
+		}
+	}
 	return errorMessage;
 }
 
+export function evaluateTimeoutSemantics(input: EvaluateTimeoutSemanticsInput): RawIoTimeoutEvaluation {
+	if (!isHelperOperation(input.operation)) {
+		throw new RawIoClassificationMismatchError(
+			"POST-RAWIO-2b",
+			`operation must be one of ${JSON.stringify(VALID_HELPER_OPERATIONS)}; got ${JSON.stringify(input.operation)}`,
+		);
+	}
+	if (typeof input.timeoutMs !== "number" || !Number.isInteger(input.timeoutMs) || input.timeoutMs <= 0) {
+		throw new RawIoClassificationMismatchError(
+			"ERRORS-RAWIO-1",
+			`timeoutMs must be a positive integer (> 0); got ${JSON.stringify(input.timeoutMs)}`,
+		);
+	}
+	const queuedWaitMs = input.queuedWaitMs ?? 0;
+	if (
+		typeof queuedWaitMs !== "number" ||
+		!Number.isInteger(queuedWaitMs) ||
+		queuedWaitMs < 0 ||
+		typeof input.elapsedSinceStartMs !== "number" ||
+		!Number.isInteger(input.elapsedSinceStartMs) ||
+		input.elapsedSinceStartMs < 0 ||
+		typeof input.elapsedSinceProgressMs !== "number" ||
+		!Number.isInteger(input.elapsedSinceProgressMs) ||
+		input.elapsedSinceProgressMs < 0
+	) {
+		throw new RawIoClassificationMismatchError(
+			"POST-RAWIO-2b",
+			"queuedWaitMs, elapsedSinceStartMs, and elapsedSinceProgressMs must be non-negative integers",
+		);
+	}
+	if (typeof input.helperKilled !== "boolean") {
+		throw new RawIoClassificationMismatchError(
+			"ERRORS-RAWIO-1",
+			`helperKilled must be a boolean; got ${JSON.stringify(input.helperKilled)}`,
+		);
+	}
+	const timedOut =
+		input.operation === "classify"
+			? input.elapsedSinceStartMs >= input.timeoutMs
+			: input.elapsedSinceProgressMs >= input.timeoutMs;
+	if (timedOut && !input.helperKilled) {
+		throw new RawIoClassificationMismatchError(
+			"ERRORS-RAWIO-1",
+			"omp must kill the helper subprocess when a request times out",
+		);
+	}
+	return Object.freeze({
+		operation: input.operation,
+		timeoutMs: input.timeoutMs,
+		queuedWaitMs,
+		elapsedSinceStartMs: input.elapsedSinceStartMs,
+		elapsedSinceProgressMs: input.elapsedSinceProgressMs,
+		timedOut,
+		helperKilled: input.helperKilled,
+	});
+}
 export function validateToolAccessRoute(
 	toolName: unknown,
 	classification: RawIoTargetClassification,
@@ -472,7 +565,7 @@ export const RAW_IO_HELPER_CONTRACT = Object.freeze({
 	},
 	"POST-RAWIO-2b": {
 		verification: "test",
-		text: "The Raw-I/O client module (@oh-my-pi/pi-coding-agent/tools/raw-io-client) exports classifyRawIoTarget(targetPath, options?) -> Promise<RawIoTargetClassification>, readRawIoBytes(targetPath, offset?, length?, options?) -> Promise<Uint8Array>, and writeRawIoBytes(targetPath, data, options?) -> Promise<void>, where options.helperSpawnCommand is an optional spawn-command override, options.timeoutMs is an optional positive integer timeout defaulting to RAW_IO_DEFAULT_TIMEOUT_MS (5000ms), and options.onRequest is invoked exactly once for each request the Raw-I/O Helper receives across every operation ('classify', 'read', 'write') with that request's operation and targetPath. Source: REQ-L15586-05, REQ-L15586-08, REQ-L15586-31, SEQ-2, SEQ-5, IP-2.",
+		text: "The Raw-I/O client module (@oh-my-pi/pi-coding-agent/tools/raw-io-client) exports classifyRawIoTarget(targetPath, options?) -> Promise<RawIoTargetClassification>, readRawIoBytes(targetPath, offset?, length?, options?) -> Promise<Uint8Array>, and writeRawIoBytes(targetPath, data, options?) -> Promise<void>, where options.helperSpawnCommand is an optional spawn-command override, options.timeoutMs is an optional positive integer timeout bound defaulting to RAW_IO_DEFAULT_TIMEOUT_MS (5000ms) whose clock starts when the helper begins the request (not while queued) and applies as a fixed limit for 'classify' and a no-progress limit for 'read' and 'write', and options.onRequest is invoked exactly once for each request the Raw-I/O Helper receives across every operation ('classify', 'read', 'write') with that request's operation and targetPath. Source: REQ-L15586-05, REQ-L15586-08, REQ-L15586-31, SEQ-2, SEQ-5, IP-2.",
 	},
 	"POST-RAWIO-2c": {
 		verification: "test",
@@ -492,7 +585,7 @@ export const RAW_IO_HELPER_CONTRACT = Object.freeze({
 	},
 	"ERRORS-RAWIO-1": {
 		verification: "test",
-		text: "IF the Raw-I/O Helper cannot start, crashes, fails, or times out (exceeding options.timeoutMs, default RAW_IO_DEFAULT_TIMEOUT_MS = 5000ms), THEN omp SHALL surface an error naming the operation and target path and SHALL NOT fall back to an in-process file open. Source: REQ-L15586-08, INV-L15586-03.",
+		text: "IF the Raw-I/O Helper cannot start, crashes, fails, or times out (when 'classify' exceeds options.timeoutMs after helper start, or 'read'/'write' makes no progress for options.timeoutMs after helper start, default RAW_IO_DEFAULT_TIMEOUT_MS = 5000ms), THEN omp SHALL kill the helper subprocess (so a timed-out write cannot land late and any other in-flight or queued requests on the shared helper also fail closed naming their operation and target path), surface an error naming the operation and target path (and for a timed-out 'write', stating that its outcome is unknown), and SHALL NOT fall back to an in-process file open. Source: REQ-L15586-08, INV-L15586-03.",
 	},
 	"FORBIDDEN-RAWIO-1": {
 		verification: "test",

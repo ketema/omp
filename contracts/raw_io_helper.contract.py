@@ -162,6 +162,19 @@ class RawIoHelperRequestEntry:
 
 
 @dataclass(slots=True, frozen=True)
+class RawIoTimeoutEvaluation:
+    """Validated timeout evaluation for a Raw-I/O Helper request (T4/R1 = A)."""
+
+    operation: HelperOperation
+    timeout_ms: int
+    queued_wait_ms: int
+    elapsed_since_start_ms: int
+    elapsed_since_progress_ms: int
+    timed_out: bool
+    helper_killed: bool
+
+
+@dataclass(slots=True, frozen=True)
 class Clause:
     """Single behavioral contract clause with verification method and citation."""
 
@@ -318,8 +331,10 @@ def validate_helper_failure_error(
     error_message: object,
     expected_operation: str,
     expected_path: str,
+    *,
+    timed_out: bool = False,
 ) -> str:
-    """ERRORS-RAWIO-1: failure error message names the failed operation and path."""
+    """ERRORS-RAWIO-1: failure error names operation/path and timeout/write-unknown."""
     if not isinstance(error_message, str) or not error_message.strip():
         raise RawIoClassificationMismatchError(
             "ERRORS-RAWIO-1",
@@ -336,7 +351,99 @@ def validate_helper_failure_error(
                 f"{expected_operation!r} and target path {expected_path!r}"
             ),
         )
+    if timed_out:
+        lower = error_message.lower()
+        if "timed out" not in lower and "timeout" not in lower:
+            raise RawIoClassificationMismatchError(
+                "ERRORS-RAWIO-1",
+                f"timed-out error message {error_message!r} must indicate a timeout",
+            )
+        if (
+            expected_operation == "write"
+            and "outcome is unknown" not in lower
+            and "outcome unknown" not in lower
+        ):
+            raise RawIoClassificationMismatchError(
+                "ERRORS-RAWIO-1",
+                (
+                    f"timed-out write error {error_message!r} must state that "
+                    "the write outcome is unknown"
+                ),
+            )
     return error_message
+
+
+def evaluate_timeout_semantics(
+    operation: object,
+    timeout_ms: object,
+    *,
+    queued_wait_ms: object = 0,
+    elapsed_since_start_ms: object,
+    elapsed_since_progress_ms: object,
+    helper_killed: object,
+) -> RawIoTimeoutEvaluation:
+    """POST-RAWIO-2b / ERRORS-RAWIO-1: pure validator for T4/R1 = A timeout rules."""
+    if not isinstance(operation, str) or operation not in VALID_HELPER_OPERATIONS:
+        raise RawIoClassificationMismatchError(
+            "POST-RAWIO-2b",
+            f"operation must be one of {VALID_HELPER_OPERATIONS!r}; got {operation!r}",
+        )
+    if (
+        not isinstance(timeout_ms, int)
+        or isinstance(timeout_ms, bool)
+        or timeout_ms <= 0
+    ):
+        raise RawIoClassificationMismatchError(
+            "ERRORS-RAWIO-1",
+            f"timeout_ms must be a positive integer (> 0); got {timeout_ms!r}",
+        )
+    if (
+        not isinstance(queued_wait_ms, int)
+        or isinstance(queued_wait_ms, bool)
+        or queued_wait_ms < 0
+        or not isinstance(elapsed_since_start_ms, int)
+        or isinstance(elapsed_since_start_ms, bool)
+        or elapsed_since_start_ms < 0
+        or not isinstance(elapsed_since_progress_ms, int)
+        or isinstance(elapsed_since_progress_ms, bool)
+        or elapsed_since_progress_ms < 0
+    ):
+        raise RawIoClassificationMismatchError(
+            "POST-RAWIO-2b",
+            "queued_wait_ms, elapsed_since_start_ms, and elapsed_since_progress_ms "
+            "must be non-negative integers",
+        )
+    if not isinstance(helper_killed, bool):
+        raise RawIoClassificationMismatchError(
+            "ERRORS-RAWIO-1",
+            f"helper_killed must be a bool; got {helper_killed!r}",
+        )
+    typed_op: HelperOperation = (
+        "classify"
+        if operation == "classify"
+        else "read"
+        if operation == "read"
+        else "write"
+    )
+    timed_out = (
+        elapsed_since_start_ms >= timeout_ms
+        if typed_op == "classify"
+        else elapsed_since_progress_ms >= timeout_ms
+    )
+    if timed_out and not helper_killed:
+        raise RawIoClassificationMismatchError(
+            "ERRORS-RAWIO-1",
+            "omp must kill the helper subprocess when a request times out",
+        )
+    return RawIoTimeoutEvaluation(
+        operation=typed_op,
+        timeout_ms=timeout_ms,
+        queued_wait_ms=queued_wait_ms,
+        elapsed_since_start_ms=elapsed_since_start_ms,
+        elapsed_since_progress_ms=elapsed_since_progress_ms,
+        timed_out=timed_out,
+        helper_killed=helper_killed,
+    )
 
 
 def validate_tool_access_route(
@@ -576,11 +683,14 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "length?, options?) -> Promise<Uint8Array>, and writeRawIoBytes("
             "targetPath, data, options?) -> Promise<void>, where "
             "options.helperSpawnCommand is an optional spawn-command override, "
-            "options.timeoutMs is an optional positive integer timeout defaulting "
-            "to RAW_IO_DEFAULT_TIMEOUT_MS (5000ms), and options.onRequest is "
-            "invoked exactly once for each request the Raw-I/O Helper receives across "
-            "every operation ('classify', 'read', 'write') with that request's "
-            "operation and targetPath. "
+            "options.timeoutMs is an optional positive integer timeout bound "
+            "defaulting to RAW_IO_DEFAULT_TIMEOUT_MS (5000ms) whose clock starts "
+            "when the helper begins the request (not while queued) and applies as a "
+            "fixed limit for 'classify' and a no-progress limit for 'read' and "
+            "'write', and options.onRequest is invoked exactly once for each "
+            "request the Raw-I/O Helper receives across every operation "
+            "('classify', 'read', 'write') with that request's operation and "
+            "targetPath. "
             "Source: REQ-L15586-05, REQ-L15586-08, REQ-L15586-31, SEQ-2, SEQ-5, IP-2."
         ),
     ),
@@ -633,10 +743,15 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
         verification="test",
         text=(
             "IF the Raw-I/O Helper cannot start, crashes, fails, or times out "
-            "(exceeding options.timeoutMs, default RAW_IO_DEFAULT_TIMEOUT_MS = "
-            "5000ms), THEN omp SHALL surface an error naming the operation and "
-            "target path and SHALL NOT fall back to an in-process file open. "
-            "Source: REQ-L15586-08, INV-L15586-03."
+            "(when 'classify' exceeds options.timeoutMs after helper start, or "
+            "'read'/'write' makes no progress for options.timeoutMs after helper "
+            "start, default RAW_IO_DEFAULT_TIMEOUT_MS = 5000ms), THEN omp SHALL "
+            "kill the helper subprocess (so a timed-out write cannot land late and "
+            "any other in-flight or queued requests on the shared helper also fail "
+            "closed naming their operation and target path), surface an error naming "
+            "the operation and target path (and for a timed-out 'write', stating "
+            "that its outcome is unknown), and SHALL NOT fall back to an in-process "
+            "file open. Source: REQ-L15586-08, INV-L15586-03."
         ),
     ),
     "FORBIDDEN-RAWIO-1": Clause(
