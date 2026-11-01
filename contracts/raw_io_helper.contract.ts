@@ -35,7 +35,7 @@ export const VALID_ENTRY_KINDS = Object.freeze(["file", "missing", "directory", 
 export const VALID_TOOL_NAMES = Object.freeze(["read", "write"] as const);
 
 export const VALID_ACCESS_CHANNELS = Object.freeze(["raw_io_helper", "sqlite_connection", "in_process"] as const);
-
+export const VALID_HELPER_OPERATIONS = Object.freeze(["classify", "read", "write"] as const);
 export const RAW_IO_WORKER_ARG = "__omp_worker_raw_io" as const;
 export const RAW_IO_WORKER_SELECTORS_MODULE = "@oh-my-pi/pi-coding-agent/cli/worker-selectors" as const;
 export const RAW_IO_CLIENT_MODULE = "@oh-my-pi/pi-coding-agent/tools/raw-io-client" as const;
@@ -50,6 +50,7 @@ export type ClassificationKind = (typeof SQLITE_FAMILY_CLASSIFICATIONS)[number];
 export type EntryKind = (typeof VALID_ENTRY_KINDS)[number];
 export type ToolName = (typeof VALID_TOOL_NAMES)[number];
 export type AccessChannel = (typeof VALID_ACCESS_CHANNELS)[number];
+export type HelperOperation = (typeof VALID_HELPER_OPERATIONS)[number];
 export type VerificationMethod = "test" | "execution" | "tool";
 
 // =============================================================================
@@ -112,11 +113,17 @@ export interface ClassifyResolvedTargetInput {
 	readonly entryKind?: unknown;
 }
 
+export interface RawIoHelperRequestEntry {
+	readonly operation: HelperOperation;
+	readonly targetPath: string;
+}
+
 export interface RawIoClassifyOptions {
 	readonly helperSpawnCommand?: {
 		readonly cmd: readonly string[];
 	};
 	readonly timeoutMs?: number;
+	readonly onRequest?: (entry: RawIoHelperRequestEntry) => void;
 }
 
 export interface RawIoClassifyOptionsSpec {
@@ -161,6 +168,10 @@ export function isEntryKind(value: unknown): value is EntryKind {
 
 export function isToolName(value: unknown): value is ToolName {
 	return value === "read" || value === "write";
+}
+
+export function isHelperOperation(value: unknown): value is HelperOperation {
+	return value === "classify" || value === "read" || value === "write";
 }
 
 export function isAccessChannel(value: unknown): value is AccessChannel {
@@ -347,6 +358,53 @@ export function validateToolAccessRoute(
 	});
 }
 
+export function validateNonSqliteHelperLog(
+	entries: unknown,
+	nonSqlitePath: unknown,
+): ReadonlyArray<RawIoHelperRequestEntry> {
+	const validPath = validateTargetPath(nonSqlitePath);
+	if (!Array.isArray(entries)) {
+		throw new RawIoClassificationMismatchError("POST-RAWIO-3c", `entries must be an array; got ${typeof entries}`);
+	}
+	const validated: RawIoHelperRequestEntry[] = [];
+	let sawClassify = false;
+	for (const item of entries) {
+		if (typeof item !== "object" || item === null) {
+			throw new RawIoClassificationMismatchError(
+				"POST-RAWIO-3c",
+				`log entry must be an object; got ${JSON.stringify(item)}`,
+			);
+		}
+		const op = Reflect.get(item, "operation");
+		const pathVal = Reflect.get(item, "targetPath") ?? Reflect.get(item, "target_path");
+		if (!isHelperOperation(op)) {
+			throw new RawIoClassificationMismatchError(
+				"POST-RAWIO-3c",
+				`operation must be one of ${JSON.stringify(VALID_HELPER_OPERATIONS)}; got ${JSON.stringify(op)}`,
+			);
+		}
+		const validEntryPath = validateTargetPath(pathVal);
+		if (validEntryPath === validPath) {
+			if (op === "classify") {
+				sawClassify = true;
+			} else {
+				throw new RawIoClassificationMismatchError(
+					"POST-RAWIO-3c",
+					`non_sqlite target '${validPath}' must not send '${op}' byte requests to the Raw-I/O Helper`,
+				);
+			}
+		}
+		validated.push(Object.freeze({ operation: op, targetPath: validEntryPath }));
+	}
+	if (!sawClassify) {
+		throw new RawIoClassificationMismatchError(
+			"POST-RAWIO-3c",
+			`expected at least one 'classify' request for non_sqlite target '${validPath}'`,
+		);
+	}
+	return Object.freeze(validated);
+}
+
 // =============================================================================
 // Artifact 5: Traceability Registry
 // =============================================================================
@@ -386,7 +444,7 @@ export const RAW_IO_HELPER_CONTRACT = Object.freeze({
 	},
 	"POST-RAWIO-3c": {
 		verification: "test",
-		text: "When a host file is classified as 'non_sqlite', ReadTool and WriteTool access that ordinary file on the in-process fast path without routing its payload through the Raw-I/O Helper. Source: REQ-L15586-31, SEQ-2, IP-2.",
+		text: "When a host file is classified as 'non_sqlite', ReadTool and WriteTool (which honor an optional session.rawIoHelperOptions: RawIoClassifyOptions override, including helperSpawnCommand and onRequest(entry: RawIoHelperRequestEntry)) access that ordinary file on the in-process fast path so the Raw-I/O Helper receives a 'classify' request and zero 'read' or 'write' byte requests for that path. Source: REQ-L15586-31, SEQ-2, IP-2.",
 	},
 	"ERRORS-RAWIO-1": {
 		verification: "test",

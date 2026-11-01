@@ -44,6 +44,7 @@ VALID_ACCESS_CHANNELS: Final[tuple[str, ...]] = (
     "sqlite_connection",
     "in_process",
 )
+VALID_HELPER_OPERATIONS: Final[tuple[str, ...]] = ("classify", "read", "write")
 RAW_IO_WORKER_ARG: Final[str] = "__omp_worker_raw_io"
 RAW_IO_WORKER_SELECTORS_MODULE: Final[str] = (
     "@oh-my-pi/pi-coding-agent/cli/worker-selectors"
@@ -66,6 +67,7 @@ type ClassificationKind = Literal[
 type EntryKind = Literal["file", "missing", "directory", "special"]
 type ToolName = Literal["read", "write"]
 type AccessChannel = Literal["raw_io_helper", "sqlite_connection", "in_process"]
+type HelperOperation = Literal["classify", "read", "write"]
 
 # ==============================================================================
 # Artifact 2: Exception Hierarchy
@@ -149,6 +151,14 @@ class RawIoToolAccessRecord:
     classification: RawIoTargetClassification
     access_channel: AccessChannel
     classified_before_open: bool
+
+
+@dataclass(slots=True, frozen=True)
+class RawIoHelperRequestEntry:
+    """Single request observed by or sent to the Raw-I/O Helper."""
+
+    operation: HelperOperation
+    target_path: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -393,6 +403,68 @@ def validate_tool_access_route(
     )
 
 
+def validate_non_sqlite_helper_log(
+    entries: object,
+    non_sqlite_path: object,
+) -> tuple[RawIoHelperRequestEntry, ...]:
+    """POST-RAWIO-3c: helper sees classify and zero read/write for non_sqlite."""
+    valid_path = validate_target_path(non_sqlite_path)
+    if not isinstance(entries, (list, tuple)):
+        raise RawIoClassificationMismatchError(
+            "POST-RAWIO-3c",
+            f"entries must be a sequence; got {type(entries).__name__}",
+        )
+    validated: list[RawIoHelperRequestEntry] = []
+    saw_classify = False
+    for item in entries:
+        if isinstance(item, RawIoHelperRequestEntry):
+            op: object = item.operation
+            path_val: object = item.target_path
+        elif isinstance(item, dict):
+            op = item.get("operation")
+            path_val = item.get("targetPath", item.get("target_path"))
+        else:
+            raise RawIoClassificationMismatchError(
+                "POST-RAWIO-3c",
+                f"log entry must be a mapping or RawIoHelperRequestEntry; got {item!r}",
+            )
+        if not isinstance(op, str) or op not in VALID_HELPER_OPERATIONS:
+            raise RawIoClassificationMismatchError(
+                "POST-RAWIO-3c",
+                f"operation must be one of {VALID_HELPER_OPERATIONS!r}; got {op!r}",
+            )
+        valid_entry_path = validate_target_path(path_val)
+        typed_op: HelperOperation = (
+            "classify" if op == "classify" else "read" if op == "read" else "write"
+        )
+        if valid_entry_path == valid_path:
+            if typed_op == "classify":
+                saw_classify = True
+            else:
+                raise RawIoClassificationMismatchError(
+                    "POST-RAWIO-3c",
+                    (
+                        f"non_sqlite target '{valid_path}' must not send "
+                        f"'{typed_op}' byte requests to the Raw-I/O Helper"
+                    ),
+                )
+        validated.append(
+            RawIoHelperRequestEntry(
+                operation=typed_op,
+                target_path=valid_entry_path,
+            )
+        )
+    if not saw_classify:
+        raise RawIoClassificationMismatchError(
+            "POST-RAWIO-3c",
+            (
+                f"expected at least one 'classify' request for non_sqlite "
+                f"target '{valid_path}'"
+            ),
+        )
+    return tuple(validated)
+
+
 # ==============================================================================
 # Artifact 5: Traceability Registry
 # ==============================================================================
@@ -486,8 +558,11 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
         verification="test",
         text=(
             "When a host file is classified as 'non_sqlite', ReadTool and WriteTool "
-            "access that ordinary file on the in-process fast path without routing "
-            "its payload through the Raw-I/O Helper. "
+            "(which honor an optional session.rawIoHelperOptions: RawIoClassifyOptions "
+            "override, including helperSpawnCommand and onRequest(entry: "
+            "RawIoHelperRequestEntry)) access that ordinary file on the in-process "
+            "fast path so the Raw-I/O Helper receives a 'classify' request and zero "
+            "'read' or 'write' byte requests for that path. "
             "Source: REQ-L15586-31, SEQ-2, IP-2."
         ),
     ),
