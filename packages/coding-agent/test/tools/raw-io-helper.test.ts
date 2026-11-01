@@ -42,30 +42,89 @@ import {
 	validateToolAccessRoute,
 } from "../../../../contracts/raw_io_helper.contract";
 
+function assertionContext(clause: string, expected: string): string {
+	return [
+		"1. WHAT: Contract-bound assertion FAILED",
+		`2. WHY: ${clause} violation`,
+		`3. EXPECTED: ${expected}`,
+		"4. ACTUAL: Shown by the matcher diagnostic below",
+		"5. GUIDANCE: Preserve the specified value or error outcome",
+	].join("\n");
+}
+
+function assertReportedClassification(
+	raw: unknown,
+	expected: {
+		targetPath: string;
+		resolvedPath: string;
+		kind: string;
+		isSqliteFamily: boolean;
+		entryKind: string;
+		headerBytes: Uint8Array;
+	},
+): void {
+	const { headerBytes, ...fields } = expected;
+	expect(raw, assertionContext("POST-RAWIO-1", JSON.stringify(fields))).toMatchObject(fields);
+	const actualHeader = typeof raw === "object" && raw !== null ? Reflect.get(raw, "headerBytes") : undefined;
+	expect(actualHeader, assertionContext("POST-RAWIO-1", "exact independently observed header bytes")).toEqual(
+		headerBytes,
+	);
+}
+
+function peerHeaderBytes(target: string): Uint8Array {
+	const probe = Bun.spawnSync({
+		cmd: [
+			process.execPath,
+			"-e",
+			"process.stdout.write(await Bun.file(process.argv[1]).slice(0,16).bytes());",
+			target,
+		],
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	expect(probe.exitCode, assertionContext("POST-RAWIO-1", "independent header observation succeeds")).toBe(0);
+	return probe.stdout;
+}
+
 // =============================================================================
 // CONTRACT VERIFICATION (supporting tests for pure contract validators, not RED)
 // =============================================================================
 
 describe("raw_io_helper.contract - contract validator verification (supporting, not RED)", () => {
 	it("enforces PRE-RAWIO-1, POST-RAWIO-1, POST-RAWIO-2/2b/2c, POST-RAWIO-3/3b/3c, ERRORS-RAWIO-1, FORBIDDEN-RAWIO-2, and FORBIDDEN-RAWIO-3 on pure inputs", () => {
-		expect(RAW_IO_HELPER_CONTRACT["PRE-RAWIO-1"].verification).toBe("test");
-		expect(validateTargetPath("/tmp/test.db")).toBe("/tmp/test.db");
-		expect(() => validateTargetPath("relative/path.db")).toThrow(RawIoInvalidTargetPathError);
-		expect(() => validateTargetPath("")).toThrow(RawIoInvalidTargetPathError);
+		expect(RAW_IO_HELPER_CONTRACT["PRE-RAWIO-1"].verification, assertionContext("PRE-RAWIO-1", 'toBe("test")')).toBe(
+			"test",
+		);
+		expect(validateTargetPath("/tmp/test.db"), assertionContext("PRE-RAWIO-1", 'toBe("/tmp/test.db")')).toBe(
+			"/tmp/test.db",
+		);
+		expect(
+			() => validateTargetPath("relative/path.db"),
+			assertionContext("PRE-RAWIO-1", "toThrow(RawIoInvalidTargetPathError)"),
+		).toThrow(RawIoInvalidTargetPathError);
+		expect(
+			() => validateTargetPath(""),
+			assertionContext("PRE-RAWIO-1", "toThrow(RawIoInvalidTargetPathError)"),
+		).toThrow(RawIoInvalidTargetPathError);
 
-		expect(validateClassifyOptions(undefined)).toMatchObject({
+		expect(
+			validateClassifyOptions(undefined),
+			assertionContext("POST-RAWIO-2b", "toMatchObject({\n\t\t\thelperSpawnCmd: undefined,\n\t\t})"),
+		).toMatchObject({
 			helperSpawnCmd: undefined,
 		});
 		expect(
 			validateClassifyOptions({
 				helperSpawnCommand: { cmd: ["/bin/false"] },
 			}),
+			assertionContext("POST-RAWIO-2b", 'toMatchObject({\n\t\t\thelperSpawnCmd: ["/bin/false"],\n\t\t})'),
 		).toMatchObject({
 			helperSpawnCmd: ["/bin/false"],
 		});
-		expect(() => validateClassifyOptions({ helperSpawnCommand: { cmd: [] } })).toThrow(
-			RawIoClassificationMismatchError,
-		);
+		expect(
+			() => validateClassifyOptions({ helperSpawnCommand: { cmd: [] } }),
+			assertionContext("POST-RAWIO-2b", "toThrow(RawIoClassificationMismatchError)"),
+		).toThrow(RawIoClassificationMismatchError);
 		const dbRec = validateClassificationRecord({
 			targetPath: "/tmp/a.db",
 			resolvedPath: "/tmp/a.db",
@@ -74,8 +133,8 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 			parentPid: process.pid,
 			entryKind: "file",
 		});
-		expect(dbRec.kind).toBe("sqlite_db");
-		expect(dbRec.isSqliteFamily).toBe(true);
+		expect(dbRec.kind, assertionContext("POST-RAWIO-1", 'toBe("sqlite_db")')).toBe("sqlite_db");
+		expect(dbRec.isSqliteFamily, assertionContext("POST-RAWIO-1", "toBe(true)")).toBe(true);
 
 		for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
 			const sidecarRec = validateClassificationRecord({
@@ -86,8 +145,8 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 				parentPid: process.pid,
 				entryKind: "file",
 			});
-			expect(sidecarRec.kind).toBe("sqlite_sidecar");
-			expect(sidecarRec.isSqliteFamily).toBe(true);
+			expect(sidecarRec.kind, assertionContext("POST-RAWIO-1", 'toBe("sqlite_sidecar")')).toBe("sqlite_sidecar");
+			expect(sidecarRec.isSqliteFamily, assertionContext("POST-RAWIO-1", "toBe(true)")).toBe(true);
 
 			// R3: missing sidecar path returns kind='missing' with isSqliteFamily=false
 			const missingSidecar = validateClassificationRecord({
@@ -98,8 +157,8 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 				parentPid: process.pid,
 				entryKind: "missing",
 			});
-			expect(missingSidecar.kind).toBe("missing");
-			expect(missingSidecar.isSqliteFamily).toBe(false);
+			expect(missingSidecar.kind, assertionContext("POST-RAWIO-1", 'toBe("missing")')).toBe("missing");
+			expect(missingSidecar.isSqliteFamily, assertionContext("POST-RAWIO-1", "toBe(false)")).toBe(false);
 		}
 
 		// R2: requested path ending in -wal that resolves to non-SQLite regular file is 'non_sqlite'
@@ -111,18 +170,20 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 			parentPid: process.pid,
 			entryKind: "file",
 		});
-		expect(reverseSymlink.kind).toBe("non_sqlite");
-		expect(reverseSymlink.isSqliteFamily).toBe(false);
+		expect(reverseSymlink.kind, assertionContext("POST-RAWIO-1", 'toBe("non_sqlite")')).toBe("non_sqlite");
+		expect(reverseSymlink.isSqliteFamily, assertionContext("POST-RAWIO-1", "toBe(false)")).toBe(false);
 
-		expect(() =>
-			validateClassificationRecord({
-				targetPath: "/tmp/a.db",
-				resolvedPath: "/tmp/a.db",
-				headerBytes: SQLITE_HEADER_MAGIC,
-				helperPid: process.pid,
-				parentPid: process.pid,
-				entryKind: "file",
-			}),
+		expect(
+			() =>
+				validateClassificationRecord({
+					targetPath: "/tmp/a.db",
+					resolvedPath: "/tmp/a.db",
+					headerBytes: SQLITE_HEADER_MAGIC,
+					helperPid: process.pid,
+					parentPid: process.pid,
+					entryKind: "file",
+				}),
+			assertionContext("FORBIDDEN-RAWIO-2", "toThrow(RawIoClassificationMismatchError)"),
 		).toThrow(RawIoClassificationMismatchError);
 
 		expect(
@@ -131,21 +192,37 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 				"classify",
 				"/tmp/a.db",
 			),
+			assertionContext("ERRORS-RAWIO-1b", 'toContain("/tmp/a.db")'),
 		).toContain("/tmp/a.db");
-		expect(() => validateHelperFailureError("", "classify", "/tmp/a.db")).toThrow(RawIoClassificationMismatchError);
+		expect(
+			() => validateHelperFailureError("", "classify", "/tmp/a.db"),
+			assertionContext("ERRORS-RAWIO-1b", "toThrow(RawIoClassificationMismatchError)"),
+		).toThrow(RawIoClassificationMismatchError);
 
-		expect(validateToolAccessRoute("read", dbRec, "sqlite_connection", true).accessChannel).toBe("sqlite_connection");
-		expect(validateToolAccessRoute("write", dbRec, "raw_io_helper", true).accessChannel).toBe("raw_io_helper");
-		expect(validateToolAccessRoute("read", reverseSymlink, "in_process", true).accessChannel).toBe("in_process");
-		expect(() => validateToolAccessRoute("read", dbRec, "in_process", true)).toThrow(
-			RawIoClassificationMismatchError,
-		);
-		expect(() => validateToolAccessRoute("write", dbRec, "sqlite_connection", false)).toThrow(
-			RawIoClassificationMismatchError,
-		);
-		expect(() => validateToolAccessRoute("read", reverseSymlink, "raw_io_helper", true)).toThrow(
-			RawIoClassificationMismatchError,
-		);
+		expect(
+			validateToolAccessRoute("read", dbRec, "sqlite_connection", true).accessChannel,
+			assertionContext("POST-RAWIO-3", 'toBe("sqlite_connection")'),
+		).toBe("sqlite_connection");
+		expect(
+			validateToolAccessRoute("write", dbRec, "raw_io_helper", true).accessChannel,
+			assertionContext("POST-RAWIO-3b", 'toBe("raw_io_helper")'),
+		).toBe("raw_io_helper");
+		expect(
+			validateToolAccessRoute("read", reverseSymlink, "in_process", true).accessChannel,
+			assertionContext("POST-RAWIO-3c", 'toBe("in_process")'),
+		).toBe("in_process");
+		expect(
+			() => validateToolAccessRoute("read", dbRec, "in_process", true),
+			assertionContext("FORBIDDEN-RAWIO-3", "toThrow(RawIoClassificationMismatchError)"),
+		).toThrow(RawIoClassificationMismatchError);
+		expect(
+			() => validateToolAccessRoute("write", dbRec, "sqlite_connection", false),
+			assertionContext("POST-RAWIO-3b", "toThrow(RawIoClassificationMismatchError)"),
+		).toThrow(RawIoClassificationMismatchError);
+		expect(
+			() => validateToolAccessRoute("read", reverseSymlink, "raw_io_helper", true),
+			assertionContext("POST-RAWIO-3c", "toThrow(RawIoClassificationMismatchError)"),
+		).toThrow(RawIoClassificationMismatchError);
 
 		const sampleLog: RawIoHelperRequestEntry[] = [
 			{ operation: "classify", targetPath: "/tmp/a.db-journal" },
@@ -153,29 +230,37 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 			{ operation: "write", targetPath: "/tmp/a.db-journal" },
 			{ operation: "classify", targetPath: "/tmp/ordinary.txt" },
 		];
-		expect(validateSqliteFamilyHelperLog(sampleLog, "/tmp/a.db-journal", ["classify", "read", "write"]).length).toBe(
-			4,
-		);
-		expect(validateNonSqliteHelperLog(sampleLog, "/tmp/ordinary.txt").length).toBe(4);
-		expect(() =>
-			validateSqliteFamilyHelperLog(
-				[{ operation: "classify", targetPath: "/tmp/a.db-journal" }],
-				"/tmp/a.db-journal",
-				["classify", "read"],
-			),
+		expect(
+			validateSqliteFamilyHelperLog(sampleLog, "/tmp/a.db-journal", ["classify", "read", "write"]).length,
+			assertionContext("POST-RAWIO-2b", "toBe(4)"),
+		).toBe(4);
+		expect(
+			validateNonSqliteHelperLog(sampleLog, "/tmp/ordinary.txt").length,
+			assertionContext("POST-RAWIO-3c", "toBe(4)"),
+		).toBe(4);
+		expect(
+			() =>
+				validateSqliteFamilyHelperLog(
+					[{ operation: "classify", targetPath: "/tmp/a.db-journal" }],
+					"/tmp/a.db-journal",
+					["classify", "read"],
+				),
+			assertionContext("POST-RAWIO-2b", "toThrow(RawIoClassificationMismatchError)"),
 		).toThrow(RawIoClassificationMismatchError);
-		expect(() =>
-			validateNonSqliteHelperLog(
-				[
-					{ operation: "classify", targetPath: "/tmp/ordinary.txt" },
-					{ operation: "read", targetPath: "/tmp/ordinary.txt" },
-				],
-				"/tmp/ordinary.txt",
-			),
+		expect(
+			() =>
+				validateNonSqliteHelperLog(
+					[
+						{ operation: "classify", targetPath: "/tmp/ordinary.txt" },
+						{ operation: "read", targetPath: "/tmp/ordinary.txt" },
+					],
+					"/tmp/ordinary.txt",
+				),
+			assertionContext("POST-RAWIO-3c", "toThrow(RawIoClassificationMismatchError)"),
 		).toThrow(RawIoClassificationMismatchError);
 
-		expect(RAW_IO_DEFAULT_TIMEOUT_MS).toBe(5000);
-		expect(RAW_IO_PROGRESS_CHUNK_BYTES).toBe(65536);
+		expect(RAW_IO_DEFAULT_TIMEOUT_MS, assertionContext("ERRORS-RAWIO-1b", "toBe(5000)")).toBe(5000);
+		expect(RAW_IO_PROGRESS_CHUNK_BYTES, assertionContext("POST-RAWIO-2b", "toBe(65536)")).toBe(65536);
 		expect(
 			evaluateTimeoutSemantics({
 				operation: "classify",
@@ -187,6 +272,7 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 				elapsedSinceProgressMs: 20,
 				helperKilled: true,
 			}).timedOut,
+			assertionContext("ERRORS-RAWIO-1b", "toBe(true)"),
 		).toBe(true);
 		expect(
 			evaluateTimeoutSemantics({
@@ -199,6 +285,7 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 				elapsedSinceProgressMs: 40,
 				helperKilled: false,
 			}).timedOut,
+			assertionContext("POST-RAWIO-2b", "toBe(false)"),
 		).toBe(false);
 		expect(
 			evaluateTimeoutSemantics({
@@ -211,16 +298,19 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 				elapsedSinceProgressMs: 0,
 				helperKilled: true,
 			}).timedOut,
+			assertionContext("ERRORS-RAWIO-1b", "toBe(true)"),
 		).toBe(true);
-		expect(() =>
-			evaluateTimeoutSemantics({
-				operation: "write",
-				timeoutMs: 100,
-				startedReceived: true,
-				elapsedSinceStartMs: 120,
-				elapsedSinceProgressMs: 120,
-				helperKilled: false,
-			}),
+		expect(
+			() =>
+				evaluateTimeoutSemantics({
+					operation: "write",
+					timeoutMs: 100,
+					startedReceived: true,
+					elapsedSinceStartMs: 120,
+					elapsedSinceProgressMs: 120,
+					helperKilled: false,
+				}),
+			assertionContext("ERRORS-RAWIO-1b", "toThrow(RawIoClassificationMismatchError)"),
 		).toThrow(RawIoClassificationMismatchError);
 		expect(
 			validateHelperFailureError(
@@ -229,16 +319,19 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 				"/tmp/a.db-journal",
 				{ timedOut: true },
 			),
+			assertionContext("ERRORS-RAWIO-1b", 'toContain("outcome is unknown")'),
 		).toContain("outcome is unknown");
-		expect(() =>
-			validateHelperFailureError(
-				"Raw-I/O Helper failed during write for '/tmp/a.db-journal': timed out after 100ms",
-				"write",
-				"/tmp/a.db-journal",
-				{ timedOut: true },
-			),
+		expect(
+			() =>
+				validateHelperFailureError(
+					"Raw-I/O Helper failed during write for '/tmp/a.db-journal': timed out after 100ms",
+					"write",
+					"/tmp/a.db-journal",
+					{ timedOut: true },
+				),
+			assertionContext("ERRORS-RAWIO-1b", "toThrow(RawIoClassificationMismatchError)"),
 		).toThrow(RawIoClassificationMismatchError);
-		expect(RAW_IO_KILL_WAIT_TIMEOUT_MS).toBe(5000);
+		expect(RAW_IO_KILL_WAIT_TIMEOUT_MS, assertionContext("ERRORS-RAWIO-1c", "toBe(5000)")).toBe(5000);
 		expect(
 			evaluateTimeoutSemantics({
 				operation: "classify",
@@ -250,6 +343,7 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 				queuedRequestsCount: 2,
 				killWaitElapsedMs: 50,
 			}).queuedAction,
+			assertionContext("ERRORS-RAWIO-1b", 'toBe("retry_on_fresh_helper")'),
 		).toBe("retry_on_fresh_helper");
 		expect(
 			evaluateTimeoutSemantics({
@@ -262,6 +356,7 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 				queuedRequestsCount: 2,
 				killWaitElapsedMs: 5000,
 			}).queuedAction,
+			assertionContext("ERRORS-RAWIO-1c", 'toBe("fail_queued_helper_not_stopped")'),
 		).toBe("fail_queued_helper_not_stopped");
 		expect(
 			validateKillWaitResolution(
@@ -281,6 +376,7 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 					queuedRequests: [{ operation: "read", targetPath: "/tmp/b.db" }],
 				},
 			).retryQueueOnFreshHelper,
+			assertionContext("ERRORS-RAWIO-1c", "toBe(false)"),
 		).toBe(false);
 	});
 });
@@ -433,7 +529,7 @@ function acquireInProcessPosixWriteLock(filePath: string): number {
 		const errnoVal = currentErrno();
 		fsSync.closeSync(fd);
 		throw new Error(
-			`Failed to acquire in-process POSIX lockf write lock on ${filePath} (rc=${String(rc)}, errno=${String(errnoVal)})`,
+			`POST-RAWIO-1b setup: failed to acquire in-process POSIX lockf write lock on ${filePath} (rc=${String(rc)}, errno=${String(errnoVal)})`,
 		);
 	}
 	return fd;
@@ -480,7 +576,7 @@ function peerPosixWriteLockBlocked(filePath: string): PeerWriteProbeResult {
 	const stderr = new TextDecoder().decode(proc.stderr).trim();
 	const detail = `exit=${String(proc.exitCode)} stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`;
 	if (proc.exitCode !== 0 || (!stdout.startsWith("LOCKED:") && stdout !== "ACQUIRED")) {
-		throw new Error(`POSIX lockf probe failed on ${filePath}: ${detail}`);
+		throw new Error(`POST-RAWIO-1b setup: POSIX lockf probe failed on ${filePath}: ${detail}`);
 	}
 	return {
 		blocked: stdout.startsWith("LOCKED:"),
@@ -579,6 +675,13 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 		const plainPath = path.join(tempDir, "notes.txt");
 		const symlinkToWalPath = path.join(tempDir, "plain-alias.txt");
 		const fakeWalSymlinkToPlainPath = path.join(tempDir, "fake.db-wal");
+		const directoryPath = path.join(tempDir, "directory.db-shm");
+		const specialPath = path.join(tempDir, "fifo.db-journal");
+		// Canonicalize only the fixture directory before acquiring any file locks.
+		const canonicalDir = await fs.realpath(tempDir);
+		await fs.mkdir(directoryPath);
+		const mkfifo = Bun.spawnSync(["mkfifo", specialPath], { stdout: "pipe", stderr: "pipe" });
+		expect(mkfifo.exitCode, assertionContext("POST-RAWIO-1", "real special-file fixture exists")).toBe(0);
 
 		await fs.writeFile(plainPath, "ordinary plain text file\n", "utf8");
 
@@ -596,12 +699,20 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			const preLockProbe = peerWriteBlocked(dbPath);
 			if (!preLockProbe.blocked) {
 				throw new Error(
-					`Test setup precondition failed: expected BEGIN IMMEDIATE to block peer writer on ${dbPath} (${preLockProbe.detail})`,
+					`POST-RAWIO-1b setup: expected BEGIN IMMEDIATE to block peer writer on ${dbPath} (${preLockProbe.detail})`,
 				);
 			}
 
 			// 1. Classify the SQLite database file while omp holds BEGIN IMMEDIATE
 			const rawDbResult = await classifyFn(dbPath);
+			assertReportedClassification(rawDbResult, {
+				targetPath: dbPath,
+				resolvedPath: path.join(canonicalDir, "test.db"),
+				kind: "sqlite_db",
+				isSqliteFamily: true,
+				entryKind: "file",
+				headerBytes: SQLITE_HEADER_MAGIC,
+			});
 			const dbClassification = validateClassificationRecord(toClassificationInput(rawDbResult, process.pid));
 			if (
 				dbClassification.kind !== "sqlite_db" ||
@@ -623,6 +734,14 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			// 2. R2 positive case: symlink whose requested name does NOT end in -wal
 			//    but whose resolved real path ends in -wal -> sqlite_sidecar
 			const rawSymlinkWalResult = await classifyFn(symlinkToWalPath);
+			assertReportedClassification(rawSymlinkWalResult, {
+				targetPath: symlinkToWalPath,
+				resolvedPath: path.join(canonicalDir, "test.db-wal"),
+				kind: "sqlite_sidecar",
+				isSqliteFamily: true,
+				entryKind: "file",
+				headerBytes: peerHeaderBytes(walPath),
+			});
 			const symlinkWalClassification = validateClassificationRecord(
 				toClassificationInput(rawSymlinkWalResult, process.pid),
 			);
@@ -645,6 +764,14 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			// 3. R2 reverse case: symlink whose requested name ends in -wal
 			//    but whose resolved real path is an ordinary non-SQLite file -> non_sqlite
 			const rawReverseSymlinkResult = await classifyFn(fakeWalSymlinkToPlainPath);
+			assertReportedClassification(rawReverseSymlinkResult, {
+				targetPath: fakeWalSymlinkToPlainPath,
+				resolvedPath: path.join(canonicalDir, "notes.txt"),
+				kind: "non_sqlite",
+				isSqliteFamily: false,
+				entryKind: "file",
+				headerBytes: new TextEncoder().encode("ordinary plain text file\n").subarray(0, 16),
+			});
 			const reverseSymlinkClassification = validateClassificationRecord(
 				toClassificationInput(rawReverseSymlinkResult, process.pid),
 			);
@@ -675,6 +802,14 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 
 			// 4. R3: missing path ending in -wal -> kind='missing', isSqliteFamily=false
 			const rawMissingWalResult = await classifyFn(missingWalPath);
+			assertReportedClassification(rawMissingWalResult, {
+				targetPath: missingWalPath,
+				resolvedPath: missingWalPath,
+				kind: "missing",
+				isSqliteFamily: false,
+				entryKind: "missing",
+				headerBytes: new Uint8Array(0),
+			});
 			const missingWalClassification = validateClassificationRecord(
 				toClassificationInput(rawMissingWalResult, process.pid),
 			);
@@ -704,8 +839,24 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			}
 			// 5. Existing -shm and -journal sidecars -> sqlite_sidecar
 			const rawShmResult = await classifyFn(shmPath);
+			assertReportedClassification(rawShmResult, {
+				targetPath: shmPath,
+				resolvedPath: path.join(canonicalDir, "test.db-shm"),
+				kind: "sqlite_sidecar",
+				isSqliteFamily: true,
+				entryKind: "file",
+				headerBytes: peerHeaderBytes(shmPath),
+			});
 			const shmClassification = validateClassificationRecord(toClassificationInput(rawShmResult, process.pid));
 			const rawJournalResult = await classifyFn(existingJournalPath);
+			assertReportedClassification(rawJournalResult, {
+				targetPath: existingJournalPath,
+				resolvedPath: path.join(canonicalDir, "test.db-journal"),
+				kind: "sqlite_sidecar",
+				isSqliteFamily: true,
+				entryKind: "file",
+				headerBytes: new TextEncoder().encode("journal-header-bytes").subarray(0, 16),
+			});
 			const journalClassification = validateClassificationRecord(
 				toClassificationInput(rawJournalResult, process.pid),
 			);
@@ -720,6 +871,23 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 					].join("\n"),
 				);
 			}
+
+			assertReportedClassification(await classifyFn(directoryPath), {
+				targetPath: directoryPath,
+				resolvedPath: path.join(canonicalDir, "directory.db-shm"),
+				kind: "directory",
+				isSqliteFamily: false,
+				entryKind: "directory",
+				headerBytes: new Uint8Array(0),
+			});
+			assertReportedClassification(await classifyFn(specialPath), {
+				targetPath: specialPath,
+				resolvedPath: path.join(canonicalDir, "fifo.db-journal"),
+				kind: "special",
+				isSqliteFamily: false,
+				entryKind: "special",
+				headerBytes: new Uint8Array(0),
+			});
 
 			// 6. Verify that omp's held WAL write lock on dbPath was NOT released
 			const postLockProbe = peerWriteBlocked(dbPath);
@@ -746,14 +914,14 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 		/*
 		 * CONTRACT TRACEABILITY:
 		 *   - Contract: contracts/raw_io_helper.contract.ts (RAW_IO_HELPER_CONTRACT)
-		 *   - Enforces: PRE-RAWIO-1, POST-RAWIO-2b, ERRORS-RAWIO-1, FORBIDDEN-RAWIO-1b
+		 *   - Enforces: PRE-RAWIO-1, POST-RAWIO-2b, ERRORS-RAWIO-1b, FORBIDDEN-RAWIO-1b
 		 *   - Category: error boundary
 		 *   - Risk tier: HIGH - silent in-process fallback on helper failure drops POSIX locks (#15586)
 		 *   - Adversarial: Contract-governed, implementation-aware
 		 *   - FOUR-CRITERIA TEST VALIDITY GATE:
-		 *     [v] C1 VALID: cites PRE-RAWIO-1, POST-RAWIO-2b, ERRORS-RAWIO-1, FORBIDDEN-RAWIO-1b
+		 *     [v] C1 VALID: cites PRE-RAWIO-1, POST-RAWIO-2b, ERRORS-RAWIO-1b, FORBIDDEN-RAWIO-1b
 		 *     [v] C2 VALUABLE: catches unformatted errors or in-process open fallback
-		 *     [v] C3 NON-DUPLICATIVE: sole test of ERRORS-RAWIO-1 crash and FORBIDDEN-RAWIO-1b no-fallback
+		 *     [v] C3 NON-DUPLICATIVE: sole test of ERRORS-RAWIO-1b crash and FORBIDDEN-RAWIO-1b no-fallback
 		 *     [v] C4 NOT FUTURE-EDIT: enforces current SLICE-4 error behavior
 		 */
 		const loaded = await tryLoadRawIoClient();
@@ -762,7 +930,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			throw new Error(
 				[
 					"1. WHAT: Raw-I/O Helper classification entry point FAILED to load for failure-handling test",
-					"2. WHY: POST-RAWIO-2b / ERRORS-RAWIO-1 violation - classification function is not exported on the contracted client surface",
+					"2. WHY: POST-RAWIO-2b / ERRORS-RAWIO-1b violation - classification function is not exported on the contracted client surface",
 					`3. EXPECTED: typeof ${RAW_IO_CLASSIFY_FN_NAME} === 'function' (loadError === undefined)`,
 					`4. ACTUAL: typeof ${RAW_IO_CLASSIFY_FN_NAME} === ${JSON.stringify(typeof classifyFn)} (loadError=${JSON.stringify(loaded.loadError)})`,
 					"5. GUIDANCE: The contracted client surface must provide the classification entry point with failure and timeout propagation",
@@ -812,7 +980,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 				throw new Error(
 					[
 						"1. WHAT: Raw-I/O Helper crash propagation FAILED",
-						`2. WHY: ERRORS-RAWIO-1 violation - ${validationErr instanceof Error ? validationErr.message : String(validationErr)}`,
+						`2. WHY: ERRORS-RAWIO-1b violation - ${validationErr instanceof Error ? validationErr.message : String(validationErr)}`,
 						`3. EXPECTED: Error message containing operation 'classify' and target path ${JSON.stringify(dbPath)}`,
 						`4. ACTUAL: ${JSON.stringify(crashMessage)}`,
 						"5. GUIDANCE: When the helper cannot start or crashes, an error naming the operation and target path must be surfaced",
@@ -1688,7 +1856,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			const unlockedJournalProbe = peerPosixWriteLockBlocked(journalPath);
 			if (unlockedJournalProbe.blocked) {
 				throw new Error(
-					`Test setup self-check failed: expected unlocked journal file to report ACQUIRED (journal=${unlockedJournalProbe.detail})`,
+					`POST-RAWIO-3b setup: expected unlocked journal file to report ACQUIRED (journal=${unlockedJournalProbe.detail})`,
 				);
 			}
 
@@ -1700,7 +1868,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			const lockedJournalProbe = peerPosixWriteLockBlocked(journalPath);
 			if (!lockedDbProbe.blocked || !lockedJournalProbe.blocked) {
 				throw new Error(
-					`Test setup self-check failed: expected held locks to report LOCKED before tool execution (db=${lockedDbProbe.detail}, journal=${lockedJournalProbe.detail})`,
+					`POST-RAWIO-3 / POST-RAWIO-3b setup: expected held locks to report LOCKED before tool execution (db=${lockedDbProbe.detail}, journal=${lockedJournalProbe.detail})`,
 				);
 			}
 
@@ -1708,7 +1876,9 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			const dbReadResult = await readTool.execute("call-read-db", { path: dbPath });
 			const dbReadText = extractToolText(dbReadResult);
 			if (!dbReadText.includes("items")) {
-				throw new Error(`Expected ReadTool on ${dbPath} to list SQLite table 'items', got: ${dbReadText}`);
+				throw new Error(
+					`POST-RAWIO-3: expected ReadTool on ${dbPath} to list SQLite table 'items', got: ${dbReadText}`,
+				);
 			}
 
 			// T2 ordering proof: symlinkToDbTxt has a .txt extension, so only out-of-process
@@ -1732,14 +1902,14 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			const unlockedWalProbe = peerPosixWriteLockBlocked(walPath);
 			if (unlockedWalProbe.blocked) {
 				throw new Error(
-					`Test setup self-check failed: expected unlocked walPath to report ACQUIRED (wal=${unlockedWalProbe.detail})`,
+					`POST-RAWIO-3 setup: expected unlocked walPath to report ACQUIRED (wal=${unlockedWalProbe.detail})`,
 				);
 			}
 			walLockFd = acquireInProcessPosixWriteLock(walPath);
 			const lockedWalProbe = peerPosixWriteLockBlocked(walPath);
 			if (!lockedWalProbe.blocked) {
 				throw new Error(
-					`Test setup self-check failed: expected held walPath lock to report LOCKED (wal=${lockedWalProbe.detail})`,
+					`POST-RAWIO-3 setup: expected held walPath lock to report LOCKED (wal=${lockedWalProbe.detail})`,
 				);
 			}
 
@@ -1750,7 +1920,7 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			});
 			if (!extractToolText(journalReadResult).includes("initial-journal-line")) {
 				throw new Error(
-					`Expected ReadTool on ${symlinkToJournalTxt} to return sidecar text, got: ${extractToolText(journalReadResult)}`,
+					`POST-RAWIO-3: expected ReadTool on ${symlinkToJournalTxt} to return sidecar text, got: ${extractToolText(journalReadResult)}`,
 				);
 			}
 
