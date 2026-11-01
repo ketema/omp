@@ -465,6 +465,63 @@ def validate_non_sqlite_helper_log(
     return tuple(validated)
 
 
+def validate_sqlite_family_helper_log(
+    entries: object,
+    sqlite_family_path: object,
+    *,
+    expected_operations: tuple[HelperOperation, ...] = ("classify", "read", "write"),
+) -> tuple[RawIoHelperRequestEntry, ...]:
+    """POST-RAWIO-3 / POST-RAWIO-3b: helper log records classify/read/write."""
+    valid_path = validate_target_path(sqlite_family_path)
+    if not isinstance(entries, (list, tuple)):
+        raise RawIoClassificationMismatchError(
+            "POST-RAWIO-3",
+            f"entries must be a sequence; got {type(entries).__name__}",
+        )
+    validated: list[RawIoHelperRequestEntry] = []
+    seen_ops: set[HelperOperation] = set()
+    for item in entries:
+        if isinstance(item, RawIoHelperRequestEntry):
+            op: object = item.operation
+            path_val: object = item.target_path
+        elif isinstance(item, dict):
+            op = item.get("operation")
+            path_val = item.get("targetPath", item.get("target_path"))
+        else:
+            raise RawIoClassificationMismatchError(
+                "POST-RAWIO-3",
+                f"log entry must be a mapping or RawIoHelperRequestEntry; got {item!r}",
+            )
+        if not isinstance(op, str) or op not in VALID_HELPER_OPERATIONS:
+            raise RawIoClassificationMismatchError(
+                "POST-RAWIO-3",
+                f"operation must be one of {VALID_HELPER_OPERATIONS!r}; got {op!r}",
+            )
+        valid_entry_path = validate_target_path(path_val)
+        typed_op: HelperOperation = (
+            "classify" if op == "classify" else "read" if op == "read" else "write"
+        )
+        if valid_entry_path == valid_path:
+            seen_ops.add(typed_op)
+        validated.append(
+            RawIoHelperRequestEntry(
+                operation=typed_op,
+                target_path=valid_entry_path,
+            )
+        )
+    for req_op in expected_operations:
+        if req_op not in seen_ops:
+            clause_id = "POST-RAWIO-3b" if req_op == "write" else "POST-RAWIO-3"
+            raise RawIoClassificationMismatchError(
+                clause_id,
+                (
+                    f"expected '{req_op}' helper request for SQLite-Family "
+                    f"target '{valid_path}'; seen={sorted(seen_ops)!r}"
+                ),
+            )
+    return tuple(validated)
+
+
 # ==============================================================================
 # Artifact 5: Traceability Registry
 # ==============================================================================
@@ -518,9 +575,12 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "Promise<RawIoTargetClassification>, readRawIoBytes(targetPath, offset?, "
             "length?, options?) -> Promise<Uint8Array>, and writeRawIoBytes("
             "targetPath, data, options?) -> Promise<void>, where "
-            "options.helperSpawnCommand is an optional spawn-command override and "
+            "options.helperSpawnCommand is an optional spawn-command override, "
             "options.timeoutMs is an optional positive integer timeout defaulting "
-            "to RAW_IO_DEFAULT_TIMEOUT_MS (5000ms). "
+            "to RAW_IO_DEFAULT_TIMEOUT_MS (5000ms), and options.onRequest is "
+            "invoked exactly once for each request the Raw-I/O Helper receives across "
+            "every operation ('classify', 'read', 'write') with that request's "
+            "operation and targetPath. "
             "Source: REQ-L15586-05, REQ-L15586-08, REQ-L15586-31, SEQ-2, SEQ-5, IP-2."
         ),
     ),
@@ -535,35 +595,38 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
     "POST-RAWIO-3": Clause(
         verification="test",
         text=(
-            "When ReadTool receives a host file path, it classifies the target out "
-            "of process through the Raw-I/O Helper before any in-process file open "
-            "and accesses a SQLite-Family target only through the Raw-I/O Helper or "
-            "a SQLite connection while retaining every POSIX advisory lock omp holds "
-            "on that inode. Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, "
-            "INV-L15586-01, INV-L15586-04."
+            "When ReadTool receives a host file path, it forwards "
+            "session.rawIoHelperOptions on every helper request, classifies the "
+            "target out of process through the Raw-I/O Helper before any in-process "
+            "file open, and accesses a SQLite-Family target only through the Raw-I/O "
+            "Helper (recording a 'read' entry in onRequest) or a SQLite connection "
+            "while retaining every POSIX advisory lock omp holds on that inode. "
+            "Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, INV-L15586-01, "
+            "INV-L15586-04."
         ),
     ),
     "POST-RAWIO-3b": Clause(
         verification="test",
         text=(
-            "When WriteTool receives a host file path, it classifies the target out "
-            "of process through the Raw-I/O Helper before any in-process file open "
-            "and accesses a SQLite-Family target only through the Raw-I/O Helper or "
-            "a SQLite connection while retaining every POSIX advisory lock omp holds "
-            "on that inode. Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, "
-            "INV-L15586-01, INV-L15586-04."
+            "When WriteTool receives a host file path, it forwards "
+            "session.rawIoHelperOptions on every helper request, classifies the "
+            "target out of process through the Raw-I/O Helper before any in-process "
+            "file open, and accesses a SQLite-Family target only through the Raw-I/O "
+            "Helper (recording a 'write' entry in onRequest) or a SQLite connection "
+            "while retaining every POSIX advisory lock omp holds on that inode. "
+            "Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, INV-L15586-01, "
+            "INV-L15586-04."
         ),
     ),
     "POST-RAWIO-3c": Clause(
         verification="test",
         text=(
             "When a host file is classified as 'non_sqlite', ReadTool and WriteTool "
-            "(which honor an optional session.rawIoHelperOptions: RawIoClassifyOptions "
-            "override, including helperSpawnCommand and onRequest(entry: "
-            "RawIoHelperRequestEntry)) access that ordinary file on the in-process "
-            "fast path so the Raw-I/O Helper receives a 'classify' request and zero "
-            "'read' or 'write' byte requests for that path. "
-            "Source: REQ-L15586-31, SEQ-2, IP-2."
+            "forward session.rawIoHelperOptions and access that ordinary file on the "
+            "in-process fast path so the same onRequest hook that records 'read' and "
+            "'write' entries for SQLite-Family helper targets records a 'classify' "
+            "request and zero 'read' or 'write' byte requests for the 'non_sqlite' "
+            "path. Source: REQ-L15586-31, SEQ-2, IP-2."
         ),
     ),
     "ERRORS-RAWIO-1": Clause(

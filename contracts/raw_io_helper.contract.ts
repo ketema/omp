@@ -405,6 +405,50 @@ export function validateNonSqliteHelperLog(
 	return Object.freeze(validated);
 }
 
+export function validateSqliteFamilyHelperLog(
+	entries: unknown,
+	sqliteFamilyPath: unknown,
+	expectedOperations: ReadonlyArray<HelperOperation> = ["classify", "read", "write"],
+): ReadonlyArray<RawIoHelperRequestEntry> {
+	const validPath = validateTargetPath(sqliteFamilyPath);
+	if (!Array.isArray(entries)) {
+		throw new RawIoClassificationMismatchError("POST-RAWIO-3", `entries must be an array; got ${typeof entries}`);
+	}
+	const validated: RawIoHelperRequestEntry[] = [];
+	const seenOps = new Set<HelperOperation>();
+	for (const item of entries) {
+		if (typeof item !== "object" || item === null) {
+			throw new RawIoClassificationMismatchError(
+				"POST-RAWIO-3",
+				`log entry must be an object; got ${JSON.stringify(item)}`,
+			);
+		}
+		const op = Reflect.get(item, "operation");
+		const pathVal = Reflect.get(item, "targetPath") ?? Reflect.get(item, "target_path");
+		if (!isHelperOperation(op)) {
+			throw new RawIoClassificationMismatchError(
+				"POST-RAWIO-3",
+				`operation must be one of ${JSON.stringify(VALID_HELPER_OPERATIONS)}; got ${JSON.stringify(op)}`,
+			);
+		}
+		const validEntryPath = validateTargetPath(pathVal);
+		if (validEntryPath === validPath) {
+			seenOps.add(op);
+		}
+		validated.push(Object.freeze({ operation: op, targetPath: validEntryPath }));
+	}
+	for (const reqOp of expectedOperations) {
+		if (!seenOps.has(reqOp)) {
+			const clauseId = reqOp === "write" ? "POST-RAWIO-3b" : "POST-RAWIO-3";
+			throw new RawIoClassificationMismatchError(
+				clauseId,
+				`expected '${reqOp}' helper request for SQLite-Family target '${validPath}'; seen=${JSON.stringify([...seenOps].sort())}`,
+			);
+		}
+	}
+	return Object.freeze(validated);
+}
+
 // =============================================================================
 // Artifact 5: Traceability Registry
 // =============================================================================
@@ -428,7 +472,7 @@ export const RAW_IO_HELPER_CONTRACT = Object.freeze({
 	},
 	"POST-RAWIO-2b": {
 		verification: "test",
-		text: "The Raw-I/O client module (@oh-my-pi/pi-coding-agent/tools/raw-io-client) exports classifyRawIoTarget(targetPath, options?) -> Promise<RawIoTargetClassification>, readRawIoBytes(targetPath, offset?, length?, options?) -> Promise<Uint8Array>, and writeRawIoBytes(targetPath, data, options?) -> Promise<void>, where options.helperSpawnCommand is an optional spawn-command override and options.timeoutMs is an optional positive integer timeout defaulting to RAW_IO_DEFAULT_TIMEOUT_MS (5000ms). Source: REQ-L15586-05, REQ-L15586-08, REQ-L15586-31, SEQ-2, SEQ-5, IP-2.",
+		text: "The Raw-I/O client module (@oh-my-pi/pi-coding-agent/tools/raw-io-client) exports classifyRawIoTarget(targetPath, options?) -> Promise<RawIoTargetClassification>, readRawIoBytes(targetPath, offset?, length?, options?) -> Promise<Uint8Array>, and writeRawIoBytes(targetPath, data, options?) -> Promise<void>, where options.helperSpawnCommand is an optional spawn-command override, options.timeoutMs is an optional positive integer timeout defaulting to RAW_IO_DEFAULT_TIMEOUT_MS (5000ms), and options.onRequest is invoked exactly once for each request the Raw-I/O Helper receives across every operation ('classify', 'read', 'write') with that request's operation and targetPath. Source: REQ-L15586-05, REQ-L15586-08, REQ-L15586-31, SEQ-2, SEQ-5, IP-2.",
 	},
 	"POST-RAWIO-2c": {
 		verification: "test",
@@ -436,15 +480,15 @@ export const RAW_IO_HELPER_CONTRACT = Object.freeze({
 	},
 	"POST-RAWIO-3": {
 		verification: "test",
-		text: "When ReadTool receives a host file path, it classifies the target out of process through the Raw-I/O Helper before any in-process file open and accesses a SQLite-Family target only through the Raw-I/O Helper or a SQLite connection while retaining every POSIX advisory lock omp holds on that inode. Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, INV-L15586-01, INV-L15586-04.",
+		text: "When ReadTool receives a host file path, it forwards session.rawIoHelperOptions on every helper request, classifies the target out of process through the Raw-I/O Helper before any in-process file open, and accesses a SQLite-Family target only through the Raw-I/O Helper (recording a 'read' entry in onRequest) or a SQLite connection while retaining every POSIX advisory lock omp holds on that inode. Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, INV-L15586-01, INV-L15586-04.",
 	},
 	"POST-RAWIO-3b": {
 		verification: "test",
-		text: "When WriteTool receives a host file path, it classifies the target out of process through the Raw-I/O Helper before any in-process file open and accesses a SQLite-Family target only through the Raw-I/O Helper or a SQLite connection while retaining every POSIX advisory lock omp holds on that inode. Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, INV-L15586-01, INV-L15586-04.",
+		text: "When WriteTool receives a host file path, it forwards session.rawIoHelperOptions on every helper request, classifies the target out of process through the Raw-I/O Helper before any in-process file open, and accesses a SQLite-Family target only through the Raw-I/O Helper (recording a 'write' entry in onRequest) or a SQLite connection while retaining every POSIX advisory lock omp holds on that inode. Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, INV-L15586-01, INV-L15586-04.",
 	},
 	"POST-RAWIO-3c": {
 		verification: "test",
-		text: "When a host file is classified as 'non_sqlite', ReadTool and WriteTool (which honor an optional session.rawIoHelperOptions: RawIoClassifyOptions override, including helperSpawnCommand and onRequest(entry: RawIoHelperRequestEntry)) access that ordinary file on the in-process fast path so the Raw-I/O Helper receives a 'classify' request and zero 'read' or 'write' byte requests for that path. Source: REQ-L15586-31, SEQ-2, IP-2.",
+		text: "When a host file is classified as 'non_sqlite', ReadTool and WriteTool forward session.rawIoHelperOptions and access that ordinary file on the in-process fast path so the same onRequest hook that records 'read' and 'write' entries for SQLite-Family helper targets records a 'classify' request and zero 'read' or 'write' byte requests for the 'non_sqlite' path. Source: REQ-L15586-31, SEQ-2, IP-2.",
 	},
 	"ERRORS-RAWIO-1": {
 		verification: "test",
