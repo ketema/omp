@@ -20,6 +20,7 @@ import {
 	RAW_IO_KILL_WAIT_TIMEOUT_MS,
 	RAW_IO_PROGRESS_CHUNK_BYTES,
 	RAW_IO_READ_BYTES_FN_NAME,
+	RAW_IO_REGISTER_UNEXITED_WRITE_FN_NAME,
 	RAW_IO_RESOLVE_KILL_WAIT_FN_NAME,
 	RAW_IO_STOP_FN_NAME,
 	RAW_IO_WORKER_ARG,
@@ -271,6 +272,7 @@ describe("raw_io_helper.contract - contract validator verification (supporting, 
 					queuedErrors: [
 						"ERRORS-RAWIO-1c violation: Raw-I/O Helper failed during read for '/tmp/b.db': previous helper could not be stopped",
 					],
+					blockFutureWritesToTarget: "/tmp/a.db-journal",
 				},
 				{
 					operation: "write",
@@ -299,6 +301,7 @@ interface RawIoClientModule {
 	readonly writeRawIoBytes?: (targetPath: string, data: Uint8Array, options?: RawIoClassifyOptions) => Promise<void>;
 	readonly stopRawIoHelper?: () => Promise<void>;
 	readonly resolveTimeoutAfterKillWait?: (input: ResolveTimeoutAfterKillWaitInput) => unknown;
+	readonly registerUnexitedWriteTarget?: (targetPath: string, exitPromise: Promise<unknown>) => void;
 }
 
 interface RawIoClientLoadResult {
@@ -1407,6 +1410,82 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 					`T4.8 FAILED (G1 ReadTool classify timeout): ${validationErr instanceof Error ? validationErr.message : String(validationErr)} (err=${JSON.stringify(g1ErrMsg)}, text=${JSON.stringify(g1ReturnedText)}, requests=${g1Requests.length}, db1Lock=${db1LockAfter.detail})`,
 				);
 			}
+			// T4.9 (ERRORS-RAWIO-1d / G3 = a): while a timed-out write's helper has not exited,
+			// refuse new writes to the same target (including symlink alias and differently spelled
+			// path), allow reads on that target and writes to other files on a fresh helper, and
+			// lift the block when exitPromise settles.
+			await stopFn();
+			const registerUnexitedFn = loaded.module?.[RAW_IO_REGISTER_UNEXITED_WRITE_FN_NAME];
+			if (typeof registerUnexitedFn !== "function") {
+				failures.push(
+					`T4.9 FAILED (ERRORS-RAWIO-1d / POST-RAWIO-2b): ${RAW_IO_REGISTER_UNEXITED_WRITE_FN_NAME} is not exported as a function on ${RAW_IO_CLIENT_MODULE} (got ${typeof registerUnexitedFn})`,
+				);
+			} else {
+				const symlinkWriteAlias = path.join(tempDir, "t4-write-alias-symlink.db-journal");
+				const dotSpelledWritePath = `${tempDir}/./t4-write-target.db-journal`;
+				const otherWritePath = path.join(tempDir, "t4-other-target.db-journal");
+				await fs.symlink(writeTargetPath, symlinkWriteAlias);
+				const exitDeferred = Promise.withResolvers<void>();
+				try {
+					registerUnexitedFn(writeTargetPath, exitDeferred.promise);
+
+					let directRefusalErr: unknown;
+					try {
+						await writeBytesFn(writeTargetPath, new TextEncoder().encode("blocked-direct\n"));
+					} catch (err) {
+						directRefusalErr = err;
+					}
+					let symlinkRefusalErr: unknown;
+					try {
+						await writeBytesFn(symlinkWriteAlias, new TextEncoder().encode("blocked-symlink\n"));
+					} catch (err) {
+						symlinkRefusalErr = err;
+					}
+					let dotSpelledRefusalErr: unknown;
+					try {
+						await writeBytesFn(dotSpelledWritePath, new TextEncoder().encode("blocked-dot\n"));
+					} catch (err) {
+						dotSpelledRefusalErr = err;
+					}
+					const directRefusalMsg = directRefusalErr instanceof Error ? directRefusalErr.message : "";
+					const symlinkRefusalMsg = symlinkRefusalErr instanceof Error ? symlinkRefusalErr.message : "";
+					const dotSpelledRefusalMsg = dotSpelledRefusalErr instanceof Error ? dotSpelledRefusalErr.message : "";
+					validateHelperFailureError(directRefusalMsg, "write", writeTargetPath, {
+						unexitedWriteTargetRefusal: true,
+					});
+					validateHelperFailureError(symlinkRefusalMsg, "write", symlinkWriteAlias, {
+						unexitedWriteTargetRefusal: true,
+					});
+					validateHelperFailureError(dotSpelledRefusalMsg, "write", dotSpelledWritePath, {
+						unexitedWriteTargetRefusal: true,
+					});
+
+					// Read on the blocked target and write to another file both proceed on a fresh helper.
+					const readDuringBlock = await readBytesFn(writeTargetPath, 0, 8);
+					await writeBytesFn(otherWritePath, new TextEncoder().encode("other-file-ok\n"));
+					const otherFileText = await fs.readFile(otherWritePath, "utf8");
+					if (readDuringBlock.byteLength !== 8 || otherFileText !== "other-file-ok\n") {
+						failures.push(
+							`T4.9 FAILED: read or other-file write blocked during unexited write guard (readLen=${readDuringBlock.byteLength}, other=${JSON.stringify(otherFileText)})`,
+						);
+					}
+
+					// Settling exitPromise lifts the block so a subsequent write to writeTargetPath succeeds.
+					exitDeferred.resolve();
+					await exitDeferred.promise;
+					await writeBytesFn(writeTargetPath, new TextEncoder().encode("after-lift-ok\n"));
+					const afterLiftText = await fs.readFile(writeTargetPath, "utf8");
+					if (afterLiftText !== "after-lift-ok\n") {
+						failures.push(`T4.9 FAILED: write after exitPromise lift produced ${JSON.stringify(afterLiftText)}`);
+					}
+				} catch (validationErr) {
+					failures.push(
+						`T4.9 FAILED (ERRORS-RAWIO-1d unexited write guard & lift): ${validationErr instanceof Error ? validationErr.message : String(validationErr)}`,
+					);
+				} finally {
+					exitDeferred.resolve();
+				}
+			}
 
 			if (!db1LockAfter.blocked || !db2LockAfter.blocked) {
 				failures.push(`T4 lock retention FAILED: db1=${db1LockAfter.detail}, db2=${db2LockAfter.detail}`);
@@ -1414,11 +1493,11 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			if (failures.length > 0) {
 				throw new Error(
 					[
-						"1. WHAT: Raw-I/O Helper T4 timeout, crash-retry, and kill-wait semantics FAILED",
-						"2. WHY: POST-RAWIO-2b / ERRORS-RAWIO-1 / ERRORS-RAWIO-1b / ERRORS-RAWIO-1c / FORBIDDEN-RAWIO-1b violation",
-						"3. EXPECTED: All T4 sub-scenarios (T4.1-T4.4, T4.5a/b/c queue retry on fresh helper & single retry bound, T4.6 crash retry on fresh helper, T4.7 resolveTimeoutAfterKillWait helperExited=false/true) pass",
+						"1. WHAT: Raw-I/O Helper T4 timeout, crash-retry, kill-wait, and unexited-write guard semantics FAILED",
+						"2. WHY: POST-RAWIO-2b / ERRORS-RAWIO-1 / ERRORS-RAWIO-1b / ERRORS-RAWIO-1c / ERRORS-RAWIO-1d / FORBIDDEN-RAWIO-1b violation",
+						"3. EXPECTED: All T4 sub-scenarios (T4.1-T4.9) pass",
 						`4. ACTUAL:\n${failures.map(f => `  - ${f}`).join("\n")}`,
-						"5. GUIDANCE: Retry queued requests once on a fresh helper after timeout or crash when the failed helper exited, and export resolveTimeoutAfterKillWait enforcing ERRORS-RAWIO-1b and ERRORS-RAWIO-1c",
+						"5. GUIDANCE: Enforce timeout, crash-retry, resolveTimeoutAfterKillWait, and registerUnexitedWriteTarget write refusal and lift",
 					].join("\n"),
 				);
 			}
