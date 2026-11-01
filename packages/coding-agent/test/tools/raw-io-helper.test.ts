@@ -1514,6 +1514,129 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 		}
 	}, 20000);
 
+	it("retains a held db-shm POSIX lock during ReadTool :conflicts (audit #1/#13)", async () => {
+		/*
+		 * CONTRACT AUTHORITY: contracts/raw_io_helper.contract.ts (RAW_IO_HELPER_CONTRACT).
+		 * Enforces: POST-RAWIO-3, FORBIDDEN-RAWIO-3; REGRESSION: audit #1/#13.
+		 * Category: integration, negative-space; Risk tier: HIGH (SQLite lock loss).
+		 * C1 VALID: existing clauses forbid raw parent descriptors on SQLite-Family targets.
+		 * C2 VALUABLE: a real parent open/close releases the lock observed by the peer.
+		 * C3 NON-DUPLICATIVE: covers :conflicts, not the existing ordinary read path.
+		 * C4 NOT FUTURE-EDIT: the current public conflict scan already violates the clauses.
+		 * No test doubles; the lock acquisition and peer probe use the real kernel.
+		 */
+		const target = path.join(tempDir, "conflict-scan.db-shm");
+		await fs.writeFile(target, "sidecar text without merge conflicts\n", "utf8");
+		const readTool = new ReadTool(createTestToolSession(tempDir));
+		const unlocked = peerPosixWriteLockBlocked(target);
+		expect(
+			unlocked.blocked,
+			[
+				"1. WHAT: ReadTool :conflicts lock-probe setup FAILED",
+				"2. WHY: POST-RAWIO-3 / FORBIDDEN-RAWIO-3 observation requires an unlocked control",
+				"3. EXPECTED: peer acquires the lock before the parent locks the target",
+				`4. ACTUAL: ${unlocked.detail}`,
+				"5. GUIDANCE: Establish an independently observable POSIX lock before exercising the tool",
+			].join("\n"),
+		).toBe(false);
+		const fd = acquireInProcessPosixWriteLock(target);
+		try {
+			const before = peerPosixWriteLockBlocked(target);
+			expect(
+				before.blocked,
+				[
+					"1. WHAT: ReadTool :conflicts held-lock setup FAILED",
+					"2. WHY: POST-RAWIO-3 / FORBIDDEN-RAWIO-3 require a genuinely held lock",
+					"3. EXPECTED: the peer is blocked before the tool call",
+					`4. ACTUAL: ${before.detail}`,
+					"5. GUIDANCE: Verify the parent holds a conflicting lock before observing retention",
+				].join("\n"),
+			).toBe(true);
+			const result = await readTool.execute("audit-read-conflicts", { path: `${target}:conflicts` });
+			// Probe BEFORE any parent read/close of the target can invalidate the observation.
+			const after = peerPosixWriteLockBlocked(target);
+			expect(
+				{ text: extractToolText(result), blocked: after.blocked },
+				[
+					"1. WHAT: ReadTool :conflicts held db-shm lock retention FAILED",
+					"2. WHY: POST-RAWIO-3 / FORBIDDEN-RAWIO-3 apply to auxiliary conflict scanning",
+					"3. EXPECTED: conflict reporting completes and the peer remains blocked",
+					`4. ACTUAL: text=${JSON.stringify(extractToolText(result))}; before=${before.detail}; after=${after.detail}`,
+					"5. GUIDANCE: Preserve the held SQLite-Family lock throughout conflict reporting",
+				].join("\n"),
+			).toEqual({ text: "No unresolved git merge conflicts in conflict-scan.db-shm.", blocked: true });
+		} finally {
+			fsSync.closeSync(fd);
+		}
+	});
+
+	it("retains a held db-shm POSIX lock when WriteTool refuses an incomplete projection (audit #2/#13)", async () => {
+		/*
+		 * CONTRACT AUTHORITY: contracts/raw_io_helper.contract.ts (RAW_IO_HELPER_CONTRACT).
+		 * Enforces: POST-RAWIO-3b, FORBIDDEN-RAWIO-3; REGRESSION: audit #2/#13.
+		 * Category: integration, refusal path; Risk tier: HIGH (SQLite lock loss).
+		 * C1 VALID: existing clauses cover all SQLite-Family byte access, even refused writes.
+		 * C2 VALUABLE: the current refusal raw-reads the held inode and releases its lock.
+		 * C3 NON-DUPLICATIVE: refusal is distinct from the existing successful byte write.
+		 * C4 NOT FUTURE-EDIT: exercises the existing incomplete-projection guard.
+		 * No test doubles; real WriteTool, POSIX lock and independent kernel probe.
+		 */
+		const target = path.join(tempDir, "projection.db-shm");
+		const original = Array.from({ length: 1000 }, (_, i) => `sidecar line ${i}\n`).join("");
+		await fs.writeFile(target, original, "utf8");
+		// A real public ReadTool projection, obtained BEFORE acquiring the lock.
+		const session = createTestToolSession(tempDir);
+		const readResult = await new ReadTool(session).execute("audit-projection-source", { path: `${target}:1-8` });
+		const projection = `${extractToolText(readResult)}\n\n[Showing lines 1-8 of 1000. Use :9 to continue]`;
+		const writeTool = new WriteTool(session);
+		const unlocked = peerPosixWriteLockBlocked(target);
+		expect(
+			unlocked.blocked,
+			[
+				"1. WHAT: WriteTool projection-refusal lock-probe setup FAILED",
+				"2. WHY: POST-RAWIO-3b / FORBIDDEN-RAWIO-3 observation requires an unlocked control",
+				"3. EXPECTED: peer acquires the lock before the parent locks the target",
+				`4. ACTUAL: ${unlocked.detail}`,
+				"5. GUIDANCE: Establish an independently observable POSIX lock before exercising the tool",
+			].join("\n"),
+		).toBe(false);
+		const fd = acquireInProcessPosixWriteLock(target);
+		try {
+			const before = peerPosixWriteLockBlocked(target);
+			expect(
+				before.blocked,
+				[
+					"1. WHAT: WriteTool projection-refusal held-lock setup FAILED",
+					"2. WHY: POST-RAWIO-3b / FORBIDDEN-RAWIO-3 require a genuinely held lock",
+					"3. EXPECTED: the peer is blocked before the tool call",
+					`4. ACTUAL: ${before.detail}`,
+					"5. GUIDANCE: Verify the parent holds a conflicting lock before observing retention",
+				].join("\n"),
+			).toBe(true);
+			let refusal: unknown;
+			try {
+				await writeTool.execute("audit-refuse-projection", { path: target, content: projection });
+			} catch (error: unknown) {
+				refusal = error;
+			}
+			// Collect BOTH refusal and retention before asserting; no first-assertion blindness.
+			const after = peerPosixWriteLockBlocked(target);
+			const message = refusal instanceof Error ? refusal.message : String(refusal);
+			expect(
+				{ refusedProjection: message.includes("with an incomplete read projection"), blocked: after.blocked },
+				[
+					"1. WHAT: WriteTool incomplete-projection refusal held db-shm lock retention FAILED",
+					"2. WHY: POST-RAWIO-3b / FORBIDDEN-RAWIO-3 also govern byte access before a refused write",
+					"3. EXPECTED: incomplete projection is refused and the peer remains blocked",
+					`4. ACTUAL: refusal=${JSON.stringify(message)}; before=${before.detail}; after=${after.detail}`,
+					"5. GUIDANCE: Preserve the held SQLite-Family lock even when the write is refused",
+				].join("\n"),
+			).toEqual({ refusedProjection: true, blocked: true });
+		} finally {
+			fsSync.closeSync(fd);
+		}
+	});
+
 	it("routes ReadTool and WriteTool SQLite-Family targets through the Raw-I/O Helper or a SQLite connection while retaining held POSIX locks and keeping non_sqlite files on the in-process fast path", async () => {
 		/*
 		 * CONTRACT TRACEABILITY:
