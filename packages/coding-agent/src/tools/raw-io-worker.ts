@@ -15,6 +15,7 @@ import type { Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import {
 	type ClassificationKind,
+	RAW_IO_PROGRESS_CHUNK_BYTES,
 	type RawIoTargetClassification,
 	type RawIoTransport,
 	type RawIoWorkerInbound,
@@ -121,39 +122,83 @@ async function classifyTargetInHelper(targetPath: string): Promise<RawIoTargetCl
 	};
 }
 
-async function readBytesInHelper(targetPath: string, offset?: number, length?: number): Promise<Uint8Array> {
+async function readBytesInHelper(
+	transport: RawIoTransport,
+	requestId: string,
+	targetPath: string,
+	offset?: number,
+	length?: number,
+): Promise<Uint8Array> {
 	const resolvedPath = await resolveRealPathOrTarget(targetPath);
-	if (offset === undefined && length === undefined) {
-		const buf = await fs.readFile(resolvedPath);
-		return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-	}
-	const readOffset = offset ?? 0;
 	const handle = await fs.open(resolvedPath, "r");
 	try {
-		if (length !== undefined) {
-			const buf = new Uint8Array(length);
-			const { bytesRead } = await handle.read(buf, 0, length, readOffset);
-			return buf.subarray(0, bytesRead);
+		const readOffset = offset ?? 0;
+		let totalToRead = length;
+		if (totalToRead === undefined) {
+			const stat = await handle.stat();
+			totalToRead = Math.max(0, stat.size - readOffset);
 		}
-		const stat = await handle.stat();
-		const remaining = Math.max(0, stat.size - readOffset);
-		const buf = new Uint8Array(remaining);
-		const { bytesRead } = await handle.read(buf, 0, remaining, readOffset);
-		return buf.subarray(0, bytesRead);
+		const output = new Uint8Array(totalToRead);
+		let bytesProcessed = 0;
+		while (bytesProcessed < totalToRead) {
+			const chunkLen = Math.min(RAW_IO_PROGRESS_CHUNK_BYTES, totalToRead - bytesProcessed);
+			const { bytesRead } = await handle.read(output, bytesProcessed, chunkLen, readOffset + bytesProcessed);
+			if (bytesRead === 0) break;
+			bytesProcessed += bytesRead;
+			transport.send({
+				type: "progress",
+				id: requestId,
+				bytesProcessed,
+			});
+		}
+		return output.subarray(0, bytesProcessed);
 	} finally {
 		await handle.close();
 	}
 }
 
-async function writeBytesInHelper(targetPath: string, data: Uint8Array): Promise<void> {
+async function writeBytesInHelper(
+	transport: RawIoTransport,
+	requestId: string,
+	targetPath: string,
+	data: Uint8Array,
+): Promise<void> {
 	const resolvedPath = await resolveRealPathOrTarget(targetPath);
-	await fs.writeFile(resolvedPath, data);
+	const handle = await fs.open(resolvedPath, "w");
+	try {
+		let bytesProcessed = 0;
+		const totalToWrite = data.byteLength;
+		if (totalToWrite === 0) {
+			transport.send({
+				type: "progress",
+				id: requestId,
+				bytesProcessed: 0,
+			});
+			return;
+		}
+		while (bytesProcessed < totalToWrite) {
+			const chunkLen = Math.min(RAW_IO_PROGRESS_CHUNK_BYTES, totalToWrite - bytesProcessed);
+			const { bytesWritten } = await handle.write(data, bytesProcessed, chunkLen, bytesProcessed);
+			if (bytesWritten === 0) {
+				throw new Error("short write (0 bytes written)");
+			}
+			bytesProcessed += bytesWritten;
+			transport.send({
+				type: "progress",
+				id: requestId,
+				bytesProcessed,
+			});
+		}
+	} finally {
+		await handle.close();
+	}
 }
 
 async function handleClassify(
 	transport: RawIoTransport,
 	message: Extract<RawIoWorkerInbound, { readonly type: "classify" }>,
 ): Promise<void> {
+	transport.send({ type: "started", id: message.id });
 	try {
 		const classification = await classifyTargetInHelper(message.targetPath);
 		transport.send({
@@ -176,8 +221,9 @@ async function handleRead(
 	transport: RawIoTransport,
 	message: Extract<RawIoWorkerInbound, { readonly type: "read" }>,
 ): Promise<void> {
+	transport.send({ type: "started", id: message.id });
 	try {
-		const bytes = await readBytesInHelper(message.targetPath, message.offset, message.length);
+		const bytes = await readBytesInHelper(transport, message.id, message.targetPath, message.offset, message.length);
 		transport.send({
 			type: "read_ok",
 			id: message.id,
@@ -198,8 +244,9 @@ async function handleWrite(
 	transport: RawIoTransport,
 	message: Extract<RawIoWorkerInbound, { readonly type: "write" }>,
 ): Promise<void> {
+	transport.send({ type: "started", id: message.id });
 	try {
-		await writeBytesInHelper(message.targetPath, message.data);
+		await writeBytesInHelper(transport, message.id, message.targetPath, message.data);
 		transport.send({
 			type: "write_ok",
 			id: message.id,

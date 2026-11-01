@@ -24,6 +24,9 @@ export const SQLITE_FAMILY_CLASSIFICATIONS = [
 	"special",
 ] as const;
 
+export const RAW_IO_DEFAULT_TIMEOUT_MS = 5000;
+export const RAW_IO_PROGRESS_CHUNK_BYTES = 65536;
+
 export type ClassificationKind = (typeof SQLITE_FAMILY_CLASSIFICATIONS)[number];
 
 export type RawIoEntryKind = "file" | "missing" | "directory" | "special";
@@ -64,6 +67,12 @@ export type RawIoWorkerInbound =
 
 export type RawIoWorkerOutbound =
 	| { readonly type: "pong"; readonly id: string }
+	| { readonly type: "started"; readonly id: string }
+	| {
+			readonly type: "progress";
+			readonly id: string;
+			readonly bytesProcessed: number;
+	  }
 	| {
 			readonly type: "classified";
 			readonly id: string;
