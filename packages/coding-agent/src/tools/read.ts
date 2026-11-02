@@ -2106,6 +2106,28 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			media.path = absolutePath;
 		}
 
+		// POST-RAWIO-3 (bounded reads): never buffer an oversized SQLite-Family target whole. Sniff a bounded
+		// helper prefix; binary targets get the ordinary binary notice, anything else is refused. The file is
+		// never opened in-process, so omp's locks on it survive.
+		if (rawIoClassification.isSqliteFamily && fileSize > SNAPSHOT_MAX_BYTES) {
+			const sizedDisplayPath = located?.url ?? formatPathRelativeToCwd(renderAbsolutePath, this.session.cwd);
+			const prefix = await readRawIoBytes(absolutePath, 0, BINARY_SNIFF_BYTES, this.session.rawIoHelperOptions);
+			if (!isRawSelector(parsed) && isProbablyBinaryHeader(prefix)) {
+				return toolResult<ReadToolDetails>({ resolvedPath: renderAbsolutePath, suffixResolution })
+					.text(
+						prependSuffixResolutionNotice(
+							`[Cannot read binary file '${sizedDisplayPath}' (${formatBytes(fileSize)}); not valid UTF-8 text, and SQLite-family files over 4 MiB cannot be read verbatim without releasing omp's SQLite locks.]`,
+							suffixResolution,
+						),
+					)
+					.sourcePath(renderAbsolutePath)
+					.done();
+			}
+			throw new ToolError(
+				`Cannot read '${sizedDisplayPath}' (${formatBytes(fileSize)}): SQLite-family files over 4 MiB cannot be read whole without releasing omp's SQLite locks. Query the database instead, or read a smaller file.`,
+			);
+		}
+
 		const ext = path.extname(renderAbsolutePath).toLowerCase();
 		// Buffer once for every consumer below: the image sniff, the binary sniff,
 		// the structural summary, the rendered window, bracket context, and the
