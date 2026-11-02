@@ -22,6 +22,7 @@ import { parseReadUrlTarget } from "../tools/fetch";
 import { wrapToolWithMetaNotice } from "../tools/output-meta";
 import { ReadTool, splitImageQuestionTarget } from "../tools/read";
 import { renderError } from "../tools/tool-errors";
+import { stopRawIoHelper } from "../tools/raw-io-client";
 import { parseXUrl } from "../web/x";
 
 import { cfgDisabledExtensions, cfgExtensions, cfgSkills } from "../extensibility/settings";
@@ -136,6 +137,9 @@ export async function runReadCommand(cmd: ReadCommandArgs): Promise<void> {
 		// Saves unsaved IDA changes and drops the host sockets that would keep the event loop alive.
 		await releaseIdaDatabases();
 		await closeDaemonClients();
+		// SEQ-RAWIO-2: a one-shot CLI stops the Raw-I/O Helper before returning so the process can exit
+		// even when the helper child is held referenced (as under PI_TEST_RUNTIME=1).
+		await stopRawIoHelper();
 	}
 
 	if (failed) process.exit(1);

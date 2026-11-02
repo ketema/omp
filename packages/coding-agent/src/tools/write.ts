@@ -71,7 +71,7 @@ import {
 import { decodeUtf8Text } from "./read-format";
 import { routeReadThroughBridge } from "./read-summary";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
-import { classifyRawIoTarget, readRawIoBytes, writeRawIoBytes } from "./raw-io-client";
+import { assertWriteTargetNotBlocked, classifyRawIoTarget, readRawIoBytes, writeRawIoBytes } from "./raw-io-client";
 import {
 	deleteRowByKey,
 	deleteRowByRowId,
@@ -1033,6 +1033,8 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					signal,
 				});
 
+				// ERRORS-RAWIO-1d: refuse before any route touches a target with an unexited timed-out helper write.
+				assertWriteTargetNotBlocked(resolvedArchivePath.absolutePath);
 				emitWriteProgress(
 					onUpdate,
 					cleanBytes,
@@ -1062,6 +1064,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 			const resolvedSqlitePath = await this.#resolveSqliteWritePath(path, signal);
 			if (resolvedSqlitePath) {
+				assertWriteTargetNotBlocked(resolvedSqlitePath.absolutePath);
 				await enforcePlanModeWrite(this.session, resolvedSqlitePath.sqlitePath, { op: "update", signal });
 
 				emitWriteProgress(onUpdate, cleanBytes, path, resolvedSqlitePath.absolutePath);
@@ -1081,6 +1084,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			await assertNotReadSelectorMisfire(path, cleanContent, this.session.cwd);
 			await enforcePlanModeWrite(this.session, path, { op: "create", signal });
 			const absolutePath = await resolvePlanPath(this.session, path, signal);
+			assertWriteTargetNotBlocked(absolutePath);
 			// A located URL write keeps its URL identity in progress, results, and the hashline header.
 			const displayPath = target ? path : formatPathRelativeToCwd(absolutePath, this.session.cwd);
 			const batchRequest = getLspBatchRequest(context?.toolCall);

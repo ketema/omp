@@ -669,12 +669,12 @@ export async function readRawIoBytes(
 	);
 }
 
-export async function writeRawIoBytes(
-	targetPath: string,
-	data: Uint8Array,
-	options?: RawIoClassifyOptions,
-): Promise<void> {
-	assertValidTargetPath(targetPath);
+/**
+ * ERRORS-RAWIO-1d: refuse a new write to a target whose previous timed-out helper has not exited.
+ * Called by every write route, independent of how the target currently classifies. Cheap when no
+ * helper is outstanding, which also keeps it inert on platforms that never register one.
+ */
+export function assertWriteTargetNotBlocked(targetPath: string): void {
 	if (unexitedWriteTargets.size > 0 && unexitedWriteTargets.has(resolveTargetKey(targetPath))) {
 		throw new RawIoHelperOperationError(
 			"ERRORS-RAWIO-1d",
@@ -683,6 +683,15 @@ export async function writeRawIoBytes(
 			"previous helper is still alive; fix the mount or restart omp",
 		);
 	}
+}
+
+export async function writeRawIoBytes(
+	targetPath: string,
+	data: Uint8Array,
+	options?: RawIoClassifyOptions,
+): Promise<void> {
+	assertValidTargetPath(targetPath);
+	assertWriteTargetNotBlocked(targetPath);
 
 	await enqueueHelperRequest<true>(
 		"write",
