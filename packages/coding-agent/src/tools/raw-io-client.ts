@@ -3,7 +3,8 @@
  *
  * Enforces PRE-RAWIO-1, POST-RAWIO-1, POST-RAWIO-1b, POST-RAWIO-2,
  * POST-RAWIO-2b, POST-RAWIO-2c, ERRORS-RAWIO-1, ERRORS-RAWIO-1b,
- * ERRORS-RAWIO-1c, FORBIDDEN-RAWIO-1, FORBIDDEN-RAWIO-1b, FORBIDDEN-RAWIO-2,
+ * ERRORS-RAWIO-1c, ERRORS-RAWIO-1d, ERRORS-RAWIO-1e,
+ * FORBIDDEN-RAWIO-1, FORBIDDEN-RAWIO-1b, FORBIDDEN-RAWIO-2,
  * and FORBIDDEN-RAWIO-2b.
  *
  * Contract-Implementation Independence (CL11-F):
@@ -68,6 +69,18 @@ export interface RawIoKillWaitResolution {
 	readonly retryQueueOnFreshHelper: boolean;
 	readonly queuedErrors: ReadonlyArray<string>;
 	readonly blockFutureWritesToTarget?: string | undefined;
+}
+
+export interface RawIoTimeoutRequest extends RawIoHelperRequestEntry {
+	readonly rejectTask: (error: Error) => void;
+}
+
+export interface RawIoTimeoutSettlementInput {
+	readonly activeRequest: RawIoTimeoutRequest;
+	readonly queuedRequests: ReadonlyArray<RawIoTimeoutRequest>;
+	readonly timeoutMs: number;
+	readonly helperExited: boolean;
+	readonly exitPromise: Promise<unknown>;
 }
 
 export class RawIoHelperClientError extends Error {
@@ -153,6 +166,48 @@ export function resolveTimeoutAfterKillWait(input: ResolveTimeoutAfterKillWaitIn
 		queuedErrors: Object.freeze(queuedErrors),
 		blockFutureWritesToTarget: input.operation === "write" ? input.targetPath : undefined,
 	});
+}
+
+export function settleRawIoTimeoutAfterKillWait(input: RawIoTimeoutSettlementInput): RawIoKillWaitResolution {
+	const resolution = resolveTimeoutAfterKillWait({
+		operation: input.activeRequest.operation,
+		targetPath: input.activeRequest.targetPath,
+		timeoutMs: input.timeoutMs,
+		helperExited: input.helperExited,
+		queuedRequests: input.queuedRequests,
+	});
+	// ERRORS-RAWIO-1c: registration failure cannot take ownership away from
+	// the native request rejectors or leave the timeout continuation pending.
+	let registrationError: unknown;
+	if (resolution.blockFutureWritesToTarget !== undefined) {
+		try {
+			registerUnexitedWriteTarget(resolution.blockFutureWritesToTarget, input.exitPromise);
+		} catch (error: unknown) {
+			registrationError = error;
+		}
+	}
+	if (!resolution.retryQueueOnFreshHelper) {
+		for (const queued of input.queuedRequests) {
+			queued.rejectTask(
+				new RawIoHelperOperationError(
+					"ERRORS-RAWIO-1c",
+					queued.operation,
+					queued.targetPath,
+					"previous helper could not be stopped",
+					registrationError === undefined ? undefined : { cause: registrationError },
+				),
+			);
+		}
+	}
+	const activeError = RawIoHelperOperationError.fromFormattedMessage(
+		input.helperExited ? "ERRORS-RAWIO-1b" : "ERRORS-RAWIO-1c",
+		input.activeRequest.operation,
+		input.activeRequest.targetPath,
+		resolution.activeError,
+	);
+	if (registrationError !== undefined) activeError.cause = registrationError;
+	input.activeRequest.rejectTask(activeError);
+	return resolution;
 }
 
 interface RawIoWorkerHandle extends WorkerHandle<RawIoWorkerInbound, RawIoWorkerOutbound> {
@@ -415,51 +470,29 @@ async function executeActiveTask(task: QueuedHelperTask): Promise<void> {
 			}
 			void handle.terminateAndWait(RAW_IO_KILL_WAIT_TIMEOUT_MS).then(helperExited => {
 				const matchingIndices: number[] = [];
-				const matchingEntries: RawIoHelperRequestEntry[] = [];
+				const matchingRequests: RawIoTimeoutRequest[] = [];
 				for (let i = 0; i < requestQueue.length; i++) {
 					const q = requestQueue[i];
 					if (q && q.cmdKey === task.cmdKey) {
 						matchingIndices.push(i);
-						matchingEntries.push({ operation: q.operation, targetPath: q.targetPath });
+						matchingRequests.push(q);
 					}
 				}
-				const resolution = resolveTimeoutAfterKillWait({
-					operation: task.operation,
-					targetPath: task.targetPath,
-					timeoutMs: task.timeoutMs,
-					helperExited,
-					queuedRequests: matchingEntries,
-				});
-				if (resolution.blockFutureWritesToTarget !== undefined) {
-					registerUnexitedWriteTarget(resolution.blockFutureWritesToTarget, handle.exited);
-				}
-				const activeClauseId = helperExited ? "ERRORS-RAWIO-1b" : "ERRORS-RAWIO-1c";
-				if (!resolution.retryQueueOnFreshHelper && matchingIndices.length > 0) {
+				if (!helperExited) {
+					// Remove backwards to retain all unaffected queue positions;
+					// the settlement owner rejects the captured requests forwards.
 					for (let k = matchingIndices.length - 1; k >= 0; k--) {
 						const idx = matchingIndices[k];
-						if (idx === undefined) continue;
-						const [removed] = requestQueue.splice(idx, 1);
-						const errMsg = resolution.queuedErrors[k];
-						if (removed && errMsg !== undefined) {
-							removed.rejectTask(
-								RawIoHelperOperationError.fromFormattedMessage(
-									"ERRORS-RAWIO-1c",
-									removed.operation,
-									removed.targetPath,
-									errMsg,
-								),
-							);
-						}
+						if (idx !== undefined) requestQueue.splice(idx, 1);
 					}
 				}
-				task.rejectTask(
-					RawIoHelperOperationError.fromFormattedMessage(
-						activeClauseId,
-						task.operation,
-						task.targetPath,
-						resolution.activeError,
-					),
-				);
+				settleRawIoTimeoutAfterKillWait({
+					activeRequest: task,
+					queuedRequests: matchingRequests,
+					timeoutMs: task.timeoutMs,
+					helperExited,
+					exitPromise: handle.exited,
+				});
 				resolve();
 			});
 		}, task.timeoutMs);
@@ -603,7 +636,7 @@ export async function classifyRawIoTarget(
 		message => (message.type === "classified" ? message.classification : undefined),
 	);
 	const headerBytes = raw.headerBytes;
-	// POST-RAWIO-1: validate the actual evidence without synthesizing bytes.
+	// POST-RAWIO-1 / ERRORS-RAWIO-1e: validate actual evidence, never synthesize bytes.
 	// Reject from the public async operation, never from an IPC event callback.
 	if (
 		raw.kind === "sqlite_db" &&
@@ -612,7 +645,7 @@ export async function classifyRawIoTarget(
 			!SQLITE_HEADER_MAGIC.every((byte, index) => headerBytes[index] === byte))
 	) {
 		throw new RawIoHelperOperationError(
-			"POST-RAWIO-1",
+			"ERRORS-RAWIO-1e",
 			"classify",
 			targetPath,
 			"sqlite_db classification did not include the actual SQLite header bytes",
