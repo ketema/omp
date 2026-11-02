@@ -167,6 +167,7 @@ import { splitAddressableFileLines } from "@oh-my-pi/pi-tui/tools/hashline-forma
 import { readBinary, resolveBinaryViewPath } from "./read-binary";
 import { readSqlite, resolveSqliteReadPath } from "./read-sqlite";
 import { classifyRawIoTarget, readRawIoBytes } from "./raw-io-client";
+import { type HelperLinePage, PageScanLimitError, pageLinesThroughHelper } from "./raw-io-lines";
 import { readJson, resolveJsonReadPath, splitJsonQueryTarget } from "./read-json";
 import {
 	getReadTextFileBridge,
@@ -2106,9 +2107,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			media.path = absolutePath;
 		}
 
-		// POST-RAWIO-3 (bounded reads): never buffer an oversized SQLite-Family target whole. Sniff a bounded
-		// helper prefix; binary targets get the ordinary binary notice, anything else is refused. The file is
-		// never opened in-process, so omp's locks on it survive.
+		// POST-RAWIO-3 (bounded reads): never buffer an oversized SQLite-Family target whole. Binary targets get
+		// the ordinary binary notice from a bounded helper prefix; text targets are paged through bounded helper
+		// range reads (default first page or one line range). The file is never opened in-process.
 		if (rawIoClassification.isSqliteFamily && fileSize > SNAPSHOT_MAX_BYTES) {
 			const sizedDisplayPath = located?.url ?? formatPathRelativeToCwd(renderAbsolutePath, this.session.cwd);
 			const prefix = await readRawIoBytes(absolutePath, 0, BINARY_SNIFF_BYTES, this.session.rawIoHelperOptions);
@@ -2116,16 +2117,63 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				return toolResult<ReadToolDetails>({ resolvedPath: renderAbsolutePath, suffixResolution })
 					.text(
 						prependSuffixResolutionNotice(
-							`[Cannot read binary file '${sizedDisplayPath}' (${formatBytes(fileSize)}); not valid UTF-8 text, and SQLite-family files over 4 MiB cannot be read verbatim without releasing omp's SQLite locks.]`,
+							`[Cannot read binary file '${sizedDisplayPath}' (${formatBytes(fileSize)}); not valid UTF-8 text. SQLite-family files over 4 MiB are not buffered whole.]`,
 							suffixResolution,
 						),
 					)
 					.sourcePath(renderAbsolutePath)
 					.done();
 			}
-			throw new ToolError(
-				`Cannot read '${sizedDisplayPath}' (${formatBytes(fileSize)}): SQLite-family files over 4 MiB cannot be read whole without releasing omp's SQLite locks. Query the database instead, or read a smaller file.`,
+			if (parsed.kind === "tail" || (parsed.kind === "lines" && parsed.ranges.length > 1)) {
+				throw new ToolError(
+					`Cannot read '${sizedDisplayPath}' (${formatBytes(fileSize)}): SQLite-family files over 4 MiB support only the default first page or a single line range, not multi-range or tail selectors.`,
+				);
+			}
+			const { offset: pageOffset, limit: pageLimit } = selToOffsetLimit(parsed);
+			const pageStart0 = pageOffset ? Math.max(0, pageOffset - 1) : 0;
+			let page: HelperLinePage;
+			try {
+				page = await pageLinesThroughHelper(
+					(from, length) => readRawIoBytes(absolutePath, from, length, this.session.rawIoHelperOptions),
+					fileSize,
+					{
+						startLine0: pageStart0,
+						maxLines: Math.min(pageLimit ?? this.#defaultLimit, DEFAULT_MAX_LINES),
+						maxBytes: DEFAULT_MAX_BYTES,
+					},
+				);
+			} catch (error) {
+				if (error instanceof PageScanLimitError) {
+					throw new ToolError(
+						`Cannot read '${sizedDisplayPath}' (${formatBytes(fileSize)}) at line ${pageStart0 + 1}: ${error.message}. SQLite-family files over 4 MiB are paged sequentially.`,
+					);
+				}
+				throw error;
+			}
+			if (page.lines.length === 0) {
+				return toolResult<ReadToolDetails>({ resolvedPath: renderAbsolutePath, suffixResolution })
+					.text(
+						prependSuffixResolutionNotice(
+							`Line ${pageStart0 + 1} is beyond end of file. Use :1 to read from the start.`,
+							suffixResolution,
+						),
+					)
+					.sourcePath(renderAbsolutePath)
+					.done();
+			}
+			const rawPage = isRawSelector(parsed);
+			const pageMode = resolveFileDisplayMode(this.session, { raw: rawPage, immutable: true });
+			let pageText = formatTextWithMode(
+				page.lines.join("\n"),
+				pageStart0 + 1,
+				false,
+				!rawPage && pageMode.lineNumbers,
 			);
+			if (page.more) pageText += `\n\n[More lines in file. Use :${pageStart0 + page.lines.length + 1} to continue]`;
+			return toolResult<ReadToolDetails>({ resolvedPath: renderAbsolutePath, suffixResolution })
+				.text(prependSuffixResolutionNotice(pageText, suffixResolution))
+				.sourcePath(renderAbsolutePath)
+				.done();
 		}
 
 		const ext = path.extname(renderAbsolutePath).toLowerCase();
