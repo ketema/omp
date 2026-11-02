@@ -904,6 +904,9 @@ export async function resolveSpeculativeReadTarget(
 		// omp's POSIX locks); the workspace directory itself is safe to realpath.
 		const workspace = await fs.realpath(cwd);
 		const resolved = resolveRealPathWithoutOpening(path.resolve(cwd, lexicalPath));
+		// A missing path comes back unresolved, so stat it BEFORE the containment check: it must report
+		// unavailable (as fs.realpath did) rather than look like it lies outside a symlinked workspace.
+		const targetStat = await fs.stat(resolved);
 		const workspaceRelativePath = path.relative(workspace, resolved);
 		if (
 			workspaceRelativePath.length === 0 ||
@@ -913,7 +916,6 @@ export async function resolveSpeculativeReadTarget(
 		) {
 			return { ok: false, reason: "local read target is unsafe" };
 		}
-		const targetStat = await fs.stat(resolved);
 		if (!targetStat.isFile() || targetStat.size > SNAPSHOT_MAX_BYTES) {
 			return { ok: false, reason: "local read target is unsafe" };
 		}
