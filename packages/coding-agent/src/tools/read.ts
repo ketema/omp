@@ -166,7 +166,12 @@ import {
 import { splitAddressableFileLines } from "@oh-my-pi/pi-tui/tools/hashline-format";
 import { readBinary, resolveBinaryViewPath } from "./read-binary";
 import { readSqlite, resolveSqliteReadPath } from "./read-sqlite";
-import { classifyRawIoTarget, readRawIoBytes } from "./raw-io-client";
+import {
+	classifyRawIoTarget,
+	type RawIoClassifyOptions,
+	readRawIoBytes,
+	resolveRealPathWithoutOpening,
+} from "./raw-io-client";
 import { type HelperLinePage, PageScanLimitError, pageLinesThroughHelper } from "./raw-io-lines";
 import { readJson, resolveJsonReadPath, splitJsonQueryTarget } from "./read-json";
 import {
@@ -892,9 +897,13 @@ export type SpeculativeReadTargetFailure = "local read path is unavailable" | "l
 export async function resolveSpeculativeReadTarget(
 	cwd: string,
 	lexicalPath: string,
+	rawIoOptions?: RawIoClassifyOptions,
 ): Promise<{ ok: true; resolved: string } | { ok: false; reason: SpeculativeReadTargetFailure }> {
 	try {
-		const [workspace, resolved] = await Promise.all([fs.realpath(cwd), fs.realpath(path.resolve(cwd, lexicalPath))]);
+		// POST-RAWIO-3: resolve the target without opening it (fs.realpath opens the file on macOS and drops
+		// omp's POSIX locks); the workspace directory itself is safe to realpath.
+		const workspace = await fs.realpath(cwd);
+		const resolved = resolveRealPathWithoutOpening(path.resolve(cwd, lexicalPath));
 		const workspaceRelativePath = path.relative(workspace, resolved);
 		if (
 			workspaceRelativePath.length === 0 ||
@@ -906,6 +915,11 @@ export async function resolveSpeculativeReadTarget(
 		}
 		const targetStat = await fs.stat(resolved);
 		if (!targetStat.isFile() || targetStat.size > SNAPSHOT_MAX_BYTES) {
+			return { ok: false, reason: "local read target is unsafe" };
+		}
+		// POST-RAWIO-3: a SQLite-Family target is never read in-process; refuse it so the read falls back to
+		// the ordinary helper-backed path.
+		if ((await classifyRawIoTarget(resolved, rawIoOptions)).isSqliteFamily) {
 			return { ok: false, reason: "local read target is unsafe" };
 		}
 		return { ok: true, resolved };
@@ -1083,7 +1097,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 		const execution = { discarded: false };
 		this.#speculativeReadExecutions.set(context.toolCall.id, execution);
-		const target = await resolveSpeculativeReadTarget(this.session.cwd, context.effect.resources[0].path);
+		const target = await resolveSpeculativeReadTarget(
+			this.session.cwd,
+			context.effect.resources[0].path,
+			this.session.rawIoHelperOptions,
+		);
 		if (!target.ok) {
 			throw new Error("Speculative read target is unavailable");
 		}

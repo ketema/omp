@@ -170,7 +170,11 @@ export class CodingAgentSpeculativeExecutionHost implements SpeculativeExecution
 		// shape gates above have allowed the candidate — so a denied read
 		// never touches the filesystem. The resolver is shared with speculative
 		// execution so both bind the same target (see resolveSpeculativeReadTarget).
-		const target = await resolveSpeculativeReadTarget(this.toolSession.cwd, resource.path);
+		const target = await resolveSpeculativeReadTarget(
+			this.toolSession.cwd,
+			resource.path,
+			this.toolSession.rawIoHelperOptions,
+		);
 		if (!target.ok) return { authorization: { allowed: false, reason: target.reason } };
 		const resolved = target.resolved;
 		if (
@@ -249,7 +253,11 @@ export class CodingAgentSpeculativeExecutionHost implements SpeculativeExecution
 		if (typeof context.args.path !== "string") return false;
 		if (!path.isAbsolute(resource.path)) return false;
 		if (path.resolve(this.toolSession.cwd, context.args.path) !== resource.path) return false;
-		const target = await resolveSpeculativeReadTarget(this.toolSession.cwd, resource.path);
+		const target = await resolveSpeculativeReadTarget(
+			this.toolSession.cwd,
+			resource.path,
+			this.toolSession.rawIoHelperOptions,
+		);
 		if (!target.ok) return false;
 		// One read serves the content gates and the digest.
 		const evidence = await digestTargetEvidence(target.resolved, true);

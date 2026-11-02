@@ -1103,6 +1103,8 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			// the helper so omp never closes an in-process descriptor on that inode.
 			const rawIoClassification = await classifyRawIoTarget(absolutePath, this.session.rawIoHelperOptions);
 			if (rawIoClassification.isSqliteFamily) {
+				// POST-RAWIO-3b: a call cancelled while classification was pending must not mutate the target.
+				signal?.throwIfAborted();
 				await assertNotTruncatedFileReadProjection(
 					this.session,
 					path,

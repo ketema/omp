@@ -305,6 +305,14 @@ function resolveTargetKey(targetPath: string): string {
 	return pending;
 }
 
+/**
+ * Resolve a path's symlinks without ever opening the target (lstat/readlink only), for callers that
+ * must not drop in-process POSIX locks (POST-RAWIO-3, speculative reads). A missing path comes back as supplied.
+ */
+export function resolveRealPathWithoutOpening(targetPath: string): string {
+	return resolveTargetKey(targetPath);
+}
+
 export function registerUnexitedWriteTarget(targetPath: string, exitPromise: Promise<unknown>): void {
 	assertValidTargetPath(targetPath);
 	const key = resolveTargetKey(targetPath);
