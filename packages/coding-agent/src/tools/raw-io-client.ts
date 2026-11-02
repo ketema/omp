@@ -249,6 +249,16 @@ function assertValidTargetPath(targetPath: unknown): asserts targetPath is strin
 
 const MAX_SYMLINK_HOPS = 40;
 
+function readTargetMetadata<T>(read: () => T): T | undefined {
+	try {
+		return read();
+	} catch (err: unknown) {
+		const code = err instanceof Error && "code" in err ? err.code : undefined;
+		if (code !== "ENOENT" && code !== "ENOTDIR") throw err;
+		return undefined;
+	}
+}
+
 /**
  * Resolve symlinks and relative segments using only `lstatSync` and
  * `readlinkSync` (never `realpathSync`, which on macOS opens the file and
@@ -270,28 +280,16 @@ function resolveTargetKey(targetPath: string): string {
 				continue;
 			}
 			const candidate = current === "/" ? `/${seg}` : `${current}/${seg}`;
-			let stat: fs.Stats;
-			try {
-				stat = fs.lstatSync(candidate);
-			} catch (err: unknown) {
-				const code = err instanceof Error && "code" in err ? err.code : undefined;
-				if (code !== "ENOENT" && code !== "ENOTDIR") throw err;
-				// POST-RAWIO-2b: only a missing/non-directory path uses the supplied key.
-				return targetPath;
-			}
+			const stat = readTargetMetadata(() => fs.lstatSync(candidate));
+			// POST-RAWIO-2b: only a missing/non-directory path uses the supplied key.
+			if (stat === undefined) return targetPath;
 			if (stat.isSymbolicLink()) {
 				hops++;
 				if (hops > MAX_SYMLINK_HOPS) {
 					return candidate;
 				}
-				let linkTarget: string;
-				try {
-					linkTarget = fs.readlinkSync(candidate);
-				} catch (err: unknown) {
-					const code = err instanceof Error && "code" in err ? err.code : undefined;
-					if (code !== "ENOENT" && code !== "ENOTDIR") throw err;
-					return targetPath;
-				}
+				const linkTarget = readTargetMetadata(() => fs.readlinkSync(candidate));
+				if (linkTarget === undefined) return targetPath;
 				const resolvedLink = linkTarget.startsWith("/") ? linkTarget : `${current}/${linkTarget}`;
 				const tail = segments.slice(i + 1).join("/");
 				pending = tail.length > 0 ? `${resolvedLink}/${tail}` : resolvedLink;
