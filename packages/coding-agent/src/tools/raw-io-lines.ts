@@ -50,7 +50,20 @@ export async function pageLinesThroughHelper(
 	let collectedBytes = 0;
 	let lineIndex = 0;
 	let offset = 0;
-	let carry: Uint8Array = new Uint8Array(0);
+	// The carry (a partial line spanning chunks) is capped at what the output can use: `take` truncates a
+	// line to maxBytes anyway, so bytes beyond the cap are dropped until the next LF. A few bytes of slack
+	// keep a cut multibyte character intact.
+	const cap = options.maxBytes + 3;
+	const EMPTY = new Uint8Array(0);
+	const joinCapped = (head: Uint8Array, tail: Uint8Array): Uint8Array => {
+		if (head.length >= cap) return head;
+		const part = tail.length > cap - head.length ? tail.subarray(0, cap - head.length) : tail;
+		const out = new Uint8Array(head.length + part.length);
+		out.set(head);
+		out.set(part, head.length);
+		return out;
+	};
+	let carry: Uint8Array = EMPTY;
 	let more = false;
 
 	const take = (lineBytes: Uint8Array): boolean => {
@@ -76,17 +89,17 @@ export async function pageLinesThroughHelper(
 		const chunk = await read(offset, Math.min(chunkBytes, fileSize - offset));
 		if (chunk.length === 0) break;
 		offset += chunk.length;
-		const data =
-			carry.length > 0 ? Buffer.concat([carry, chunk]) : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.length);
+		const data = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.length);
 		let start = 0;
 		for (let i = data.indexOf(LF, start); i !== -1; i = data.indexOf(LF, start)) {
-			if (!take(data.subarray(start, i))) break scan;
+			const lineBytes = joinCapped(carry, data.subarray(start, i));
+			carry = EMPTY;
+			if (!take(lineBytes)) break scan;
 			start = i + 1;
 		}
-		carry = Uint8Array.from(data.subarray(start));
+		carry = joinCapped(carry, data.subarray(start));
 	}
 	// A final line without a trailing newline.
 	if (!more && offset >= fileSize && carry.length > 0 && lineIndex >= options.startLine0) take(carry);
-	else if (!more && offset >= fileSize && carry.length > 0) lineIndex++;
 	return { lines, startLine0: options.startLine0, more };
 }
