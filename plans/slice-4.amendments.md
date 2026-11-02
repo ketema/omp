@@ -135,3 +135,12 @@
 - **#24/#25:** Observe session option forwarding on each actual auxiliary helper read; setup operations cannot supply the refusal/conflict operation's evidence.
 - **#26:** After GREEN, a separate behavior-preserving refactor reduces `resolveTargetKey` classic cyclomatic complexity to at most 15, with tests passing before and after.
 - No further re-audit is requested. Audit closure remains conditional on Claude's verification of these commits and the Mac full-suite result; this ledger does not assert closure, deployment, or bridge-start authority.
+
+## 2026-11-02 — PR #51 CI failure and Copilot F6: thin clarifications (Batches A and B)
+
+- Decided By: User (Ketema, 2026-11-02, verbatim: "entire gates can be ignored. i lift the branch hold. we can proceed. ... lets get slice 4 merged correctly and safely"). This authorizes proceeding; it does not choose individual Copilot findings.
+- Evidence (observed): CI job 125480713459 fails because `scripts/ci-test-ts.ts:555` sets `PI_TEST_RUNTIME=1` for shard children, the `read-cli-skill` probe inherits it, `worker-client.ts:328` then keeps the Raw-I/O Helper child referenced, and the one-shot `omp read` probe never exits (exit 143). Reproduced locally with `PI_TEST_RUNTIME=1`. Copilot F6 (comment 4446508781): the unexited-write refusal lives only in `writeRawIoBytes`; `write.ts` consults it only after classifying the target as SQLite-family, so a database a timed-out helper write left non-SQLite bypasses it. Verified in `raw-io-client.ts` and `write.ts`.
+- Decided By: oMACarchy (pending Claude's verification) — both are thin clarifications that preserve every cited requirement and relax nothing:
+  - **`SEQ-RAWIO-2`:** a one-shot CLI command that issues Raw-I/O requests stops the helper before returning, so the process can exit when the helper child is referenced.
+  - **`ERRORS-RAWIO-1d`:** the public WriteTool applies the existing refusal before selecting any write route, independent of the target's current classification.
+- Both contract twins carry identical text (checked). Next: RED tests, then GREEN, as separate commits. Copilot F5 (bounded reads over the snapshot cap) is a separate batch; F1, F2, F3, F4 and F7 await Ketema's disposition and are not in this batch.

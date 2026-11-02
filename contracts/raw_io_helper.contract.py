@@ -1008,7 +1008,11 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
         text=(
             "At omp process exit, omp SHALL invoke stopRawIoHelper after its "
             "last Raw-I/O request to terminate the helper subprocess. "
-            "Source: SEQ-6, IP-2."
+            "A one-shot CLI command that issues Raw-I/O requests (such as "
+            "`omp read`) SHALL stop the helper before it returns, so the "
+            "process can exit even when the helper child is held referenced "
+            "(as under PI_TEST_RUNTIME=1). "
+            "Source: SEQ-6, IP-2, CI run 41504561263."
         ),
     ),
     "SEQ-RAWIO-3": Clause(
@@ -1163,6 +1167,10 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "that refused request; this helper failure SHALL NOT be thrown "
             "synchronously. PRE-RAWIO-1 violations remain distinct "
             "RawIoInvalidTargetPathError failures. "
+            "The public WriteTool SHALL apply this refusal before selecting any "
+            "write route, independent of the target's current classification (a "
+            "timed-out helper write can leave a SQLite database classified as "
+            "non-SQLite). "
             "(Verified by test driving registerUnexitedWriteTarget(targetPath, "
             "exitPromise), writeRawIoBytes, readRawIoBytes, and "
             "classifyRawIoTarget, including symlink-alias refusal and lift when "
