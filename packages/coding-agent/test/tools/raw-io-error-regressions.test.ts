@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { classifyRawIoTarget, stopRawIoHelper } from "@oh-my-pi/pi-coding-agent/tools/raw-io-client";
+import {
+	classifyRawIoTarget,
+	RawIoHelperOperationError,
+	stopRawIoHelper,
+} from "@oh-my-pi/pi-coding-agent/tools/raw-io-client";
 import { SQLITE_HEADER_MAGIC, type RawIoHelperClauseId } from "../../../../contracts/raw_io_helper.contract";
 
 function evidence(clause: RawIoHelperClauseId, what: string, expected: string, actual: unknown): string {
@@ -25,10 +29,10 @@ describe("Raw-I/O error-boundary regressions (audit #4/#17)", () => {
 		await fs.rm(dir, { recursive: true, force: true });
 	});
 
-	it("rejects sqlite_db evidence whose real-worker header bytes are missing (#4)", async () => {
-		/* Enforces POST-RAWIO-1, HIGH-risk IPC boundary regression.
-		 * C1: classification must reflect actual headers; C2: current client invents the magic;
-		 * C3: malformed response differs from normal classification; C4: current fabrication path.
+	it("rejects sqlite_db evidence whose real-worker header bytes are missing (#4/#23)", async () => {
+		/* Enforces POST-RAWIO-1 / ERRORS-RAWIO-1e, HIGH-risk IPC boundary regression.
+		 * C1: actual header and exact rejection identity; C2: current rejection has the wrong clauseId;
+		 * C3: malformed response differs from normal classification; C4: existing provider boundary.
 		 * The provider is the real worker. Its construction-time transport records its actual
 		 * header and then supplies the specified malformed response; no successful provider fake.
 		 */
@@ -68,14 +72,21 @@ describe("Raw-I/O error-boundary regressions (audit #4/#17)", () => {
 			),
 		).toEqual(Array.from(SQLITE_HEADER_MAGIC));
 		expect(
-			error instanceof Error,
+			error,
+			evidence("ERRORS-RAWIO-1e", "missing-header error class", "native RawIoHelperOperationError", {
+				error: String(error),
+				result,
+			}),
+		).toBeInstanceOf(RawIoHelperOperationError);
+		expect(
+			error,
 			evidence(
-				"POST-RAWIO-1",
-				"missing-header classification refusal",
-				"reject the malformed sqlite_db response, never manufacture header bytes",
-				{ error: String(error), result },
+				"ERRORS-RAWIO-1e",
+				"missing-header error identity",
+				"own error clause and caller operation/target",
+				error,
 			),
-		).toBe(true);
+		).toMatchObject({ clauseId: "ERRORS-RAWIO-1e", operation: "classify", targetPath: target });
 	});
 
 	it("rejects a throwing onRequest promise without unhandled rejection or process exit (#17)", async () => {

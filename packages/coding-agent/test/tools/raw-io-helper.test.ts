@@ -9,10 +9,12 @@ import * as workerSelectors from "@oh-my-pi/pi-coding-agent/cli/worker-selectors
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
+import { RawIoHelperOperationError } from "@oh-my-pi/pi-coding-agent/tools/raw-io-client";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import {
 	type ClassifyResolvedTargetInput,
 	evaluateTimeoutSemantics,
+	type HelperOperation,
 	RAW_IO_CLASSIFY_FN_NAME,
 	RAW_IO_CLIENT_MODULE,
 	RAW_IO_DEFAULT_TIMEOUT_MS,
@@ -27,6 +29,7 @@ import {
 	RAW_IO_WRITE_BYTES_FN_NAME,
 	type RawIoClassifyOptions,
 	RawIoClassificationMismatchError,
+	type RawIoHelperClauseId,
 	type RawIoHelperRequestEntry,
 	RawIoInvalidTargetPathError,
 	type ResolveTimeoutAfterKillWaitInput,
@@ -50,6 +53,32 @@ function assertionContext(clause: string, expected: string): string {
 		"4. ACTUAL: Shown by the matcher diagnostic below",
 		"5. GUIDANCE: Preserve the specified value or error outcome",
 	].join("\n");
+}
+
+function recordOperationError(
+	failures: string[],
+	error: unknown,
+	expected: { clauseId: RawIoHelperClauseId; operation: HelperOperation; targetPath: string },
+): void {
+	if (
+		!(error instanceof RawIoHelperOperationError) ||
+		error.clauseId !== expected.clauseId ||
+		error.operation !== expected.operation ||
+		error.targetPath !== expected.targetPath
+	) {
+		const actual =
+			error instanceof RawIoHelperOperationError
+				? {
+						errorClass: error.constructor.name,
+						clauseId: error.clauseId,
+						operation: error.operation,
+						targetPath: error.targetPath,
+					}
+				: { errorClass: error instanceof Error ? error.constructor.name : typeof error };
+		failures.push(
+			`[${expected.clauseId}] expected native RawIoHelperOperationError ${JSON.stringify(expected)}; actual ${JSON.stringify(actual)}`,
+		);
+	}
 }
 
 function assertReportedClassification(
@@ -973,7 +1002,14 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 				peerPosixWriteLockBlocked(inodeTarget).blocked,
 				assertionContext("FORBIDDEN-RAWIO-1b", "the independent inode-lock control starts unlocked"),
 			).toBe(false);
-			const observations: { mode: string; clauseId: unknown; lockRetained: boolean }[] = [];
+			const observations: {
+				mode: string;
+				nativeClass: boolean;
+				clauseId: unknown;
+				operation: unknown;
+				targetPath: unknown;
+				lockRetained: boolean;
+			}[] = [];
 			const messageFailures: string[] = [];
 			for (const [mode, executable] of [
 				["cannot-start", path.join(tempDir, "missing-helper-executable")],
@@ -994,6 +1030,9 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 				// preceding case failed; each case independently reacquires its lock.
 				observations.push({
 					mode,
+					nativeClass: failure instanceof RawIoHelperOperationError,
+					operation: failure instanceof Error ? Reflect.get(failure, "operation") : undefined,
+					targetPath: failure instanceof Error ? Reflect.get(failure, "targetPath") : undefined,
 					clauseId: failure instanceof Error ? Reflect.get(failure, "clauseId") : undefined,
 					lockRetained: peerPosixWriteLockBlocked(inodeTarget).blocked,
 				});
@@ -1014,8 +1053,22 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 					"each helper failure retains the exact held inode lock",
 				),
 			).toEqual([
-				{ mode: "cannot-start", clauseId: "ERRORS-RAWIO-1b", lockRetained: true },
-				{ mode: "crash", clauseId: "ERRORS-RAWIO-1b", lockRetained: true },
+				{
+					mode: "cannot-start",
+					nativeClass: true,
+					clauseId: "ERRORS-RAWIO-1b",
+					operation: "classify",
+					targetPath: inodeTarget,
+					lockRetained: true,
+				},
+				{
+					mode: "crash",
+					nativeClass: true,
+					clauseId: "ERRORS-RAWIO-1b",
+					operation: "classify",
+					targetPath: inodeTarget,
+					lockRetained: true,
+				},
 			]);
 			const postFailureLockProbe = peerWriteBlocked(dbPath);
 			if (!postFailureLockProbe.blocked) {
@@ -1185,6 +1238,11 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 			}
 			const t41Elapsed = performance.now() - t41Start;
 			const t41Msg = t41Err instanceof Error ? t41Err.message : "";
+			recordOperationError(failures, t41Err, {
+				clauseId: "ERRORS-RAWIO-1b",
+				operation: "classify",
+				targetPath: dbPath,
+			});
 			const t41Pid = Number((await fs.readFile(pidFilePath, "utf8").catch(() => "0")).trim());
 			const t41Dead = t41Pid > 0 ? waitForPidDead(t41Pid) : false;
 			try {
@@ -1230,6 +1288,11 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 				t42bErr = err;
 			}
 			const t42bMsg = t42bErr instanceof Error ? t42bErr.message : "";
+			recordOperationError(failures, t42bErr, {
+				clauseId: "ERRORS-RAWIO-1b",
+				operation: "read",
+				targetPath: dbPath,
+			});
 			try {
 				validateHelperFailureError(t42bMsg, "read", dbPath, { timedOut: true });
 			} catch (validationErr) {
@@ -1250,6 +1313,11 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 				t43Err = err;
 			}
 			const t43Msg = t43Err instanceof Error ? t43Err.message : "";
+			recordOperationError(failures, t43Err, {
+				clauseId: "ERRORS-RAWIO-1b",
+				operation: "classify",
+				targetPath: dbPath,
+			});
 			try {
 				validateHelperFailureError(t43Msg, "classify", dbPath, { timedOut: true });
 			} catch (validationErr) {
@@ -1273,6 +1341,11 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 				t44Err = err;
 			}
 			const t44Msg = t44Err instanceof Error ? t44Err.message : "";
+			recordOperationError(failures, t44Err, {
+				clauseId: "ERRORS-RAWIO-1b",
+				operation: "write",
+				targetPath: writeTargetPath,
+			});
 			const t44Pid = Number((await fs.readFile(writePidFile, "utf8").catch(() => "0")).trim());
 			if (t44Pid > 0) {
 				waitForPidDead(t44Pid);
@@ -1352,6 +1425,11 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 					},
 				}),
 			]);
+			recordOperationError(
+				failures,
+				activeTimeoutSettled.status === "rejected" ? activeTimeoutSettled.reason : undefined,
+				{ clauseId: "ERRORS-RAWIO-1b", operation: "classify", targetPath: dbPath },
+			);
 			const activeTimeoutMsg =
 				activeTimeoutSettled.status === "rejected" && activeTimeoutSettled.reason instanceof Error
 					? activeTimeoutSettled.reason.message
@@ -1400,6 +1478,16 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 					timeoutMs: 500,
 				}),
 			]);
+			recordOperationError(failures, firstFailSettled.status === "rejected" ? firstFailSettled.reason : undefined, {
+				clauseId: "ERRORS-RAWIO-1b",
+				operation: "classify",
+				targetPath: dbPath,
+			});
+			recordOperationError(
+				failures,
+				secondFailSettled.status === "rejected" ? secondFailSettled.reason : undefined,
+				{ clauseId: "ERRORS-RAWIO-1b", operation: "read", targetPath: secondDbPath },
+			);
 			const firstFailMsg =
 				firstFailSettled.status === "rejected" && firstFailSettled.reason instanceof Error
 					? firstFailSettled.reason.message
@@ -1443,6 +1531,11 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 					timeoutMs: 500,
 				}),
 			]);
+			recordOperationError(
+				failures,
+				crashActiveSettled.status === "rejected" ? crashActiveSettled.reason : undefined,
+				{ clauseId: "ERRORS-RAWIO-1b", operation: "classify", targetPath: dbPath },
+			);
 			const crashActiveMsg =
 				crashActiveSettled.status === "rejected" && crashActiveSettled.reason instanceof Error
 					? crashActiveSettled.reason.message
@@ -1538,6 +1631,11 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 				g1Err = err;
 			}
 			const g1ErrMsg = g1Err instanceof Error ? g1Err.message : "";
+			recordOperationError(failures, g1Err, {
+				clauseId: "ERRORS-RAWIO-1b",
+				operation: "classify",
+				targetPath: dbPath,
+			});
 			const db1LockAfter = peerWriteBlocked(dbPath);
 			const db2LockAfter = peerWriteBlocked(secondDbPath);
 			try {
@@ -1592,6 +1690,21 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 					const directRefusalMsg = directRefusalErr instanceof Error ? directRefusalErr.message : "";
 					const symlinkRefusalMsg = symlinkRefusalErr instanceof Error ? symlinkRefusalErr.message : "";
 					const dotSpelledRefusalMsg = dotSpelledRefusalErr instanceof Error ? dotSpelledRefusalErr.message : "";
+					recordOperationError(failures, directRefusalErr, {
+						clauseId: "ERRORS-RAWIO-1d",
+						operation: "write",
+						targetPath: writeTargetPath,
+					});
+					recordOperationError(failures, symlinkRefusalErr, {
+						clauseId: "ERRORS-RAWIO-1d",
+						operation: "write",
+						targetPath: symlinkWriteAlias,
+					});
+					recordOperationError(failures, dotSpelledRefusalErr, {
+						clauseId: "ERRORS-RAWIO-1d",
+						operation: "write",
+						targetPath: dotSpelledWritePath,
+					});
 					validateHelperFailureError(directRefusalMsg, "write", writeTargetPath, {
 						unexitedWriteTargetRefusal: true,
 					});
@@ -1669,7 +1782,14 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 		 */
 		const target = path.join(tempDir, "conflict-scan.db-shm");
 		await fs.writeFile(target, "sidecar text without merge conflicts\n", "utf8");
-		const readTool = new ReadTool(createTestToolSession(tempDir));
+		const requests: RawIoHelperRequestEntry[] = [];
+		const readTool = new ReadTool(
+			createTestToolSession(tempDir, {
+				onRequest(entry) {
+					requests.push(entry);
+				},
+			}),
+		);
 		const unlocked = peerPosixWriteLockBlocked(target);
 		expect(
 			unlocked.blocked,
@@ -1707,6 +1827,10 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 					"5. GUIDANCE: Preserve the held SQLite-Family lock throughout conflict reporting",
 				].join("\n"),
 			).toEqual({ text: "No unresolved git merge conflicts in conflict-scan.db-shm.", blocked: true });
+			expect(
+				requests,
+				assertionContext("POST-RAWIO-3", "the conflict-scan helper read forwards the session's onRequest option"),
+			).toContainEqual({ operation: "read", targetPath: target });
 		} finally {
 			fsSync.closeSync(fd);
 		}
@@ -1727,8 +1851,15 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 		const original = Array.from({ length: 1000 }, (_, i) => `sidecar line ${i}\n`).join("");
 		await fs.writeFile(target, original, "utf8");
 		// A real public ReadTool projection, obtained BEFORE acquiring the lock.
-		const session = createTestToolSession(tempDir);
+		const requests: RawIoHelperRequestEntry[] = [];
+		const session = createTestToolSession(tempDir, {
+			onRequest(entry) {
+				requests.push(entry);
+			},
+		});
 		const readResult = await new ReadTool(session).execute("audit-projection-source", { path: `${target}:1-8` });
+		// The setup read must never satisfy the refusal-path forwarding oracle.
+		requests.length = 0;
 		const projection = `${extractToolText(readResult)}\n\n[Showing lines 1-8 of 1000. Use :9 to continue]`;
 		const writeTool = new WriteTool(session);
 		const unlocked = peerPosixWriteLockBlocked(target);
@@ -1774,6 +1905,10 @@ describe("Raw-I/O Helper target classification, ReadTool/WriteTool routing, and 
 					"5. GUIDANCE: Preserve the held SQLite-Family lock even when the write is refused",
 				].join("\n"),
 			).toEqual({ refusedProjection: true, blocked: true });
+			expect(
+				requests,
+				assertionContext("POST-RAWIO-3b", "the refusal-path helper read forwards the session's onRequest option"),
+			).toContainEqual({ operation: "read", targetPath: target });
 		} finally {
 			fsSync.closeSync(fd);
 		}

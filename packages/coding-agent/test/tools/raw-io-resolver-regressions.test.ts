@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	RawIoHelperOperationError,
 	readRawIoBytes,
 	registerUnexitedWriteTarget,
 	stopRawIoHelper,
@@ -80,6 +81,23 @@ describe("Raw-I/O resolved write-block regressions (audit #3/#16)", () => {
 					content,
 				}),
 			).toEqual({ refused: true, content: "protected\n" });
+			for (const [error, suppliedPath] of [
+				[directError, target],
+				[aliasError, alternate],
+			] as const) {
+				expect(
+					error,
+					evidence("write refusal class", "native RawIoHelperOperationError", String(error)),
+				).toBeInstanceOf(RawIoHelperOperationError);
+				expect(
+					error,
+					evidence("write refusal identity", "exact clause, operation and supplied target", error),
+				).toMatchObject({
+					clauseId: "ERRORS-RAWIO-1d",
+					operation: "write",
+					targetPath: suppliedPath,
+				});
+			}
 		} finally {
 			oldHelperExit.resolve();
 			await oldHelperExit.promise;
