@@ -66,6 +66,7 @@ RAW_IO_READ_BYTES_FN_NAME: Final[str] = "readRawIoBytes"
 RAW_IO_WRITE_BYTES_FN_NAME: Final[str] = "writeRawIoBytes"
 RAW_IO_STOP_FN_NAME: Final[str] = "stopRawIoHelper"
 RAW_IO_RESOLVE_KILL_WAIT_FN_NAME: Final[str] = "resolveTimeoutAfterKillWait"
+RAW_IO_SETTLE_KILL_WAIT_FN_NAME: Final[str] = "settleRawIoTimeoutAfterKillWait"
 RAW_IO_REGISTER_UNEXITED_WRITE_FN_NAME: Final[str] = "registerUnexitedWriteTarget"
 RAW_IO_DEFAULT_TIMEOUT_MS: Final[int] = 5000
 RAW_IO_KILL_WAIT_TIMEOUT_MS: Final[int] = 5000
@@ -1126,12 +1127,20 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "or queued request; this helper failure SHALL NOT be thrown "
             "synchronously. PRE-RAWIO-1 violations remain distinct "
             "RawIoInvalidTargetPathError failures. "
-            "(Verified by unit test on the exported "
-            "resolveTimeoutAfterKillWait production function with "
-            "helperExited=false; the wiring that passes helperExited=false after "
-            "the 5s wait is checked by reading the code during the slice audit, "
-            "because no unprivileged test can create a process that survives "
-            "SIGKILL.) Source: REQ-L15586-08, INV-L15586-03."
+            "The exported settleRawIoTimeoutAfterKillWait(input: "
+            "RawIoTimeoutSettlementInput) -> RawIoKillWaitResolution is the "
+            "settlement owner invoked by the real kill-wait continuation. "
+            "If registerUnexitedWriteTarget throws during that settlement, the "
+            "owner SHALL still settle the active and queued request promises "
+            "with the specified errors, retain the registration error as cause, "
+            "preserve queued request order, and produce no floating rejection. "
+            "Verified by unit tests on the real exported "
+            "resolveTimeoutAfterKillWait and settlement owner with "
+            "helperExited=false, native promise rejectors, and real "
+            "registration/EACCES; the false-result wiring after the 5s wait "
+            "remains code inspection because no unprivileged test can create "
+            "a process that survives SIGKILL. "
+            "Source: REQ-L15586-08, INV-L15586-03."
         ),
     ),
     "ERRORS-RAWIO-1d": Clause(
@@ -1162,6 +1171,18 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "code during the slice audit, because no unprivileged test can create "
             "a process that survives SIGKILL.) "
             "Source: REQ-L15586-08, INV-L15586-03."
+        ),
+    ),
+    "ERRORS-RAWIO-1e": Clause(
+        verification="test",
+        text=(
+            "IF classifyRawIoTarget receives a sqlite_db classification without "
+            "the actual header bytes matching SQLITE_HEADER_MAGIC, THEN its "
+            "returned promise SHALL reject with RawIoHelperOperationError "
+            "carrying clauseId='ERRORS-RAWIO-1e', operation='classify', and "
+            "the caller's targetPath; it SHALL NOT synthesize header bytes or "
+            "throw this failure synchronously. "
+            "Source: REQ-L15586-05, REQ-L15586-08, IP-2."
         ),
     ),
     "FORBIDDEN-RAWIO-1": Clause(

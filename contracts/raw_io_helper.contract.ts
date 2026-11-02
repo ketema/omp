@@ -50,6 +50,7 @@ export const RAW_IO_READ_BYTES_FN_NAME = "readRawIoBytes" as const;
 export const RAW_IO_WRITE_BYTES_FN_NAME = "writeRawIoBytes" as const;
 export const RAW_IO_STOP_FN_NAME = "stopRawIoHelper" as const;
 export const RAW_IO_RESOLVE_KILL_WAIT_FN_NAME = "resolveTimeoutAfterKillWait" as const;
+export const RAW_IO_SETTLE_KILL_WAIT_FN_NAME = "settleRawIoTimeoutAfterKillWait" as const;
 export const RAW_IO_REGISTER_UNEXITED_WRITE_FN_NAME = "registerUnexitedWriteTarget" as const;
 export const RAW_IO_DEFAULT_TIMEOUT_MS = 5000 as const;
 export const RAW_IO_KILL_WAIT_TIMEOUT_MS = 5000 as const;
@@ -156,6 +157,7 @@ export interface RawIoClientSurface {
 	readonly writeRawIoBytes: (targetPath: string, data: Uint8Array, options?: RawIoClassifyOptions) => Promise<void>;
 	readonly stopRawIoHelper: () => Promise<void>;
 	readonly resolveTimeoutAfterKillWait: (input: ResolveTimeoutAfterKillWaitInput) => RawIoKillWaitResolution;
+	readonly settleRawIoTimeoutAfterKillWait: (input: RawIoTimeoutSettlementInput) => RawIoKillWaitResolution;
 	readonly registerUnexitedWriteTarget: (targetPath: string, exitPromise: Promise<unknown>) => void;
 }
 
@@ -172,6 +174,18 @@ export interface RawIoKillWaitResolution {
 	readonly retryQueueOnFreshHelper: boolean;
 	readonly queuedErrors: ReadonlyArray<string>;
 	readonly blockFutureWritesToTarget?: string | undefined;
+}
+
+export interface RawIoTimeoutRequest extends RawIoHelperRequestEntry {
+	readonly rejectTask: (error: Error) => void;
+}
+
+export interface RawIoTimeoutSettlementInput {
+	readonly activeRequest: RawIoTimeoutRequest;
+	readonly queuedRequests: ReadonlyArray<RawIoTimeoutRequest>;
+	readonly timeoutMs: number;
+	readonly helperExited: boolean;
+	readonly exitPromise: Promise<unknown>;
 }
 
 export interface RawIoToolAccessRecord {
@@ -840,11 +854,15 @@ export const RAW_IO_HELPER_CONTRACT = Object.freeze({
 	},
 	"ERRORS-RAWIO-1c": {
 		verification: "test",
-		text: "IF a timed-out Raw-I/O Helper has not exited within RAW_IO_KILL_WAIT_TIMEOUT_MS (5000ms) after SIGKILL (helperExited=false in resolveTimeoutAfterKillWait), THEN omp SHALL report the active request's timeout error anyway (for a 'write', stating both that its outcome is unknown and that it may still land), SHALL NOT retry queued requests on a fresh helper (retryQueueOnFreshHelper=false), SHALL fail each queued request naming its operation and target path with an error stating that the previous helper could not be stopped, and SHALL NOT fall back to an in-process file open. Each affected public async operation's returned promise SHALL reject with RawIoHelperOperationError carrying clauseId='ERRORS-RAWIO-1c', operation, and targetPath for that active or queued request; this helper failure SHALL NOT be thrown synchronously. PRE-RAWIO-1 violations remain distinct RawIoInvalidTargetPathError failures. (Verified by unit test on the exported resolveTimeoutAfterKillWait production function with helperExited=false; the wiring that passes helperExited=false after the 5s wait is checked by reading the code during the slice audit, because no unprivileged test can create a process that survives SIGKILL.) Source: REQ-L15586-08, INV-L15586-03.",
+		text: "IF a timed-out Raw-I/O Helper has not exited within RAW_IO_KILL_WAIT_TIMEOUT_MS (5000ms) after SIGKILL (helperExited=false in resolveTimeoutAfterKillWait), THEN omp SHALL report the active request's timeout error anyway (for a 'write', stating both that its outcome is unknown and that it may still land), SHALL NOT retry queued requests on a fresh helper (retryQueueOnFreshHelper=false), SHALL fail each queued request naming its operation and target path with an error stating that the previous helper could not be stopped, and SHALL NOT fall back to an in-process file open. Each affected public async operation's returned promise SHALL reject with RawIoHelperOperationError carrying clauseId='ERRORS-RAWIO-1c', operation, and targetPath for that active or queued request; this helper failure SHALL NOT be thrown synchronously. PRE-RAWIO-1 violations remain distinct RawIoInvalidTargetPathError failures. The exported settleRawIoTimeoutAfterKillWait(input: RawIoTimeoutSettlementInput) -> RawIoKillWaitResolution is the settlement owner invoked by the real kill-wait continuation. If registerUnexitedWriteTarget throws during that settlement, the owner SHALL still settle the active and queued request promises with the specified errors, retain the registration error as cause, preserve queued request order, and produce no floating rejection. Verified by unit tests on the real exported resolveTimeoutAfterKillWait and settlement owner with helperExited=false, native promise rejectors, and real registration/EACCES; the false-result wiring after the 5s wait remains code inspection because no unprivileged test can create a process that survives SIGKILL. Source: REQ-L15586-08, INV-L15586-03.",
 	},
 	"ERRORS-RAWIO-1d": {
 		verification: "test",
 		text: "WHILE a timed-out write's Raw-I/O Helper has not been observed to exit (tracked in-memory via registerUnexitedWriteTarget(targetPath, exitPromise) keyed by the target's resolved real path—falling back to targetPath on ENOENT/ENOTDIR—for the life of the omp process with no time cap; does not survive an omp restart), omp SHALL refuse any new write request whose resolved real path matches that target with an error naming the operation ('write') and target path and stating that the previous helper is still alive and to fix the mount or restart omp, while allowing read and classify requests and write requests to other files to proceed on a fresh helper, and SHALL lift the block when exitPromise (the old helper's exit) settles. The refused public async write operation's returned promise SHALL reject with RawIoHelperOperationError carrying clauseId='ERRORS-RAWIO-1d', operation='write', and targetPath for that refused request; this helper failure SHALL NOT be thrown synchronously. PRE-RAWIO-1 violations remain distinct RawIoInvalidTargetPathError failures. (Verified by test driving registerUnexitedWriteTarget(targetPath, exitPromise), writeRawIoBytes, readRawIoBytes, and classifyRawIoTarget, including symlink-alias refusal and lift when exitPromise settles; the wiring that registers the target when the 5s kill wait ends with helperExited=false is checked by reading the code during the slice audit, because no unprivileged test can create a process that survives SIGKILL.) Source: REQ-L15586-08, INV-L15586-03.",
+	},
+	"ERRORS-RAWIO-1e": {
+		verification: "test",
+		text: "IF classifyRawIoTarget receives a sqlite_db classification without the actual header bytes matching SQLITE_HEADER_MAGIC, THEN its returned promise SHALL reject with RawIoHelperOperationError carrying clauseId='ERRORS-RAWIO-1e', operation='classify', and the caller's targetPath; it SHALL NOT synthesize header bytes or throw this failure synchronously. Source: REQ-L15586-05, REQ-L15586-08, IP-2.",
 	},
 	"FORBIDDEN-RAWIO-1": {
 		verification: "test",

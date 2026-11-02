@@ -122,3 +122,16 @@
 - **D1 (`INV-L15586-02`, `FORBIDDEN-RAWIO-1`):** Keep `verification='test'`; use the existing tests executing the real helper's normal classify, read, write, start, and stop operations. Add only a short note in the clause rationale and worker header not to add `bun:sqlite` or any SQLite binding as a Raw-I/O Helper dependency. No new test, dependency-graph check, exhaustive edge-case matrix, or deliberate future-capability sabotage.
 - Decided By: User (Ketema, 2026-11-01; verbatim D2: "D2 -> yes. tool it is.").
 - **D2 (`INV-L15586-12`, `FORBIDDEN-RAWIO-2b`):** The approved REQUIREMENTS commit `8b873c68dd` changes the requirement verification to Tool. Both contract twins now declare `verification='tool'`, naming Bun's serialized-data-only IPC channel, which cannot carry a file descriptor. The proof holds only while omp and the helper communicate over that channel.
+
+## 2026-11-01 — Bounded re-audit disposition and thin error refinements
+
+- Decided By: User (Ketema, verbatim relayed by Claude): "i do. resolve them then the audit is over as there a no behaviorial findings this round."
+- Approved classification: **TRIVIAL=1, CLARIFICATION=7, BEHAVIORAL=0, DISMISSED=2**.
+- **Dismissed; no code changes or new tests:** #19 (not-yet-existing-file literal-key edge) and #17a (caller-supplied rejecting `exitPromise`; internal callers pass `handle.exited`). These are not reopened by this cycle.
+- **#23:** Add `ERRORS-RAWIO-1e` to both twins and the SLICE-4 plan: malformed `sqlite_db` evidence rejects the returned promise with `RawIoHelperOperationError`, operation `classify`, and the caller's target path; header bytes are never invented. Requirement IDs and guarantees are preserved.
+- Decided By: Claude + oMACarchy — use `clauseId='ERRORS-RAWIO-1e'` rather than `POST-RAWIO-1` so this error, like the other error scenarios, names its own ERRORS clause. The metadata change belongs in GREEN after structured RED assertions.
+- Decided By: Claude + oMACarchy — #17b uses exported `settleRawIoTimeoutAfterKillWait` as the real continuation's settlement owner. Unit tests use native promise rejectors and real `registerUnexitedWriteTarget`/filesystem `EACCES`, not a registrar mock. Registration failure retains its cause and cannot prevent the contracted active/queued rejection or reorder the queue. The unexited-helper false-result wiring remains explicitly inspected, not represented as an impossible live SIGKILL-survivor test.
+- **#20/#21/#22:** Strengthen existing error scenarios to observe the exact class and `clauseId`, `operation`, and `targetPath`, retaining the real lock/timeout/refusal controls.
+- **#24/#25:** Observe session option forwarding on each actual auxiliary helper read; setup operations cannot supply the refusal/conflict operation's evidence.
+- **#26:** After GREEN, a separate behavior-preserving refactor reduces `resolveTargetKey` classic cyclomatic complexity to at most 15, with tests passing before and after.
+- No further re-audit is requested. Audit closure remains conditional on Claude's verification of these commits and the Mac full-suite result; this ledger does not assert closure, deployment, or bridge-start authority.
