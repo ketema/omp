@@ -462,6 +462,9 @@ describe("read speculation assessment", () => {
 		for (const { path: target, reason } of [
 			{ path: "directory", reason: "local read target is unsafe" },
 			{ path: "missing.txt", reason: "local read path is unavailable" },
+			// POST-RAWIO-3: a SQLite-Family target is refused at authorization (never read in-process), so the
+			// read falls back to the ordinary helper-backed path.
+			{ path: "data.sqlite", reason: "local read target is unsafe" },
 		]) {
 			const assessment = await policy.assess({ args: { path: target } });
 			if (!assessment.eligible) throw new Error(`expected provisional admission for ${target}`);
@@ -473,7 +476,7 @@ describe("read speculation assessment", () => {
 		// Content verdicts moved behind the hook gate: authorization admits
 		// provisionally (no file bytes read), and the pre-execution capture —
 		// which runs after `beforeToolCall` for deferred candidates — vetoes.
-		for (const target of ["image.png", "data.sqlite", "blob.dat"]) {
+		for (const target of ["image.png", "blob.dat"]) {
 			const assessment = await policy.assess({ args: { path: target } });
 			if (!assessment.eligible) throw new Error(`expected provisional admission for ${target}`);
 			const context = authorizeContext(`content-${target}`, target, assessment.effect);
