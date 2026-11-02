@@ -144,3 +144,10 @@
   - **`SEQ-RAWIO-2`:** a one-shot CLI command that issues Raw-I/O requests stops the helper before returning, so the process can exit when the helper child is referenced.
   - **`ERRORS-RAWIO-1d`:** the public WriteTool applies the existing refusal before selecting any write route, independent of the target's current classification.
 - Both contract twins carry identical text (checked). Next: RED tests, then GREEN, as separate commits. Copilot F5 (bounded reads over the snapshot cap) is a separate batch; F1, F2, F3, F4 and F7 await Ketema's disposition and are not in this batch.
+
+## 2026-11-02 — Copilot F5: bounded helper reads over the snapshot cap (Batch C)
+
+- Decided By: User (Ketema, 2026-11-02, verbatim: "... lets get slice 4 merged correctly and safely"); authorizes proceeding, not the exact wording below.
+- Evidence (observed): `read.ts` buffered every SQLite-Family target whole through the helper regardless of `SNAPSHOT_MAX_BYTES` (4 MiB), so a multi-GB `-wal` is allocated in the helper and copied into the parent before the binary check or paging (Copilot comment 4446508705, `read.ts:2117`).
+- Decided By: oMACarchy (pending Claude's verification) — thin clarification of `POST-RAWIO-3`, relaxing nothing: bytes requested from the helper for a SQLite-Family target are bounded by `SNAPSHOT_MAX_BYTES`; a larger target is sniffed from a bounded helper prefix, returned as a binary-file result when binary, otherwise refused with an error naming the limit; never read whole, never opened in-process. Both twins identical (checked).
+- Open for Ketema: the refusal for oversized non-binary SQLite-Family files is a small behavior choice (the alternative is helper-backed ranged paging, a larger change). F1, F2, F3, F4 and F7 remain undisposed.

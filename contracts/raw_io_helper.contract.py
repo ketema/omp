@@ -1037,6 +1037,11 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "POSIX advisory lock SQLite holds on the database file and its -shm "
             "file, and every POSIX advisory lock omp holds on a SQLite-Family "
             "target that the tool accesses through the Raw-I/O Helper. "
+            "ReadTool SHALL bound the bytes it requests from the Raw-I/O Helper "
+            "for a SQLite-Family target by SNAPSHOT_MAX_BYTES (4 MiB): a larger "
+            "target is sniffed from a bounded helper prefix, returned as a "
+            "binary-file result when binary, and otherwise refused with an error "
+            "naming the size limit, never read whole and never opened in-process. "
             "Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, INV-L15586-01, "
             "INV-L15586-04, Q-SLICE4-01."
         ),
