@@ -68,3 +68,64 @@ describe("pageLinesThroughHelper", () => {
 		).rejects.toBeInstanceOf(PageScanLimitError);
 	});
 });
+
+describe("pageLinesThroughHelper memory bound (Claude audit, POST-RAWIO-3)", () => {
+	const MIB = 1024 * 1024;
+
+	/** A reader that fabricates a file on demand, so the test itself never holds the whole file. */
+	function syntheticReader(totalBytes: number, tail = "") {
+		const tailBytes = new TextEncoder().encode(tail);
+		const size = totalBytes + tailBytes.length;
+		return {
+			size,
+			read: async (offset: number, length: number): Promise<Uint8Array> => {
+				const out = new Uint8Array(Math.max(0, Math.min(length, size - offset)));
+				out.fill(0x61);
+				for (let at = Math.max(offset, totalBytes); at < offset + out.length; at++) {
+					out[at - offset] = tailBytes[at - totalBytes] ?? 0x0a;
+				}
+				return out;
+			},
+		};
+	}
+
+	async function peakGrowthMiB<T>(work: () => Promise<T>): Promise<{ result: T; growthMiB: number }> {
+		Bun.gc(true);
+		const baseline = process.memoryUsage().rss;
+		let peak = baseline;
+		const sampler = setInterval(() => {
+			peak = Math.max(peak, process.memoryUsage().rss);
+		}, 2);
+		try {
+			const result = await work();
+			return { result, growthMiB: Math.round((Math.max(peak, process.memoryUsage().rss) - baseline) / MIB) };
+		} finally {
+			clearInterval(sampler);
+		}
+	}
+
+	it("does not accumulate a 48 MiB single line with no newline (first page)", async () => {
+		const r = syntheticReader(48 * MIB);
+		const { result, growthMiB } = await peakGrowthMiB(() =>
+			pageLinesThroughHelper(r.read, r.size, { startLine0: 0, maxLines: 3, maxBytes: 1000, chunkBytes: MIB }),
+		);
+		expect(result.lines.length).toBe(1);
+		expect(result.lines[0]?.length).toBe(1000);
+		expect(growthMiB < 24, `parent RSS grew by ${growthMiB} MiB while paging a newline-free file`).toBe(true);
+	}, 120_000);
+
+	it("holds no bytes while skipping a huge line, then returns the lines after it", async () => {
+		const r = syntheticReader(48 * MIB, "\nafter one\nafter two\n");
+		const { result, growthMiB } = await peakGrowthMiB(() =>
+			pageLinesThroughHelper(r.read, r.size, {
+				startLine0: 1,
+				maxLines: 3,
+				maxBytes: 1000,
+				chunkBytes: MIB,
+				scanCapBytes: 256 * MIB,
+			}),
+		);
+		expect(result.lines).toEqual(["after one", "after two"]);
+		expect(growthMiB < 24, `parent RSS grew by ${growthMiB} MiB while skipping a huge line`).toBe(true);
+	}, 120_000);
+});
