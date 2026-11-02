@@ -1044,6 +1044,10 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "default first page and single line ranges; any other selector is "
             "refused with an error naming the 4 MiB limit), never read whole and "
             "never opened in-process. "
+            "Speculative reads SHALL resolve their target without opening it and "
+            "SHALL NOT read a SQLite-Family target in-process: a SQLite-Family "
+            "target is refused as unsafe for speculation, so the read falls back "
+            "to the ordinary helper-backed path. "
             "Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, INV-L15586-01, "
             "INV-L15586-04, Q-SLICE4-01."
         ),
@@ -1062,6 +1066,9 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "POSIX advisory lock SQLite holds on the database file and its -shm "
             "file, and every POSIX advisory lock omp holds on a SQLite-Family "
             "target that the tool accesses through the Raw-I/O Helper. "
+            "WriteTool SHALL recheck cancellation after classifying a "
+            "SQLite-Family target and before dispatching the write to the Raw-I/O "
+            "Helper, so a cancelled call never mutates the target. "
             "Source: REQ-L15586-05, REQ-L15586-31, SEQ-2, IP-2, INV-L15586-01, "
             "INV-L15586-04, Q-SLICE4-01."
         ),
