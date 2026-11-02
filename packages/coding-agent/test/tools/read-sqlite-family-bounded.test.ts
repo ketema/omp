@@ -84,25 +84,78 @@ describe("ReadTool bounds helper reads of SQLite-Family files (Copilot F5)", () 
 		).toBe(true);
 	}, 120_000);
 
-	it("refuses an oversized non-binary sidecar with an error naming the 4 MiB limit", async () => {
-		const textual = path.join(dir, "big.db-journal");
-		await fs.writeFile(textual, "a line of plain text\n".repeat(Math.ceil((SNAPSHOT_MAX_BYTES + MIB) / 21)));
-		const size = (await fs.stat(textual)).size;
-		expect(size > SNAPSHOT_MAX_BYTES, evidence("fixture size control", "the file exceeds the cap", size)).toBe(true);
-		let refusal: unknown;
-		let result: unknown;
-		try {
-			result = await new ReadTool(session(dir)).execute("big-journal", { path: textual });
-		} catch (error: unknown) {
-			refusal = error;
+	describe("pages an oversized non-binary sidecar (Ketema decision on F5)", () => {
+		let textual = "";
+		const LINES = 450_000;
+
+		async function readText(readPath: string): Promise<string> {
+			const result = await new ReadTool(session(dir)).execute("page", { path: readPath });
+			return result.content
+				.filter(block => block.type === "text")
+				.map(block => ("text" in block ? block.text : ""))
+				.join("\n");
 		}
-		const message = refusal instanceof Error ? refusal.message : "";
-		expect(
-			{ refused: refusal !== undefined, namesLimit: message.includes("4 MiB") },
-			evidence("oversized text sidecar", "refused with an error naming the 4 MiB limit", {
-				message,
-				returned: result !== undefined,
-			}),
-		).toEqual({ refused: true, namesLimit: true });
-	}, 60_000);
+
+		beforeEach(async () => {
+			textual = path.join(dir, "big.db-journal");
+			const rows: string[] = [];
+			for (let i = 1; i <= LINES; i++) rows.push(`line ${i}`);
+			await fs.writeFile(textual, `${rows.join("\n")}\n`);
+			const size = (await fs.stat(textual)).size;
+			expect(size > SNAPSHOT_MAX_BYTES, evidence("fixture size control", "the file exceeds the cap", size)).toBe(
+				true,
+			);
+		});
+
+		it("returns the first page with a continuation notice instead of refusing or buffering the file", async () => {
+			const text = await readText(textual);
+			expect(
+				{
+					hasFirst: text.includes("line 1"),
+					hasContinuation: /Use :\d+ to continue/.test(text),
+					small: text.length < 200_000,
+				},
+				evidence("default page", "first page plus a continuation notice, bounded", {
+					head: text.slice(0, 120),
+					length: text.length,
+				}),
+			).toEqual({ hasFirst: true, hasContinuation: true, small: true });
+		}, 60_000);
+
+		it("returns exactly a requested single line range", async () => {
+			const text = await readText(`${textual}:3-5`);
+			expect(
+				{
+					three: text.includes("line 3"),
+					four: text.includes("line 4"),
+					five: text.includes("line 5"),
+					six: text.includes("line 6\n") || text.endsWith("line 6"),
+				},
+				evidence("single range", "lines 3 to 5 and not line 6", text.slice(0, 200)),
+			).toEqual({ three: true, four: true, five: true, six: false });
+		}, 60_000);
+
+		it("pages deep into the file through bounded helper reads", async () => {
+			const text = await readText(`${textual}:300000-300002`);
+			expect(
+				{ a: text.includes("line 300000"), b: text.includes("line 300002"), before: text.includes("line 299999") },
+				evidence("deep range", "lines 300000 to 300002 only", text.slice(0, 200)),
+			).toEqual({ a: true, b: true, before: false });
+		}, 90_000);
+
+		it("refuses multi-range and tail selectors with an error naming the 4 MiB limit", async () => {
+			for (const selector of [":1-2,5-6", ":-3"]) {
+				let message = "";
+				try {
+					await readText(`${textual}${selector}`);
+				} catch (error: unknown) {
+					message = error instanceof Error ? error.message : String(error);
+				}
+				expect(
+					message.includes("4 MiB"),
+					evidence(`unsupported selector ${selector}`, "refused naming the 4 MiB limit", message),
+				).toBe(true);
+			}
+		}, 60_000);
+	});
 });
