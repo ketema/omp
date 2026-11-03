@@ -166,6 +166,13 @@ import {
 import { splitAddressableFileLines } from "@oh-my-pi/pi-tui/tools/hashline-format";
 import { readBinary, resolveBinaryViewPath } from "./read-binary";
 import { readSqlite, resolveSqliteReadPath } from "./read-sqlite";
+import {
+	classifyRawIoTarget,
+	type RawIoClassifyOptions,
+	readRawIoBytes,
+	resolveRealPathWithoutOpening,
+} from "./raw-io-client";
+import { type HelperLinePage, PageScanLimitError, pageLinesThroughHelper } from "./raw-io-lines";
 import { readJson, resolveJsonReadPath, splitJsonQueryTarget } from "./read-json";
 import {
 	getReadTextFileBridge,
@@ -890,9 +897,16 @@ export type SpeculativeReadTargetFailure = "local read path is unavailable" | "l
 export async function resolveSpeculativeReadTarget(
 	cwd: string,
 	lexicalPath: string,
+	rawIoOptions?: RawIoClassifyOptions,
 ): Promise<{ ok: true; resolved: string } | { ok: false; reason: SpeculativeReadTargetFailure }> {
 	try {
-		const [workspace, resolved] = await Promise.all([fs.realpath(cwd), fs.realpath(path.resolve(cwd, lexicalPath))]);
+		// POST-RAWIO-3: resolve the target without opening it (fs.realpath opens the file on macOS and drops
+		// omp's POSIX locks); the workspace directory itself is safe to realpath.
+		const workspace = await fs.realpath(cwd);
+		const resolved = resolveRealPathWithoutOpening(path.resolve(cwd, lexicalPath));
+		// A missing path comes back unresolved, so stat it BEFORE the containment check: it must report
+		// unavailable (as fs.realpath did) rather than look like it lies outside a symlinked workspace.
+		const targetStat = await fs.stat(resolved);
 		const workspaceRelativePath = path.relative(workspace, resolved);
 		if (
 			workspaceRelativePath.length === 0 ||
@@ -902,8 +916,12 @@ export async function resolveSpeculativeReadTarget(
 		) {
 			return { ok: false, reason: "local read target is unsafe" };
 		}
-		const targetStat = await fs.stat(resolved);
 		if (!targetStat.isFile() || targetStat.size > SNAPSHOT_MAX_BYTES) {
+			return { ok: false, reason: "local read target is unsafe" };
+		}
+		// POST-RAWIO-3: a SQLite-Family target is never read in-process; refuse it so the read falls back to
+		// the ordinary helper-backed path.
+		if ((await classifyRawIoTarget(resolved, rawIoOptions)).isSqliteFamily) {
 			return { ok: false, reason: "local read target is unsafe" };
 		}
 		return { ok: true, resolved };
@@ -1081,7 +1099,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 		const execution = { discarded: false };
 		this.#speculativeReadExecutions.set(context.toolCall.id, execution);
-		const target = await resolveSpeculativeReadTarget(this.session.cwd, context.effect.resources[0].path);
+		const target = await resolveSpeculativeReadTarget(
+			this.session.cwd,
+			context.effect.resources[0].path,
+			this.session.rawIoHelperOptions,
+		);
 		if (!target.ok) {
 			throw new Error("Speculative read target is unavailable");
 		}
@@ -1912,7 +1934,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 
 			const sqlitePath = await resolveSqliteReadPath(this.session, readPath, suffixCache, signal);
 			if (sqlitePath) {
-				return readSqlite(sqlitePath, signal);
+				return readSqlite(sqlitePath, signal, this.session.rawIoHelperOptions);
 			}
 			// local:// and artifact:// locate backing files without their URL query;
 			// restore it only for JSON reads, leaving other schemes' query semantics alone.
@@ -2056,9 +2078,25 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			}
 			return dirResult;
 		}
+		// REQ-L15586-05 / REQ-L15586-31 / SEQ-2 (POST-RAWIO-3, POST-RAWIO-3c, FORBIDDEN-RAWIO-3):
+		// Classify every regular host file out of process via the Raw-I/O Helper
+		// before any in-process file open.
+		const rawIoClassification = await classifyRawIoTarget(absolutePath, this.session.rawIoHelperOptions);
+		if (rawIoClassification.kind === "sqlite_db" && !isRawSelector(parsed) && parsed.kind !== "conflicts") {
+			return readSqlite(
+				{
+					absolutePath,
+					sqliteSubPath: localTarget.sel ?? "",
+					queryString: "",
+					suffixResolution,
+				},
+				signal,
+				this.session.rawIoHelperOptions,
+			);
+		}
 
 		if (parsed.kind === "conflicts") {
-			return this.#readFileConflicts(absolutePath, suffixResolution, signal);
+			return this.#readFileConflicts(absolutePath, suffixResolution, rawIoClassification.isSqliteFamily, signal);
 		}
 
 		if (pdfImageRead) {
@@ -2089,6 +2127,75 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			media.path = absolutePath;
 		}
 
+		// POST-RAWIO-3 (bounded reads): never buffer an oversized SQLite-Family target whole. Binary targets get
+		// the ordinary binary notice from a bounded helper prefix; text targets are paged through bounded helper
+		// range reads (default first page or one line range). The file is never opened in-process.
+		if (rawIoClassification.isSqliteFamily && fileSize > SNAPSHOT_MAX_BYTES) {
+			const sizedDisplayPath = located?.url ?? formatPathRelativeToCwd(renderAbsolutePath, this.session.cwd);
+			const prefix = await readRawIoBytes(absolutePath, 0, BINARY_SNIFF_BYTES, this.session.rawIoHelperOptions);
+			if (!isRawSelector(parsed) && isProbablyBinaryHeader(prefix)) {
+				return toolResult<ReadToolDetails>({ resolvedPath: renderAbsolutePath, suffixResolution })
+					.text(
+						prependSuffixResolutionNotice(
+							`[Cannot read binary file '${sizedDisplayPath}' (${formatBytes(fileSize)}); not valid UTF-8 text. SQLite-family files over 4 MiB are not buffered whole.]`,
+							suffixResolution,
+						),
+					)
+					.sourcePath(renderAbsolutePath)
+					.done();
+			}
+			if (parsed.kind === "tail" || (parsed.kind === "lines" && parsed.ranges.length > 1)) {
+				throw new ToolError(
+					`Cannot read '${sizedDisplayPath}' (${formatBytes(fileSize)}): SQLite-family files over 4 MiB support only the default first page or a single line range, not multi-range or tail selectors.`,
+				);
+			}
+			const { offset: pageOffset, limit: pageLimit } = selToOffsetLimit(parsed);
+			const pageStart0 = pageOffset ? Math.max(0, pageOffset - 1) : 0;
+			let page: HelperLinePage;
+			try {
+				page = await pageLinesThroughHelper(
+					(from, length) => readRawIoBytes(absolutePath, from, length, this.session.rawIoHelperOptions),
+					fileSize,
+					{
+						startLine0: pageStart0,
+						maxLines: Math.min(pageLimit ?? this.#defaultLimit, DEFAULT_MAX_LINES),
+						maxBytes: DEFAULT_MAX_BYTES,
+					},
+				);
+			} catch (error) {
+				if (error instanceof PageScanLimitError) {
+					throw new ToolError(
+						`Cannot read '${sizedDisplayPath}' (${formatBytes(fileSize)}) at line ${pageStart0 + 1}: ${error.message}. SQLite-family files over 4 MiB are paged sequentially.`,
+					);
+				}
+				throw error;
+			}
+			if (page.lines.length === 0) {
+				return toolResult<ReadToolDetails>({ resolvedPath: renderAbsolutePath, suffixResolution })
+					.text(
+						prependSuffixResolutionNotice(
+							`Line ${pageStart0 + 1} is beyond end of file. Use :1 to read from the start.`,
+							suffixResolution,
+						),
+					)
+					.sourcePath(renderAbsolutePath)
+					.done();
+			}
+			const rawPage = isRawSelector(parsed);
+			const pageMode = resolveFileDisplayMode(this.session, { raw: rawPage, immutable: true });
+			let pageText = formatTextWithMode(
+				page.lines.join("\n"),
+				pageStart0 + 1,
+				false,
+				!rawPage && pageMode.lineNumbers,
+			);
+			if (page.more) pageText += `\n\n[More lines in file. Use :${pageStart0 + page.lines.length + 1} to continue]`;
+			return toolResult<ReadToolDetails>({ resolvedPath: renderAbsolutePath, suffixResolution })
+				.text(prependSuffixResolutionNotice(pageText, suffixResolution))
+				.sourcePath(renderAbsolutePath)
+				.done();
+		}
+
 		const ext = path.extname(renderAbsolutePath).toLowerCase();
 		// Buffer once for every consumer below: the image sniff, the binary sniff,
 		// the structural summary, the rendered window, bracket context, and the
@@ -2097,7 +2204,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		// so a PNG stored as `.txt` still resolves at any size under the cap;
 		// unbuffered files keep one centralized 256KB peek regardless of
 		// extension, since only magic bytes — never the name — decide.
-		const wholeFileBytes = fileSize <= SNAPSHOT_MAX_BYTES ? await readWholeFile(absolutePath) : undefined;
+		const wholeFileBytes = rawIoClassification.isSqliteFamily
+			? Buffer.from(await readRawIoBytes(absolutePath, undefined, undefined, this.session.rawIoHelperOptions))
+			: fileSize <= SNAPSHOT_MAX_BYTES
+				? await readWholeFile(absolutePath)
+				: undefined;
 		const imageHeader =
 			isRawSelector(parsed) && !rawImages
 				? undefined
@@ -2857,10 +2968,17 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	async #readFileConflicts(
 		absolutePath: string,
 		suffixResolution: { from: string; to: string } | undefined,
+		isSqliteFamily: boolean,
 		signal: AbortSignal | undefined,
 	): Promise<AgentToolResult<ReadToolDetails>> {
 		throwIfAborted(signal);
-		const scan = await scanFileForConflicts(absolutePath);
+		// POST-RAWIO-3 / FORBIDDEN-RAWIO-3 also cover auxiliary conflict scans.
+		const scan = await scanFileForConflicts(
+			absolutePath,
+			isSqliteFamily
+				? { readBytes: length => readRawIoBytes(absolutePath, 0, length, this.session.rawIoHelperOptions) }
+				: {},
+		);
 		const displayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
 		const history = getConflictHistory(this.session);
 		const entries = scan.blocks.map(block =>

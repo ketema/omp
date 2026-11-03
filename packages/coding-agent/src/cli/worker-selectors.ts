@@ -25,3 +25,5 @@ export const STATS_ACTIVITY_WORKER_ARG = "__omp_worker_stats_activity";
 export const TEXT_PREDICT_WORKER_ARG = "__omp_worker_text_predict";
 /** Terminal-output selector shared by the CLI dispatcher and worker launcher. */
 export const TERMINAL_OUTPUT_WORKER_ARG = "__omp_worker_terminal_output";
+/** Raw-I/O Helper selector shared by the CLI dispatcher and `raw-io-client.ts` (POST-RAWIO-2). */
+export const RAW_IO_WORKER_ARG = "__omp_worker_raw_io";

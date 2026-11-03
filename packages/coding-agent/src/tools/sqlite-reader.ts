@@ -1,7 +1,13 @@
 import { Database, type SQLQueryBindings, type Statement } from "bun:sqlite";
+import * as fs from "node:fs/promises";
 import { formatBytes, replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-
+import {
+	classifyRawIoTarget,
+	type RawIoClassifyOptions,
+	RawIoHelperClientError,
+	readRawIoBytes,
+} from "./raw-io-client";
 const SQLITE_MAGIC = new Uint8Array([
 	0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00,
 ]);
@@ -18,14 +24,23 @@ function isSqliteCantOpen(error: unknown): boolean {
 	return typeof error.code === "string" && error.code.startsWith("SQLITE_CANTOPEN");
 }
 
-async function requiresWalSidecarInitialization(filePath: string): Promise<boolean> {
-	const formatVersions = await Bun.file(filePath).slice(18, 20).bytes();
-	if (formatVersions[0] !== 2 && formatVersions[1] !== 2) return false;
+async function statRegularFileExists(candidatePath: string): Promise<boolean> {
+	try {
+		const st = await fs.stat(candidatePath);
+		return st.isFile();
+	} catch {
+		return false;
+	}
+}
+
+async function requiresWalSidecarInitialization(filePath: string, options?: RawIoClassifyOptions): Promise<boolean> {
 	const [walExists, shmExists] = await Promise.all([
-		Bun.file(`${filePath}-wal`).exists(),
-		Bun.file(`${filePath}-shm`).exists(),
+		statRegularFileExists(`${filePath}-wal`),
+		statRegularFileExists(`${filePath}-shm`),
 	]);
-	return !walExists || !shmExists;
+	if (walExists && shmExists) return false;
+	const formatVersions = await readRawIoBytes(filePath, 18, 2, options);
+	return formatVersions[0] === 2 || formatVersions[1] === 2;
 }
 
 function configureSqliteReadConnection(db: Database): Database {
@@ -47,8 +62,8 @@ function configureSqliteReadConnection(db: Database): Database {
  * unfinalized `db.prepare()` statement leaves the connection a zombie that keeps the file open
  * (Windows then refuses to delete it).
  */
-export async function openSqliteReadConnection(filePath: string): Promise<Database> {
-	if (await requiresWalSidecarInitialization(filePath)) {
+export async function openSqliteReadConnection(filePath: string, options?: RawIoClassifyOptions): Promise<Database> {
+	if (await requiresWalSidecarInitialization(filePath, options)) {
 		return configureSqliteReadConnection(new Database(filePath, { readwrite: true, create: false, strict: true }));
 	}
 	try {
@@ -555,10 +570,14 @@ export function parseSqlitePathCandidates(filePath: string): SqlitePathCandidate
 	return candidates.sort((left, right) => right.sqlitePath.length - left.sqlitePath.length);
 }
 
-export async function isSqliteFile(absolutePath: string): Promise<boolean> {
+export async function isSqliteFile(absolutePath: string, options?: RawIoClassifyOptions): Promise<boolean> {
 	try {
-		return looksLikeSqlite(await Bun.file(absolutePath).slice(0, SQLITE_MAGIC.byteLength).bytes());
-	} catch {
+		const classification = await classifyRawIoTarget(absolutePath, options);
+		return classification.kind === "sqlite_db";
+	} catch (error) {
+		if (error instanceof RawIoHelperClientError) {
+			throw error;
+		}
 		return false;
 	}
 }

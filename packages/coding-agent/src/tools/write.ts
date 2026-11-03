@@ -71,7 +71,7 @@ import {
 import { decodeUtf8Text } from "./read-format";
 import { routeReadThroughBridge } from "./read-summary";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
-
+import { assertWriteTargetNotBlocked, classifyRawIoTarget, readRawIoBytes, writeRawIoBytes } from "./raw-io-client";
 import {
 	deleteRowByKey,
 	deleteRowByRowId,
@@ -338,9 +338,13 @@ async function assertNotTruncatedFileReadProjection(
 	displayPath: string,
 	rawContent: string,
 	writeContent: string,
+	isSqliteFamily = false,
 ): Promise<void> {
 	if (!endsWithReadTruncationNotice(rawContent)) return;
-	const currentContent = await readCurrentWriteSource(session, requestedPath, absolutePath);
+	// POST-RAWIO-3b / FORBIDDEN-RAWIO-3: refusing a projection must retain locks too.
+	const currentContent = isSqliteFamily
+		? new TextDecoder().decode(await readRawIoBytes(absolutePath, undefined, undefined, session.rawIoHelperOptions))
+		: await readCurrentWriteSource(session, requestedPath, absolutePath);
 	assertNotShorterReadProjection(displayPath, rawContent, currentContent, writeContent);
 }
 
@@ -801,7 +805,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 						`Cannot write '${candidate.sqlitePath}': it is a ${kind}, not a regular file or directory.`,
 					);
 				}
-				if (!(await isSqliteFile(absolutePath))) {
+				if (!(await isSqliteFile(absolutePath, this.session.rawIoHelperOptions))) {
 					sawExistingNonSqlite = true;
 					continue;
 				}
@@ -1029,6 +1033,8 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					signal,
 				});
 
+				// ERRORS-RAWIO-1d: refuse before any route touches a target with an unexited timed-out helper write.
+				assertWriteTargetNotBlocked(resolvedArchivePath.absolutePath);
 				emitWriteProgress(
 					onUpdate,
 					cleanBytes,
@@ -1058,6 +1064,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 			const resolvedSqlitePath = await this.#resolveSqliteWritePath(path, signal);
 			if (resolvedSqlitePath) {
+				assertWriteTargetNotBlocked(resolvedSqlitePath.absolutePath);
 				await enforcePlanModeWrite(this.session, resolvedSqlitePath.sqlitePath, { op: "update", signal });
 
 				emitWriteProgress(onUpdate, cleanBytes, path, resolvedSqlitePath.absolutePath);
@@ -1077,6 +1084,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			await assertNotReadSelectorMisfire(path, cleanContent, this.session.cwd);
 			await enforcePlanModeWrite(this.session, path, { op: "create", signal });
 			const absolutePath = await resolvePlanPath(this.session, path, signal);
+			assertWriteTargetNotBlocked(absolutePath);
 			// A located URL write keeps its URL identity in progress, results, and the hashline header.
 			const displayPath = target ? path : formatPathRelativeToCwd(absolutePath, this.session.cwd);
 			const batchRequest = getLspBatchRequest(context?.toolCall);
@@ -1088,6 +1096,42 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			const kind = existing && specialFileKind(existing);
 			if (kind) {
 				throw new ToolError(`Cannot write '${path}': it is a ${kind}, not a regular file or directory.`);
+			}
+			// REQ-L15586-05 / REQ-L15586-31 / SEQ-2 (POST-RAWIO-3b, POST-RAWIO-3c, FORBIDDEN-RAWIO-3):
+			// Classify every host file target out of process via the Raw-I/O Helper
+			// before any in-process open, and write SQLite-Family targets through
+			// the helper so omp never closes an in-process descriptor on that inode.
+			const rawIoClassification = await classifyRawIoTarget(absolutePath, this.session.rawIoHelperOptions);
+			if (rawIoClassification.isSqliteFamily) {
+				// POST-RAWIO-3b: a call cancelled while classification was pending must not mutate the target.
+				signal?.throwIfAborted();
+				await assertNotTruncatedFileReadProjection(
+					this.session,
+					path,
+					absolutePath,
+					displayPath,
+					content,
+					cleanContent,
+					true,
+				);
+				emitWriteProgress(onUpdate, cleanBytes, displayPath, absolutePath);
+				await writeRawIoBytes(
+					absolutePath,
+					new Uint8Array(Buffer.from(cleanContent, "utf8")),
+					this.session.rawIoHelperOptions,
+				);
+				invalidateFsScanAfterWrite(absolutePath);
+				this.session.bumpFileMutationVersion?.(absolutePath);
+				const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent, displayPath);
+				const writeLine = `Successfully wrote ${cleanBytes} bytes to ${displayPath}`;
+				let resultText = header ? `${header}\n${writeLine}` : writeLine;
+				if (stripped) {
+					resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
+				}
+				return {
+					content: [{ type: "text", text: resultText }],
+					details: { resolvedPath: absolutePath },
+				};
 			}
 			// Check if file exists and is auto-generated before overwriting.
 			if (existing) {

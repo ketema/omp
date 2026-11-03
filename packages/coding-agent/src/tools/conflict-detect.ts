@@ -140,13 +140,22 @@ export interface ConflictFileScan {
  */
 export async function scanFileForConflicts(
 	absolutePath: string,
-	options: { maxBytes?: number } = {},
+	options: { maxBytes?: number; readBytes?: (length: number) => Promise<Uint8Array> } = {},
 ): Promise<ConflictFileScan> {
 	const maxBytes = options.maxBytes ?? SCAN_FILE_DEFAULT_MAX_BYTES;
-	const file = Bun.file(absolutePath);
-	const size = file.size;
-	const truncated = size > maxBytes;
-	const bytes = truncated ? new Uint8Array(await file.slice(0, maxBytes).arrayBuffer()) : await file.bytes();
+	let bytes: Uint8Array;
+	let truncated: boolean;
+	if (options.readBytes) {
+		// POST-RAWIO-3 / FORBIDDEN-RAWIO-3: the caller supplies helper-only bytes
+		// for SQLite-Family targets. One extra byte detects the existing scan cap.
+		const prefix = await options.readBytes(maxBytes + 1);
+		truncated = prefix.byteLength > maxBytes;
+		bytes = prefix.subarray(0, maxBytes);
+	} else {
+		const file = Bun.file(absolutePath);
+		truncated = file.size > maxBytes;
+		bytes = truncated ? new Uint8Array(await file.slice(0, maxBytes).arrayBuffer()) : await file.bytes();
+	}
 	const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
 	// `split("\n")` over a truncated read may leave a partial last line; the
 	// scanner already tolerates an unclosed opener, so no extra trimming.
