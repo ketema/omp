@@ -152,7 +152,7 @@ describe("SLICE-3 (POST-RAWIO-6): native Rust grep, pi-walker ignore-file reads,
 			cwd: path.resolve(import.meta.dir, "../.."),
 			env: {
 				...process.env,
-				OMP_RAW_IO_VFS_HELPER_CMD: "/nonexistent/omp-raw-io-vfs-helper-binary",
+				OMP_RAW_IO_VFS_HELPER_FAULT: "spawn_fail",
 				OMP_SLICE3_TARGET: shmPath,
 			},
 			stdout: "pipe",
