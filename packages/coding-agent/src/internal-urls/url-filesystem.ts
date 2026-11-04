@@ -31,6 +31,7 @@ import {
 } from "@oh-my-pi/pi-natives";
 import { isFsError } from "@oh-my-pi/pi-utils";
 import { TIER_RANK } from "../tools/approval";
+import { readRawIoBytes } from "../tools/raw-io-client";
 import { UrlContainmentError } from "./filesystem-resource";
 import { parseInternalUrl } from "./parse";
 import { InternalUrlRouter } from "./router";
@@ -312,7 +313,10 @@ export class InternalUrlFilesystem {
 	async readPrefix(input: string, maxBytes: number): Promise<Uint8Array> {
 		try {
 			const node = await this.#node(input, true, false);
-			if (node.kind !== "virtual") return await Bun.file(node.path).slice(0, maxBytes).bytes();
+			if (node.kind !== "virtual") {
+				const absolutePath = path.resolve(this.#context.cwd || process.cwd(), node.path);
+				return await readRawIoBytes(absolutePath, 0, maxBytes, this.#context.session?.rawIoHelperOptions);
+			}
 			if (node.directory) throw new UrlFsError("EISDIR", `Is a directory: ${node.url}`);
 			return node.bytes.subarray(0, maxBytes);
 		} catch (error) {
@@ -756,6 +760,8 @@ export class InternalUrlFilesystem {
 		if (this.#context.signal?.aborted) return { code: "ECANCELED", message };
 		if (error instanceof UrlContainmentError) return { code: "EACCES", message };
 		if (isFsError(error) && ERRNO_CODE_RE.test(error.code)) return { code: error.code, message };
+		const embeddedErrno = /\b(E[A-Z0-9]{2,}):/.exec(message);
+		if (embeddedErrno?.[1] && ERRNO_CODE_RE.test(embeddedErrno[1])) return { code: embeddedErrno[1], message };
 		// Handlers report misses and refusals as plain errors; classify them by what they say.
 		if (DENIED_MESSAGE_RE.test(message)) return { code: "EACCES", message };
 		if (MISSING_MESSAGE_RE.test(message)) return { code: "ENOENT", message };

@@ -1084,6 +1084,10 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
             "path. Source: REQ-L15586-31, SEQ-2, IP-2."
         ),
     ),
+    "POST-RAWIO-4": Clause(
+        verification="test",
+        text=("When InternalUrlFilesystem.readPrefix reads a non-virtual node (a host file path or a file-backed internal URL), it forwards context.session?.rawIoHelperOptions and reads the first maxBytes bytes at offset 0 through the Raw-I/O Helper (readRawIoBytes) without opening the file in the omp process, retaining every POSIX advisory lock SQLite holds on a database file and its -shm file and every POSIX advisory lock omp holds on the target; virtual nodes continue to slice their in-memory bytes, and any Raw-I/O Helper failure rejects with a UrlFsError whose message names the failed 'read' operation and resolved target path without falling back to an in-process file open. Source: REQ-L15586-06, REQ-L15586-08, INV-L15586-01, INV-L15586-03."),
+    ),
     "ERRORS-RAWIO-1": Clause(
         verification="test",
         text=(

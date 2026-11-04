@@ -143,7 +143,17 @@ slices:
   - REQ-L15586-06
   - REQ-L15586-08
   - REQ-L15586-28
-  clauses_in_scope: []
+  clauses_in_scope:
+  - PRE-RAWIO-1
+  - POST-RAWIO-2
+  - POST-RAWIO-4
+  - SEQ-RAWIO-2
+  - ERRORS-RAWIO-1
+  - ERRORS-RAWIO-1b
+  - FORBIDDEN-RAWIO-1
+  - FORBIDDEN-RAWIO-1b
+  - FORBIDDEN-RAWIO-2
+  - FORBIDDEN-RAWIO-2b
   clauses_deferred: []
   negative_constraints:
   - INV-L15586-01
@@ -152,7 +162,7 @@ slices:
   - INV-L15586-04
   - INV-L15586-12
   - INV-L15586-13
-  status: PENDING
+  status: GREEN_COMPLETE
   depends_on: []
   issue: TODO
   pivot_note: Shippable alone; the find text scan can no longer release omp's locks, proven on both hosts.
@@ -178,13 +188,24 @@ slices:
   - REQ-L15586-23
   - REQ-L15586-24
   - REQ-L15586-30
-  clauses_in_scope: []
+  clauses_in_scope:
+  - PRE-BH-2
+  - INV-BH-1
+  - INV-BH-4
+  - INV-BH-5
+  - SEQ-BH-3
+  - SEQ-BH-4
+  - SEQ-BH-5b
+  - SEQ-BH-6
+  - ERRORS-BH-1
+  - ERRORS-BH-2
+  - ERRORS-BH-3
   clauses_deferred: []
   negative_constraints:
   - INV-L15586-08
   - INV-L15586-09
   - INV-L15586-10
-  status: PENDING
+  status: GREEN_COMPLETE
   depends_on: []
   issue: TODO
   pivot_note: Shippable alone; oMACarchy's own omp work is gated by the CCABDD state machine, proven first in an isolated session.

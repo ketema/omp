@@ -11,6 +11,7 @@ import { formatPathRelativeToCwd, resolveSearchResultPath } from "../tools/path-
 import { type CascadeResult, runCascade } from "../tools/jfind/cascade";
 import { rankedHeat } from "../tools/jfind/passages";
 import { resolveSearchRoot, type SearchRoot } from "../tools/jfind/tree";
+import { stopRawIoHelper } from "../tools/raw-io-client";
 
 export interface FindCommandArgs {
 	query: string;
@@ -129,5 +130,6 @@ export async function runFindCommand(cmd: FindCommandArgs): Promise<void> {
 		if (result.coverage === "unavailable") process.exitCode = 1;
 	} finally {
 		close();
+		await stopRawIoHelper();
 	}
 }

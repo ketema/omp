@@ -844,6 +844,10 @@ export const RAW_IO_HELPER_CONTRACT = Object.freeze({
 		verification: "test",
 		text: "When a host file is classified as 'non_sqlite', ReadTool and WriteTool forward session.rawIoHelperOptions and access that ordinary file on the in-process fast path so the same onRequest hook that records 'read' and 'write' entries for SQLite-Family helper targets records a 'classify' request and zero 'read' or 'write' byte requests for the 'non_sqlite' path. Source: REQ-L15586-31, SEQ-2, IP-2.",
 	},
+	"POST-RAWIO-4": {
+		verification: "test",
+		text: "When InternalUrlFilesystem.readPrefix reads a non-virtual node (a host file path or a file-backed internal URL), it forwards context.session?.rawIoHelperOptions and reads the first maxBytes bytes at offset 0 through the Raw-I/O Helper (readRawIoBytes) without opening the file in the omp process, retaining every POSIX advisory lock SQLite holds on a database file and its -shm file and every POSIX advisory lock omp holds on the target; virtual nodes continue to slice their in-memory bytes, and any Raw-I/O Helper failure rejects with a UrlFsError whose message names the failed 'read' operation and resolved target path without falling back to an in-process file open. Source: REQ-L15586-06, REQ-L15586-08, INV-L15586-01, INV-L15586-03.",
+	},
 	"ERRORS-RAWIO-1": {
 		verification: "test",
 		text: "IF a live Raw-I/O Helper returns a per-request error for the active request (such as a target read or write error), THEN omp SHALL fail only that active request with an error naming its operation and target path, leave the live helper subprocess and any queued requests untouched, and SHALL NOT fall back to an in-process file open. The public async operation's returned promise SHALL reject with RawIoHelperOperationError carrying clauseId='ERRORS-RAWIO-1', operation, and targetPath for that request; this helper failure SHALL NOT be thrown synchronously. PRE-RAWIO-1 violations remain distinct RawIoInvalidTargetPathError failures. Source: REQ-L15586-08, INV-L15586-03.",
