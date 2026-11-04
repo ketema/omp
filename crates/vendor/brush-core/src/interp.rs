@@ -922,10 +922,19 @@ async fn wait_for_pipeline_processes_and_update_status(
 
 	while let Some(child) = process_spawn_results.pop_front() {
 		ensure_not_cancelled(params)?;
-		let wait_result = if !stopped_children.is_empty() {
-			child.poll().await?
+		let wait_outcome = if !stopped_children.is_empty() {
+			child.poll().await
 		} else {
-			child.wait_with_cancel(params.cancel_token()).await?
+			child.wait_with_cancel(params.cancel_token()).await
+		};
+		let wait_result = match wait_outcome {
+			Ok(res) => res,
+			Err(wait_err) => {
+				let _ = shell
+					.display_error(&mut params.stderr(shell), &wait_err)
+					.await;
+				ExecutionWaitResult::Completed(ExecutionResult::general_error())
+			},
 		};
 
 		match wait_result {

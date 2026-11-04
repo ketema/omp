@@ -280,50 +280,103 @@ fn is_url_root(text: &str) -> bool {
 #[allow(unused_variables, reason = "argv0 is only used on unix platforms")]
 fn spawn_vfs_input_pump(
 	mut vfs_file: pi_vfs::File,
-) -> Result<(std::process::Stdio, std::thread::JoinHandle<()>), error::Error> {
+) -> Result<(std::process::Stdio, std::thread::JoinHandle<io::Result<()>>), error::Error> {
 	let (pipe_reader, mut pipe_writer) = std::io::pipe()?;
 	let handle = std::thread::spawn(move || {
 		let mut buf = vec![0u8; 64 * 1024];
+		let mut pump_err: Option<io::Error> = None;
 		loop {
 			match std::io::Read::read(&mut vfs_file, &mut buf) {
 				Ok(0) => break,
 				Ok(n) => {
-					if std::io::Write::write_all(&mut pipe_writer, &buf[..n]).is_err() {
+					if let Err(err) = std::io::Write::write_all(&mut pipe_writer, &buf[..n]) {
+						if err.kind() != std::io::ErrorKind::BrokenPipe {
+							pump_err = Some(err);
+						}
 						break;
 					}
 				},
 				Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
-				Err(_) => break,
+				Err(err) => {
+					pump_err = Some(err);
+					break;
+				},
 			}
 		}
 		drop(pipe_writer);
-		let _ = vfs_file.close();
+		if let Some(err) = pump_err {
+			let _ = vfs_file.close();
+			return Err(err);
+		}
+		vfs_file.close()
 	});
 	Ok((std::process::Stdio::from(pipe_reader), handle))
 }
 
 fn spawn_vfs_output_pump(
 	mut vfs_file: pi_vfs::File,
-) -> Result<(std::process::Stdio, std::thread::JoinHandle<()>), error::Error> {
+) -> Result<(std::process::Stdio, std::thread::JoinHandle<io::Result<()>>), error::Error> {
 	let (mut pipe_reader, pipe_writer) = std::io::pipe()?;
 	let handle = std::thread::spawn(move || {
 		let mut buf = vec![0u8; 64 * 1024];
+		let mut write_err: Option<io::Error> = None;
 		loop {
 			match std::io::Read::read(&mut pipe_reader, &mut buf) {
 				Ok(0) => break,
 				Ok(n) => {
-					if std::io::Write::write_all(&mut vfs_file, &buf[..n]).is_err() {
+					if let Err(err) = std::io::Write::write_all(&mut vfs_file, &buf[..n]) {
+						write_err = Some(err);
 						break;
 					}
 				},
 				Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
-				Err(_) => break,
+				Err(err) => {
+					write_err = Some(err);
+					break;
+				},
 			}
 		}
-		let _ = std::io::Write::flush(&mut vfs_file);
-		let _ = vfs_file.close();
+		drop(pipe_reader);
+		if let Some(err) = write_err {
+			let _ = vfs_file.close();
+			return Err(err);
+		}
+		std::io::Write::flush(&mut vfs_file)?;
+		vfs_file.close()
 	});
 	Ok((std::process::Stdio::from(pipe_writer), handle))
+}
+
+pub async fn join_vfs_io_pumps(
+	pumps: Vec<std::thread::JoinHandle<io::Result<()>>>,
+) -> io::Result<()> {
+	if pumps.is_empty() {
+		return Ok(());
+	}
+	tokio::task::spawn_blocking(move || {
+		let mut first_err: Option<io::Error> = None;
+		for pump in pumps {
+			match pump.join() {
+				Ok(Ok(())) => {},
+				Ok(Err(err)) => {
+					if first_err.is_none() {
+						first_err = Some(err);
+					}
+				},
+				Err(_) => {
+					if first_err.is_none() {
+						first_err = Some(io::Error::other("VFS redirect pump thread panicked"));
+					}
+				},
+			}
+		}
+		match first_err {
+			Some(err) => Err(err),
+			None => Ok(()),
+		}
+	})
+	.await
+	.map_err(|join_err| io::Error::other(join_err.to_string()))?
 }
 
 pub async fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtensions>(
@@ -339,7 +392,7 @@ pub async fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtension
 }
 
 #[allow(unused_variables, reason = "argv0 is only used on unix platforms")]
-pub(crate) async fn compose_std_command_with_pumps<
+pub async fn compose_std_command_with_pumps<
 	S: AsRef<OsStr>,
 	SE: extensions::ShellExtensions,
 >(
@@ -348,7 +401,13 @@ pub(crate) async fn compose_std_command_with_pumps<
 	argv0: &str,
 	args: &[S],
 	empty_env: bool,
-) -> Result<(std::process::Command, Vec<std::thread::JoinHandle<()>>), error::Error> {
+) -> Result<
+	(
+		std::process::Command,
+		Vec<std::thread::JoinHandle<io::Result<()>>>,
+	),
+	error::Error,
+> {
 	// The operating system has no view of this process's virtual filesystem: a
 	// child can only start in a native directory and only run a native program.
 	// A file-backed scheme aliases a real file, so the program, the arguments
@@ -479,7 +538,7 @@ pub(crate) async fn compose_std_command_with_pumps<
 		}
 	}
 
-	let mut io_pumps: Vec<std::thread::JoinHandle<()>> = Vec::new();
+	let mut io_pumps: Vec<std::thread::JoinHandle<io::Result<()>>> = Vec::new();
 
 	// Redirect stdin, if applicable.
 	match context.try_fd(OpenFiles::STDIN_FD) {

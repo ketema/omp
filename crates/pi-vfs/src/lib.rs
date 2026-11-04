@@ -59,7 +59,7 @@ pub use file::{File, FileHandle};
 pub use fs::{BlockingFs, Fs};
 #[cfg(unix)]
 pub use helper::{
-	RAW_IO_VFS_HELPER_CMD_ENV, RAW_IO_VFS_HELPER_FLAG, helper_pid, init_vfs_helper_host,
+	RAW_IO_VFS_HELPER_FAULT_ENV, RAW_IO_VFS_HELPER_FLAG, helper_pid, init_vfs_helper_host,
 	is_raw_io_helper_failure, run_vfs_helper_loop,
 };
 pub use metadata::Metadata;

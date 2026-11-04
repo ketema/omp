@@ -48,8 +48,13 @@ impl builtins::Command for ExecCommand {
 		// unsafe, since it would also replace the *parent* shell instance. We instead
 		// delegate to the `command` builtin to perform the execution, with an
 		// expectation of returning.
-		if context.shell.is_subshell() {
-			if self.empty_environment || self.exec_as_login || self.name_for_argv0.is_some() {
+		let has_vfs_redirects = context.iter_fds().any(|(_, f)| f.as_vfs().is_some());
+		if context.shell.is_subshell() || has_vfs_redirects {
+			if self.empty_environment
+				|| self.exec_as_login
+				|| self.name_for_argv0.is_some()
+				|| has_vfs_redirects
+			{
 				return self.execute_external_in_subshell(context).await;
 			}
 
@@ -101,7 +106,7 @@ impl ExecCommand {
 		context: brush_core::ExecutionContext<'_, SE>,
 	) -> Result<ExecutionResult, brush_core::Error> {
 		let argv0 = self.argv0();
-		let cmd = commands::compose_std_command(
+		let (cmd, io_pumps) = commands::compose_std_command_with_pumps(
 			&context,
 			&self.args[0],
 			argv0.as_ref(),
@@ -116,6 +121,8 @@ impl ExecCommand {
 		let mut child = match cmd.spawn() {
 			Ok(child) => child,
 			Err(spawn_err) => {
+				drop(cmd);
+				let _ = commands::join_vfs_io_pumps(io_pumps).await;
 				if spawn_err.kind() == std::io::ErrorKind::NotFound {
 					return Ok(ExecutionExitCode::NotFound.into());
 				}
@@ -123,9 +130,12 @@ impl ExecCommand {
 				return Err(ErrorKind::from(spawn_err).into());
 			},
 		};
+		// Drop `cmd` immediately so the parent's copy of any redirected Stdio pipe
+		// ends is closed before waiting on the child or joining VFS pumps.
+		drop(cmd);
 
 		let status = child.wait().await?;
-
+		commands::join_vfs_io_pumps(io_pumps).await?;
 		if let Some(code) = status.code() {
 			#[expect(clippy::cast_sign_loss)]
 			return Ok(ExecutionResult::new((code & 0xff) as u8));

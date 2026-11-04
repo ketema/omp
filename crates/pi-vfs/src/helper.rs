@@ -38,8 +38,9 @@ use crate::{
 	types::{FileId, FileTime, FileType, Permissions, StatFs},
 };
 
-/// Environment variable overriding the Raw-I/O Helper command for `pi-vfs`.
-pub const RAW_IO_VFS_HELPER_CMD_ENV: &str = "OMP_RAW_IO_VFS_HELPER_CMD";
+/// Fault-injection environment variable for `pi-vfs` Raw-I/O Helper tests
+/// (`spawn_fail` or `fail_after_ops:<N>`). Never accepts an executable path.
+pub const RAW_IO_VFS_HELPER_FAULT_ENV: &str = "OMP_RAW_IO_VFS_HELPER_FAULT";
 
 /// Hidden CLI flag that dispatches a spawned executable into
 /// [`run_vfs_helper_loop`].
@@ -479,10 +480,14 @@ pub fn run_vfs_helper_loop() -> ! {
 	IN_HELPER_PROCESS.store(true, Ordering::SeqCst);
 	// SAFETY: helper runs single-threaded before any user work; clear bootstrap
 	// env vars.
+	let mut remaining_ops = std::env::var(RAW_IO_VFS_HELPER_FAULT_ENV)
+		.ok()
+		.and_then(|val| val.strip_prefix("fail_after_ops:")?.parse::<usize>().ok());
 	unsafe {
 		std::env::remove_var(RAW_IO_VFS_HELPER_FLAG);
 		std::env::remove_var("BUN_BE_BUN");
 		std::env::remove_var("__OMP_VFS_HELPER_ADDON");
+		std::env::remove_var(RAW_IO_VFS_HELPER_FAULT_ENV);
 	}
 	// Duplicate stdout for the framing channel and redirect fd 1 to /dev/null
 	// so any accidental stdout print inside the child cannot corrupt the pipe.
@@ -512,6 +517,12 @@ pub fn run_vfs_helper_loop() -> ! {
 	let mut next_id: u64 = 1;
 
 	while let Ok(op) = read_u8(&mut inp) {
+		if let Some(rem) = &mut remaining_ops {
+			if *rem == 0 {
+				std::process::exit(2);
+			}
+			*rem -= 1;
+		}
 		let step: io::Result<()> = (|| {
 			match op {
 				OP_OPEN => {
@@ -779,29 +790,28 @@ struct HelperConn {
 
 impl HelperConn {
 	fn spawn() -> Result<Self, String> {
-		let mut cmd = if let Some(override_cmd) =
-			std::env::var_os(RAW_IO_VFS_HELPER_CMD_ENV).filter(|val| !val.is_empty())
+		if std::env::var(RAW_IO_VFS_HELPER_FAULT_ENV)
+			.ok()
+			.is_some_and(|val| val == "spawn_fail" || val == "1")
 		{
-			let mut c = Command::new(override_cmd);
-			c.arg(RAW_IO_VFS_HELPER_FLAG);
-			c.env(RAW_IO_VFS_HELPER_FLAG, "1");
-			c
+			return Err(
+				"fault injection: helper spawn failed (OMP_RAW_IO_VFS_HELPER_FAULT=spawn_fail)"
+					.to_owned(),
+			);
+		}
+		let exe = std::env::current_exe().map_err(|err| format!("current_exe failed: {err}"))?;
+		let mut cmd = Command::new(&exe);
+		cmd.env(RAW_IO_VFS_HELPER_FLAG, "1");
+		if module_is_node_addon()
+			&& let Some(addon_path) = MODULE_PATH.as_deref()
+		{
+			cmd.env("BUN_BE_BUN", "1")
+				.env("__OMP_VFS_HELPER_ADDON", addon_path)
+				.arg("-e")
+				.arg("require(process.env.__OMP_VFS_HELPER_ADDON).__ompInstallTokioRuntime()");
 		} else {
-			let exe = std::env::current_exe().map_err(|err| format!("current_exe failed: {err}"))?;
-			let mut c = Command::new(&exe);
-			c.env(RAW_IO_VFS_HELPER_FLAG, "1");
-			if module_is_node_addon()
-				&& let Some(addon_path) = MODULE_PATH.as_deref()
-			{
-				c.env("BUN_BE_BUN", "1")
-					.env("__OMP_VFS_HELPER_ADDON", addon_path)
-					.arg("-e")
-					.arg("require(process.env.__OMP_VFS_HELPER_ADDON).__ompInstallTokioRuntime()");
-			} else {
-				c.arg(RAW_IO_VFS_HELPER_FLAG);
-			}
-			c
-		};
+			cmd.arg(RAW_IO_VFS_HELPER_FLAG);
+		}
 
 		cmd.stdin(Stdio::piped())
 			.stdout(Stdio::piped())
