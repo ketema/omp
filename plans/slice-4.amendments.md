@@ -175,3 +175,9 @@
 - Clause Added: `POST-RAWIO-4` in `contracts/raw_io_helper.contract.ts` and `contracts/raw_io_helper.contract.py`.
 - Requirement IDs: `REQ-L15586-06`, `REQ-L15586-08`, `INV-L15586-01`, `INV-L15586-03`.
 - Rationale: `InternalUrlFilesystem.readPrefix` previously called `Bun.file(node.path).slice(0, maxBytes).bytes()` in-process for non-virtual nodes (Trigger Path 3, reached by `jfind` text scanning). Routing non-virtual `readPrefix` reads through `readRawIoBytes(absolutePath, maxBytes, 0, this.#context.session?.rawIoHelperOptions)` moves the open/read/close into the Raw-I/O Helper child process without opening any file descriptor in `omp`. One-shot `omp find` (`runFindCommand`) also calls `stopRawIoHelper()` in its `finally` block (`SEQ-RAWIO-2`).
+
+## 2026-11-04 - SLICE-6 (REQ-L15586-07): Embedded-shell redirects and builtin host-file opens via Raw-I/O Helper
+- Decided By: oMACarchy and Claude (middle-layer Rust bridge design agreed 2026-11-04).
+- Clause Added / Amended: `POST-RAWIO-5` added and `FORBIDDEN-RAWIO-2b` widened in `contracts/raw_io_helper.contract.ts` and `contracts/raw_io_helper.contract.py`.
+- Requirement IDs: `REQ-L15586-07`, `REQ-L15586-08`, `SEQ-4`, `SEQ-5`, `SEQ-6`, `IP-4`, `INV-L15586-01`, `INV-L15586-03`, `INV-L15586-04`, `INV-L15586-12`.
+- Rationale: `pi-vfs` `Route::Native` (`native_open`, `Fs::read`, `Fs::write`, `BlockingFs::read`, `BlockingFs::write`, `native::copy`) executes host-file opens, reads, writes, metadata, truncation, sync, and closes inside the long-lived Raw-I/O Helper child process (lazily started on first request from `omp` with `RAW_IO_WORKER_ARG` and stopped at exit) over anonymous OS byte pipes (`pipe(2)`), which cannot carry `SCM_RIGHTS` file descriptors (`FORBIDDEN-RAWIO-2b`). External-command redirects on `OpenFile::Vfs` stream through dedicated OS pump threads over anonymous pipes so payloads larger than the pipe buffer cannot deadlock.

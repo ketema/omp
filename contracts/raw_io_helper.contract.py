@@ -1088,6 +1088,10 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
         verification="test",
         text=("When InternalUrlFilesystem.readPrefix reads a non-virtual node (a host file path or a file-backed internal URL), it forwards context.session?.rawIoHelperOptions and reads the first maxBytes bytes at offset 0 through the Raw-I/O Helper (readRawIoBytes) without opening the file in the omp process, retaining every POSIX advisory lock SQLite holds on a database file and its -shm file and every POSIX advisory lock omp holds on the target; virtual nodes continue to slice their in-memory bytes, and any Raw-I/O Helper failure rejects with a UrlFsError whose message names the failed 'read' operation and resolved target path without falling back to an in-process file open. Source: REQ-L15586-06, REQ-L15586-08, INV-L15586-01, INV-L15586-03."),
     ),
+    "POST-RAWIO-5": Clause(
+        verification="test",
+        text=("When the embedded shell (brush Shell::open_file) or a shell builtin opens, reads, or writes a host file through pi-vfs Route::Native (native_open, Fs::read, Fs::write, BlockingFs::read, BlockingFs::write, or native::copy), pi-vfs SHALL execute that open, read, write, metadata, truncation, sync, and close inside the long-lived Raw-I/O Helper child process (started lazily on first request from omp's executable with RAW_IO_WORKER_ARG and stopped at process exit) over anonymous OS byte pipes without opening or receiving any file descriptor for that target inside the omp process, retaining every POSIX advisory lock SQLite holds on a database file and its -shm file and every POSIX advisory lock omp holds on the target; external-command redirects on the resulting handle stream through dedicated OS pump threads over anonymous pipes (with O_CREAT, O_TRUNC, and O_APPEND applied in the helper at open_file time) so payloads larger than the OS pipe buffer do not deadlock; and if the helper cannot start or fails, pi-vfs SHALL return an io::Error naming the failed operation and target path without falling back to an in-process file open. Source: REQ-L15586-07, REQ-L15586-08, SEQ-4, SEQ-5, SEQ-6, IP-4, INV-L15586-01, INV-L15586-03, INV-L15586-04, INV-L15586-12."),
+    ),
     "ERRORS-RAWIO-1": Clause(
         verification="test",
         text=(
@@ -1239,14 +1243,7 @@ RAW_IO_HELPER_CONTRACT: Final[dict[str, Clause]] = {
     ),
     "FORBIDDEN-RAWIO-2b": Clause(
         verification="tool",
-        text=(
-            "omp SHALL NOT receive from another process a file descriptor for a file "
-            "opened by a Trigger Path. Tool guarantee: Bun's IPC channel between "
-            "omp and the Raw-I/O Helper carries serialized data only and cannot "
-            "carry a file descriptor. This proof applies only while omp and the "
-            "helper communicate over that channel (Ketema D2). "
-            "Source: INV-L15586-12."
-        ),
+        text=("omp SHALL NOT receive from another process a file descriptor for a file opened by a Trigger Path. Tool guarantee: Bun's IPC channel (for TypeScript callers) and anonymous OS byte pipes created by pipe(2) over stdin/stdout (for Rust pi-vfs callers) between omp and the Raw-I/O Helper carry serialized byte data only and cannot carry a file descriptor (SCM_RIGHTS requires an AF_UNIX socket control message, which pipe(2) does not support). This proof applies only while omp and the helper communicate over those channels (Ketema D2). Source: INV-L15586-12."),
     ),
     "FORBIDDEN-RAWIO-3": Clause(
         verification="test",
