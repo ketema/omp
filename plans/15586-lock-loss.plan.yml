@@ -190,7 +190,7 @@ slices:
   - INV-L15586-03
   - INV-L15586-04
   - INV-L15586-12
-  status: PENDING
+  status: GREEN_COMPLETE
   depends_on: []
   issue: TODO
   pivot_note: Shippable alone; embedded-shell redirects and builtin file opens can no longer release omp's locks, proven on both hosts.
