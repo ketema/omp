@@ -2408,7 +2408,17 @@ export async function runRootCommand(
 						deferStartupSafe: deferStartupSafeExtensions,
 					});
 			const extensionFlagSink: ExtensionFlagSink = {
-				getFlags: () => ExtensionRunner.aggregateFlags(extensionsResult.extensions),
+				getFlags: () => {
+					const flags: Map<string, { type: "boolean" | "string" }> = ExtensionRunner.aggregateFlags(
+						extensionsResult.extensions,
+					);
+					// SEQ-TOOL-2: native RLM binds later; admit its isolation values
+					// into the shared runtime before CLI validation, without loading it twice.
+					for (const name of ["OMP_RLM_AGENT_DIR", "RLM_KERNEL_VENV"]) {
+						if (!flags.has(name)) flags.set(name, { type: "string" });
+					}
+					return flags;
+				},
 				setFlagValue: (name, value) => {
 					extensionsResult.runtime.flagValues.set(name, value);
 				},
