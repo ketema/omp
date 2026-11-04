@@ -131,7 +131,9 @@ slices:
   - INV-L15586-04
   - INV-L15586-12
   - INV-L15586-13
-  status: PENDING
+  # Merged in ketema/omp#51 (c888612e00) and deployed on both hosts; Ketema 2026-11-03: "slice 4 is as
+  # done as it is going to get. real world use will have to verify or rebut if the fix works."
+  status: GREEN_COMPLETE
   depends_on: []
   issue: TODO
   pivot_note: Shippable alone; the read and write tools can no longer release omp's locks on SQLite-Family files, proven on both hosts; built by oMACarchy and audited by Claude.
@@ -189,7 +191,11 @@ slices:
 - id: SLICE-8
   requirement_ids:
   - REQ-L15586-26
-  clauses_in_scope: []
+  # Condition of REQ-L15586-26 observed 2026-11-03: the reproducing test fails on c888612e00 with
+  # "unknown flags: --OMP_RLM_AGENT_DIR, --RLM_KERNEL_VENV". Clauses live in contracts/rlm-tool.contract.ts.
+  clauses_in_scope:
+  - SEQ-TOOL-2
+  - FORBIDDEN-TOOL-3
   clauses_deferred: []
   negative_constraints:
   - INV-L15586-11
