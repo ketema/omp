@@ -44,7 +44,9 @@ slices:
   - INV-L15586-08
   - INV-L15586-09
   - INV-L15586-11
-  status: PENDING
+  # Accepted by Ketema 2026-11-03 (verbatim: "slice -1 is accepted"), after ketema/omp-hooks#24
+  # and ketema/HomeDirectory#812 merged and both hosts showed the hook's live behaviour.
+  status: AUDITED
   depends_on: []
   issue: TODO
   pivot_note: Shippable alone with no omp rebuild; the Search Guard Hook and builtins switch run on both hosts, proven by their own behaviour there, and block the search that corrupted oMACarchy's database.
