@@ -101,7 +101,7 @@ slices:
   - INV-L15586-04
   - INV-L15586-12
   - INV-L15586-13
-  status: PENDING
+  status: GREEN_COMPLETE
   depends_on: []
   issue: TODO
   pivot_note: Shippable alone; native grep content and walker ignore-file reads can no longer release omp's locks, proven on both hosts.
