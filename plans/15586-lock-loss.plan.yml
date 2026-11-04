@@ -19,7 +19,26 @@ slices:
   - REQ-L15586-17
   - REQ-L15586-18
   - REQ-L15586-22
-  clauses_in_scope: []
+  # Clauses live in ketema/omp-hooks contracts/omp_search_guard.contract.ts (manifest section 9),
+  # delivered in ketema/omp-hooks#24.
+  clauses_in_scope:
+  - PRE-SG-1
+  - REQ-SG-10
+  - REQ-SG-10b
+  - REQ-SG-11a
+  - REQ-SG-11b
+  - REQ-SG-11c
+  - REQ-SG-12
+  - REQ-SG-13
+  - REQ-SG-14
+  - REQ-SG-15
+  - REQ-SG-16
+  - REQ-SG-17
+  - REQ-SG-18
+  - REQ-SG-22
+  - REQ-SG-23
+  - INV-SG-1
+  - ERRORS-SG-1
   clauses_deferred: []
   negative_constraints:
   - INV-L15586-08
