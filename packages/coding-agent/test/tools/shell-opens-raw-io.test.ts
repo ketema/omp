@@ -73,11 +73,10 @@ describe("SLICE-6 (POST-RAWIO-5): embedded-shell redirects and builtin host-file
 		});
 		expect(result.exitCode).toBe(0);
 		expect(result.output).toContain("SQLite format 3");
-		expect(await fs.readFile(outPath, "utf8")).toBe("initial\nappended\n");
-
 		const dbStillLocked = peerPosixWriteLockBlocked(dbPath);
 		const shmStillLocked = peerPosixWriteLockBlocked(shmPath);
 		const outStillLocked = peerPosixWriteLockBlocked(outPath);
+		expect(await fs.readFile(outPath, "utf8")).toBe("initial\nappended\n");
 
 		expect(
 			{
@@ -129,25 +128,21 @@ describe("SLICE-6 (POST-RAWIO-5): embedded-shell redirects and builtin host-file
 		await fs.writeFile(targetPath, "SQLite format 3\0must-not-open-in-process\n", "utf8");
 		heldLockFds.push(acquireInProcessPosixWriteLock(targetPath));
 
-		const childScript = path.join(tempDir, "probe-broken-helper.ts");
-		await fs.writeFile(
-			childScript,
-			[
-				'import { executeShell } from "@oh-my-pi/pi-natives";',
-				"const target = process.argv[2] ?? '';",
-				"let output = '';",
-				"const res = await executeShell({ command: `: < '${target}'`, cwd: process.cwd(), timeoutMs: 5000 }, (_e, chunk) => { if (chunk) output += chunk; });",
-				"console.log(JSON.stringify({ exitCode: res.exitCode, output }));",
-			].join("\n"),
-			"utf8",
-		);
+		const inlineScript = [
+			'import { executeShell } from "@oh-my-pi/pi-natives";',
+			"const target = process.env.OMP_SLICE6_TARGET ?? '';",
+			"let output = '';",
+			"const res = await executeShell({ command: `: < '${target}'`, cwd: process.cwd(), timeoutMs: 5000 }, (_e, chunk) => { if (chunk) output += chunk; });",
+			"console.log(JSON.stringify({ exitCode: res.exitCode, output }));",
+		].join("\n");
 
 		const proc = Bun.spawnSync({
-			cmd: [process.execPath, childScript, targetPath],
+			cmd: [process.execPath, "-e", inlineScript],
 			cwd: path.resolve(import.meta.dir, "../.."),
 			env: {
 				...process.env,
 				OMP_RAW_IO_VFS_HELPER_CMD: "/nonexistent/omp-raw-io-vfs-helper-binary",
+				OMP_SLICE6_TARGET: targetPath,
 			},
 			stdout: "pipe",
 			stderr: "pipe",
