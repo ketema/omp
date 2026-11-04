@@ -37,6 +37,13 @@ export const TOOL_BUSY_CHOICES: readonly [string, string] = [
   'Kill kernel and restart',
 ] as const
 
+/** REQ-RLM-0014: native RLM-only runtime isolation parameters. */
+export const RLM_ISOLATION_FLAGS = ['OMP_RLM_AGENT_DIR', 'RLM_KERNEL_VENV'] as const
+export interface RlmIsolationFlagValues {
+  readonly OMP_RLM_AGENT_DIR: string
+  readonly RLM_KERNEL_VENV: string
+}
+
 // =============================================================================
 // Artifact 2: Exceptions
 // =============================================================================
@@ -130,23 +137,38 @@ export function validateRestartNotice(notice: string): string {
   return notice
 }
 
+/** SEQ-TOOL-2: preserve resolved isolation flag values without coercion. */
+export function validateRlmIsolationFlagValues(value: unknown): RlmIsolationFlagValues {
+  if (typeof value !== 'object' || value === null) {
+    throw new RlmToolContractError('SEQ-TOOL-2: string isolation flag values required')
+  }
+  const agentDir: unknown = Reflect.get(value, 'OMP_RLM_AGENT_DIR')
+  const venv: unknown = Reflect.get(value, 'RLM_KERNEL_VENV')
+  if (typeof agentDir !== 'string' || typeof venv !== 'string') {
+    throw new RlmToolContractError('SEQ-TOOL-2: string isolation flag values required')
+  }
+  return { OMP_RLM_AGENT_DIR: agentDir, RLM_KERNEL_VENV: venv }
+}
+
 // =============================================================================
 // Artifact 5: Traceability
 // =============================================================================
 
 export const RLM_TOOL_CONTRACT = {
-  'PRE-TOOL-1': 'The Model invokes the tool with exactly { code: string } (F-020, TOOL-V1).',
-  'POST-TOOL-1': 'Every result carries details with durationMs and status (F-031).',
-  'POST-TOOL-2': 'isError is true iff status is error or aborted (F-032, TOOL-V2).',
-  'POST-TOOL-3': 'A restart notice appears only after interrupt→kill→restart, wrapped in exact tags (F-029, TOOL-V3).',
-  'POST-TOOL-4': 'Working messages appear at kernel start, state restore, and runtime prep, and clear on completion (F-030).',
-  'POST-TOOL-5': 'The prompt contract F-040..F-062 is delivered through the tool description and system-prompt additions (REQ-RLM-0005).',
-  'INV-TOOL-1': 'The tool declares executionMode "sequential"; cells never overlap (F-021, INV-KM-1).',
-  'INV-TOOL-LIFETIME-1': 'From first invocation, a busy kernel offers exactly the two choices of TOOL_BUSY_CHOICES in interactive UIs, or auto-cancels in non-UI contexts (F-028).',
-  'ERRORS-TOOL-1': 'RlmRuntimeMissingError names the interpreter override and rebuild path when the runtime fails to import (F-237).',
-  'FORBIDDEN-TOOL-1': 'The RLM plugin SHALL NOT alter the existing eval tool, its kernel registry, or runner semantics (REQ-N-1).',
-  'FORBIDDEN-TOOL-2': 'The RLM plugin SHALL NOT add mandatory main-context sections beyond the tool description adjoining the tool inventory (REQ-N-2).',
-  'SEQ-TOOL-1': 'The RLM extension registers the tool wired through a KernelManager whose transport is constructed from the resolved config (REQ-RLM-0019); the first model invocation reaches the real runner with no additional wiring step (manifest SEQ-13, IP-9).',
+  'PRE-TOOL-1': { verification: 'test', text: 'The Model invokes the tool with exactly { code: string } (F-020, TOOL-V1).' },
+  'POST-TOOL-1': { verification: 'test', text: 'Every result carries details with durationMs and status (F-031).' },
+  'POST-TOOL-2': { verification: 'test', text: 'isError is true iff status is error or aborted (F-032, TOOL-V2).' },
+  'POST-TOOL-3': { verification: 'test', text: 'A restart notice appears only after interrupt→kill→restart, wrapped in exact tags (F-029, TOOL-V3).' },
+  'POST-TOOL-4': { verification: 'test', text: 'Working messages appear at kernel start, state restore, and runtime prep, and clear on completion (F-030).' },
+  'POST-TOOL-5': { verification: 'test', text: 'The prompt contract F-040..F-062 is delivered through the tool description and system-prompt additions (REQ-RLM-0005).' },
+  'INV-TOOL-1': { verification: 'test', text: 'The tool declares executionMode "sequential"; cells never overlap (F-021, INV-KM-1).' },
+  'INV-TOOL-LIFETIME-1': { verification: 'test', text: 'From first invocation, a busy kernel offers exactly the two choices of TOOL_BUSY_CHOICES in interactive UIs, or auto-cancels in non-UI contexts (F-028).' },
+  'ERRORS-TOOL-1': { verification: 'test', text: 'RlmRuntimeMissingError names the interpreter override and rebuild path when the runtime fails to import (F-237).' },
+  'FORBIDDEN-TOOL-1': { verification: 'test', text: 'The RLM plugin SHALL NOT alter the existing eval tool, its kernel registry, or runner semantics (REQ-N-1).' },
+  'FORBIDDEN-TOOL-2': { verification: 'test', text: 'The RLM plugin SHALL NOT add mandatory main-context sections beyond the tool description adjoining the tool inventory (REQ-N-2).' },
+  'SEQ-TOOL-1': { verification: 'test', text: 'The RLM extension registers the tool wired through a KernelManager whose transport is constructed from the resolved config (REQ-RLM-0019); the first model invocation reaches the real runner with no additional wiring step (manifest SEQ-13, IP-9).' },
+  'SEQ-TOOL-2': { verification: 'test', manifestRefs: ['REQ-RLM-0014'], text: 'runRootCommand admits built-in RLM isolation flag declarations before applyExtensionFlags and reportUnrecognizedFlags, preserves their string values (including @-prefixed paths), and supplies shared runtime flagValues to the single session RLM factory (manifest SEQ-11/SEQ-13). Admission does not start a kernel or change auth/profile/defaults.' },
+  'FORBIDDEN-TOOL-3': { verification: 'test', manifestRefs: ['REQ-RLM-0014'], text: 'Native parameter admission does not accept misspelled flags or suppress usage-error rejection before session creation. Existing read-only/restricted native-tool denial remains governed by FORBIDDEN-NATIVE-2 in contracts/rlm-native-tool.contract.ts.' },
 } as const
 
 export type RlmToolClauseId = keyof typeof RLM_TOOL_CONTRACT

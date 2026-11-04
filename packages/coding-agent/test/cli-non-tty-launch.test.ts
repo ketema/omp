@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { RLM_ISOLATION_FLAGS, validateRlmIsolationFlagValues } from "../../../contracts/rlm-tool.contract";
 
 // Launch-mode selection without a terminal on stdin (scripts, CI, `</dev/null`).
 // Before: a bare or prompt-carrying launch chose interactive mode, booted the TUI
@@ -87,6 +88,45 @@ async function writeFlagExtension(
 }
 
 // Each case cold-starts the CLI graph in a child process; the budget covers that transpile.
+describe("native RLM isolation parameter admission", () => {
+	it("SEQ-TOOL-2: admits isolation values before file processing without creating runtime state", async () => {
+		/** CAR: contracts/rlm-tool.contract.ts SEQ-TOOL-2 -> REQ-RLM-0014.
+		 * Real CLI parent lifecycle, isolated HOME, no test doubles; high-risk regression.
+		 * C1 current clause; C2 exact next startup boundary; C3 native rather than discovered flags;
+		 * C4 existing admission behavior. No provider request or kernel startup is permitted. */
+		using tempDir = TempDir.createSync("@omp-rlm-cli-parameters-");
+		const values = validateRlmIsolationFlagValues({
+			OMP_RLM_AGENT_DIR: "@candidate-runtime",
+			RLM_KERNEL_VENV: "@candidate-venv",
+		});
+		const missing = tempDir.join("deliberately-missing-input.md");
+		const args = ["-p", ...RLM_ISOLATION_FLAGS.flatMap(flag => [`--${flag}`, values[flag]]), `@${missing}`];
+		const run = await launchWithoutTerminal(tempDir, args);
+		const failure = `WHAT: native RLM CLI admission\nWHY: SEQ-TOOL-2\nEXPECTED: missing-file rejection after native flag parsing, no runtime creation\nACTUAL: ${run.exitCode} ${run.stderr}\nGUIDANCE: preserve declared flag values and reject the absent input before session startup`;
+		expect(run.exitCode, failure).toBe(1);
+		expect(run.stderr, failure).toContain(`File not found: ${missing}`);
+		expect(run.stderr, failure).not.toContain("unknown flags");
+		expect(fs.existsSync(tempDir.join("@candidate-runtime")), failure).toBe(false);
+		expect(fs.existsSync(tempDir.join("@candidate-venv")), failure).toBe(false);
+	}, 30_000);
+
+	it("FORBIDDEN-TOOL-3: a misspelled isolation flag is still rejected as a usage error", async () => {
+		/** CAR: contracts/rlm-tool.contract.ts FORBIDDEN-TOOL-3 -> REQ-RLM-0014, REQ-L15586-26.
+		 * Supporting regression, not RED: it passes before the fix and bounds the admission path so that
+		 * admitting the two native flags cannot widen into admitting near-miss spellings.
+		 * Real CLI parent lifecycle, isolated HOME, no test doubles. Risk tier: HIGH (a swallowed typo would
+		 * start a session with an ignored isolation directory). */
+		using tempDir = TempDir.createSync("@omp-rlm-cli-typo-");
+		const misspelled = `${RLM_ISOLATION_FLAGS[0]}X`;
+		const missing = tempDir.join("deliberately-missing-input.md");
+		const run = await launchWithoutTerminal(tempDir, ["-p", `--${misspelled}`, "@typo-runtime", `@${missing}`]);
+		const failure = `WHAT: misspelled native RLM flag\nWHY: FORBIDDEN-TOOL-3\nEXPECTED: usage error naming --${misspelled}, exit 2, no file processing\nACTUAL: ${run.exitCode} ${run.stderr}\nGUIDANCE: admit only the declared isolation flag names; any other unknown flag stays a usage error`;
+		expect(run.exitCode, failure).toBe(2);
+		expect(run.stderr, failure).toContain(`unknown flag: --${misspelled}`);
+		expect(run.stderr, failure).not.toContain("File not found");
+	}, 30_000);
+});
+
 describe("launch without a terminal on stdin", () => {
 	it("fails a bare launch with a usage error and exit 2", async () => {
 		using tempDir = TempDir.createSync("@omp-non-tty-bare-");
