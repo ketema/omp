@@ -42,6 +42,7 @@ pub struct ChildProcess {
 	#[cfg(windows)]
 	kill_handle: Option<OwnedHandle>,
 	completion_marker: Option<CompletionMarker>,
+	io_pumps:    Vec<std::thread::JoinHandle<()>>,
 }
 
 impl ChildProcess {
@@ -63,6 +64,7 @@ impl ChildProcess {
 			#[cfg(windows)]
 			kill_handle,
 			completion_marker: None,
+			io_pumps: Vec::new(),
 		}
 	}
 
@@ -86,6 +88,23 @@ impl ChildProcess {
 	pub fn duplicate_kill_handle(&self) -> Option<OwnedHandle> {
 		let handle = self.kill_handle.as_ref()?;
 		duplicate_handle(handle.as_raw_handle())
+	}
+
+	pub(crate) fn set_io_pumps(&mut self, pumps: Vec<std::thread::JoinHandle<()>>) {
+		self.io_pumps = pumps;
+	}
+
+	async fn join_io_pumps(&mut self) {
+		let pumps = std::mem::take(&mut self.io_pumps);
+		if pumps.is_empty() {
+			return;
+		}
+		let _ = tokio::task::spawn_blocking(move || {
+			for pump in pumps {
+				let _ = pump.join();
+			}
+		})
+		.await;
 	}
 
 	pub(crate) fn set_completion_marker(
@@ -146,6 +165,7 @@ impl ChildProcess {
 					let output = output?;
 					let marker_exit_code = completion_exit_code(&output.status);
 					self.reaped = true;
+					self.join_io_pumps().await;
 					self.write_completion_marker(marker_exit_code);
 					break Ok(ProcessWaitResult::Completed(output))
 				},
@@ -163,6 +183,7 @@ impl ChildProcess {
 						}
 					}
 					self.kill();
+					self.join_io_pumps().await;
 					self.write_completion_marker(130);
 					break Ok(ProcessWaitResult::Cancelled)
 				},
@@ -228,6 +249,9 @@ impl ChildProcess {
 			Ok(output) => {
 				let marker_exit_code = completion_exit_code(&output.status);
 				self.reaped = true;
+				for pump in std::mem::take(&mut self.io_pumps) {
+					let _ = pump.join();
+				}
 				self.write_completion_marker(marker_exit_code);
 				Ok(output)
 			},

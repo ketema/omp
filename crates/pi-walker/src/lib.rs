@@ -30,7 +30,7 @@ use std::{
 	io::{self, BufRead},
 	path::{Path, PathBuf},
 	sync::{
-		Arc, Mutex,
+		Arc, LazyLock, Mutex,
 		atomic::{AtomicBool, Ordering as AtomicOrdering},
 	},
 };
@@ -1533,6 +1533,7 @@ where
 	}
 
 	options.cache = false;
+	clear_ignore_helper_failure();
 	let fs = &request.filesystem;
 	let Some(root_entry) = root_entry(fs, &request.root, options.detail, options.follow_links)?
 	else {
@@ -1574,6 +1575,8 @@ where
 
 	if let Some(error) = shared.take_error() {
 		Err(WalkError::Interrupted(error))
+	} else if let Some((path, message)) = take_ignore_helper_failure() {
+		Err(WalkError::InvalidData { path, message })
 	} else if shared.should_stop() {
 		Ok(WalkStatus::Stopped)
 	} else {
@@ -2791,6 +2794,7 @@ where
 		return Ok(WalkStatus::Complete);
 	}
 
+	clear_ignore_helper_failure();
 	let root_device = root_device_for_options(fs, root, options);
 	let matcher = FastIgnore::new(fs, options.use_gitignore);
 	let root_ignore = matcher.root_state(fs, root);
@@ -2810,7 +2814,11 @@ where
 		heartbeat,
 	};
 
-	context.walk_root(root, &root_ignore, visitor)
+	let status = context.walk_root(root, &root_ignore, visitor)?;
+	if let Some((path, message)) = take_ignore_helper_failure() {
+		return Err(WalkError::InvalidData { path, message });
+	}
+	Ok(status)
 }
 
 struct WalkContext<'a, H> {
@@ -3645,6 +3653,33 @@ pub fn add_ignore_file(
 }
 
 /// [`add_ignore_file`] restricted to lines accepted by `keep`.
+static IGNORE_HELPER_FAILURE: LazyLock<Mutex<Option<(PathBuf, String)>>> =
+	LazyLock::new(|| Mutex::new(None));
+
+fn clear_ignore_helper_failure() {
+	*IGNORE_HELPER_FAILURE
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
+fn record_ignore_helper_failure(path: &Path, err: &io::Error) {
+	if pi_vfs::is_raw_io_helper_failure(err) {
+		let mut slot = IGNORE_HELPER_FAILURE
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner);
+		if slot.is_none() {
+			*slot = Some((path.to_path_buf(), err.to_string()));
+		}
+	}
+}
+
+fn take_ignore_helper_failure() -> Option<(PathBuf, String)> {
+	IGNORE_HELPER_FAILURE
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner)
+		.take()
+}
+
 fn add_ignore_lines(
 	builder: &mut ignore::gitignore::GitignoreBuilder,
 	fs: &BlockingFs,
@@ -3657,7 +3692,10 @@ fn add_ignore_lines(
 	};
 	let file = match fs.open(path) {
 		Ok(file) => file,
-		Err(err) => return Some(with_path(ignore::Error::Io(err))),
+		Err(err) => {
+			record_ignore_helper_failure(path, &err);
+			return Some(with_path(ignore::Error::Io(err)));
+		},
 	};
 	let mut errors = Vec::new();
 	for (index, line) in io::BufReader::new(file).lines().enumerate() {
@@ -3667,6 +3705,7 @@ fn add_ignore_lines(
 		let line = match line {
 			Ok(line) => line,
 			Err(err) => {
+				record_ignore_helper_failure(path, &err);
 				errors.push(tagged(ignore::Error::Io(err)));
 				break;
 			},
@@ -3834,7 +3873,14 @@ fn global_excludes_path(fs: &BlockingFs) -> Option<PathBuf> {
 		.map(PathBuf::from)
 		.or_else(|| home.as_ref().map(|home| home.join(".config")));
 	let excludes_in = |config: Option<PathBuf>| {
-		let contents = fs.read(config?).ok()?;
+		let config = config?;
+		let contents = match fs.read(&config) {
+			Ok(bytes) => bytes,
+			Err(err) => {
+				record_ignore_helper_failure(&config, &err);
+				return None;
+			},
+		};
 		parse_excludes_file(&contents, home.as_deref())
 	};
 	excludes_in(env_path("GIT_CONFIG_GLOBAL").map(PathBuf::from))

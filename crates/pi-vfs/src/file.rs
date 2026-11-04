@@ -87,6 +87,8 @@ pub struct File {
 
 enum Repr {
 	Native(std::fs::File),
+	#[cfg(unix)]
+	Helper(crate::helper::HelperFile),
 	Virtual(Arc<Shared>),
 }
 
@@ -142,6 +144,8 @@ impl fmt::Debug for File {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match &self.repr {
 			Repr::Native(file) => f.debug_tuple("File::Native").field(file).finish(),
+			#[cfg(unix)]
+			Repr::Helper(file) => f.debug_tuple("File::Helper").field(file).finish(),
 			Repr::Virtual(shared) => match &shared.handle {
 				Some(handle) => f.debug_tuple("File::Virtual").field(handle).finish(),
 				None => f.write_str("File::Virtual(<closed>)"),
@@ -153,6 +157,13 @@ impl fmt::Debug for File {
 impl From<std::fs::File> for File {
 	fn from(file: std::fs::File) -> Self {
 		Self { repr: Repr::Native(file) }
+	}
+}
+
+#[cfg(unix)]
+impl From<crate::helper::HelperFile> for File {
+	fn from(file: crate::helper::HelperFile) -> Self {
+		Self { repr: Repr::Helper(file) }
 	}
 }
 
@@ -236,13 +247,25 @@ impl File {
 	pub const fn native(&self) -> Option<&std::fs::File> {
 		match &self.repr {
 			Repr::Native(file) => Some(file),
+			#[cfg(unix)]
+			Repr::Helper(_) => None,
 			Repr::Virtual(_) => None,
+		}
+	}
+
+	#[cfg(unix)]
+	pub(crate) const fn helper(&self) -> Option<&crate::helper::HelperFile> {
+		match &self.repr {
+			Repr::Helper(file) => Some(file),
+			Repr::Native(_) | Repr::Virtual(_) => None,
 		}
 	}
 
 	pub fn into_native(self) -> Result<std::fs::File, Self> {
 		match self.repr {
 			Repr::Native(file) => Ok(file),
+			#[cfg(unix)]
+			repr @ Repr::Helper(_) => Err(Self { repr }),
 			repr @ Repr::Virtual(_) => Err(Self { repr }),
 		}
 	}
@@ -256,6 +279,8 @@ impl File {
 		Ok(Self {
 			repr: match &self.repr {
 				Repr::Native(file) => Repr::Native(file.try_clone()?),
+				#[cfg(unix)]
+				Repr::Helper(file) => Repr::Helper(file.try_clone()?),
 				Repr::Virtual(shared) => Repr::Virtual(Arc::clone(shared)),
 			},
 		})
@@ -264,6 +289,8 @@ impl File {
 	pub fn metadata(&self) -> io::Result<Metadata> {
 		match &self.repr {
 			Repr::Native(file) => native::file_metadata(file),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.metadata(),
 			Repr::Virtual(shared) => shared.run(shared.handle().metadata()),
 		}
 	}
@@ -271,6 +298,8 @@ impl File {
 	pub fn set_len(&self, size: u64) -> io::Result<()> {
 		match &self.repr {
 			Repr::Native(file) => file.set_len(size),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.set_len(size),
 			Repr::Virtual(shared) => shared.run(shared.handle().set_len(size)),
 		}
 	}
@@ -278,6 +307,8 @@ impl File {
 	pub fn set_permissions(&self, permissions: Permissions) -> io::Result<()> {
 		match &self.repr {
 			Repr::Native(file) => native::file_set_permissions(file, permissions),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.set_permissions(permissions),
 			Repr::Virtual(shared) => shared.run(shared.handle().set_permissions(permissions)),
 		}
 	}
@@ -292,6 +323,8 @@ impl File {
 		let (accessed, modified) = (accessed.into(), modified.into());
 		match &self.repr {
 			Repr::Native(file) => native::file_set_times(file, accessed, modified),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.set_times(accessed, modified),
 			Repr::Virtual(shared) => shared.run(shared.handle().set_times(accessed, modified)),
 		}
 	}
@@ -299,6 +332,8 @@ impl File {
 	pub fn sync_all(&self) -> io::Result<()> {
 		match &self.repr {
 			Repr::Native(file) => file.sync_all(),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.sync(false),
 			Repr::Virtual(shared) => shared.run(shared.handle().sync_all()),
 		}
 	}
@@ -306,6 +341,8 @@ impl File {
 	pub fn sync_data(&self) -> io::Result<()> {
 		match &self.repr {
 			Repr::Native(file) => file.sync_data(),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.sync(true),
 			Repr::Virtual(shared) => shared.run(shared.handle().sync_data()),
 		}
 	}
@@ -314,6 +351,8 @@ impl File {
 	pub fn file_id(&self) -> io::Result<FileId> {
 		match &self.repr {
 			Repr::Native(file) => native::file_id_of(file),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.file_id(),
 			Repr::Virtual(_) => self
 				.metadata()?
 				.file_id()
@@ -326,6 +365,8 @@ impl File {
 	pub fn is_locked(&self) -> io::Result<bool> {
 		match &self.repr {
 			Repr::Native(file) => native::file_is_locked(file),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.is_locked(),
 			Repr::Virtual(shared) => shared.run(shared.handle().is_locked()),
 		}
 	}
@@ -335,6 +376,8 @@ impl File {
 	pub fn close(self) -> io::Result<()> {
 		match self.repr {
 			Repr::Native(file) => native::close(file),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.close(),
 			Repr::Virtual(shared) => match Arc::try_unwrap(shared) {
 				Ok(mut shared) => {
 					let handle = shared.handle.take();
@@ -351,6 +394,8 @@ impl File {
 	pub async fn read_async(&self, buf: &mut [u8]) -> io::Result<usize> {
 		match &self.repr {
 			Repr::Native(file) => host(file).read(buf),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.read(buf),
 			Repr::Virtual(shared) => shared.guard(shared.handle().read(buf)).await,
 		}
 	}
@@ -358,6 +403,8 @@ impl File {
 	pub async fn write_async(&self, buf: &[u8]) -> io::Result<usize> {
 		match &self.repr {
 			Repr::Native(file) => host(file).write(buf),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.write(buf),
 			Repr::Virtual(shared) => shared.guard(shared.handle().write(buf)).await,
 		}
 	}
@@ -365,6 +412,8 @@ impl File {
 	pub async fn write_all_async(&self, buf: &[u8]) -> io::Result<()> {
 		match &self.repr {
 			Repr::Native(file) => host(file).write_all(buf),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.write_all(buf),
 			Repr::Virtual(shared) => shared.guard(write_all_handle(shared.handle(), buf)).await,
 		}
 	}
@@ -372,6 +421,8 @@ impl File {
 	pub async fn read_to_end_async(&self, buf: &mut Vec<u8>) -> io::Result<usize> {
 		match &self.repr {
 			Repr::Native(file) => host(file).read_to_end(buf),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.read_to_end(buf),
 			Repr::Virtual(shared) => shared.guard(read_to_end_handle(shared.handle(), buf)).await,
 		}
 	}
@@ -379,6 +430,12 @@ impl File {
 	pub async fn read_to_string_async(&self, buf: &mut String) -> io::Result<usize> {
 		match &self.repr {
 			Repr::Native(file) => host(file).read_to_string(buf),
+			#[cfg(unix)]
+			Repr::Helper(file) => {
+				let mut bytes = Vec::new();
+				file.read_to_end(&mut bytes)?;
+				append_utf8(buf, bytes)
+			},
 			Repr::Virtual(_) => {
 				let mut bytes = Vec::new();
 				self.read_to_end_async(&mut bytes).await?;
@@ -390,6 +447,8 @@ impl File {
 	pub async fn flush_async(&self) -> io::Result<()> {
 		match &self.repr {
 			Repr::Native(_) => Ok(()),
+			#[cfg(unix)]
+			Repr::Helper(_) => Ok(()),
 			Repr::Virtual(shared) => shared.guard(shared.handle().flush()).await,
 		}
 	}
@@ -397,6 +456,8 @@ impl File {
 	pub async fn seek_async(&self, pos: SeekFrom) -> io::Result<u64> {
 		match &self.repr {
 			Repr::Native(file) => host(file).seek(pos),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.seek(pos),
 			Repr::Virtual(shared) => shared.guard(shared.handle().seek(pos)).await,
 		}
 	}
@@ -404,6 +465,8 @@ impl File {
 	pub async fn metadata_async(&self) -> io::Result<Metadata> {
 		match &self.repr {
 			Repr::Native(file) => native::file_metadata(file),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.metadata(),
 			Repr::Virtual(shared) => shared.guard(shared.handle().metadata()).await,
 		}
 	}
@@ -411,6 +474,8 @@ impl File {
 	pub async fn set_len_async(&self, size: u64) -> io::Result<()> {
 		match &self.repr {
 			Repr::Native(file) => file.set_len(size),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.set_len(size),
 			Repr::Virtual(shared) => shared.guard(shared.handle().set_len(size)).await,
 		}
 	}
@@ -418,6 +483,8 @@ impl File {
 	pub async fn set_permissions_async(&self, permissions: Permissions) -> io::Result<()> {
 		match &self.repr {
 			Repr::Native(file) => native::file_set_permissions(file, permissions),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.set_permissions(permissions),
 			Repr::Virtual(shared) => {
 				shared
 					.guard(shared.handle().set_permissions(permissions))
@@ -434,6 +501,8 @@ impl File {
 		let (accessed, modified) = (accessed.into(), modified.into());
 		match &self.repr {
 			Repr::Native(file) => native::file_set_times(file, accessed, modified),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.set_times(accessed, modified),
 			Repr::Virtual(shared) => {
 				shared
 					.guard(shared.handle().set_times(accessed, modified))
@@ -445,6 +514,8 @@ impl File {
 	pub async fn sync_all_async(&self) -> io::Result<()> {
 		match &self.repr {
 			Repr::Native(file) => file.sync_all(),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.sync(false),
 			Repr::Virtual(shared) => shared.guard(shared.handle().sync_all()).await,
 		}
 	}
@@ -452,6 +523,8 @@ impl File {
 	pub async fn sync_data_async(&self) -> io::Result<()> {
 		match &self.repr {
 			Repr::Native(file) => file.sync_data(),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.sync(true),
 			Repr::Virtual(shared) => shared.guard(shared.handle().sync_data()).await,
 		}
 	}
@@ -459,6 +532,8 @@ impl File {
 	pub async fn is_locked_async(&self) -> io::Result<bool> {
 		match &self.repr {
 			Repr::Native(file) => native::file_is_locked(file),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.is_locked(),
 			Repr::Virtual(shared) => shared.guard(shared.handle().is_locked()).await,
 		}
 	}
@@ -467,6 +542,8 @@ impl File {
 	pub async fn close_async(self) -> io::Result<()> {
 		match self.repr {
 			Repr::Native(file) => native::close(file),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.close(),
 			Repr::Virtual(shared) => match Arc::try_unwrap(shared) {
 				Ok(mut shared) => match shared.handle.take() {
 					Some(handle) => handle.close().await,
@@ -482,6 +559,8 @@ impl Read for &File {
 	fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
 		match &self.repr {
 			Repr::Native(file) => host(file).read(buf),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.read(buf),
 			Repr::Virtual(shared) => shared.run(shared.handle().read(buf)),
 		}
 	}
@@ -489,6 +568,8 @@ impl Read for &File {
 	fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
 		match &self.repr {
 			Repr::Native(file) => host(file).read_to_end(buf),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.read_to_end(buf),
 			Repr::Virtual(shared) => shared.run(read_to_end_handle(shared.handle(), buf)),
 		}
 	}
@@ -496,6 +577,12 @@ impl Read for &File {
 	fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
 		match &self.repr {
 			Repr::Native(file) => host(file).read_to_string(buf),
+			#[cfg(unix)]
+			Repr::Helper(file) => {
+				let mut bytes = Vec::new();
+				file.read_to_end(&mut bytes)?;
+				append_utf8(buf, bytes)
+			},
 			Repr::Virtual(_) => {
 				let mut bytes = Vec::new();
 				self.read_to_end(&mut bytes)?;
@@ -509,6 +596,8 @@ impl Write for &File {
 	fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
 		match &self.repr {
 			Repr::Native(file) => host(file).write(buf),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.write(buf),
 			Repr::Virtual(shared) => shared.run(shared.handle().write(buf)),
 		}
 	}
@@ -516,6 +605,8 @@ impl Write for &File {
 	fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
 		match &self.repr {
 			Repr::Native(file) => host(file).write_all(buf),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.write_all(buf),
 			Repr::Virtual(shared) => shared.run(write_all_handle(shared.handle(), buf)),
 		}
 	}
@@ -523,6 +614,8 @@ impl Write for &File {
 	fn flush(&mut self) -> io::Result<()> {
 		match &self.repr {
 			Repr::Native(_) => Ok(()),
+			#[cfg(unix)]
+			Repr::Helper(_) => Ok(()),
 			Repr::Virtual(shared) => shared.run(shared.handle().flush()),
 		}
 	}
@@ -532,6 +625,8 @@ impl Seek for &File {
 	fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
 		match &self.repr {
 			Repr::Native(file) => host(file).seek(pos),
+			#[cfg(unix)]
+			Repr::Helper(file) => file.seek(pos),
 			Repr::Virtual(shared) => shared.run(shared.handle().seek(pos)),
 		}
 	}
