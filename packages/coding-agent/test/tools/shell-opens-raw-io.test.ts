@@ -188,14 +188,14 @@ describe("SLICE-6 (POST-RAWIO-5): embedded-shell redirects and builtin host-file
 		expect(spawnFailOut.output).toContain(targetPath);
 		expect(peerPosixWriteLockBlocked(targetPath).blocked).toBe(true);
 
-		// (2) Helper dies mid-redirect (OMP_RAW_IO_VFS_HELPER_FAULT=fail_after_ops:2): pump surfaces
+		// (2) Helper dies mid-redirect (OMP_RAW_IO_VFS_HELPER_FAULT=fail_after_ops:4): pump surfaces
 		// the error on stderr with op+path and fails the command with non-zero exitCode.
 		const midStreamProc = Bun.spawnSync({
 			cmd: [process.execPath, "-e", inlineScript],
 			cwd: path.resolve(import.meta.dir, "../.."),
 			env: {
 				...process.env,
-				OMP_RAW_IO_VFS_HELPER_FAULT: "fail_after_ops:2",
+				OMP_RAW_IO_VFS_HELPER_FAULT: "fail_after_ops:4",
 				OMP_SLICE6_TARGET: bigPath,
 				OMP_SLICE6_CMD: `/usr/bin/wc -c < '${bigPath}'`,
 			},
@@ -211,10 +211,10 @@ describe("SLICE-6 (POST-RAWIO-5): embedded-shell redirects and builtin host-file
 		expect(midStreamOut.output).toContain(bigPath);
 		expect(peerPosixWriteLockBlocked(bigPath).blocked).toBe(true);
 
-		// (3) Subshell `exec -a` with VFS redirects joins its pumps and retains locks.
+		// (3) Subshell `command` with VFS redirects joins its pumps and retains locks.
 		const urlFs = new InternalUrlFilesystem({ context: { cwd: tempDir }, tier: "exec" });
 		const execRes = await runShell({
-			command: `(exec -a custom_cat /bin/cat < '${targetPath}' > '${execOutPath}')`,
+			command: `(command /bin/cat < '${targetPath}' > '${execOutPath}')`,
 			cwd: tempDir,
 			timeoutMs: 10000,
 			filesystem: urlFs.shellFilesystem(),
