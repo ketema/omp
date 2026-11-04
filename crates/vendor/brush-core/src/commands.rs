@@ -278,6 +278,107 @@ fn is_url_root(text: &str) -> bool {
 ///   environment; if false, the command will inherit environment variables
 ///   marked as exported in the provided `Shell`.
 #[allow(unused_variables, reason = "argv0 is only used on unix platforms")]
+fn spawn_vfs_input_pump(
+	mut vfs_file: pi_vfs::File,
+) -> Result<(std::process::Stdio, std::thread::JoinHandle<io::Result<()>>), error::Error> {
+	let (pipe_reader, mut pipe_writer) = std::io::pipe()?;
+	let handle = std::thread::spawn(move || {
+		let mut buf = vec![0u8; 64 * 1024];
+		let mut pump_err: Option<io::Error> = None;
+		loop {
+			match std::io::Read::read(&mut vfs_file, &mut buf) {
+				Ok(0) => break,
+				Ok(n) => {
+					if let Err(err) = std::io::Write::write_all(&mut pipe_writer, &buf[..n]) {
+						if err.kind() != std::io::ErrorKind::BrokenPipe {
+							pump_err = Some(err);
+						}
+						break;
+					}
+				},
+				Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+				Err(err) => {
+					pump_err = Some(err);
+					break;
+				},
+			}
+		}
+		drop(pipe_writer);
+		if let Some(err) = pump_err {
+			let _ = vfs_file.close();
+			return Err(err);
+		}
+		vfs_file.close()
+	});
+	Ok((std::process::Stdio::from(pipe_reader), handle))
+}
+
+fn spawn_vfs_output_pump(
+	mut vfs_file: pi_vfs::File,
+) -> Result<(std::process::Stdio, std::thread::JoinHandle<io::Result<()>>), error::Error> {
+	let (mut pipe_reader, pipe_writer) = std::io::pipe()?;
+	let handle = std::thread::spawn(move || {
+		let mut buf = vec![0u8; 64 * 1024];
+		let mut write_err: Option<io::Error> = None;
+		loop {
+			match std::io::Read::read(&mut pipe_reader, &mut buf) {
+				Ok(0) => break,
+				Ok(n) => {
+					if let Err(err) = std::io::Write::write_all(&mut vfs_file, &buf[..n]) {
+						write_err = Some(err);
+						break;
+					}
+				},
+				Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+				Err(err) => {
+					write_err = Some(err);
+					break;
+				},
+			}
+		}
+		drop(pipe_reader);
+		if let Some(err) = write_err {
+			let _ = vfs_file.close();
+			return Err(err);
+		}
+		std::io::Write::flush(&mut vfs_file)?;
+		vfs_file.close()
+	});
+	Ok((std::process::Stdio::from(pipe_writer), handle))
+}
+
+pub async fn join_vfs_io_pumps(
+	pumps: Vec<std::thread::JoinHandle<io::Result<()>>>,
+) -> io::Result<()> {
+	if pumps.is_empty() {
+		return Ok(());
+	}
+	tokio::task::spawn_blocking(move || {
+		let mut first_err: Option<io::Error> = None;
+		for pump in pumps {
+			match pump.join() {
+				Ok(Ok(())) => {},
+				Ok(Err(err)) => {
+					if first_err.is_none() {
+						first_err = Some(err);
+					}
+				},
+				Err(_) => {
+					if first_err.is_none() {
+						first_err = Some(io::Error::other("VFS redirect pump thread panicked"));
+					}
+				},
+			}
+		}
+		match first_err {
+			Some(err) => Err(err),
+			None => Ok(()),
+		}
+	})
+	.await
+	.map_err(|join_err| io::Error::other(join_err.to_string()))?
+}
+
 pub async fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtensions>(
 	context: &ExecutionContext<'_, SE>,
 	command_name: &str,
@@ -285,6 +386,28 @@ pub async fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtension
 	args: &[S],
 	empty_env: bool,
 ) -> Result<std::process::Command, error::Error> {
+	let (cmd, _pumps) =
+		compose_std_command_with_pumps(context, command_name, argv0, args, empty_env).await?;
+	Ok(cmd)
+}
+
+#[allow(unused_variables, reason = "argv0 is only used on unix platforms")]
+pub async fn compose_std_command_with_pumps<
+	S: AsRef<OsStr>,
+	SE: extensions::ShellExtensions,
+>(
+	context: &ExecutionContext<'_, SE>,
+	command_name: &str,
+	argv0: &str,
+	args: &[S],
+	empty_env: bool,
+) -> Result<
+	(
+		std::process::Command,
+		Vec<std::thread::JoinHandle<io::Result<()>>>,
+	),
+	error::Error,
+> {
 	// The operating system has no view of this process's virtual filesystem: a
 	// child can only start in a native directory and only run a native program.
 	// A file-backed scheme aliases a real file, so the program, the arguments
@@ -415,9 +538,16 @@ pub async fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtension
 		}
 	}
 
+	let mut io_pumps: Vec<std::thread::JoinHandle<io::Result<()>>> = Vec::new();
+
 	// Redirect stdin, if applicable.
 	match context.try_fd(OpenFiles::STDIN_FD) {
 		None => (),
+		Some(openfiles::OpenFile::Vfs(vfs_file)) => {
+			let (as_stdio, pump) = spawn_vfs_input_pump(vfs_file)?;
+			io_pumps.push(pump);
+			cmd.stdin(as_stdio);
+		},
 		Some(stdin_file) => {
 			let as_stdio = stdin_file.into_stdio()?;
 			cmd.stdin(as_stdio);
@@ -427,6 +557,11 @@ pub async fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtension
 	// Redirect stdout, if applicable.
 	match context.try_fd(OpenFiles::STDOUT_FD) {
 		None => (),
+		Some(openfiles::OpenFile::Vfs(vfs_file)) => {
+			let (as_stdio, pump) = spawn_vfs_output_pump(vfs_file)?;
+			io_pumps.push(pump);
+			cmd.stdout(as_stdio);
+		},
 		Some(stdout_file) => {
 			let as_stdio = stdout_file.into_stdio()?;
 			cmd.stdout(as_stdio);
@@ -436,6 +571,11 @@ pub async fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtension
 	// Redirect stderr, if applicable.
 	match context.try_fd(OpenFiles::STDERR_FD) {
 		None => {},
+		Some(openfiles::OpenFile::Vfs(vfs_file)) => {
+			let (as_stdio, pump) = spawn_vfs_output_pump(vfs_file)?;
+			io_pumps.push(pump);
+			cmd.stderr(as_stdio);
+		},
 		Some(stderr_file) => {
 			let as_stdio = stderr_file.into_stdio()?;
 			cmd.stderr(as_stdio);
@@ -448,7 +588,7 @@ pub async fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtension
 	});
 	cmd.inject_fds(other_files)?;
 
-	Ok(cmd)
+	Ok((cmd, io_pumps))
 }
 
 pub(crate) async fn on_preexecute(
@@ -869,7 +1009,7 @@ pub(crate) async fn execute_external_command(
 	// command) unless the caller specified an explicit override.
 	let argv0 = argv0_override.unwrap_or(context.command_name.as_str());
 	#[allow(unused_mut, reason = "only mutated on unix platforms")]
-	let mut cmd = compose_std_command(
+	let (mut cmd, io_pumps) = compose_std_command_with_pumps(
 		&context,
 		executable_path,
 		argv0,
@@ -965,6 +1105,7 @@ pub(crate) async fn execute_external_command(
 			}
 
 			let mut child_process = processes::ChildProcess::new(child, pid, actual_pgid);
+			child_process.set_io_pumps(io_pumps);
 			if let Some((output, markers)) = marker_output.take() {
 				child_process.set_completion_marker(
 					output,

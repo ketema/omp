@@ -42,6 +42,7 @@ pub struct ChildProcess {
 	#[cfg(windows)]
 	kill_handle: Option<OwnedHandle>,
 	completion_marker: Option<CompletionMarker>,
+	io_pumps:    Vec<std::thread::JoinHandle<std::io::Result<()>>>,
 }
 
 impl ChildProcess {
@@ -63,6 +64,7 @@ impl ChildProcess {
 			#[cfg(windows)]
 			kill_handle,
 			completion_marker: None,
+			io_pumps: Vec::new(),
 		}
 	}
 
@@ -86,6 +88,18 @@ impl ChildProcess {
 	pub fn duplicate_kill_handle(&self) -> Option<OwnedHandle> {
 		let handle = self.kill_handle.as_ref()?;
 		duplicate_handle(handle.as_raw_handle())
+	}
+
+	pub(crate) fn set_io_pumps(
+		&mut self,
+		pumps: Vec<std::thread::JoinHandle<std::io::Result<()>>>,
+	) {
+		self.io_pumps = pumps;
+	}
+
+	async fn join_io_pumps(&mut self) -> std::io::Result<()> {
+		let pumps = std::mem::take(&mut self.io_pumps);
+		crate::commands::join_vfs_io_pumps(pumps).await
 	}
 
 	pub(crate) fn set_completion_marker(
@@ -146,6 +160,10 @@ impl ChildProcess {
 					let output = output?;
 					let marker_exit_code = completion_exit_code(&output.status);
 					self.reaped = true;
+					if let Err(pump_err) = self.join_io_pumps().await {
+						self.write_completion_marker(1);
+						return Err(pump_err.into());
+					}
 					self.write_completion_marker(marker_exit_code);
 					break Ok(ProcessWaitResult::Completed(output))
 				},
@@ -163,6 +181,16 @@ impl ChildProcess {
 						}
 					}
 					self.kill();
+					#[cfg(unix)]
+					if !self.reaped {
+						if let Ok(Ok(_)) = tokio::time::timeout(
+							std::time::Duration::from_millis(200),
+							&mut self.exec_future,
+						).await {
+							self.reaped = true;
+						}
+					}
+					let _ = self.join_io_pumps().await;
 					self.write_completion_marker(130);
 					break Ok(ProcessWaitResult::Cancelled)
 				},
@@ -190,6 +218,15 @@ impl ChildProcess {
 		}
 		#[cfg(unix)]
 		{
+			if let Some(pgid) = self.pgid
+				&& pgid > 0
+				&& self.pid == Some(pgid)
+			{
+				let _ = nix::sys::signal::kill(
+					nix::unistd::Pid::from_raw(-pgid),
+					nix::sys::signal::Signal::SIGKILL,
+				);
+			}
 			let Some(pid) = self.pid else { return };
 			let _ = nix::sys::signal::kill(
 				nix::unistd::Pid::from_raw(pid),
@@ -228,6 +265,22 @@ impl ChildProcess {
 			Ok(output) => {
 				let marker_exit_code = completion_exit_code(&output.status);
 				self.reaped = true;
+				for pump in std::mem::take(&mut self.io_pumps) {
+					match pump.join() {
+						Ok(Ok(())) => {},
+						Ok(Err(err)) => {
+							self.write_completion_marker(1);
+							return Some(Err(err.into()));
+						},
+						Err(_) => {
+							self.write_completion_marker(1);
+							return Some(Err(std::io::Error::other(
+								"VFS redirect pump thread panicked",
+							)
+							.into()));
+						},
+					}
+				}
 				self.write_completion_marker(marker_exit_code);
 				Ok(output)
 			},

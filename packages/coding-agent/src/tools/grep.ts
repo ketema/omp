@@ -58,6 +58,7 @@ import {
 	searchApprovalCacheTargets,
 } from "./search-approval-targets";
 import { type LineRange, parseLineRanges, selectorLineRanges } from "@oh-my-pi/pi-tui/tools/line-ranges";
+import { type RawIoClassifyOptions, RawIoHelperOperationError, readRawIoBytes } from "./raw-io-client";
 import { isReadableUrlPath, splitPathAndSel } from "@oh-my-pi/pi-tui/tools/read";
 import { toPathList } from "@oh-my-pi/pi-tui/render/render-utils";
 import { isRawSelector } from "./read-selector";
@@ -395,26 +396,66 @@ const SNAPSHOT_STAMP_MAX = 256;
  * granule leaves the stamp unchanged.
  */
 const RACY_STAMP_WINDOW_NS = 2_000_000_000n;
+const SNAPSHOT_MAX_FILE_BYTES = 4 * 1024 * 1024;
+const snapshotUtf8Decoder = new TextDecoder("utf-8", { fatal: true });
 const snapshotStampsByStore = new WeakMap<EditStore, LRUCache<string, SnapshotStamp>>();
+
+async function readAndRecordSnapshotViaHelper(
+	store: EditStore,
+	filePath: string,
+	rawIoHelperOptions?: RawIoClassifyOptions,
+): Promise<string | null> {
+	let bytes: Uint8Array;
+	try {
+		bytes = await readRawIoBytes(filePath, 0, SNAPSHOT_MAX_FILE_BYTES + 1, rawIoHelperOptions);
+	} catch (err) {
+		if (err instanceof RawIoHelperOperationError && err.clauseId !== "ERRORS-RAWIO-1") {
+			throw err;
+		}
+		return null;
+	}
+	if (bytes.byteLength > SNAPSHOT_MAX_FILE_BYTES) {
+		return null;
+	}
+	let text: string;
+	try {
+		text = snapshotUtf8Decoder.decode(bytes);
+	} catch {
+		return null;
+	}
+	return store.recordSnapshot(filePath, text);
+}
 
 /**
  * Whole-file snapshot tags for `snapshotPaths`, in order (null = unreadable or
  * over the snapshot cap). Files whose stat identity is unchanged since this
  * store last recorded them, and whose recorded head still carries that tag,
- * skip the native re-read: recording identical text again would only refresh
+ * skip the helper re-read: recording identical text again would only refresh
  * recency, which `headHash` does too. Stats run concurrently and BEFORE the
  * read, so a write racing the read invalidates the stamp instead of pinning a
  * stale tag.
  */
-async function recordSnapshotTags(store: EditStore, snapshotPaths: readonly string[]): Promise<(string | null)[]> {
+async function recordSnapshotTags(
+	store: EditStore,
+	snapshotPaths: readonly string[],
+	rawIoHelperOptions?: RawIoClassifyOptions,
+): Promise<(string | null)[]> {
 	const stamps = snapshotStampsByStore.get(store) ?? new LRUCache<string, SnapshotStamp>({ max: SNAPSHOT_STAMP_MAX });
 	snapshotStampsByStore.set(store, stamps);
 	const stats = await Promise.all(snapshotPaths.map(filePath => stat(filePath, { bigint: true }).catch(() => null)));
-	return snapshotPaths.map((filePath, index) => {
+	const out: (string | null)[] = [];
+	for (let index = 0; index < snapshotPaths.length; index++) {
+		const filePath = snapshotPaths[index];
 		const st = stats[index];
 		if (!st) {
 			stamps.delete(filePath);
-			return store.recordSnapshotFile(filePath);
+			out.push(await readAndRecordSnapshotViaHelper(store, filePath, rawIoHelperOptions));
+			continue;
+		}
+		if (st.size > BigInt(SNAPSHOT_MAX_FILE_BYTES)) {
+			stamps.delete(filePath);
+			out.push(null);
+			continue;
 		}
 		const prior = stamps.get(filePath);
 		if (
@@ -425,17 +466,19 @@ async function recordSnapshotTags(store: EditStore, snapshotPaths: readonly stri
 			prior.ino === st.ino &&
 			store.headHash(filePath) === prior.tag
 		) {
-			return prior.tag;
+			out.push(prior.tag);
+			continue;
 		}
-		const tag = store.recordSnapshotFile(filePath);
+		const tag = await readAndRecordSnapshotViaHelper(store, filePath, rawIoHelperOptions);
 		const changedNs = st.mtimeNs > st.ctimeNs ? st.mtimeNs : st.ctimeNs;
 		if (tag && BigInt(Date.now()) * 1_000_000n - changedNs >= RACY_STAMP_WINDOW_NS) {
 			stamps.set(filePath, { size: st.size, mtimeNs: st.mtimeNs, ctimeNs: st.ctimeNs, ino: st.ino, tag });
 		} else {
 			stamps.delete(filePath);
 		}
-		return tag;
-	});
+		out.push(tag);
+	}
+	return out;
 }
 
 /**
@@ -1150,6 +1193,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					const tags = await recordSnapshotTags(
 						getEditStore(this.session),
 						editable.map(entry => entry.snapshotPath),
+						this.session.rawIoHelperOptions,
 					);
 					for (let index = 0; index < editable.length; index++) {
 						const tag = tags[index];

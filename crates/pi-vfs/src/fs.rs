@@ -327,10 +327,14 @@ fn mount_access(execute: bool) -> io::Result<()> {
 }
 
 fn mount_stat_fs(file: &File) -> io::Result<StatFs> {
-	match file.native() {
-		Some(native) => native::fstat_fs(native),
-		None => Err(unsupported("statfs")),
+	if let Some(native) = file.native() {
+		return native::fstat_fs(native);
 	}
+	#[cfg(unix)]
+	if let Some(helper) = file.helper() {
+		return helper.fstat_fs();
+	}
+	Err(unsupported("statfs"))
 }
 
 fn read_options() -> OpenOptions {
@@ -593,7 +597,7 @@ impl Fs {
 	pub async fn read(&self, path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 		let path = path.as_ref();
 		match self.route(path)? {
-			Route::Native => std::fs::read(path),
+			Route::Native => native::read(path),
 			Route::Provider(provider) => self.guard(provider.read(path)).await,
 			Route::Mounted(file) => {
 				let file = mount_open_async(file, &read_options()).await?;
@@ -612,7 +616,7 @@ impl Fs {
 	pub async fn write(&self, path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> io::Result<()> {
 		let (path, contents) = (path.as_ref(), contents.as_ref());
 		match self.route(path)? {
-			Route::Native => std::fs::write(path, contents),
+			Route::Native => native::write(path, contents),
 			Route::Provider(provider) => self.guard(provider.write(path, contents)).await,
 			Route::Mounted(file) => {
 				mount_open_async(file, &create_options())
@@ -776,7 +780,7 @@ impl Fs {
 	pub async fn copy(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<u64> {
 		let (from, to) = (from.as_ref(), to.as_ref());
 		match (self.route(from)?, self.route(to)?) {
-			(Route::Native, Route::Native) => std::fs::copy(from, to),
+			(Route::Native, Route::Native) => native::copy(from, to),
 			(Route::Mounted(_), _) | (_, Route::Mounted(_)) => {
 				let source = self.open(from).await?;
 				let target = self.create(to).await?;
@@ -1217,7 +1221,7 @@ impl BlockingFs {
 	pub fn read(&self, path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 		let path = path.as_ref();
 		match self.fs.route(path)? {
-			Route::Native => std::fs::read(path),
+			Route::Native => native::read(path),
 			Route::Provider(provider) => self.run(provider.read(path)),
 			Route::Mounted(file) => {
 				let mut contents = Vec::new();
@@ -1235,7 +1239,7 @@ impl BlockingFs {
 	pub fn write(&self, path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> io::Result<()> {
 		let (path, contents) = (path.as_ref(), contents.as_ref());
 		match self.fs.route(path)? {
-			Route::Native => std::fs::write(path, contents),
+			Route::Native => native::write(path, contents),
 			Route::Provider(provider) => self.run(provider.write(path, contents)),
 			Route::Mounted(file) => {
 				io::Write::write_all(&mut mount_open(file, &create_options())?, contents)
@@ -1385,7 +1389,7 @@ impl BlockingFs {
 	pub fn copy(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<u64> {
 		let (from, to) = (from.as_ref(), to.as_ref());
 		match (self.fs.route(from)?, self.fs.route(to)?) {
-			(Route::Native, Route::Native) => std::fs::copy(from, to),
+			(Route::Native, Route::Native) => native::copy(from, to),
 			(Route::Mounted(_), _) | (_, Route::Mounted(_)) => {
 				let source = self.open(from)?;
 				let target = self.create(to)?;

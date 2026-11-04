@@ -1635,6 +1635,9 @@ fn search_one_file<M: Matcher + Sync>(
 				ReadPolicy::Full => FileOutcome::Skipped,
 			});
 		},
+		Err(err) if pi_vfs::is_raw_io_helper_failure(&err) => {
+			return Err(Error::from_reason(err.to_string()));
+		},
 		Err(_) => return Ok(FileOutcome::Skipped),
 	}
 	let search = match sink {
@@ -2394,6 +2397,9 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 			Ok(ReadFile::Read) => Haystack::Slice(&buffer),
 			Ok(ReadFile::Oversized) if !multiline => match fs.open(&search_path) {
 				Ok(file) => Haystack::Reader(CancellableReader { file, ct: &ct }),
+				Err(err) if pi_vfs::is_raw_io_helper_failure(&err) => {
+					return Err(Error::from_reason(err.to_string()));
+				},
 				Err(_) => {
 					return Ok(GrepResult {
 						matches:            Vec::new(),
@@ -2407,6 +2413,9 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 			},
 			Ok(ReadFile::Oversized) => match read_file_prefix(fs, &search_path, &mut buffer) {
 				Ok(ReadFile::Read) => Haystack::Slice(&buffer),
+				Err(err) if pi_vfs::is_raw_io_helper_failure(&err) => {
+					return Err(Error::from_reason(err.to_string()));
+				},
 				_ => {
 					return Ok(GrepResult {
 						matches:            Vec::new(),
@@ -2417,6 +2426,9 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 						skipped_oversized:  Some(1),
 					});
 				},
+			},
+			Err(err) if pi_vfs::is_raw_io_helper_failure(&err) => {
+				return Err(Error::from_reason(err.to_string()));
 			},
 			Ok(ReadFile::Skipped) | Err(_) => {
 				return Ok(GrepResult {

@@ -37,6 +37,8 @@ mod dir;
 mod error;
 mod file;
 mod fs;
+#[cfg(unix)]
+pub mod helper;
 mod metadata;
 mod native;
 mod options;
@@ -55,6 +57,11 @@ pub use error::{
 };
 pub use file::{File, FileHandle};
 pub use fs::{BlockingFs, Fs};
+#[cfg(unix)]
+pub use helper::{
+	RAW_IO_VFS_HELPER_FAULT_ENV, RAW_IO_VFS_HELPER_FLAG, helper_pid, init_vfs_helper_host,
+	is_raw_io_helper_failure, run_vfs_helper_loop,
+};
 pub use metadata::Metadata;
 pub use options::{
 	CanonicalizeOptions, DirOptions, MissingHandling, OpenOptions, ResolveMode, TempOptions,
@@ -65,3 +72,8 @@ pub use path::{
 };
 pub use provider::FileSystem;
 pub use types::{FileId, FileKind, FileTime, FileType, NodeKind, Permissions, StatFs, SymlinkKind};
+
+#[cfg(not(unix))]
+pub const fn is_raw_io_helper_failure(_err: &std::io::Error) -> bool {
+	false
+}
