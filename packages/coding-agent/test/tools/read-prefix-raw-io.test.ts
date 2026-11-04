@@ -8,7 +8,11 @@ import { sessionResolveContext } from "@oh-my-pi/pi-coding-agent/internal-urls/c
 import { InternalUrlFilesystem, UrlFsError } from "@oh-my-pi/pi-coding-agent/internal-urls/url-filesystem";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { readText } from "@oh-my-pi/pi-coding-agent/tools/jfind/text";
-import { type RawIoClassifyOptions, stopRawIoHelper } from "@oh-my-pi/pi-coding-agent/tools/raw-io-client";
+import {
+	type RawIoClassifyOptions,
+	type RawIoHelperRequestEntry,
+	stopRawIoHelper,
+} from "@oh-my-pi/pi-coding-agent/tools/raw-io-client";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { RAW_IO_HELPER_CONTRACT } from "../../../../contracts/raw_io_helper.contract";
 import { acquireInProcessPosixWriteLock, peerPosixWriteLockBlocked } from "../utils/posix-lock-probe";
