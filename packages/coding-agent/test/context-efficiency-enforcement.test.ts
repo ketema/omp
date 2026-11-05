@@ -353,6 +353,8 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 				homeDir: homeRoot,
 				priorBindingExpr: "expand_rules = lambda x: 'PRIOR_BINDING'",
 				probeCallExpr: "expand_rules(17)",
+				pythonInterpreter: "python3",
+				loaderPath: path.join(homeRoot, "missing-restore.py"),
 			});
 			expect(badLoad.refused.length, "POST-CTX27-4 violation: failed load must report refusal error").toBe(1);
 			expect(badLoad.probeResult, "POST-CTX27-4 violation: failed load must leave previous binding in place").toBe(
