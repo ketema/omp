@@ -7,7 +7,7 @@
 
 import { countTokens, Encoding } from "@oh-my-pi/pi-natives";
 
-export const IPYTHON_FILE_THRESHOLD_TOKENS = 1500;
+export const IPYTHON_FILE_THRESHOLD_TOKENS = 800;
 export const IPYTHON_OUTPUT_VAR_PREFIX = "out_";
 export const IPYTHON_DESCRIPTOR_SAMPLE_LINES = 5;
 export const IPYTHON_DESCRIPTOR_LINE_CUT = 100;
