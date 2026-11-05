@@ -22,7 +22,9 @@ import { countTokens, Encoding } from "@oh-my-pi/pi-natives";
 import {
 	expectedIpythonDescriptor,
 	IPYTHON_ARTIFACT_TOOL_TYPE,
+	IPYTHON_DESCRIPTOR_INSTRUCTION,
 	IPYTHON_FILE_THRESHOLD_TOKENS,
+	wholeReadRefusal,
 } from "../../../contracts/context_efficiency_enforcement.contract.ts";
 import { buildKernelEnv, type KernelCaps, type KernelSession } from "../src/bootstrap.ts";
 import { KernelManagerAdapter } from "../src/extension.ts";
@@ -230,6 +232,69 @@ describe("a large ipython stdout is filed into out_<n> (REQ-CTX27-23 to REQ-CTX2
 						`ACTUAL (first 300 chars): ${JSON.stringify(resultText(large).slice(0, 300))}\n` +
 						"GUIDANCE: the filing threshold is 800 tokens",
 				).toBe(expected);
+			} finally {
+				await session.shutdown();
+				fs.rmSync(home, { recursive: true, force: true });
+			}
+		},
+		120_000,
+	);
+
+	liveTest(
+		"POST-CTX27-19 / POST-CTX27-20: a whole read of a filed artifact is refused with the range hint, and the descriptor says to answer from the kernel",
+		async () => {
+			// Risk tier: HIGH — in session 01a1add1 the model read the whole artifact back and cancelled the saving.
+			const home = fs.mkdtempSync(join(os.tmpdir(), "omp-ipy-filing-"));
+			const session = await openFilingSession(home);
+			try {
+				const refusedBeforeAnyFiling = await session.toolCall("read", { path: "artifact://1" });
+				expect(
+					refusedBeforeAnyFiling,
+					"POST-CTX27-19 violation: a read of an artifact that no ipython output filed was refused\n" +
+						"GUIDANCE: only artifacts saved by the ipython filing are guarded",
+				).toBeUndefined();
+
+				const first = await session.call(bigPrint(100).code);
+				const second = await session.call(bigPrint(110).code);
+				const idFirst = session.artifacts[0]?.id ?? "missing";
+				const idSecond = session.artifacts[1]?.id ?? "missing";
+				expect(
+					[resultText(first), resultText(second)].every(
+						text => text.includes(IPYTHON_DESCRIPTOR_INSTRUCTION) && text.includes("a whole read is refused"),
+					),
+					"POST-CTX27-20 violation: the descriptor does not tell the model to answer from the kernel and read by range only\n" +
+						`ACTUAL (first 400 chars): ${JSON.stringify(resultText(first).slice(0, 400))}\n` +
+						"GUIDANCE: the first access line ends with the instruction and the artifact line says a whole read is refused",
+				).toBe(true);
+
+				const whole = await session.toolCall("read", { path: `artifact://${idFirst}` });
+				expect(
+					whole,
+					"POST-CTX27-19 violation: a whole read of a filed artifact was not refused with the contracted text\n" +
+						`EXPECTED: ${JSON.stringify({ block: true, reason: wholeReadRefusal(idFirst, 1) })}\n` +
+						`ACTUAL: ${JSON.stringify(whole)}\n` +
+						"GUIDANCE: refuse the call and name out_<n> and the range form",
+				).toEqual({ block: true, reason: wholeReadRefusal(idFirst, 1) });
+
+				expect(
+					await session.toolCall("read", { path: `artifact://${idSecond}:raw` }),
+					"POST-CTX27-19 violation: a whole :raw read of the second filed artifact was not refused with out_2\n" +
+						"GUIDANCE: map each filed artifact to its own out_<n>",
+				).toEqual({ block: true, reason: wholeReadRefusal(idSecond, 2) });
+
+				for (const [label, toolName, input] of [
+					["ranged read", "read", { path: `artifact://${idFirst}:1-60` }],
+					["raw ranged read", "read", { path: `artifact://${idFirst}:raw:5-9` }],
+					["last lines", "read", { path: `artifact://${idFirst}:-20` }],
+					["other artifact", "read", { path: "artifact://99" }],
+					["other protocol", "read", { path: "file:///tmp/x.txt" }],
+					["other tool", "bash", { command: `cat artifact://${idFirst}` }],
+				] as const) {
+					expect(
+						await session.toolCall(toolName, input),
+						`POST-CTX27-19 violation: the ${label} was refused\nGUIDANCE: only a whole read of a filed artifact is refused`,
+					).toBeUndefined();
+				}
 			} finally {
 				await session.shutdown();
 				fs.rmSync(home, { recursive: true, force: true });

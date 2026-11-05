@@ -1,7 +1,7 @@
 schema_version: '1.0'
 feature_name: context-efficiency-enforcement
 manifest_path: requirements/REQUIREMENT_MANIFEST_CTX27.md
-manifest_hash: sha256:dc0ee40b5599b93a7b3579a8dbc0533174a1bec6978c767dcefd5d959fd916e3
+manifest_hash: sha256:4aadd32c15370bdb0309fce1664d64c12e660f9d7c98ca04192b81f86f696da4
 created: '2026-11-05'
 last_updated: '2026-11-05'
 status: ACTIVE
@@ -83,6 +83,8 @@ slices:
   - REQ-CTX27-28
   - REQ-CTX27-29
   - REQ-CTX27-30
+  - REQ-CTX27-31
+  - REQ-CTX27-32
   clauses_in_scope:
   - POST-CTX27-12
   - POST-CTX27-13
@@ -91,6 +93,8 @@ slices:
   - POST-CTX27-16
   - POST-CTX27-17
   - POST-CTX27-18
+  - POST-CTX27-19
+  - POST-CTX27-20
   - FORBIDDEN-CTX27-3
   - ERRORS-CTX27-4
   clauses_deferred: []
@@ -98,7 +102,7 @@ slices:
   - FORBIDDEN-CTX27-3
   status: PENDING
   issue: ketema/omp#27
-  pivot_note: Item 2. Only ipython output changes. When a cell's stdout reaches 800 o200k tokens, the full text stays in the kernel as out_<n>, omp saves the same text as a session artifact, and the tool result carries a descriptor that names both access methods with the kernel variable preferred. Every other tool, protocol and thinking block is untouched. The ipython:// protocol is a later slice. Ketema accepts only after his real-life fresh-session test.
+  pivot_note: Item 2. Only ipython output changes, plus one refusal. When a cell's stdout reaches 800 o200k tokens, the full text stays in the kernel as out_<n>, omp saves the same text as a session artifact, and the tool result carries a descriptor that names both access methods with the kernel variable preferred and tells the model to answer from the kernel. A whole read of that artifact is refused with a range hint. Every other tool, protocol and thinking block is untouched. The ipython:// protocol is a later slice.
 forgotten_invariants:
 - INV-CTX27-01
 - INV-CTX27-07

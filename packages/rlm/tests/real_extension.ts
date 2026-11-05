@@ -39,6 +39,8 @@ export interface RealSession {
 	readonly warnings: string[];
 	/** Fires `type` to every registered handler with `event`; the session's owned directory is `dir` (default: the initial one). */
 	emit(type: string, event?: object, dir?: string): Promise<void>;
+	/** Fires a tool call to every tool_call handler; the first block result, or undefined when none refused it. */
+	toolCall(toolName: string, input: object): Promise<{ block?: boolean; reason?: string } | undefined>;
 	start(): Promise<void>;
 	shutdown(): Promise<void>;
 	call(code: string): Promise<ToolResult>;
@@ -87,6 +89,17 @@ export async function openRealSession(
 		const ctx = { cwd: root, sessionManager: { resolveOwnArtifactsDir: async () => dir } };
 		for (const handler of handlers.get(type) ?? []) await handler({ type, ...event }, ctx);
 	};
+	const toolCall = async (toolName: string, input: object) => {
+		const ctx = { cwd: root, sessionManager: { resolveOwnArtifactsDir: async () => initialDir } };
+		for (const handler of handlers.get("tool_call") ?? []) {
+			const result = await handler(
+				{ type: "tool_call", toolCallId: `t-${crypto.randomUUID()}`, toolName, input },
+				ctx,
+			);
+			if (result) return result as { block?: boolean; reason?: string };
+		}
+		return undefined;
+	};
 	const call = (code: string) => tools[0].execute(`c-${crypto.randomUUID()}`, { code }, undefined, undefined, toolCtx);
 	return {
 		root,
@@ -98,6 +111,7 @@ export async function openRealSession(
 				.map(message => String(message.content));
 		},
 		emit,
+		toolCall,
 		start: () => emit("session_start"),
 		shutdown: () => emit("session_shutdown"),
 		call,

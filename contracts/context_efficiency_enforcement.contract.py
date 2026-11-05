@@ -7,6 +7,7 @@ mirrors every constant, exception, record, validator, and clause ID.
 The implementation MUST NOT import from either contract file (CL11-F).
 """
 
+import re
 from dataclasses import dataclass
 from typing import Final, Literal
 
@@ -197,12 +198,13 @@ def expected_ipython_descriptor(info: FiledOutputInfo) -> str:
     out = [f"[ipython output filed] {name} | {len(lines)} lines | {size} bytes | {info.tokens} tokens"]
     if info.cut_at_ceiling:
         out.append(f"cut: first {IPYTHON_OUTPUT_CEILING_BYTES} bytes kept")
-    out.append(f'open (preferred): {name} in ipython, e.g. {name}.count("ERROR")')
+    out.append(f'open (preferred): {name} in ipython, e.g. {name}.count("ERROR"). {IPYTHON_DESCRIPTOR_INSTRUCTION}')
     if info.artifact_id is None:
         out.append("full unchanged copy: unavailable (artifact save failed)")
     else:
         out.append(
-            f"full unchanged copy: artifact://{info.artifact_id} (page with :1-60; unchanged if {name} is rebound)"
+            f"full unchanged copy: artifact://{info.artifact_id} (ranges only, e.g. :1-60; a whole read is refused; "
+            f"unchanged if {name} is rebound)"
         )
     out.extend(["head:", *head])
     if tail:
@@ -214,6 +216,28 @@ def validate_ipython_descriptor(info: FiledOutputInfo, result_text: str) -> None
     expected = expected_ipython_descriptor(info)
     if result_text != expected:
         raise IpythonFilingViolationError(f"POST-CTX27-15 violation: descriptor {result_text!r} != {expected!r}")
+
+
+# REQ-CTX27-32: the instruction that closes the descriptor's first access line.
+IPYTHON_DESCRIPTOR_INSTRUCTION: Final[str] = "Answer from it; paste no lines into your reply."
+
+
+def whole_artifact_read_id(path: str) -> str | None:
+    """REQ-CTX27-31: the artifact id when path reads artifact://<id> (optionally :raw) with no line range, else None.
+
+    Ranged forms (:5, :5-9, :-60, :5+20, :raw:5-9, comma lists) and every other path return None.
+    """
+    match = re.fullmatch(r"artifact://(\d+)(?::raw)?", path.strip(), flags=re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def whole_read_refusal(artifact_id: str, n: int) -> str:
+    """REQ-CTX27-31: the refusal text for a whole read of the artifact copy of out_<n>."""
+    name = f"{IPYTHON_OUTPUT_VAR_PREFIX}{n}"
+    return (
+        f'artifact://{artifact_id} is the full copy of {name}. Ask {name} in ipython (for example {name}.count("ERROR")) '
+        f"or read a range: artifact://{artifact_id}:1-60."
+    )
 
 
 # ==============================================================================
@@ -470,11 +494,28 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
             "IPYTHON_OUTPUT_CEILING_BYTES bytes and the descriptor states the cut. Source: REQ-CTX27-30."
         ),
     ),
+    "POST-CTX27-19": Clause(
+        verification="test",
+        text=(
+            "A read of artifact://<id> without a line range, where <id> is the artifact of a filed ipython output, "
+            "is refused with wholeReadRefusal(id, n); a ranged read of it, a read of any other artifact id and a "
+            "read of any other path proceed untouched. Source: REQ-CTX27-31."
+        ),
+    ),
+    "POST-CTX27-20": Clause(
+        verification="test",
+        text=(
+            "The first access line of the descriptor ends with IPYTHON_DESCRIPTOR_INSTRUCTION and the artifact "
+            "line says that only ranges are read and a whole read is refused (expectedIpythonDescriptor). "
+            "Source: REQ-CTX27-32."
+        ),
+    ),
     "FORBIDDEN-CTX27-3": Clause(
         verification="test",
         text=(
             "The rlm extension registers exactly one tool, ipython, and no tool_result handler: it never files, "
-            "truncates or rewrites the result of any other tool. Source: REQ-CTX27-29."
+            "truncates or rewrites the result of any other tool. Its only tool_call handler is the refusal of "
+            "POST-CTX27-19. Source: REQ-CTX27-29."
         ),
     ),
     "ERRORS-CTX27-4": Clause(

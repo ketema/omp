@@ -389,11 +389,11 @@ export function expectedIpythonDescriptor(info: FiledOutputInfo): string {
 	const bytes = new TextEncoder().encode(info.text).length;
 	const out = [`[ipython output filed] ${name} | ${lines.length} lines | ${bytes} bytes | ${info.tokens} tokens`];
 	if (info.cutAtCeiling) out.push(`cut: first ${IPYTHON_OUTPUT_CEILING_BYTES} bytes kept`);
-	out.push(`open (preferred): ${name} in ipython, e.g. ${name}.count("ERROR")`);
+	out.push(`open (preferred): ${name} in ipython, e.g. ${name}.count("ERROR"). ${IPYTHON_DESCRIPTOR_INSTRUCTION}`);
 	out.push(
 		info.artifactId === null
 			? "full unchanged copy: unavailable (artifact save failed)"
-			: `full unchanged copy: artifact://${info.artifactId} (page with :1-60; unchanged if ${name} is rebound)`,
+			: `full unchanged copy: artifact://${info.artifactId} (ranges only, e.g. :1-60; a whole read is refused; unchanged if ${name} is rebound)`,
 	);
 	out.push("head:", ...head);
 	if (tail.length > 0) out.push("tail:", ...tail);
@@ -409,6 +409,24 @@ export function validateIpythonDescriptor(info: FiledOutputInfo, resultText: str
 			`descriptor ${JSON.stringify(resultText)} != ${JSON.stringify(expected)}`,
 		);
 	}
+}
+
+/** REQ-CTX27-32: the instruction that closes the descriptor's first access line. */
+export const IPYTHON_DESCRIPTOR_INSTRUCTION = "Answer from it; paste no lines into your reply.";
+
+/**
+ * REQ-CTX27-31: the artifact id when `path` is a read of `artifact://<id>` (optionally `:raw`) with no line range,
+ * or null for any other path or any ranged form (`:5`, `:5-9`, `:-60`, `:5+20`, `:raw:5-9`, comma lists). Pure.
+ */
+export function wholeArtifactReadId(path: string): string | null {
+	const match = /^artifact:\/\/(\d+)(?::raw)?$/i.exec(path.trim());
+	return match === null ? null : (match[1] ?? null);
+}
+
+/** REQ-CTX27-31: the refusal text for a whole read of the artifact copy of `out_<n>`. Pure. */
+export function wholeReadRefusal(artifactId: string, n: number): string {
+	const name = `${IPYTHON_OUTPUT_VAR_PREFIX}${n}`;
+	return `artifact://${artifactId} is the full copy of ${name}. Ask ${name} in ipython (for example ${name}.count("ERROR")) or read a range: artifact://${artifactId}:1-60.`;
 }
 
 // =============================================================================
@@ -625,11 +643,25 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 			"When stdout exceeds IPYTHON_OUTPUT_CEILING_BYTES, the variable and the artifact hold the first IPYTHON_OUTPUT_CEILING_BYTES bytes and the descriptor states the cut.",
 		requirement_ids: ["REQ-CTX27-30"],
 	},
+	"POST-CTX27-19": {
+		id: "POST-CTX27-19",
+		method: "test",
+		description:
+			"A read of artifact://<id> without a line range, where <id> is the artifact of a filed ipython output, is refused with wholeReadRefusal(id, n); a ranged read of it, a read of any other artifact id and a read of any other path proceed untouched.",
+		requirement_ids: ["REQ-CTX27-31"],
+	},
+	"POST-CTX27-20": {
+		id: "POST-CTX27-20",
+		method: "test",
+		description:
+			"The first access line of the descriptor ends with IPYTHON_DESCRIPTOR_INSTRUCTION and the artifact line says that only ranges are read and a whole read is refused (expectedIpythonDescriptor).",
+		requirement_ids: ["REQ-CTX27-32"],
+	},
 	"FORBIDDEN-CTX27-3": {
 		id: "FORBIDDEN-CTX27-3",
 		method: "test",
 		description:
-			"The rlm extension registers exactly one tool, ipython, and no tool_result handler: it never files, truncates or rewrites the result of any other tool.",
+			"The rlm extension registers exactly one tool, ipython, and no tool_result handler: it never files, truncates or rewrites the result of any other tool. Its only tool_call handler is the refusal of POST-CTX27-19.",
 		requirement_ids: ["REQ-CTX27-29"],
 	},
 	"ERRORS-CTX27-4": {
