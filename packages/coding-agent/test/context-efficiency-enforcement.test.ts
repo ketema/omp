@@ -466,6 +466,9 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 				await expect(
 					migrateHelperSnapshotsToTargetPython({
 						snapshotsDir: migSnapDir,
+						sourceOverrides: {
+							[fns[1]!.name]: "def tally_rows(rows):\n    return {'MODIFIED_OVERRIDE': len(rows)}\n",
+						},
 						renameFile: (oldP, newP) => {
 							renameCalls += 1;
 							if (renameCalls === 2) {
