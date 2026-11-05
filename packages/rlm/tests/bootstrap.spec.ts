@@ -284,9 +284,9 @@ test("fresh install requests EVERY base and extras package in the install argv (
   for (const pkg of [...BASE_PACKAGES, ...EXTRAS_PACKAGES]) {
     expect(allArgs.includes(pkg)).toBe(true)
   }
-  // Python 3.11 requested for the venv (F-191)
+  // Python 3.14.10 requested for the venv (F-191 / POST-BOOT-1)
   const venvCall = deps.runner.calls.find(c => c.args.join(" ").includes("venv"))
-  expect(venvCall?.args.join(" ")).toContain("3.11")
+  expect(venvCall?.args.join(" ")).toContain("3.14.10")
   fs.rmSync(venvDir, { recursive: true, force: true })
 })
 
@@ -713,7 +713,7 @@ describe("INV-BOOT-1 lock primitives", () => {
 
 test("manifest schema gate: schema 8 with all fields; wrong schema rejected", () => {
   expect(SCHEMA_VERSION).toBe(8)
-  expect(PYTHON_VERSION).toBe("3.11")
+  expect(PYTHON_VERSION).toBe("3.14.10")
   expect(EXTRAS_PACKAGES).toEqual([
     "requests", "httpx", "pyyaml", "tomli", "python-dotenv",
     "pandas", "numpy", "scipy", "beautifulsoup4", "lxml", "pydantic", "tyro",

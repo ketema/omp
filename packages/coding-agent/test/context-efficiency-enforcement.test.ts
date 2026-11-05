@@ -66,6 +66,8 @@ import {
 	IMPL_TURN_INLINE_TOKEN_BUDGET,
 	ImplBudgetInvariantViolationError,
 	ImplPreconditionViolationError,
+	ImplSnapshotMigrationError,
+	migrateHelperSnapshotsToTargetPython,
 	restoreTrustedHelperSnapshotsWithLoader,
 	saveTrustedHelperSnapshot,
 } from "../src/context/context-efficiency-enforcement";
@@ -117,7 +119,7 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 	});
 
 	it("aligns contract and implementation constants and enforces PRE-CTX27-1 and INV-CTX27-1 runtime guards (PRE-CTX27-1, INV-CTX27-1, POST-CTX27-1..5, SEQ-CTX27-1..4, ERRORS-CTX27-1, FORBIDDEN-CTX27-1)", async () => {
-		expect(Object.keys(CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT).length).toBe(13);
+		expect(Object.keys(CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT).length).toBe(15);
 		expect(IMPL_RESULT_TOKEN_THRESHOLD).toBe(RESULT_TOKEN_THRESHOLD);
 		expect(IMPL_TURN_INLINE_TOKEN_BUDGET).toBe(TURN_INLINE_TOKEN_BUDGET);
 		expect(IMPL_SESSION_INLINE_TOKEN_BUDGET).toBe(SESSION_INLINE_TOKEN_BUDGET);
@@ -322,6 +324,35 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 			).toBe(false);
 		}
 
+		// Also verify real dill loader binds digest_text.__globals__ to __main__ (globals()),
+		// preventing Python 3.14 + dill 0.4.1 from pickling a custom dict containing module objects.
+		const realDillHome = fs.mkdtempSync(path.join(os.tmpdir(), "omp-ctx27-realdill-"));
+		try {
+			const realSnapDir = path.join(realDillHome, ".omp", "agent", "repl-snapshots");
+			for (const fn of fns) {
+				await saveTrustedHelperSnapshot({
+					snapshotsDir: realSnapDir,
+					name: fn.name,
+					signature: fn.signature,
+					summary: fn.summary,
+					snapshotBasename: fn.snapshot,
+					pythonSource: fn.pythonSource,
+				});
+			}
+			const realLoad = await restoreTrustedHelperSnapshotsWithLoader({
+				homeDir: realDillHome,
+				probeCallExpr:
+					"(sorted(k for k in digest_text.__globals__.keys() if not k.startswith('__')), digest_text('abc')[:8])",
+			});
+			expect(realLoad.restoredCount).toBe(3);
+			expect(
+				realLoad.probeResult,
+				"POST-CTX27-4 violation: helper snapshot must serialize with globals() and recurse=True so Python 3.14 + dill 0.4.1 carries only referenced globals",
+			).toBe("(['hashlib'], 'ba7816bf')");
+		} finally {
+			fs.rmSync(realDillHome, { recursive: true, force: true });
+		}
+
 		// Verify ~/.agents/skills/repl-snapshots/restore.py loads the declared names and types,
 		// and a failed load leaves previous bindings in place and returns an error.
 		const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "omp-ctx27-home-"));
@@ -335,17 +366,14 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 					summary: fn.summary,
 					snapshotBasename: fn.snapshot,
 					pythonSource: fn.pythonSource,
-					pythonInterpreter: "python3",
 				});
 			}
 			const goodLoad = await restoreTrustedHelperSnapshotsWithLoader({
 				homeDir: homeRoot,
-				probeCallExpr: "expand_rules(17)",
-				pythonInterpreter: "python3",
-				loaderPath: path.join(homeRoot, "missing-restore.py"),
+				probeCallExpr: "(expand_rules(17), bool(os.environ.get('PYTHONUSERBASE')))",
 			});
 			expect(goodLoad.restoredCount, "POST-CTX27-4 violation: restore.py must restore all 3 functions").toBe(3);
-			expect(goodLoad.probeResult).toBe("R017");
+			expect(goodLoad.probeResult).toBe("('R017', True)");
 
 			// Corrupt one snapshot file so SHA-256 mismatches -> failed load leaves previous binding in place and returns error
 			fs.writeFileSync(path.join(homeSnapDir, "expand_rules.dill"), "corrupted", { mode: 0o600 });
@@ -353,13 +381,174 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 				homeDir: homeRoot,
 				priorBindingExpr: "expand_rules = lambda x: 'PRIOR_BINDING'",
 				probeCallExpr: "expand_rules(17)",
-				pythonInterpreter: "python3",
-				loaderPath: path.join(homeRoot, "missing-restore.py"),
 			});
 			expect(badLoad.refused.length, "POST-CTX27-4 violation: failed load must report refusal error").toBe(1);
 			expect(badLoad.probeResult, "POST-CTX27-4 violation: failed load must leave previous binding in place").toBe(
 				"PRIOR_BINDING",
 			);
+
+			// POST-CTX27-6 & ERRORS-CTX27-2 (F1, F2, F4, F5):
+			const migrateHome = fs.mkdtempSync(path.join(os.tmpdir(), "omp-ctx27-mig-"));
+			try {
+				const migSnapDir = path.join(migrateHome, ".omp", "agent", "repl-snapshots");
+				// F5: missing manifest returns migratedCount: 0 and non-empty probed targetPythonVersion
+				const emptyMig = await migrateHelperSnapshotsToTargetPython({
+					snapshotsDir: migSnapDir,
+				});
+				expect(emptyMig.migratedCount).toBe(0);
+				expect(
+					/^\d+\.\d+$/.test(emptyMig.targetPythonVersion),
+					`POST-CTX27-6 violation: missing-manifest migration must report probed targetPythonVersion, got '${emptyMig.targetPythonVersion}'`,
+				).toBe(true);
+
+				for (const fn of fns) {
+					await saveTrustedHelperSnapshot({
+						snapshotsDir: migSnapDir,
+						name: fn.name,
+						signature: fn.signature,
+						summary: fn.summary,
+						snapshotBasename: fn.snapshot,
+						pythonSource: fn.pythonSource,
+					});
+				}
+				const manifestFile = path.join(migSnapDir, "manifest.json");
+
+				// F2: overwrite on-disk .dill files with stale 3.11 dummy bytes so skipping rename (mutant MC) fails both SHA-256 and restore.py!
+				const staleBytes = Buffer.from("STALE_311_BYTES_DO_NOT_RESTORE", "utf8");
+				const staleSha = crypto.createHash("sha256").update(staleBytes).digest("hex");
+				for (const fn of fns) {
+					fs.writeFileSync(path.join(migSnapDir, fn.snapshot), staleBytes, { mode: 0o600 });
+				}
+				const staleManifestText = fs
+					.readFileSync(manifestFile, "utf8")
+					.replaceAll('"python_version":', '"python_version": "3.11",\n      "prior_python_version":');
+				fs.writeFileSync(manifestFile, staleManifestText, { mode: 0o600 });
+
+				const migResult = await migrateHelperSnapshotsToTargetPython({
+					snapshotsDir: migSnapDir,
+				});
+				expect(migResult.migratedCount, "POST-CTX27-6 violation: expected all 3 helper snapshots migrated").toBe(3);
+
+				const updatedManifestText = fs.readFileSync(manifestFile, "utf8");
+				for (const fn of fns) {
+					const diskBytes = fs.readFileSync(path.join(migSnapDir, fn.snapshot));
+					const diskSha = crypto.createHash("sha256").update(diskBytes).digest("hex");
+					expect(diskSha, `POST-CTX27-6 violation: ${fn.snapshot} was not replaced on disk`).not.toBe(staleSha);
+					expect(
+						updatedManifestText.includes(`"sha256": "${diskSha}"`),
+						`POST-CTX27-6 violation: manifest.json sha256 does not match migrated ${fn.snapshot} on disk`,
+					).toBe(true);
+				}
+
+				const afterMig = await restoreTrustedHelperSnapshotsWithLoader({
+					homeDir: migrateHome,
+					probeCallExpr: "(expand_rules(17), tally_rows([{'s': 'ok'}])['ok'], digest_text('abc')[:8])",
+				});
+				expect(afterMig.restoredCount).toBe(3);
+				expect(afterMig.refused.length).toBe(0);
+				expect(afterMig.probeResult).toBe("('R017', 1, 'ba7816bf')");
+
+				// F4: fault injection on the 2nd rename (with the first file newly created, bakPath=null) -> must unlink the orphan and restore existing files
+				const preFaultManifest = fs.readFileSync(manifestFile, "utf8");
+				const preFaultDillHashes = new Map<string, string>();
+				for (const fn of fns) {
+					const fp = path.join(migSnapDir, fn.snapshot);
+					if (fs.existsSync(fp)) {
+						preFaultDillHashes.set(
+							fn.snapshot,
+							crypto.createHash("sha256").update(fs.readFileSync(fp)).digest("hex"),
+						);
+					}
+				}
+				const orphanFile = path.join(migSnapDir, fns[0]!.snapshot);
+				fs.unlinkSync(orphanFile); // fns[0] has no pre-existing file on disk (bakPath = null)
+				let renameCalls = 0;
+				await expect(
+					migrateHelperSnapshotsToTargetPython({
+						snapshotsDir: migSnapDir,
+						sourceOverrides: {
+							[fns[1]!.name]: "def tally_rows(rows):\n    return {'MODIFIED_OVERRIDE': len(rows)}\n",
+						},
+						renameFile: (oldP, newP) => {
+							renameCalls += 1;
+							if (renameCalls === 3) {
+								throw new Error("simulated rename failure on 3rd file");
+							}
+							fs.renameSync(oldP, newP);
+						},
+					}),
+				).rejects.toBeInstanceOf(ImplSnapshotMigrationError);
+				expect(renameCalls).toBe(3);
+				expect(
+					fs.existsSync(orphanFile),
+					"ERRORS-CTX27-2 violation: failed migration left orphan newly-created .dill file when bakPath was null",
+				).toBe(false);
+				expect(
+					fs.readFileSync(manifestFile, "utf8"),
+					"ERRORS-CTX27-2 violation: failed mid-commit migration must leave manifest.json byte-identical",
+				).toBe(preFaultManifest);
+				for (const fn of fns.slice(1)) {
+					const afterFaultBytes = fs.readFileSync(path.join(migSnapDir, fn.snapshot));
+					const afterFaultSha = crypto.createHash("sha256").update(afterFaultBytes).digest("hex");
+					expect(
+						afterFaultSha,
+						`ERRORS-CTX27-2 violation: failed mid-commit migration did not roll back ${fn.snapshot}`,
+					).toBe(preFaultDillHashes.get(fn.snapshot));
+				}
+				// Restore fns[0] file for subsequent F1 test
+				await migrateHelperSnapshotsToTargetPython({ snapshotsDir: migSnapDir });
+
+				// F1: remove python_source from expand_rules -> must throw ImplSnapshotMigrationError naming 'expand_rules' and leave manifest.json and all .dill bytes unchanged
+				const brokenManifestText = fs
+					.readFileSync(manifestFile, "utf8")
+					.replace('"python_source":', '"omitted_source":')
+					.replace('"python_version":', '"python_version": "3.11",\n      "prior_ver":');
+				fs.writeFileSync(manifestFile, brokenManifestText, { mode: 0o600 });
+
+				let caughtF1: Error | null = null;
+				try {
+					await migrateHelperSnapshotsToTargetPython({
+						snapshotsDir: migSnapDir,
+					});
+				} catch (err) {
+					caughtF1 = err instanceof Error ? err : new Error(String(err));
+				}
+				expect(caughtF1).toBeInstanceOf(ImplSnapshotMigrationError);
+				expect(
+					caughtF1?.message.includes("expand_rules"),
+					`ERRORS-CTX27-2 violation: error message must name 'expand_rules', got '${caughtF1?.message}'`,
+				).toBe(true);
+				expect(
+					fs.readFileSync(manifestFile, "utf8"),
+					"ERRORS-CTX27-2 violation: failed migration must leave manifest.json unchanged",
+				).toBe(brokenManifestText);
+				for (const fn of fns) {
+					const afterF1Bytes = fs.readFileSync(path.join(migSnapDir, fn.snapshot));
+					const afterF1Sha = crypto.createHash("sha256").update(afterF1Bytes).digest("hex");
+					expect(afterF1Sha).toBe(preFaultDillHashes.get(fn.snapshot));
+				}
+
+				// F3 (CL9-A): an interpreter lacking real dill must fail loud instead of spoofing dill.__version__ = '0.4.1'
+				const noDillWrapper = path.join(migrateHome, "python-no-dill.sh");
+				fs.writeFileSync(
+					noDillWrapper,
+					'#!/bin/sh\nexec python3 -S -c "import sys; sys.modules[\'dill\'] = None; exec(sys.argv[2])" "$@"\n',
+					{ mode: 0o755 },
+				);
+				await expect(
+					saveTrustedHelperSnapshot({
+						snapshotsDir: path.join(migrateHome, "no-dill-snaps"),
+						name: "expand_rules",
+						signature: "(i: int) -> str",
+						summary: "400-branch rule lookup",
+						snapshotBasename: "expand_rules.dill",
+						pythonSource: "def expand_rules(i):\n    return 'R001'\n",
+						pythonInterpreter: noDillWrapper,
+					}),
+				).rejects.toThrow(/POST-CTX27-4 violation/);
+			} finally {
+				fs.rmSync(migrateHome, { recursive: true, force: true });
+			}
 		} finally {
 			fs.rmSync(homeRoot, { recursive: true, force: true });
 		}

@@ -17,7 +17,7 @@
 /** F-190: bootstrap manifest schema version. */
 export const BOOT_SCHEMA_VERSION = 8
 /** F-191: required Python version. */
-export const BOOT_PYTHON_VERSION = '3.11'
+export const BOOT_PYTHON_VERSION = '3.14.10'
 /** F-192: base packages, exact names. The runtime shim is omp's own
  * rlm-runtime (bundled in-repo); the port does not depend on any
  * prime-agent package (user directive 2026-08-17). */
@@ -134,7 +134,7 @@ export function validateForkEligibility(claim: {
 
 export const RLM_BOOTSTRAP_CONTRACT = {
   'PRE-BOOT-1': 'Interpreter resolution order: explicit override, then managed venv, then XDG fallback (F-205/F-197).',
-  'POST-BOOT-1': 'The managed venv carries Python 3.11 with every base and extras package of BOOT package constants (F-191/F-192, BOOT-V1, Z-4).',
+  'POST-BOOT-1': 'The managed venv carries Python 3.14.10 with every base and extras package of BOOT package constants (F-191/F-192, BOOT-V1, Z-4).',
   'POST-BOOT-2': 'The runtime identity hash covers the rlm runtime sources plus pyproject; bootstrap compares it to the recorded manifest hash and REBUILDS the venv on mismatch — a fresh install with an unchanged runtime identity skips reinstall (F-194).',
   'POST-BOOT-3': 'Every admitted interpreter passed a readiness probe whose ACTUAL OUTPUT was evaluated: the probe imports ipykernel and the rlm runtime and reports callable rlm, harness CRUD method presence, HarnessEntry fields, and background absence; admission requires the evaluated output to pass — a zero exit code with failing or garbage output rejects the interpreter (F-193, F-252).',
   'INV-BOOT-1': 'Only the bootstrap lock holder rebuilds: managed bootstrap runs under the lock; a live foreign holder blocks with the domain error, and stale locks (holder pid no longer alive, or older than BOOT_LOCK_STALE_MS with no live pid) age out — a live holder is never stolen regardless of age (F-195).',
