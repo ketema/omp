@@ -49,6 +49,18 @@ WORKBENCH_RULES: Final[str] = (
     "before re-deriving a decision. Send noisy builds, tests and installs to TMUX-OFFLOAD and read back only the "
     "summary. Read skill, system and memory text in full."
 )
+IPYTHON_FILE_THRESHOLD_TOKENS: Final[int] = 1500
+IPYTHON_OUTPUT_VAR_PREFIX: Final[str] = "out_"
+IPYTHON_DESCRIPTOR_SAMPLE_LINES: Final[int] = 5
+IPYTHON_DESCRIPTOR_LINE_CUT: Final[int] = 100
+IPYTHON_OUTPUT_CEILING_BYTES: Final[int] = 16 * 1024 * 1024
+IPYTHON_ARTIFACT_TOOL_TYPE: Final[str] = "ipython"
+IPYTHON_DESCRIPTION_STATEMENTS: Final[tuple[str, ...]] = (
+    "A filed output has two access methods for the same data.",
+    "Kernel access ranks first because it allows processing before anything enters context.",
+    "artifact:// returns the whole unchanged text and needs paging.",
+    "Rebinding the variable leaves the artifact unchanged.",
+)
 
 # ==============================================================================
 # Artifact 2: Exception Hierarchy
@@ -86,6 +98,10 @@ class SnapshotMigrationViolationError(ContextEfficiencyContractError):
 
 class WorkbenchReportViolationError(ContextEfficiencyContractError):
     """Raised when a workbench report or notice breaks POST-CTX27-8, POST-CTX27-9, or ERRORS-CTX27-3."""
+
+
+class IpythonFilingViolationError(ContextEfficiencyContractError):
+    """Raised when a filed ipython output breaks POST-CTX27-12 to POST-CTX27-18, FORBIDDEN-CTX27-3, or ERRORS-CTX27-4."""
 
 # ==============================================================================
 # Artifact 3: Immutable Typed Records
@@ -154,6 +170,50 @@ def validate_workbench_message(report: WorkbenchReport, message: str) -> None:
     expected = expected_workbench_message(report)
     if message != expected:
         raise WorkbenchReportViolationError(f"POST-CTX27-9 violation: message {message!r} != {expected!r}")
+
+
+@dataclass(frozen=True)
+class FiledOutputInfo:
+    n: int
+    text: str  # the full kept stdout, after any ceiling cut
+    tokens: int  # o200k tokens of text
+    artifact_id: str | None  # None when the artifact copy could not be saved
+    cut_at_ceiling: bool
+
+
+def expected_ipython_descriptor(info: FiledOutputInfo) -> str:
+    name = f"{IPYTHON_OUTPUT_VAR_PREFIX}{info.n}"
+    lines = info.text[:-1].split("\n") if info.text.endswith("\n") else info.text.split("\n")
+    head = [line[:IPYTHON_DESCRIPTOR_LINE_CUT] for line in lines[:IPYTHON_DESCRIPTOR_SAMPLE_LINES]]
+    tail = (
+        [
+            line[:IPYTHON_DESCRIPTOR_LINE_CUT]
+            for line in lines[max(IPYTHON_DESCRIPTOR_SAMPLE_LINES, len(lines) - IPYTHON_DESCRIPTOR_SAMPLE_LINES) :]
+        ]
+        if len(lines) > IPYTHON_DESCRIPTOR_SAMPLE_LINES
+        else []
+    )
+    size = len(info.text.encode("utf-8"))
+    out = [f"[ipython output filed] {name} | {len(lines)} lines | {size} bytes | {info.tokens} tokens"]
+    if info.cut_at_ceiling:
+        out.append(f"cut: first {IPYTHON_OUTPUT_CEILING_BYTES} bytes kept")
+    out.append(f'open (preferred): {name} in ipython, e.g. {name}.count("ERROR")')
+    if info.artifact_id is None:
+        out.append("full unchanged copy: unavailable (artifact save failed)")
+    else:
+        out.append(
+            f"full unchanged copy: artifact://{info.artifact_id} (page with :1-60; unchanged if {name} is rebound)"
+        )
+    out.extend(["head:", *head])
+    if tail:
+        out.extend(["tail:", *tail])
+    return "\n".join(out)
+
+
+def validate_ipython_descriptor(info: FiledOutputInfo, result_text: str) -> None:
+    expected = expected_ipython_descriptor(info)
+    if result_text != expected:
+        raise IpythonFilingViolationError(f"POST-CTX27-15 violation: descriptor {result_text!r} != {expected!r}")
 
 
 # ==============================================================================
@@ -357,6 +417,73 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
         text=(
             "createAgentSession does not mount createContextEfficiencyExtension in any session: no loaded "
             "extension registers its tool_result and before_agent_start handlers. Source: REQ-CTX27-17."
+        ),
+    ),
+    "POST-CTX27-12": Clause(
+        verification="test",
+        text=(
+            "When an ipython cell raises no error and its stdout reaches IPYTHON_FILE_THRESHOLD_TOKENS o200k "
+            "tokens, the kernel variable out_<n> holds exactly the full stdout and the tool result does not "
+            "contain that stdout. Source: REQ-CTX27-23."
+        ),
+    ),
+    "POST-CTX27-13": Clause(
+        verification="test",
+        text=(
+            "Filed outputs are numbered from 1 in each session, and a variable already bound to out_<n> is never "
+            "overwritten: the next free number is used and the descriptor names it. Source: REQ-CTX27-24."
+        ),
+    ),
+    "POST-CTX27-14": Clause(
+        verification="test",
+        text=(
+            "The artifact saved through the session's saveArtifact under IPYTHON_ARTIFACT_TOOL_TYPE holds exactly "
+            "the full stdout, and its id is the one the descriptor names. Source: REQ-CTX27-25."
+        ),
+    ),
+    "POST-CTX27-15": Clause(
+        verification="test",
+        text=(
+            "The tool result text of a filed output equals expectedIpythonDescriptor(info): variable name, line "
+            "count, byte count, token count, both access methods with the kernel variable first and marked "
+            "preferred, then 5 head and 5 tail lines each cut at 100 characters. Source: REQ-CTX27-26."
+        ),
+    ),
+    "POST-CTX27-16": Clause(
+        verification="test",
+        text=(
+            "stderr, tracebacks, expression results and stdout below IPYTHON_FILE_THRESHOLD_TOKENS reach the "
+            "tool result exactly as before: no variable is filed and no artifact is saved. Source: REQ-CTX27-27."
+        ),
+    ),
+    "POST-CTX27-17": Clause(
+        verification="test",
+        text=(
+            "The ipython tool description contains every statement of IPYTHON_DESCRIPTION_STATEMENTS verbatim. "
+            "Source: REQ-CTX27-28."
+        ),
+    ),
+    "POST-CTX27-18": Clause(
+        verification="test",
+        text=(
+            "When stdout exceeds IPYTHON_OUTPUT_CEILING_BYTES, the variable and the artifact hold the first "
+            "IPYTHON_OUTPUT_CEILING_BYTES bytes and the descriptor states the cut. Source: REQ-CTX27-30."
+        ),
+    ),
+    "FORBIDDEN-CTX27-3": Clause(
+        verification="test",
+        text=(
+            "The rlm extension registers exactly one tool, ipython, and no tool_result handler: it never files, "
+            "truncates or rewrites the result of any other tool. Source: REQ-CTX27-29."
+        ),
+    ),
+    "ERRORS-CTX27-4": Clause(
+        verification="test",
+        text=(
+            "When the filed output cannot be bound in the kernel, the stdout is returned unchanged with one added "
+            "line saying that filing the output failed; when the artifact copy cannot be saved, the variable is "
+            "still bound and the descriptor states that the copy is unavailable. "
+            "Source: REQ-CTX27-23, REQ-CTX27-25."
         ),
     ),
 }

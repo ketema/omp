@@ -1,7 +1,7 @@
 schema_version: '1.0'
 feature_name: context-efficiency-enforcement
 manifest_path: requirements/REQUIREMENT_MANIFEST_CTX27.md
-manifest_hash: sha256:5158591d3859f98afee5b6e4f6af083e5ba5a2d1c0054089ee0b484c0bbbb481
+manifest_hash: sha256:a6e838fa6c14b75b7182d058096cee3bb4e7c56beed192f6c13b0729be0fd341
 created: '2026-11-05'
 last_updated: '2026-11-05'
 status: ACTIVE
@@ -73,6 +73,32 @@ slices:
   status: PENDING
   issue: ketema/omp#27
   pivot_note: Item 1a. A top-level session that owns an artifacts directory starts its IPython kernel at launch, the kernel loads Ketema's helpers via restore.py, and omp sends one developer-role message through its message bus (delivered with the next user message) naming what loaded and stating the context efficiency rules. In-memory sessions and subagents stay lazy (option 3, Q1). Never repeated per turn, never in a tool result; the context efficiency extension is unmounted. Ketema accepts only after his real-life fresh-session test.
+- id: SLICE-3
+  requirement_ids:
+  - REQ-CTX27-23
+  - REQ-CTX27-24
+  - REQ-CTX27-25
+  - REQ-CTX27-26
+  - REQ-CTX27-27
+  - REQ-CTX27-28
+  - REQ-CTX27-29
+  - REQ-CTX27-30
+  clauses_in_scope:
+  - POST-CTX27-12
+  - POST-CTX27-13
+  - POST-CTX27-14
+  - POST-CTX27-15
+  - POST-CTX27-16
+  - POST-CTX27-17
+  - POST-CTX27-18
+  - FORBIDDEN-CTX27-3
+  - ERRORS-CTX27-4
+  clauses_deferred: []
+  negative_constraints:
+  - FORBIDDEN-CTX27-3
+  status: PENDING
+  issue: ketema/omp#27
+  pivot_note: Item 2. Only ipython output changes. When a cell's stdout reaches 1,500 o200k tokens, the full text stays in the kernel as out_<n>, omp saves the same text as a session artifact, and the tool result carries a descriptor that names both access methods with the kernel variable preferred. Every other tool, protocol and thinking block is untouched. The ipython:// protocol is a later slice. Ketema accepts only after his real-life fresh-session test.
 forgotten_invariants:
 - INV-CTX27-01
 - INV-CTX27-07

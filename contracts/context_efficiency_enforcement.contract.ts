@@ -53,6 +53,24 @@ export const WORKBENCH_MESSAGE_SEPARATOR = "\n\n";
 /** REQ-CTX27-19 (Z11): the rules that end the workbench message. Ketema may edit this wording; tests follow it. */
 export const WORKBENCH_RULES =
 	"Context efficiency rules for this session: keep payloads out of the transcript; do data work in the ipython kernel and read a result by asking it one small question (len, keys, first row), never by printing it whole. Call the helpers listed above by name and never rewrite one. Look in memory, git history and transcripts before re-deriving a decision. Send noisy builds, tests and installs to TMUX-OFFLOAD and read back only the summary. Read skill, system and memory text in full.";
+/** REQ-CTX27-23 (Z13): an ipython cell's stdout is filed at this many o200k tokens. */
+export const IPYTHON_FILE_THRESHOLD_TOKENS = 1500;
+/** REQ-CTX27-24 (Z15): the filed kernel variable is this prefix plus the filed-output number. */
+export const IPYTHON_OUTPUT_VAR_PREFIX = "out_";
+/** REQ-CTX27-26: the descriptor shows this many head and tail lines, each cut at IPYTHON_DESCRIPTOR_LINE_CUT characters. */
+export const IPYTHON_DESCRIPTOR_SAMPLE_LINES = 5;
+export const IPYTHON_DESCRIPTOR_LINE_CUT = 100;
+/** REQ-CTX27-30 (Z14): the most stdout one filed output keeps. */
+export const IPYTHON_OUTPUT_CEILING_BYTES = 16 * 1024 * 1024;
+/** REQ-CTX27-25: the tool type the artifact copy is saved under. */
+export const IPYTHON_ARTIFACT_TOOL_TYPE = "ipython";
+/** REQ-CTX27-28: statements the ipython tool description contains verbatim. */
+export const IPYTHON_DESCRIPTION_STATEMENTS: readonly string[] = [
+	"A filed output has two access methods for the same data.",
+	"Kernel access ranks first because it allows processing before anything enters context.",
+	"artifact:// returns the whole unchanged text and needs paging.",
+	"Rebinding the variable leaves the artifact unchanged.",
+];
 
 // =============================================================================
 // Artifact 2: Domain Exception Classes
@@ -111,6 +129,13 @@ export class WorkbenchReportViolationError extends ContextEfficiencyContractErro
 	constructor(clauseId: string, detail: string) {
 		super(`${clauseId} violation: ${detail}`);
 		this.name = "WorkbenchReportViolationError";
+	}
+}
+
+export class IpythonFilingViolationError extends ContextEfficiencyContractError {
+	constructor(clauseId: string, detail: string) {
+		super(`${clauseId} violation: ${detail}`);
+		this.name = "IpythonFilingViolationError";
 	}
 }
 
@@ -336,6 +361,56 @@ export function validateWorkbenchMessage(report: WorkbenchReport, message: strin
 	}
 }
 
+/** What the descriptor of one filed ipython output is built from (REQ-CTX27-26). */
+export interface FiledOutputInfo {
+	readonly n: number;
+	/** The full kept stdout, after any ceiling cut. */
+	readonly text: string;
+	/** o200k tokens of `text`. */
+	readonly tokens: number;
+	/** The artifact id of the saved copy, or null when the copy could not be saved. */
+	readonly artifactId: string | null;
+	/** True when stdout exceeded IPYTHON_OUTPUT_CEILING_BYTES and was cut. */
+	readonly cutAtCeiling: boolean;
+}
+
+/** REQ-CTX27-26, REQ-CTX27-30: the exact descriptor that replaces a filed stdout. Pure; used by validateIpythonDescriptor. */
+export function expectedIpythonDescriptor(info: FiledOutputInfo): string {
+	const name = `${IPYTHON_OUTPUT_VAR_PREFIX}${info.n}`;
+	const lines = info.text.endsWith("\n") ? info.text.slice(0, -1).split("\n") : info.text.split("\n");
+	const cut = (line: string): string => line.slice(0, IPYTHON_DESCRIPTOR_LINE_CUT);
+	const head = lines.slice(0, IPYTHON_DESCRIPTOR_SAMPLE_LINES).map(cut);
+	const tail =
+		lines.length > IPYTHON_DESCRIPTOR_SAMPLE_LINES
+			? lines
+					.slice(Math.max(IPYTHON_DESCRIPTOR_SAMPLE_LINES, lines.length - IPYTHON_DESCRIPTOR_SAMPLE_LINES))
+					.map(cut)
+			: [];
+	const bytes = new TextEncoder().encode(info.text).length;
+	const out = [`[ipython output filed] ${name} | ${lines.length} lines | ${bytes} bytes | ${info.tokens} tokens`];
+	if (info.cutAtCeiling) out.push(`cut: first ${IPYTHON_OUTPUT_CEILING_BYTES} bytes kept`);
+	out.push(`open (preferred): ${name} in ipython, e.g. ${name}.count("ERROR")`);
+	out.push(
+		info.artifactId === null
+			? "full unchanged copy: unavailable (artifact save failed)"
+			: `full unchanged copy: artifact://${info.artifactId} (page with :1-60; unchanged if ${name} is rebound)`,
+	);
+	out.push("head:", ...head);
+	if (tail.length > 0) out.push("tail:", ...tail);
+	return out.join("\n");
+}
+
+/** POST-CTX27-15 / POST-CTX27-18: the tool result text equals the contracted descriptor for the filed output. */
+export function validateIpythonDescriptor(info: FiledOutputInfo, resultText: string): void {
+	const expected = expectedIpythonDescriptor(info);
+	if (resultText !== expected) {
+		throw new IpythonFilingViolationError(
+			"POST-CTX27-15",
+			`descriptor ${JSON.stringify(resultText)} != ${JSON.stringify(expected)}`,
+		);
+	}
+}
+
 // =============================================================================
 // Artifact 5: Method-Aware Clause Map
 // =============================================================================
@@ -501,5 +576,67 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 		description:
 			"createAgentSession does not mount createContextEfficiencyExtension in any session: no loaded extension registers its tool_result and before_agent_start handlers.",
 		requirement_ids: ["REQ-CTX27-17"],
+	},
+	"POST-CTX27-12": {
+		id: "POST-CTX27-12",
+		method: "test",
+		description:
+			"When an ipython cell raises no error and its stdout reaches IPYTHON_FILE_THRESHOLD_TOKENS o200k tokens, the kernel variable out_<n> holds exactly the full stdout and the tool result does not contain that stdout.",
+		requirement_ids: ["REQ-CTX27-23"],
+	},
+	"POST-CTX27-13": {
+		id: "POST-CTX27-13",
+		method: "test",
+		description:
+			"Filed outputs are numbered from 1 in each session, and a variable already bound to out_<n> is never overwritten: the next free number is used and the descriptor names it.",
+		requirement_ids: ["REQ-CTX27-24"],
+	},
+	"POST-CTX27-14": {
+		id: "POST-CTX27-14",
+		method: "test",
+		description:
+			"The artifact saved through the session's saveArtifact under IPYTHON_ARTIFACT_TOOL_TYPE holds exactly the full stdout, and its id is the one the descriptor names.",
+		requirement_ids: ["REQ-CTX27-25"],
+	},
+	"POST-CTX27-15": {
+		id: "POST-CTX27-15",
+		method: "test",
+		description:
+			"The tool result text of a filed output equals expectedIpythonDescriptor(info): variable name, line count, byte count, token count, both access methods with the kernel variable first and marked preferred, then 5 head and 5 tail lines each cut at 100 characters.",
+		requirement_ids: ["REQ-CTX27-26"],
+	},
+	"POST-CTX27-16": {
+		id: "POST-CTX27-16",
+		method: "test",
+		description:
+			"stderr, tracebacks, expression results and stdout below IPYTHON_FILE_THRESHOLD_TOKENS reach the tool result exactly as before: no variable is filed and no artifact is saved.",
+		requirement_ids: ["REQ-CTX27-27"],
+	},
+	"POST-CTX27-17": {
+		id: "POST-CTX27-17",
+		method: "test",
+		description: "The ipython tool description contains every statement of IPYTHON_DESCRIPTION_STATEMENTS verbatim.",
+		requirement_ids: ["REQ-CTX27-28"],
+	},
+	"POST-CTX27-18": {
+		id: "POST-CTX27-18",
+		method: "test",
+		description:
+			"When stdout exceeds IPYTHON_OUTPUT_CEILING_BYTES, the variable and the artifact hold the first IPYTHON_OUTPUT_CEILING_BYTES bytes and the descriptor states the cut.",
+		requirement_ids: ["REQ-CTX27-30"],
+	},
+	"FORBIDDEN-CTX27-3": {
+		id: "FORBIDDEN-CTX27-3",
+		method: "test",
+		description:
+			"The rlm extension registers exactly one tool, ipython, and no tool_result handler: it never files, truncates or rewrites the result of any other tool.",
+		requirement_ids: ["REQ-CTX27-29"],
+	},
+	"ERRORS-CTX27-4": {
+		id: "ERRORS-CTX27-4",
+		method: "test",
+		description:
+			"When the filed output cannot be bound in the kernel, the stdout is returned unchanged with one added line saying that filing the output failed; when the artifact copy cannot be saved, the variable is still bound and the descriptor states that the copy is unavailable.",
+		requirement_ids: ["REQ-CTX27-23", "REQ-CTX27-25"],
 	},
 } as const;
