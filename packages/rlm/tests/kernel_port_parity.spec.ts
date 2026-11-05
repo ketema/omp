@@ -114,6 +114,7 @@ describe("POST-SESSION-MOVE-3: the extension's use of the port on a same-session
 		let constructed = 0;
 		const port = completePortDouble();
 		const session = await openRealSession(root, oldDir, {
+			announceWorkbench: false, // the kernel must stay lazy here: this case is about a move with no live kernel
 			createKernel: () => {
 				constructed++;
 				return port;

@@ -230,6 +230,7 @@ async function startSessionA(scripts: PortScript[], dir: string): Promise<Harnes
 	const records: PortRecord[] = [];
 	const { api, registry } = makeRegistry();
 	await createRlmExtension({
+		announceWorkbench: false, // these cases drive the lazy kernel lifecycle; the workbench announcement has its own tests
 		createKernel() {
 			const { port, record } = makePort(`S${records.length + 1}`, scripts[records.length] ?? {});
 			records.push(record);
@@ -626,6 +627,7 @@ describe("POST-SESSION-TRANSITION-GEN-1 / POST-SESSION-SHUTDOWN-RACE-1 / ERRORS-
 		const started: string[] = [];
 		const { api, registry } = makeRegistry();
 		await createRlmExtension({
+			announceWorkbench: false, // lazy kernel lifecycle under test; the workbench announcement has its own tests
 			createKernel(_config, artifactsDir) {
 				const { port, record } = makePort(`S${records.length + 1}`, {});
 				const realEnsure = port.ensureStarted.bind(port);
