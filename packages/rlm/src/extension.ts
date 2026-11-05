@@ -14,6 +14,7 @@ import { KernelManager } from "./kernel";
 import { RlmSessionLifecycle } from "./session_lifecycle";
 import { createRlmToolDefinition, type RlmToolKernelPort, type RlmToolKernelResult } from "./tool";
 import { createTransport } from "./transport";
+import type { WorkbenchReport } from "./workbench";
 // =============================================================================
 // Config types
 // =============================================================================
@@ -141,6 +142,10 @@ export class KernelManagerAdapter implements RlmExtensionKernelPort {
 
 	restoredNames(): readonly string[] {
 		return this.manager.restoredNames();
+	}
+
+	workbenchReport(): WorkbenchReport | null {
+		return this.manager.workbenchReport();
 	}
 
 	restoredSkipped(): ReadonlyArray<{ readonly name: string; readonly reason: string }> {

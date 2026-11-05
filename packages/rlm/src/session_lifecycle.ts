@@ -146,6 +146,9 @@ export class RlmSessionLifecycle {
 			restoredNames() {
 				return bound.restoredNames();
 			},
+			workbenchReport() {
+				return bound.workbenchReport?.() ?? null;
+			},
 		};
 	}
 

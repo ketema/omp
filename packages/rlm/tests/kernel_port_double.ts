@@ -45,6 +45,7 @@ export function completePortDouble(script: { retargetFails?: boolean } = {}): Po
 		async flushSnapshot() {},
 		restoredNames: () => [],
 		restoredSkipped: () => [],
+		workbenchReport: () => null,
 		async onCompactionComplete() {},
 		compactionNotice: () => null,
 		takeTeardownNotice: () => null,
