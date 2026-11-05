@@ -1,0 +1,54 @@
+schema_version: '1.0'
+feature_name: context-efficiency-enforcement
+manifest_path: requirements/REQUIREMENT_MANIFEST_CTX27.md
+manifest_hash: sha256:b69a4e26709e6dd2eea7b2a7ed2e62bce598563e598e94b99fe65cbad71f1b08
+created: '2026-11-05'
+last_updated: '2026-11-05'
+status: ACTIVE
+slices:
+- id: SLICE-1
+  requirement_ids:
+  - REQ-CTX27-01
+  - REQ-CTX27-02
+  - REQ-CTX27-03
+  - REQ-CTX27-04
+  - REQ-CTX27-05
+  - REQ-CTX27-06
+  - REQ-CTX27-07
+  - REQ-CTX27-08
+  - REQ-CTX27-09
+  - REQ-CTX27-10
+  - REQ-CTX27-11
+  - REQ-CTX27-12
+  - REQ-CTX27-13
+  - REQ-CTX27-14
+  clauses_in_scope:
+  - POST-CTX27-1
+  - POST-CTX27-2
+  - POST-CTX27-3
+  - POST-CTX27-4
+  - POST-CTX27-5
+  - SEQ-CTX27-1
+  - SEQ-CTX27-2
+  - SEQ-CTX27-3
+  - SEQ-CTX27-4
+  - ERRORS-CTX27-1
+  - FORBIDDEN-CTX27-1
+  clauses_deferred: []
+  negative_constraints:
+  - INV-CTX27-01
+  - INV-CTX27-02
+  - INV-CTX27-03
+  - INV-CTX27-04
+  - INV-CTX27-05
+  - INV-CTX27-06
+  - INV-CTX27-07
+  - FORBIDDEN-CTX27-1
+  status: PENDING
+  depends_on: []
+  issue: ketema/omp#27
+  pivot_note: Shippable enforcement of emission, catalog, compaction, and prompt-assembly gates for ketema/omp#27 verified by Tests 1-4 in CI with the fixture transcript <= 700 o200k tokens.
+forgotten_invariants:
+- INV-CTX27-01
+- INV-CTX27-06
+- INV-CTX27-07
