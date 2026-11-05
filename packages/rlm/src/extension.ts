@@ -418,6 +418,7 @@ export function createRlmExtension(
 		// REQ-CTX27-22 / REQ-CTX27-18: a top-level session starts its kernel at launch, then sends the workbench message once.
 		const announceWorkbench = async (): Promise<void> => {
 			if (Number(api.getFlag("RLM_DEPTH") ?? "0") !== 0) return;
+			if (!lifecycle.ownsArtifactsDir()) return;
 			const kernel = await lifecycle.ensureKernel();
 			await kernel.ensureStarted();
 			const report = kernel.workbenchReport?.() ?? null;
