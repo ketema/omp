@@ -216,6 +216,8 @@ function assembleText(
 export interface RlmToolDefinitionOptions {
 	readonly kernel: RlmToolKernelPort;
 	readonly onRevival?: (names: readonly string[]) => void;
+	/** Called once for each filed output whose artifact copy was saved, with the artifact id and the `out_<n>` number. */
+	readonly onFiled?: (artifactId: string, n: number) => void;
 }
 
 /**
@@ -348,7 +350,10 @@ export function createRlmToolDefinition(options: RlmToolDefinitionOptions): {
 					nextFiledOutput,
 					ctx?.sessionManager?.saveArtifact?.bind(ctx.sessionManager),
 				);
-				if (filed !== null) nextFiledOutput = filed.n + 1;
+				if (filed !== null) {
+					nextFiledOutput = filed.n + 1;
+					if (filed.artifactId !== null) options.onFiled?.(filed.artifactId, filed.n);
+				}
 
 				// Text assembly
 				let text = assembleText(
@@ -446,7 +451,7 @@ async function fileLargeStdout(
 	result: KernelExecutionResult,
 	nextN: number,
 	saveArtifact: SaveArtifact | undefined,
-): Promise<{ n: number; descriptor: string } | null> {
+): Promise<{ n: number; descriptor: string; artifactId: string | null } | null> {
 	if (result.status !== "ok") return null;
 	const text = result.stdoutFull ?? result.stdout;
 	const tokens = countOutputTokens(text);
@@ -462,5 +467,5 @@ async function fileLargeStdout(
 			artifactId = null;
 		}
 	}
-	return { n, descriptor: ipythonDescriptor({ n, text, tokens, artifactId }) };
+	return { n, descriptor: ipythonDescriptor({ n, text, tokens, artifactId }), artifactId };
 }

@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { bootstrapManagedVenv, buildKernelEnv } from "./bootstrap";
 import { EMBEDDED_RUNTIME_SOURCES, ensureExtractedAssets } from "./embedded_assets";
+import { wholeArtifactReadId, wholeReadRefusal } from "./ipython_filing";
 import type { KernelClock, KernelExecutionResult, KernelTransport } from "./kernel";
 import { KernelManager } from "./kernel";
 import { RlmSessionLifecycle } from "./session_lifecycle";
@@ -76,7 +77,7 @@ interface StructuralExtensionAPI {
 	registerTool(tool: any): void;
 	registerFlag(name: string, opts?: { type: "boolean" | "string"; default?: boolean | string }): void;
 	registerCommand(name: string, opts: { handler: (args: string, ctx: unknown) => Promise<void> }): void;
-	on(event: string, handler: (event: unknown, ctx: unknown) => void | Promise<void>): void;
+	on(event: string, handler: (event: unknown, ctx: unknown) => unknown): void;
 	getFlag(name: string): string | boolean | undefined;
 	sendMessage(payload: unknown, options?: { triggerTurn?: boolean; deliverAs?: string }): void;
 }
@@ -353,8 +354,12 @@ export function createRlmExtension(
 			},
 		});
 
+		// REQ-CTX27-31: artifact id -> out_<n> number for every filed output whose copy was saved in this session.
+		const filedArtifacts = new Map<string, number>();
+
 		// registerTool: exactly ONE tool, the ipython tool
 		const toolDef = createRlmToolDefinition({
+			onFiled: (artifactId: string, n: number) => filedArtifacts.set(artifactId, n),
 			kernel: {
 				ensureStarted(onProgress?: (phase: "starting" | "restoring" | "preparing") => void) {
 					return lifecycle.ensureKernel().then(k => k.ensureStarted(onProgress));
@@ -437,8 +442,22 @@ export function createRlmExtension(
 			await lifecycle.handleSessionInit(event, ctx);
 			await announceWorkbench();
 		});
-		api.on("session_switch", (event, ctx) => lifecycle.handleSessionInit(event, ctx));
-		api.on("session_branch", (event, ctx) => lifecycle.handleSessionInit(event, ctx));
+		api.on("session_switch", (event, ctx) => {
+			filedArtifacts.clear();
+			return lifecycle.handleSessionInit(event, ctx);
+		});
+		api.on("session_branch", (event, ctx) => {
+			filedArtifacts.clear();
+			return lifecycle.handleSessionInit(event, ctx);
+		});
 		api.on("session_shutdown", () => lifecycle.shutdown());
+		// REQ-CTX27-31: refuse a whole read of the artifact copy of a filed output; every other call proceeds untouched.
+		api.on("tool_call", (event: unknown) => {
+			const call = event as { toolName?: string; input?: { path?: unknown } };
+			if (call.toolName !== "read" || typeof call.input?.path !== "string") return undefined;
+			const id = wholeArtifactReadId(call.input.path);
+			const n = id === null ? undefined : filedArtifacts.get(id);
+			return id === null || n === undefined ? undefined : { block: true, reason: wholeReadRefusal(id, n) };
+		});
 	};
 }

@@ -12,6 +12,7 @@ export const IPYTHON_OUTPUT_VAR_PREFIX = "out_";
 export const IPYTHON_DESCRIPTOR_SAMPLE_LINES = 5;
 export const IPYTHON_DESCRIPTOR_LINE_CUT = 100;
 export const IPYTHON_ARTIFACT_TOOL_TYPE = "ipython";
+export const IPYTHON_DESCRIPTOR_INSTRUCTION = "Answer from it; paste no lines into your reply.";
 
 /** Saves text as a session artifact and resolves its id (the shape of `ReadonlySessionManager.saveArtifact`). */
 export type SaveArtifact = (content: string, toolType: string) => Promise<string | undefined>;
@@ -38,11 +39,11 @@ export function ipythonDescriptor(info: FiledOutputInfo): string {
 			: [];
 	const bytes = new TextEncoder().encode(info.text).length;
 	const out = [`[ipython output filed] ${name} | ${lines.length} lines | ${bytes} bytes | ${info.tokens} tokens`];
-	out.push(`open (preferred): ${name} in ipython, e.g. ${name}.count("ERROR")`);
+	out.push(`open (preferred): ${name} in ipython, e.g. ${name}.count("ERROR"). ${IPYTHON_DESCRIPTOR_INSTRUCTION}`);
 	out.push(
 		info.artifactId === null
 			? "full unchanged copy: unavailable (artifact save failed)"
-			: `full unchanged copy: artifact://${info.artifactId} (page with :1-60; unchanged if ${name} is rebound)`,
+			: `full unchanged copy: artifact://${info.artifactId} (ranges only, e.g. :1-60; a whole read is refused; unchanged if ${name} is rebound)`,
 	);
 	out.push("head:", ...head);
 	if (tail.length > 0) out.push("tail:", ...tail);
@@ -68,4 +69,19 @@ export function bindOutputCode(start: number): string {
 /** o200k tokens of `text`, the same proxy counter the rest of omp uses. */
 export function countOutputTokens(text: string): number {
 	return countTokens(text, Encoding.O200kBase);
+}
+
+/**
+ * REQ-CTX27-31: the artifact id when `path` reads `artifact://<id>` (optionally `:raw`) with no line range, else null.
+ * Ranged forms (`:5`, `:5-9`, `:-60`, `:5+20`, `:raw:5-9`, comma lists) and every other path return null.
+ */
+export function wholeArtifactReadId(path: string): string | null {
+	const match = /^artifact:\/\/(\d+)(?::raw)?$/i.exec(path.trim());
+	return match === null ? null : (match[1] ?? null);
+}
+
+/** REQ-CTX27-31: the refusal text for a whole read of the artifact copy of `out_<n>`. */
+export function wholeReadRefusal(artifactId: string, n: number): string {
+	const name = `${IPYTHON_OUTPUT_VAR_PREFIX}${n}`;
+	return `artifact://${artifactId} is the full copy of ${name}. Ask ${name} in ipython (for example ${name}.count("ERROR")) or read a range: artifact://${artifactId}:1-60.`;
 }
