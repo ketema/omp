@@ -15,6 +15,7 @@ import { KernelManager } from "./kernel";
 import { RlmSessionLifecycle } from "./session_lifecycle";
 import { createRlmToolDefinition, type RlmToolKernelPort, type RlmToolKernelResult } from "./tool";
 import { createTransport } from "./transport";
+import { userMessageWithReminder } from "./user_reminder";
 import { WORKBENCH_MESSAGE_TYPE, type WorkbenchReport, workbenchMessage } from "./workbench";
 // =============================================================================
 // Config types
@@ -458,6 +459,13 @@ export function createRlmExtension(
 			const id = wholeArtifactReadId(call.input.path);
 			const n = id === null ? undefined : filedArtifacts.get(id);
 			return id === null || n === undefined ? undefined : { block: true, reason: wholeReadRefusal(id, n) };
+		});
+		// REQ-CTX27-33, REQ-CTX27-34: the reminder joins Ketema's own interactive message as if he typed it.
+		api.on("input", (event: unknown) => {
+			const input = event as { text?: unknown; source?: unknown };
+			if (typeof input.text !== "string" || typeof input.source !== "string") return undefined;
+			const text = userMessageWithReminder(input.text, input.source);
+			return text === input.text ? undefined : { text };
 		});
 	};
 }
