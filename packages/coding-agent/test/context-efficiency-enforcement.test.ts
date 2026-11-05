@@ -21,6 +21,9 @@ import * as path from "node:path";
 import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
 import * as natives from "@oh-my-pi/pi-natives";
 import {
+	assertBudgetInvariant,
+	assertValidEnforcerPreconditions,
+	BudgetInvariantViolationError,
 	CARD_MAX_TOKENS,
 	CARD_NAME_MAX_CHARS,
 	CARD_SIGNATURE_MAX_CHARS,
@@ -33,6 +36,7 @@ import {
 	DISPLAY_MAX_LINES,
 	FIXTURE_TRANSCRIPT_MAX_TOKENS,
 	PAYLOAD_SLICE_BYTES,
+	PreconditionViolationError,
 	RESULT_TOKEN_THRESHOLD,
 	SAMPLE_STRING_MAX_CHARS,
 	SCHEMA_NAME_MAX_CHARS,
@@ -46,6 +50,7 @@ import {
 } from "../../../contracts/context_efficiency_enforcement.contract";
 import {
 	assemblePromptWithCatalogCards,
+	assertImplBudgetInvariant,
 	ContextEfficiencyEnforcer,
 	countO200kTokens,
 	createContextEfficiencyExtension,
@@ -59,6 +64,8 @@ import {
 	IMPL_RESULT_TOKEN_THRESHOLD,
 	IMPL_SESSION_INLINE_TOKEN_BUDGET,
 	IMPL_TURN_INLINE_TOKEN_BUDGET,
+	ImplBudgetInvariantViolationError,
+	ImplPreconditionViolationError,
 	restoreTrustedHelperSnapshotsWithLoader,
 	saveTrustedHelperSnapshot,
 } from "../src/context/context-efficiency-enforcement";
@@ -109,8 +116,8 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 		fs.rmSync(tempRoot, { recursive: true, force: true });
 	});
 
-	it("aligns contract and implementation constants (POST-CTX27-1..5, SEQ-CTX27-1..4, ERRORS-CTX27-1, FORBIDDEN-CTX27-1)", () => {
-		expect(Object.keys(CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT).length).toBe(11);
+	it("aligns contract and implementation constants and enforces PRE-CTX27-1 and INV-CTX27-1 runtime guards (PRE-CTX27-1, INV-CTX27-1, POST-CTX27-1..5, SEQ-CTX27-1..4, ERRORS-CTX27-1, FORBIDDEN-CTX27-1)", async () => {
+		expect(Object.keys(CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT).length).toBe(13);
 		expect(IMPL_RESULT_TOKEN_THRESHOLD).toBe(RESULT_TOKEN_THRESHOLD);
 		expect(IMPL_TURN_INLINE_TOKEN_BUDGET).toBe(TURN_INLINE_TOKEN_BUDGET);
 		expect(IMPL_SESSION_INLINE_TOKEN_BUDGET).toBe(SESSION_INLINE_TOKEN_BUDGET);
@@ -120,6 +127,24 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 		expect(IMPL_CARD_MAX_TOKENS).toBe(CARD_MAX_TOKENS);
 		expect(IMPL_FIXTURE_TRANSCRIPT_MAX_TOKENS).toBe(FIXTURE_TRANSCRIPT_MAX_TOKENS);
 		expect(IMPL_COMPACTION_CANCELLED_TEXT).toBe(COMPACTION_CANCELLED_TEXT);
+
+		// PRE-CTX27-1: both contract validator and independent implementation reject blank agentDir/sessionId/toolCallId
+		expect(() => assertValidEnforcerPreconditions({ agentDir: "", sessionId: "s1" })).toThrow(PreconditionViolationError);
+		expect(() => new ContextEfficiencyEnforcer({ agentDir: "", sessionId: "s1" })).toThrow(
+			ImplPreconditionViolationError,
+		);
+		const enf = new ContextEfficiencyEnforcer({ agentDir: tempRoot, sessionId: "s1" });
+		await expect(enf.admitToolResult({ toolCallId: "   ", text: "ok" })).rejects.toBeInstanceOf(
+			ImplPreconditionViolationError,
+		);
+
+		// INV-CTX27-1: both contract validator and independent implementation enforce turn/session budget bounds
+		expect(() => assertBudgetInvariant({ turnInlineTokens: 1501, sessionInlineTokens: 0 })).toThrow(
+			BudgetInvariantViolationError,
+		);
+		expect(() => assertImplBudgetInvariant({ turnInlineTokens: 1501, sessionInlineTokens: 0 })).toThrow(
+			ImplBudgetInvariantViolationError,
+		);
 	});
 
 	it("Test 1 (Emission): enforces F-inline, F-over, F-turn, and F-session with kernel SHA-256 parity and display caps (POST-CTX27-1, POST-CTX27-2, POST-CTX27-3, SEQ-CTX27-1, SEQ-CTX27-2)", async () => {

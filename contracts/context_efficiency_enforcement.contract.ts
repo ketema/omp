@@ -2,13 +2,11 @@
  * Context Efficiency Enforcement Contract — Specification Authority for ketema/omp#27.
  *
  * Defines behavioral obligations for:
- *   1. Emission gate (o200k token proxy, 1,500 per-result/per-turn, 6,000 per-session,
- *      400-token UDT descriptor, kernel binding, 60-line / 2 KB displayhook cap)
- *   2. Catalog gate (trusted helper snapshots, ≤80-token cards on every prompt, no bodies)
- *   3. Compaction gate (unpicklable drop to open_items, xz/0x80 snapshot verification,
- *      single auto-compact-memory-<session_id>-<seq> record, cancel on hash/write failure)
- *   4. Prompt assembly (no 32-byte payload-value slice outside cut sample/text line,
- *      ≤700-token fixture transcript)
+ *   1. Preconditions & Invariants (PRE-CTX27-1, INV-CTX27-1)
+ *   2. Emission gate (POST-CTX27-1..3, SEQ-CTX27-1..2)
+ *   3. Catalog gate (POST-CTX27-4, SEQ-CTX27-3)
+ *   4. Compaction gate (POST-CTX27-5, SEQ-CTX27-4, ERRORS-CTX27-1)
+ *   5. Prompt assembly (FORBIDDEN-CTX27-1)
  *
  * The implementation MUST NOT import from this file (CL11-F); tests import both.
  */
@@ -47,6 +45,20 @@ export class ContextEfficiencyContractError extends Error {
 	constructor(message: string) {
 		super(message);
 		this.name = "ContextEfficiencyContractError";
+	}
+}
+
+export class PreconditionViolationError extends ContextEfficiencyContractError {
+	constructor(detail: string) {
+		super(`PRE-CTX27-1 violation: ${detail}`);
+		this.name = "PreconditionViolationError";
+	}
+}
+
+export class BudgetInvariantViolationError extends ContextEfficiencyContractError {
+	constructor(detail: string) {
+		super(`INV-CTX27-1 violation: ${detail}`);
+		this.name = "BudgetInvariantViolationError";
 	}
 }
 
@@ -113,8 +125,44 @@ export interface AutoCompactMemoryRecord {
 }
 
 // =============================================================================
-// Artifact 4: Pure Callable Validators
+// Artifact 4: Pure Callable Validators & Assertion Signatures
 // =============================================================================
+
+export function assertValidEnforcerPreconditions(options: {
+	readonly agentDir: string;
+	readonly sessionId: string;
+}): asserts options is { readonly agentDir: string; readonly sessionId: string } {
+	if (typeof options.agentDir !== "string" || options.agentDir.trim().length === 0) {
+		throw new PreconditionViolationError("agentDir must be a non-empty string");
+	}
+	if (typeof options.sessionId !== "string" || options.sessionId.trim().length === 0) {
+		throw new PreconditionViolationError("sessionId must be a non-empty string");
+	}
+}
+
+export function assertBudgetInvariant(state: {
+	readonly turnInlineTokens: number;
+	readonly sessionInlineTokens: number;
+}): void {
+	if (
+		!Number.isInteger(state.turnInlineTokens) ||
+		state.turnInlineTokens < 0 ||
+		state.turnInlineTokens > TURN_INLINE_TOKEN_BUDGET
+	) {
+		throw new BudgetInvariantViolationError(
+			`turnInlineTokens ${state.turnInlineTokens} outside [0, ${TURN_INLINE_TOKEN_BUDGET}]`,
+		);
+	}
+	if (
+		!Number.isInteger(state.sessionInlineTokens) ||
+		state.sessionInlineTokens < 0 ||
+		state.sessionInlineTokens > SESSION_INLINE_TOKEN_BUDGET
+	) {
+		throw new BudgetInvariantViolationError(
+			`sessionInlineTokens ${state.sessionInlineTokens} outside [0, ${SESSION_INLINE_TOKEN_BUDGET}]`,
+		);
+	}
+}
 
 export function validateUdtDescriptorRecord(
 	record: UdtDescriptorRecord,
@@ -197,6 +245,20 @@ export interface ContractClause {
 }
 
 export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, ContractClause>> = {
+	"PRE-CTX27-1": {
+		id: "PRE-CTX27-1",
+		method: "test",
+		description:
+			"ContextEfficiencyEnforcer requires non-empty agentDir and sessionId strings at construction, and admitToolResult requires a non-empty toolCallId string; violating inputs throw PreconditionViolationError citing PRE-CTX27-1.",
+		requirement_ids: ["REQ-CTX27-01", "REQ-CTX27-02"],
+	},
+	"INV-CTX27-1": {
+		id: "INV-CTX27-1",
+		method: "test",
+		description:
+			"At every public entry and exit of ContextEfficiencyEnforcer, turnInlineTokens is an integer in [0, 1500] and sessionInlineTokens is an integer in [0, 6000]; any violation throws BudgetInvariantViolationError citing INV-CTX27-1.",
+		requirement_ids: ["REQ-CTX27-02", "REQ-CTX27-03"],
+	},
 	"POST-CTX27-1": {
 		id: "POST-CTX27-1",
 		method: "test",

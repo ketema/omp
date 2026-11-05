@@ -45,6 +45,14 @@ class ContextEfficiencyContractError(Exception):
     """Base contract error for context efficiency enforcement."""
 
 
+class PreconditionViolationError(ContextEfficiencyContractError):
+    """Raised when PRE-CTX27-1 is violated."""
+
+
+class BudgetInvariantViolationError(ContextEfficiencyContractError):
+    """Raised when INV-CTX27-1 is violated."""
+
+
 class DescriptorSchemaViolationError(ContextEfficiencyContractError):
     """Raised when a Universal Data Topology descriptor violates POST-CTX27-2."""
 
@@ -100,6 +108,24 @@ def validate_helper_catalog_card(card: HelperCatalogCardRecord, token_count: int
 # ==============================================================================
 
 CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
+    "PRE-CTX27-1": Clause(
+        verification="test",
+        text=(
+            "ContextEfficiencyEnforcer requires non-empty agentDir and sessionId strings at "
+            "construction, and admitToolResult requires a non-empty toolCallId string; "
+            "violating inputs throw PreconditionViolationError citing PRE-CTX27-1. "
+            "Source: REQ-CTX27-01, REQ-CTX27-02."
+        ),
+    ),
+    "INV-CTX27-1": Clause(
+        verification="test",
+        text=(
+            "At every public entry and exit of ContextEfficiencyEnforcer, turnInlineTokens "
+            "is an integer in [0, 1500] and sessionInlineTokens is an integer in [0, 6000]; "
+            "any violation throws BudgetInvariantViolationError citing INV-CTX27-1. "
+            "Source: REQ-CTX27-02, REQ-CTX27-03."
+        ),
+    ),
     "POST-CTX27-1": Clause(
         verification="test",
         text=(
