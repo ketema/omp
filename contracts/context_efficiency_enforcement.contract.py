@@ -49,7 +49,7 @@ WORKBENCH_RULES: Final[str] = (
     "before re-deriving a decision. Send noisy builds, tests and installs to TMUX-OFFLOAD and read back only the "
     "summary. Read skill, system and memory text in full."
 )
-IPYTHON_FILE_THRESHOLD_TOKENS: Final[int] = 1500
+IPYTHON_FILE_THRESHOLD_TOKENS: Final[int] = 800
 IPYTHON_OUTPUT_VAR_PREFIX: Final[str] = "out_"
 IPYTHON_DESCRIPTOR_SAMPLE_LINES: Final[int] = 5
 IPYTHON_DESCRIPTOR_LINE_CUT: Final[int] = 100

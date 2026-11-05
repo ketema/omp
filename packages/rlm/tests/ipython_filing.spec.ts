@@ -181,4 +181,60 @@ describe("a large ipython stdout is filed into out_<n> (REQ-CTX27-23 to REQ-CTX2
 		},
 		120_000,
 	);
+
+	liveTest(
+		"POST-CTX27-12 / POST-CTX27-14: a stdout between 800 and 1,500 tokens is filed, and one below 800 stays inline",
+		async () => {
+			// Risk tier: HIGH — the threshold is a value REQ-CTX27-23 and REQ-CTX27-27 name (lowered from 1,500 to 800 on 2026-11-05).
+			const home = fs.mkdtempSync(join(os.tmpdir(), "omp-ipy-filing-"));
+			const session = await openFilingSession(home);
+			try {
+				const above = bigPrint(90);
+				const below = bigPrint(60);
+				const aboveTokens = countTokens(above.stdout, Encoding.O200kBase);
+				const belowTokens = countTokens(below.stdout, Encoding.O200kBase);
+				expect(
+					aboveTokens,
+					"fixture check: the larger print must sit between 800 and 1,500 tokens",
+				).toBeGreaterThan(800);
+				expect(aboveTokens, "fixture check: the larger print must sit between 800 and 1,500 tokens").toBeLessThan(
+					1500,
+				);
+				expect(belowTokens, "fixture check: the smaller print must sit below 800 tokens").toBeLessThan(800);
+
+				const small = await session.call(below.code);
+				expect(
+					resultText(small).includes("row 59: value-"),
+					"POST-CTX27-14 violation: a stdout below the threshold did not reach the tool result unchanged\n" +
+						`ACTUAL (first 200 chars): ${JSON.stringify(resultText(small).slice(0, 200))}\n` +
+						"GUIDANCE: stdout below IPYTHON_FILE_THRESHOLD_TOKENS stays inline",
+				).toBe(true);
+				expect(
+					session.artifacts.length,
+					"POST-CTX27-14 violation: a stdout below the threshold was filed\n" +
+						"GUIDANCE: only a stdout that reaches IPYTHON_FILE_THRESHOLD_TOKENS is filed",
+				).toBe(0);
+
+				const large = await session.call(above.code);
+				const expected = expectedIpythonDescriptor({
+					n: 1,
+					text: above.stdout,
+					tokens: aboveTokens,
+					artifactId: session.artifacts[0]?.id ?? null,
+					cutAtCeiling: false,
+				});
+				expect(
+					resultText(large),
+					`POST-CTX27-12 violation: a stdout of ${aboveTokens} tokens was not filed\n` +
+						`EXPECTED: ${JSON.stringify(expected)}\n` +
+						`ACTUAL (first 300 chars): ${JSON.stringify(resultText(large).slice(0, 300))}\n` +
+						"GUIDANCE: the filing threshold is 800 tokens",
+				).toBe(expected);
+			} finally {
+				await session.shutdown();
+				fs.rmSync(home, { recursive: true, force: true });
+			}
+		},
+		120_000,
+	);
 });

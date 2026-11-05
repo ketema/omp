@@ -54,7 +54,7 @@ export const WORKBENCH_MESSAGE_SEPARATOR = "\n\n";
 export const WORKBENCH_RULES =
 	"Context efficiency rules for this session: keep payloads out of the transcript; do data work in the ipython kernel and read a result by asking it one small question (len, keys, first row), never by printing it whole. Call the helpers listed above by name and never rewrite one. Look in memory, git history and transcripts before re-deriving a decision. Send noisy builds, tests and installs to TMUX-OFFLOAD and read back only the summary. Read skill, system and memory text in full.";
 /** REQ-CTX27-23 (Z13): an ipython cell's stdout is filed at this many o200k tokens. */
-export const IPYTHON_FILE_THRESHOLD_TOKENS = 1500;
+export const IPYTHON_FILE_THRESHOLD_TOKENS = 800;
 /** REQ-CTX27-24 (Z15): the filed kernel variable is this prefix plus the filed-output number. */
 export const IPYTHON_OUTPUT_VAR_PREFIX = "out_";
 /** REQ-CTX27-26: the descriptor shows this many head and tail lines, each cut at IPYTHON_DESCRIPTOR_LINE_CUT characters. */
