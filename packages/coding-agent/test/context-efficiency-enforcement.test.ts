@@ -66,6 +66,8 @@ import {
 	IMPL_TURN_INLINE_TOKEN_BUDGET,
 	ImplBudgetInvariantViolationError,
 	ImplPreconditionViolationError,
+	ImplSnapshotMigrationError,
+	migrateHelperSnapshotsToTargetPython,
 	restoreTrustedHelperSnapshotsWithLoader,
 	saveTrustedHelperSnapshot,
 } from "../src/context/context-efficiency-enforcement";
@@ -117,7 +119,7 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 	});
 
 	it("aligns contract and implementation constants and enforces PRE-CTX27-1 and INV-CTX27-1 runtime guards (PRE-CTX27-1, INV-CTX27-1, POST-CTX27-1..5, SEQ-CTX27-1..4, ERRORS-CTX27-1, FORBIDDEN-CTX27-1)", async () => {
-		expect(Object.keys(CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT).length).toBe(13);
+		expect(Object.keys(CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT).length).toBe(15);
 		expect(IMPL_RESULT_TOKEN_THRESHOLD).toBe(RESULT_TOKEN_THRESHOLD);
 		expect(IMPL_TURN_INLINE_TOKEN_BUDGET).toBe(TURN_INLINE_TOKEN_BUDGET);
 		expect(IMPL_SESSION_INLINE_TOKEN_BUDGET).toBe(SESSION_INLINE_TOKEN_BUDGET);
@@ -389,6 +391,63 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 			expect(badLoad.probeResult, "POST-CTX27-4 violation: failed load must leave previous binding in place").toBe(
 				"PRIOR_BINDING",
 			);
+			// POST-CTX27-6 & ERRORS-CTX27-2: migrate helper snapshots from neutral source to target Python,
+			// and fail loud without mutating manifest.json when a record lacks source.
+			const migrateHome = fs.mkdtempSync(path.join(os.tmpdir(), "omp-ctx27-mig-"));
+			try {
+				const migSnapDir = path.join(migrateHome, ".omp", "agent", "repl-snapshots");
+				for (const fn of fns) {
+					await saveTrustedHelperSnapshot({
+						snapshotsDir: migSnapDir,
+						name: fn.name,
+						signature: fn.signature,
+						summary: fn.summary,
+						snapshotBasename: fn.snapshot,
+						pythonSource: fn.pythonSource,
+						pythonInterpreter: "python3",
+					});
+				}
+				const manifestFile = path.join(migSnapDir, "manifest.json");
+				const staleManifestText = fs
+					.readFileSync(manifestFile, "utf8")
+					.replaceAll('"python_version":', '"python_version": "3.11",\n      "prior_python_version":');
+				fs.writeFileSync(manifestFile, staleManifestText, { mode: 0o600 });
+
+				const migResult = await migrateHelperSnapshotsToTargetPython({
+					snapshotsDir: migSnapDir,
+					targetPython: "python3",
+				});
+				expect(migResult.migratedCount, "POST-CTX27-6 violation: expected all 3 helper snapshots migrated").toBe(3);
+
+				const afterMig = await restoreTrustedHelperSnapshotsWithLoader({
+					homeDir: migrateHome,
+					probeCallExpr: "expand_rules(17)",
+					pythonInterpreter: "python3",
+					loaderPath: path.join(migrateHome, "missing-restore.py"),
+				});
+				expect(afterMig.restoredCount).toBe(3);
+				expect(afterMig.probeResult).toBe("R017");
+
+				// ERRORS-CTX27-2: remove python_source and set python_version="3.11" -> must throw ImplSnapshotMigrationError and leave manifest untouched
+				const brokenManifestText = fs
+					.readFileSync(manifestFile, "utf8")
+					.replace('"python_source":', '"omitted_source":')
+					.replace('"python_version":', '"python_version": "3.11",\n      "prior_ver":');
+				fs.writeFileSync(manifestFile, brokenManifestText, { mode: 0o600 });
+
+				await expect(
+					migrateHelperSnapshotsToTargetPython({
+						snapshotsDir: migSnapDir,
+						targetPython: "python3",
+					}),
+				).rejects.toBeInstanceOf(ImplSnapshotMigrationError);
+				expect(
+					fs.readFileSync(manifestFile, "utf8"),
+					"ERRORS-CTX27-2 violation: failed migration must leave manifest.json unchanged",
+				).toBe(brokenManifestText);
+			} finally {
+				fs.rmSync(migrateHome, { recursive: true, force: true });
+			}
 		} finally {
 			fs.rmSync(homeRoot, { recursive: true, force: true });
 		}

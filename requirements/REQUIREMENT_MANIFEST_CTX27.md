@@ -126,6 +126,7 @@ No contract executes unless all predicates evaluate to TRUE.
 | REQ-CTX27-11 | Compaction record | WHEN the Compaction Snapshot verifies as a non-empty xz stream whose decompressed bytes start with `0x80` and whose SHA-256 matches, Compaction Gate SHALL write one Memory Record `auto-compact-memory-<session_id>-<seq>` and allow compaction to proceed. | Test | High | Lossless compaction recovery anchor. |
 | REQ-CTX27-12 | Snapshot reload | WHEN `dill.load_session` loads a verified Compaction Snapshot in a fresh Python process, IPython Kernel SHALL restore `artifact_<id>` with the original payload SHA-256. | Test | High | Round-trip durability proof. |
 | REQ-CTX27-13 | Compaction refusal | WHEN the Compaction Snapshot SHA-256 mismatches the Memory Record or the Compaction Snapshot write fails, Compaction Gate SHALL return `{ cancel: true }` from `session_before_compact` so `omp` throws `CompactionCancelledError` with unchanged compaction-entry count and status text `Compaction cancelled`. | Test | High | Fail-closed on corrupt or failed snapshot write. |
+| REQ-CTX27-15 | Snapshot migration | WHEN the managed Python environment upgrades to CPython `3.14.10`, Catalog Gate SHALL migrate every Trusted Helper Snapshot in `manifest.json` from its neutral Python source to the target Python minor version and atomically update `python_version`, `dill_version`, `sha256`, and `byte_size`. | Test | High | Dill code-object bytecode does not cross Python minor versions; neutral source migration preserves every helper across 3.11 to 3.14.10. |
 
 ## 4.5 Non-Functional & Quality Attributes
 
@@ -175,6 +176,7 @@ No contract executes unless all predicates evaluate to TRUE.
 | REQ-CTX27-08 | Trusted Helper Snapshot fails mode, symlink, or SHA-256 check on restore | Catalog Gate SHALL leave prior bindings unchanged. | Catalog Gate SHALL return an error naming the failed snapshot validation. |
 | REQ-CTX27-10 | Kernel variable is unpicklable during compaction | Compaction Gate SHALL drop the variable from the snapshot and continue compaction. | Compaction Gate SHALL list the dropped variable name in `open_items`. |
 | REQ-CTX27-13 | Compaction Snapshot write fails or SHA-256 mismatches | Compaction Gate SHALL return `{ cancel: true }` and abort compaction. | omp SHALL throw `CompactionCancelledError` and set status `Compaction cancelled`. |
+| REQ-CTX27-15 | A Trusted Helper Snapshot has no recoverable Python source or fails target compilation during migration | Catalog Gate SHALL abort the migration without modifying `manifest.json` or existing snapshot files. | Catalog Gate SHALL raise an error naming the unmigratable snapshot record ID. |
 
 ## 8. Completion Promise (Ralph Loop Exit)
 

@@ -65,6 +65,10 @@ class PayloadLeakViolationError(ContextEfficiencyContractError):
     """Raised when a 32-byte payload value slice leaks into a prompt (FORBIDDEN-CTX27-1)."""
 
 
+
+class SnapshotMigrationViolationError(ContextEfficiencyContractError):
+    """Raised when a helper snapshot cannot be migrated from neutral source (ERRORS-CTX27-2)."""
+
 # ==============================================================================
 # Artifact 3: Immutable Typed Records
 # ==============================================================================
@@ -178,6 +182,17 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
             "Source: REQ-CTX27-10, REQ-CTX27-11, REQ-CTX27-12, INV-CTX27-05."
         ),
     ),
+    "POST-CTX27-6": Clause(
+        verification="test",
+        text=(
+            "migrateHelperSnapshotsToTargetPython migrates every snapshot record in manifest.json "
+            "from its neutral Python source (stored in manifest.json or supplied via "
+            "sourceOverrides) to targetPython's major.minor version and dill version, atomically "
+            "updating the snapshot file and manifest.json (python_version, dill_version, sha256, "
+            "byte_size) so restore.py restores all migrated helpers under targetPython. "
+            "Source: REQ-CTX27-15."
+        ),
+    ),
     "SEQ-CTX27-1": Clause(
         verification="test",
         text=(
@@ -217,6 +232,15 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
             "fails, session_before_compact returns { cancel: true }, compact() throws "
             "CompactionCancelledError, the compaction-entry count is unchanged, and the status "
             "text is Compaction cancelled. Source: REQ-CTX27-13."
+        ),
+    ),
+    "ERRORS-CTX27-2": Clause(
+        verification="test",
+        text=(
+            "When any snapshot record in manifest.json lacks a neutral Python source or fails "
+            "compilation under targetPython during migration, migrateHelperSnapshotsToTargetPython "
+            "throws SnapshotMigrationViolationError naming the record ID and leaves manifest.json "
+            "and existing snapshot files unchanged. Source: REQ-CTX27-15."
         ),
     ),
     "FORBIDDEN-CTX27-1": Clause(

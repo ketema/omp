@@ -83,6 +83,13 @@ export class PayloadLeakViolationError extends ContextEfficiencyContractError {
 	}
 }
 
+export class SnapshotMigrationViolationError extends ContextEfficiencyContractError {
+	constructor(recordId: string, detail: string) {
+		super(`ERRORS-CTX27-2 violation: failed to migrate snapshot ${recordId}: ${detail}`);
+		this.name = "SnapshotMigrationViolationError";
+	}
+}
+
 // =============================================================================
 // Artifact 3: Immutable Typed Records
 // =============================================================================
@@ -294,6 +301,13 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 			"On session_before_compact, unpicklable kernel names are dropped from the snapshot, listed in open_items, and compaction proceeds; a valid snapshot writes ~/.omp/agent/ipython-compact-<session_id>.pkl as a non-empty xz stream whose decompressed bytes start with 0x80, writes exactly one auto-compact-memory-<session_id>-<seq> record with {narrative, descriptors, kernel_handles, snapshot_path, sha256, files_touched, open_items} and no payload, and a fresh dill.load_session restores the payload hash.",
 		requirement_ids: ["REQ-CTX27-10", "REQ-CTX27-11", "REQ-CTX27-12", "INV-CTX27-05"],
 	},
+	"POST-CTX27-6": {
+		id: "POST-CTX27-6",
+		method: "test",
+		description:
+			"migrateHelperSnapshotsToTargetPython migrates every snapshot record in manifest.json from its neutral Python source (stored in manifest.json or supplied via sourceOverrides) to targetPython's major.minor version and dill version, atomically updating the snapshot file and manifest.json (python_version, dill_version, sha256, byte_size) so restore.py restores all migrated helpers under targetPython.",
+		requirement_ids: ["REQ-CTX27-15"],
+	},
 	"SEQ-CTX27-1": {
 		id: "SEQ-CTX27-1",
 		method: "test",
@@ -328,6 +342,13 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 		description:
 			"When the compaction snapshot hash does not match the record or the snapshot write fails, session_before_compact returns { cancel: true }, compact() throws CompactionCancelledError, the compaction-entry count is unchanged, and the status text is Compaction cancelled.",
 		requirement_ids: ["REQ-CTX27-13"],
+	},
+	"ERRORS-CTX27-2": {
+		id: "ERRORS-CTX27-2",
+		method: "test",
+		description:
+			"When any snapshot record in manifest.json lacks a neutral Python source or fails compilation under targetPython during migration, migrateHelperSnapshotsToTargetPython throws SnapshotMigrationViolationError naming the record ID and leaves manifest.json and existing snapshot files unchanged.",
+		requirement_ids: ["REQ-CTX27-15"],
 	},
 	"FORBIDDEN-CTX27-1": {
 		id: "FORBIDDEN-CTX27-1",
