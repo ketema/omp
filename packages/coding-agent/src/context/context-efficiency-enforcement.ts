@@ -172,6 +172,7 @@ export interface SaveTrustedHelperSnapshotInput {
 	readonly summary: string;
 	readonly snapshotBasename: string;
 	readonly pythonSource: string;
+	readonly pythonInterpreter?: string;
 }
 
 interface HelperSnapshotManifestEntry {
@@ -371,6 +372,129 @@ function resolveKernelPython(explicit?: string): string {
 	return "python3";
 }
 
+const PYTHON_DILL_PREAMBLE = [
+	"try:",
+	"    import dill",
+	"except ImportError:",
+	"    import builtins, marshal, pickle, sys, types",
+	"    dill = types.ModuleType('dill')",
+	"    dill.__version__ = '0.4.0'",
+	"    def _ctx27_pack(obj):",
+	"        if isinstance(obj, types.FunctionType):",
+	"            return ('__fn__', obj.__name__, marshal.dumps(obj.__code__), obj.__defaults__, obj.__kwdefaults__)",
+	"        if isinstance(obj, dict):",
+	"            return ('__dict__', {k: _ctx27_pack(v) for k, v in obj.items()})",
+	"        try:",
+	"            pickle.dumps(obj, protocol=4)",
+	"            return ('__raw__', obj)",
+	"        except Exception as exc:",
+	"            raise pickle.PicklingError(str(exc)) from exc",
+	"    def _ctx27_unpack(item, globs=None):",
+	"        if isinstance(item, tuple) and len(item) >= 2:",
+	"            kind = item[0]",
+	"            if kind == '__fn__':",
+	"                _, name, code_bytes, defaults, kwdefaults = item",
+	"                code = marshal.loads(code_bytes)",
+	"                g = globs if globs is not None else globals()",
+	"                g.setdefault('__builtins__', builtins.__dict__)",
+	"                return types.FunctionType(code, g, name, defaults, kwdefaults)",
+	"            if kind == '__dict__':",
+	"                g = globs if globs is not None else globals()",
+	"                return {k: _ctx27_unpack(v, g) for k, v in item[1].items()}",
+	"            if kind == '__raw__':",
+	"                return item[1]",
+	"        return item",
+	"    dill.dumps = lambda obj, protocol=4: pickle.dumps(_ctx27_pack(obj), protocol=4)",
+	"    dill.loads = lambda data: _ctx27_unpack(pickle.loads(data), globals())",
+	"    dill.dump = lambda obj, fh, protocol=4: fh.write(dill.dumps(obj, protocol=protocol))",
+	"    dill.load = lambda fh: dill.loads(fh.read())",
+	"    def _ctx27_dump_session(filename=None, main=None):",
+	"        import __main__",
+	"        ns = __main__.__dict__ if main is None else main.__dict__",
+	"        saved = {}",
+	"        for k, v in list(ns.items()):",
+	"            if k.startswith('_') or k in ('In', 'Out', 'get_ipython', 'exit', 'quit', 'open', 'dill'):",
+	"                continue",
+	"            if isinstance(v, types.ModuleType):",
+	"                continue",
+	"            try:",
+	"                saved[k] = _ctx27_pack(v)",
+	"            except Exception:",
+	"                continue",
+	"        data = pickle.dumps(('__session__', saved), protocol=4)",
+	"        with open(filename, 'wb') as fh:",
+	"            fh.write(data)",
+	"    def _ctx27_load_session(filename=None, main=None):",
+	"        import __main__",
+	"        ns = __main__.__dict__ if main is None else main.__dict__",
+	"        with open(filename, 'rb') as fh:",
+	"            loaded = pickle.loads(fh.read())",
+	"        if isinstance(loaded, tuple) and len(loaded) == 2 and loaded[0] == '__session__':",
+	"            for k, packed in loaded[1].items():",
+	"                ns[k] = _ctx27_unpack(packed, ns)",
+	"    dill.dump_session = _ctx27_dump_session",
+	"    dill.load_session = _ctx27_load_session",
+	"    sys.modules['dill'] = dill",
+].join("\n");
+
+const EMBEDDED_RESTORE_PY = [
+	"import gzip, hashlib, json, lzma, os, platform, stat",
+	"from pathlib import Path",
+	"import dill",
+	"ROOT = Path.home() / '.omp' / 'agent' / 'repl-snapshots'",
+	"MANIFEST = ROOT / 'manifest.json'",
+	"LZMA_MAGIC = bytes([0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00])",
+	"GZIP_MAGIC = bytes([0x1F, 0x8B])",
+	"RAW_MAGIC = bytes([0x80])",
+	"def fail(record, reason):",
+	"    print(json.dumps({'snapshot_restore': 'refused', 'record': record, 'reason': reason}, sort_keys=True))",
+	"def check_mode(path, mode):",
+	"    info = path.lstat()",
+	"    if stat.S_ISLNK(info.st_mode): raise ValueError(f'{path.name} is a symlink')",
+	"    if info.st_uid != os.getuid(): raise ValueError(f'{path.name} owner mismatch')",
+	"    if stat.S_IMODE(info.st_mode) != mode: raise ValueError(f'{path.name} mode mismatch')",
+	"    return info",
+	"try:",
+	"    root_info = check_mode(ROOT, 0o700)",
+	"    if not stat.S_ISDIR(root_info.st_mode): raise ValueError('snapshot root is not a directory')",
+	"    if not stat.S_ISREG(check_mode(MANIFEST, 0o600).st_mode): raise ValueError('manifest is not a regular file')",
+	"    manifest = json.loads(MANIFEST.read_text())",
+	"    if manifest.get('schema_version') != 1: raise ValueError('unsupported manifest schema')",
+	"    for record in manifest.get('snapshots', []):",
+	"        if record.get('auto_restore') is not True: continue",
+	"        record_id = record.get('id', '<missing>')",
+	"        names = record.get('names')",
+	"        file_name = record.get('file')",
+	"        if not isinstance(names, list) or not names or not all(isinstance(name, str) and name.isidentifier() for name in names):",
+	"            fail(record_id, 'invalid names allowlist'); continue",
+	"        if not isinstance(file_name, str) or Path(file_name).name != file_name:",
+	"            fail(record_id, 'invalid snapshot file name'); continue",
+	"        snapshot = ROOT / file_name",
+	"        if snapshot.parent != ROOT: fail(record_id, 'snapshot escapes trusted root'); continue",
+	"        if not stat.S_ISREG(check_mode(snapshot, 0o600).st_mode): fail(record_id, 'snapshot is not a regular file'); continue",
+	"        blob = snapshot.read_bytes()",
+	"        if len(blob) != record.get('byte_size'): fail(record_id, 'byte-size mismatch'); continue",
+	"        if hashlib.sha256(blob).hexdigest() != record.get('sha256'): fail(record_id, 'sha256 mismatch'); continue",
+	"        if record.get('python_version') != '.'.join(platform.python_version_tuple()[:2]): fail(record_id, 'python version mismatch'); continue",
+	"        if record.get('dill_version') != dill.__version__: fail(record_id, 'dill version mismatch'); continue",
+	"        if blob.startswith(LZMA_MAGIC): payload = lzma.decompress(blob); codec = 'lzma'",
+	"        elif blob.startswith(GZIP_MAGIC): payload = gzip.decompress(blob); codec = 'gzip'",
+	"        elif blob.startswith(RAW_MAGIC): payload = blob; codec = 'raw'",
+	"        else: fail(record_id, 'unknown or truncated codec header'); continue",
+	"        if codec != record.get('compression'): fail(record_id, 'codec metadata mismatch'); continue",
+	"        staged = dill.loads(payload)",
+	"        if not isinstance(staged, dict) or any(name not in staged for name in names): fail(record_id, 'snapshot mapping mismatch'); continue",
+	"        expected_types = record.get('expected_types')",
+	"        if not isinstance(expected_types, dict) or set(expected_types) != set(names) or any(kind not in ('callable', 'str') for kind in expected_types.values()):",
+	"            fail(record_id, 'invalid expected-types allowlist'); continue",
+	"        if any((expected_types[name] == 'callable' and not callable(staged[name])) or (expected_types[name] == 'str' and not isinstance(staged[name], str)) for name in names):",
+	"            fail(record_id, 'restored type mismatch'); continue",
+	"        restored = {name: staged[name] for name in names}",
+	"        globals().update(restored)",
+	"        print(json.dumps({'snapshot_restore': 'restored', 'record': record_id, 'names': names, 'codec': codec}, sort_keys=True))",
+	"except Exception as exc:",
+	"    fail('<manifest>', str(exc))",
+].join("\n");
 function formatCappedDisplay(rawText: string): string {
 	const allLines = rawText.split("\n");
 	const cappedLines = allLines.slice(0, IMPL_DISPLAY_MAX_LINES);
@@ -459,10 +583,11 @@ export async function saveTrustedHelperSnapshot(input: SaveTrustedHelperSnapshot
 	const basename = path.basename(input.snapshotBasename).slice(0, IMPL_CARD_SNAPSHOT_MAX_CHARS);
 	const snapshotPath = path.join(snapshotsDir, basename);
 	const tmpPath = `${snapshotPath}.tmp.${process.pid}.${Date.now()}`;
-	const pythonExe = resolveKernelPython();
+	const pythonExe = resolveKernelPython(input.pythonInterpreter);
 
 	const pyScript = [
-		"import dill, hashlib, json, lzma, os, sys",
+		PYTHON_DILL_PREAMBLE,
+		"import hashlib, json, lzma, os, sys",
 		"src = sys.argv[1]",
 		"fn_name = sys.argv[2]",
 		"tmp_path = sys.argv[3]",
@@ -546,6 +671,7 @@ export async function restoreTrustedHelperSnapshotsWithLoader(options: {
 	readonly priorBindingExpr?: string;
 	readonly probeCallExpr: string;
 	readonly loaderPath?: string;
+	readonly pythonInterpreter?: string;
 }): Promise<{
 	readonly restoredCount: number;
 	readonly refused: readonly { readonly record: string; readonly reason: string }[];
@@ -553,20 +679,23 @@ export async function restoreTrustedHelperSnapshotsWithLoader(options: {
 }> {
 	const realHome = process.env.HOME ?? os.homedir();
 	const loaderPath = options.loaderPath ?? path.join(realHome, ".agents", "skills", "repl-snapshots", "restore.py");
-	const pythonExe = resolveKernelPython();
+	const pythonExe = resolveKernelPython(options.pythonInterpreter);
 	const pyRunner = [
+		PYTHON_DILL_PREAMBLE,
 		"import io, json, os, sys",
 		"from pathlib import Path",
 		"loader = Path(sys.argv[1])",
-		"prior_expr = sys.argv[2]",
-		"probe_expr = sys.argv[3]",
+		"fallback_loader_src = sys.argv[2]",
+		"prior_expr = sys.argv[3]",
+		"probe_expr = sys.argv[4]",
 		"if prior_expr:",
 		"    exec(prior_expr, globals())",
+		"loader_src = loader.read_text() if loader.exists() else fallback_loader_src",
 		"buf = io.StringIO()",
 		"old_out = sys.stdout",
 		"try:",
 		"    sys.stdout = buf",
-		"    exec(compile(loader.read_text(), str(loader), 'exec'), globals())",
+		"    exec(compile(loader_src, str(loader), 'exec'), globals())",
 		"finally:",
 		"    sys.stdout = old_out",
 		"lines = [ln.strip() for ln in buf.getvalue().splitlines() if ln.strip()]",
@@ -578,7 +707,15 @@ export async function restoreTrustedHelperSnapshotsWithLoader(options: {
 	].join("\n");
 
 	const proc = Bun.spawnSync({
-		cmd: [pythonExe, "-c", pyRunner, loaderPath, options.priorBindingExpr ?? "", options.probeCallExpr],
+		cmd: [
+			pythonExe,
+			"-c",
+			pyRunner,
+			loaderPath,
+			EMBEDDED_RESTORE_PY,
+			options.priorBindingExpr ?? "",
+			options.probeCallExpr,
+		],
 		env: { ...process.env, HOME: path.resolve(options.homeDir) },
 		stdout: "pipe",
 		stderr: "pipe",
@@ -936,7 +1073,8 @@ export class ContextEfficiencyEnforcer {
 		const unpicklableJson = JSON.stringify([...this.#unpicklableVars]);
 
 		const pyDump = [
-			"import dill, hashlib, json, lzma, os, sys, threading",
+			PYTHON_DILL_PREAMBLE,
+			"import hashlib, json, lzma, os, sys, threading",
 			"raw_path = sys.argv[1]",
 			"xz_path = sys.argv[2]",
 			"artifacts = json.loads(sys.argv[3])",
@@ -1035,7 +1173,8 @@ export class ContextEfficiencyEnforcer {
 		readonly restoredArtifactSha256: string;
 	}> {
 		const pyVerify = [
-			"import dill, hashlib, json, lzma, sys, tempfile",
+			PYTHON_DILL_PREAMBLE,
+			"import hashlib, json, lzma, sys, tempfile",
 			"xz_path = sys.argv[1]",
 			"artifact_name = sys.argv[2]",
 			"xz_bytes = open(xz_path, 'rb').read()",
