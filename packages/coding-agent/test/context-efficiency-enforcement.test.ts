@@ -21,9 +21,8 @@ import * as path from "node:path";
 import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
 import * as natives from "@oh-my-pi/pi-natives";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { Settings } from "../src/config/settings";
 import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
 import { createAgentSession } from "../src/sdk";
 import { AuthStorage } from "../src/session/auth-storage";
 import { SessionManager } from "../src/session/session-manager";
@@ -70,7 +69,6 @@ import {
 	IMPL_RESULT_TOKEN_THRESHOLD,
 	IMPL_SESSION_INLINE_TOKEN_BUDGET,
 	IMPL_TURN_INLINE_TOKEN_BUDGET,
-	ImplBudgetInvariantViolationError,
 	ImplPreconditionViolationError,
 	ImplSnapshotMigrationError,
 	migrateHelperSnapshotsToTargetPython,
@@ -148,9 +146,7 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 		);
 
 		// INV-CTX27-1: both contract validator and independent implementation enforce turn/session budget bounds
-		expect(() => assertBudgetInvariant({ turnInlineTokens: 1501, sessionInlineTokens: 0 })).toThrow(
-			/INV-CTX27-1/,
-		);
+		expect(() => assertBudgetInvariant({ turnInlineTokens: 1501, sessionInlineTokens: 0 })).toThrow(/INV-CTX27-1/);
 		expect(() => assertImplBudgetInvariant({ turnInlineTokens: 1501, sessionInlineTokens: 0 })).toThrow(
 			/INV-CTX27-1/,
 		);
@@ -721,19 +717,11 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 
 		const authStorage = await AuthStorage.create(path.join(tempHome, "auth.db"));
 		authStorage.keys.setRuntime("managed-primary", "test-key");
+		authStorage.keys.setRuntime("openai", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempHome, "models.yml"));
-
-		const testModel = buildModel({
-			id: "mock-model",
-			name: "Mock Model",
-			api: "openai-responses",
+		const testModel = createMockModel({
 			provider: "openai",
-			baseUrl: "https://example.invalid",
-			reasoning: false,
-			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 8192,
-			maxTokens: 2048,
+			responses: [{ content: ["Integration test response"] }],
 		});
 
 		const { session, extensionsResult } = await createAgentSession({
