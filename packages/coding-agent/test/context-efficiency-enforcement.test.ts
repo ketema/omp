@@ -322,6 +322,34 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 			).toBe(false);
 		}
 
+		// Also verify real dill loader binds digest_text.__globals__ to __main__ (globals()),
+		// preventing Python 3.14 + dill 0.4.1 from pickling a custom dict containing module objects.
+		const realDillHome = fs.mkdtempSync(path.join(os.tmpdir(), "omp-ctx27-realdill-"));
+		try {
+			const realSnapDir = path.join(realDillHome, ".omp", "agent", "repl-snapshots");
+			for (const fn of fns) {
+				await saveTrustedHelperSnapshot({
+					snapshotsDir: realSnapDir,
+					name: fn.name,
+					signature: fn.signature,
+					summary: fn.summary,
+					snapshotBasename: fn.snapshot,
+					pythonSource: fn.pythonSource,
+				});
+			}
+			const realLoad = await restoreTrustedHelperSnapshotsWithLoader({
+				homeDir: realDillHome,
+				probeCallExpr: "(digest_text.__globals__ is globals(), digest_text('abc')[:8])",
+			});
+			expect(realLoad.restoredCount).toBe(3);
+			expect(
+				realLoad.probeResult,
+				"POST-CTX27-4 violation: helper snapshot must bind __globals__ to __main__ so Python 3.14 + dill 0.4.1 does not pickle module objects in a custom dict",
+			).toBe("(True, 'ba7816bf')");
+		} finally {
+			fs.rmSync(realDillHome, { recursive: true, force: true });
+		}
+
 		// Verify ~/.agents/skills/repl-snapshots/restore.py loads the declared names and types,
 		// and a failed load leaves previous bindings in place and returns an error.
 		const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "omp-ctx27-home-"));
