@@ -25,8 +25,8 @@ import {
 import { buildKernelEnv, type KernelCaps, type KernelSession } from "../src/bootstrap.ts";
 import { KernelManagerAdapter } from "../src/extension.ts";
 import { type KernelClock, KernelManager } from "../src/kernel.ts";
-import { createRlmToolDefinition } from "../src/tool.ts";
 import { createTransport } from "../src/transport.ts";
+import { openRealSession } from "./real_extension.ts";
 
 const REAL_HOME = os.homedir();
 const KERNEL_PYTHON = join(REAL_HOME, ".omp", "agent", "kernel-venv", "bin", "python");
@@ -183,17 +183,17 @@ describe("workbench loads at kernel start (REQ-CTX27-16)", () => {
 	);
 });
 
-/** A tool-call context with no UI: the kernel start and the first cell run without any prompt. */
-const toolContext = {
-	hasUI: false,
-	setWorkingMessage: (_message?: string): void => {},
-	ui: { select: async (): Promise<string | undefined> => undefined },
-};
-
-/** The real tool path: tool definition over the real adapter, kernel and transport. */
-function makeTool(home: string) {
+/**
+ * The real session path: createRlmExtension, its tool, the session lifecycle that binds each call to the kernel, and
+ * the real adapter, KernelManager and transport. Only the host API is synthetic; the kernel is built for `home`.
+ */
+async function openWorkbenchSession(home: string) {
 	const { transport, manager } = makeStack(home);
-	return { manager, tool: createRlmToolDefinition({ kernel: new KernelManagerAdapter(transport, manager) }) };
+	const session = await openRealSession(home, join(home, "artifacts"), {
+		createKernel: () => new KernelManagerAdapter(transport, manager),
+	});
+	await session.start();
+	return { manager, session };
 }
 
 describe("workbench notice on the first ipython call (REQ-CTX27-18)", () => {
@@ -203,15 +203,9 @@ describe("workbench notice on the first ipython call (REQ-CTX27-18)", () => {
 			// Risk tier: HIGH — the notice is how Ketema and the model learn what is on the workbench.
 			const home = makeHome();
 			writeProbeSnapshot(home);
-			const { manager, tool } = makeTool(home);
+			const { manager, session } = await openWorkbenchSession(home);
 			try {
-				const first = await tool.execute(
-					"call-1",
-					{ code: "print('cell-output')" },
-					undefined,
-					undefined,
-					toolContext,
-				);
+				const first = await session.call("print('cell-output')");
 				const text = first.content.map(part => part.text).join("\n");
 				const expected = expectedWorkbenchNotice(validateWorkbenchReport(manager.workbenchReport()));
 				expect(
@@ -233,7 +227,7 @@ describe("workbench notice on the first ipython call (REQ-CTX27-18)", () => {
 						"GUIDANCE: the first call of a session reports what the workbench loaded, once",
 				).toEqual({ notices: 1, exact: 1, ranCell: true });
 			} finally {
-				await manager.dispose({ snapshot: false });
+				await session.shutdown();
 				fs.rmSync(home, { recursive: true, force: true });
 			}
 		},
@@ -246,9 +240,9 @@ describe("workbench notice on the first ipython call (REQ-CTX27-18)", () => {
 			// Risk tier: HIGH — a fresh session with no loader must say so, not look like an empty workbench.
 			const home = makeHome();
 			fs.rmSync(join(home, WORKBENCH_LOADER_PATH_FROM_HOME));
-			const { manager, tool } = makeTool(home);
+			const { manager, session } = await openWorkbenchSession(home);
 			try {
-				const first = await tool.execute("call-1", { code: "print(2 + 2)" }, undefined, undefined, toolContext);
+				const first = await session.call("print(2 + 2)");
 				const text = first.content.map(part => part.text).join("\n");
 				const report = validateWorkbenchReport(manager.workbenchReport());
 				const expected = expectedWorkbenchNotice(report);
@@ -271,7 +265,7 @@ describe("workbench notice on the first ipython call (REQ-CTX27-18)", () => {
 						"GUIDANCE: when the loader cannot run the session still starts, and the notice says why",
 				).toEqual({ notices: 1, exact: 1, ranCell: true });
 			} finally {
-				await manager.dispose({ snapshot: false });
+				await session.shutdown();
 				fs.rmSync(home, { recursive: true, force: true });
 			}
 		},
