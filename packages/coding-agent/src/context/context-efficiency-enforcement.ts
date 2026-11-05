@@ -118,7 +118,8 @@ interface HelperSnapshotManifestEntry {
 	readonly python_version: string;
 	readonly dill_version: string;
 	readonly names: readonly string[];
-	readonly expected_types: Readonly<Record<string, string>>;
+	readonly expected_types: Readonly<Record<string, "callable" | "str">>;
+	readonly auto_restore: boolean;
 	readonly signature: string;
 	readonly summary: string;
 	readonly compression: string;
@@ -302,7 +303,8 @@ export async function saveTrustedHelperSnapshot(input: SaveTrustedHelperSnapshot
 		python_version: meta.python_version,
 		dill_version: meta.dill_version,
 		names: [input.name.slice(0, IMPL_CARD_NAME_MAX_CHARS)],
-		expected_types: { [input.name.slice(0, IMPL_CARD_NAME_MAX_CHARS)]: "function" },
+		expected_types: { [input.name.slice(0, IMPL_CARD_NAME_MAX_CHARS)]: "callable" },
+		auto_restore: true,
 		signature: input.signature.slice(0, IMPL_CARD_SIGNATURE_MAX_CHARS),
 		summary: input.summary.slice(0, IMPL_CARD_SUMMARY_MAX_CHARS),
 		compression: meta.compression,
@@ -322,6 +324,58 @@ export async function saveTrustedHelperSnapshot(input: SaveTrustedHelperSnapshot
 		signature: entry.signature,
 		summary: entry.summary,
 		snapshot: entry.file,
+	};
+}
+
+export async function restoreTrustedHelperSnapshotsWithLoader(options: {
+	readonly homeDir: string;
+	readonly priorBindingExpr?: string;
+	readonly probeCallExpr: string;
+	readonly loaderPath?: string;
+}): Promise<{
+	readonly restoredCount: number;
+	readonly refused: readonly { readonly record: string; readonly reason: string }[];
+	readonly probeResult: string;
+}> {
+	const realHome = process.env.HOME ?? os.homedir();
+	const loaderPath = options.loaderPath ?? path.join(realHome, ".agents", "skills", "repl-snapshots", "restore.py");
+	const pythonExe = resolveKernelPython();
+	const pyRunner = [
+		"import io, json, os, sys",
+		"from pathlib import Path",
+		"loader = Path(sys.argv[1])",
+		"prior_expr = sys.argv[2]",
+		"probe_expr = sys.argv[3]",
+		"if prior_expr:",
+		"    exec(prior_expr, globals())",
+		"buf = io.StringIO()",
+		"old_out = sys.stdout",
+		"try:",
+		"    sys.stdout = buf",
+		"    exec(compile(loader.read_text(), str(loader), 'exec'), globals())",
+		"finally:",
+		"    sys.stdout = old_out",
+		"lines = [ln.strip() for ln in buf.getvalue().splitlines() if ln.strip()]",
+		"events = [json.loads(ln) for ln in lines]",
+		"restored_count = sum(1 for e in events if e.get('snapshot_restore') == 'restored')",
+		"refused = [{'record': e.get('record', ''), 'reason': e.get('reason', '')} for e in events if e.get('snapshot_restore') == 'refused']",
+		"probe_val = eval(probe_expr, globals()) if probe_expr else ''",
+		"print(json.dumps({'restoredCount': restored_count, 'refused': refused, 'probeResult': str(probe_val)}))",
+	].join("\n");
+
+	const proc = Bun.spawnSync({
+		cmd: [pythonExe, "-c", pyRunner, loaderPath, options.priorBindingExpr ?? "", options.probeCallExpr],
+		env: { ...process.env, HOME: path.resolve(options.homeDir) },
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	if (proc.exitCode !== 0) {
+		throw new Error(`POST-CTX27-4 violation: restore.py execution failed: ${proc.stderr.toString()}`);
+	}
+	return JSON.parse(proc.stdout.toString().trim()) as {
+		restoredCount: number;
+		refused: { record: string; reason: string }[];
+		probeResult: string;
 	};
 }
 
@@ -779,4 +833,66 @@ export class ContextEfficiencyEnforcer {
 			restoredArtifactSha256: string;
 		};
 	}
+}
+
+// =============================================================================
+// Harness Extension Factory (sdk.ts inline extension wiring)
+// =============================================================================
+
+export interface ContextEfficiencyExtensionAPI {
+	on(event: string, handler: (event: unknown, ctx: unknown) => unknown): void;
+}
+
+export function createContextEfficiencyExtension(options?: {
+	readonly agentDir?: string;
+	readonly sessionId?: string;
+	readonly snapshotsDir?: string;
+}): (api: ContextEfficiencyExtensionAPI) => Promise<void> {
+	return async (api: ContextEfficiencyExtensionAPI): Promise<void> => {
+		const home = process.env.HOME ?? os.homedir();
+		const agentDir = options?.agentDir ?? path.join(home, ".omp", "agent");
+		const snapshotsDir = options?.snapshotsDir ?? path.join(agentDir, "repl-snapshots");
+		const sessionId = options?.sessionId ?? "default";
+		const enforcer = new ContextEfficiencyEnforcer({ agentDir, sessionId });
+
+		api.on("turn_start", () => {
+			enforcer.startNewTurn();
+		});
+
+		api.on("tool_result", async (rawEvent: unknown) => {
+			if (!rawEvent || typeof rawEvent !== "object") return undefined;
+			const event = rawEvent as { toolCallId?: string; content?: { type: string; text?: string }[] };
+			const blocks = Array.isArray(event.content) ? event.content : [];
+			const textBlocks = blocks.filter(b => b.type === "text" && typeof b.text === "string");
+			if (textBlocks.length === 0) return undefined;
+			const combined = textBlocks.map(b => b.text ?? "").join("\n");
+			const outcome = await enforcer.admitToolResult({
+				toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : "tool",
+				text: combined,
+			});
+			if (outcome.mode === "inline") return undefined;
+			return {
+				content: [{ type: "text", text: outcome.transcriptText }],
+			};
+		});
+
+		api.on("before_agent_start", async (rawEvent: unknown) => {
+			const event =
+				rawEvent && typeof rawEvent === "object" ? (rawEvent as { systemPrompt?: string[] }) : undefined;
+			const assembled = assemblePromptWithCatalogCards("", snapshotsDir);
+			if (assembled.cards.length === 0) return undefined;
+			const cardBlock = assembled.cards.map(c => JSON.stringify(c)).join("\n");
+			return {
+				systemPrompt: [...(Array.isArray(event?.systemPrompt) ? event.systemPrompt : []), cardBlock],
+			};
+		});
+
+		api.on("session_before_compact", async () => {
+			const res = await enforcer.runBeforeCompactHook();
+			if (res.cancel === true) {
+				return { cancel: true };
+			}
+			return undefined;
+		});
+	};
 }
