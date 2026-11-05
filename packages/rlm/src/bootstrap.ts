@@ -16,7 +16,7 @@ import { join } from "node:path";
 // =============================================================================
 
 export const SCHEMA_VERSION = 8;
-export const PYTHON_VERSION = "3.11";
+export const PYTHON_VERSION = "3.14.10";
 export const BASE_PACKAGES: readonly string[] = ["ipykernel", "rlm-runtime", "dill"];
 export const EXTRAS_PACKAGES: readonly string[] = [
 	"requests",

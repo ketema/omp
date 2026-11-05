@@ -74,6 +74,12 @@ export class ImplBudgetInvariantViolationError extends ImplContextEfficiencyErro
 	}
 }
 
+export class ImplSnapshotMigrationError extends ImplContextEfficiencyError {
+	constructor(recordId: string, detail: string) {
+		super(`ERRORS-CTX27-2 violation: failed to migrate snapshot ${recordId}: ${detail}`);
+	}
+}
+
 export function assertImplEnforcerPreconditions(options: {
 	readonly agentDir: string;
 	readonly sessionId: string;
@@ -189,6 +195,7 @@ interface HelperSnapshotManifestEntry {
 	readonly summary: string;
 	readonly compression: string;
 	readonly saved_at: string;
+	readonly python_source?: string;
 }
 
 interface HelperSnapshotManifest {
@@ -282,6 +289,7 @@ function parseManifestFile(rawText: string): HelperSnapshotManifest {
 			summary: item.summary,
 			compression: item.compression,
 			saved_at: item.saved_at,
+			...(typeof item.python_source === "string" ? { python_source: item.python_source } : {}),
 		});
 	}
 	return { schema_version: 1, snapshots: entries };
@@ -647,6 +655,7 @@ export async function saveTrustedHelperSnapshot(input: SaveTrustedHelperSnapshot
 		summary: input.summary.slice(0, IMPL_CARD_SUMMARY_MAX_CHARS),
 		compression: meta.compression,
 		saved_at: new Date().toISOString(),
+		python_source: input.pythonSource,
 	};
 	const nextManifest: HelperSnapshotManifest = {
 		schema_version: 1,
@@ -663,6 +672,121 @@ export async function saveTrustedHelperSnapshot(input: SaveTrustedHelperSnapshot
 		summary: entry.summary,
 		snapshot: entry.file,
 	};
+}
+
+export async function migrateHelperSnapshotsToTargetPython(options: {
+	readonly snapshotsDir: string;
+	readonly targetPython?: string;
+	readonly sourceOverrides?: Readonly<Record<string, string>>;
+}): Promise<{ readonly migratedCount: number; readonly targetPythonVersion: string }> {
+	const snapshotsDir = path.resolve(options.snapshotsDir);
+	const manifestPath = path.join(snapshotsDir, "manifest.json");
+	if (!fs.existsSync(manifestPath)) {
+		return { migratedCount: 0, targetPythonVersion: "" };
+	}
+	const manifest = parseManifestFile(fs.readFileSync(manifestPath, "utf8"));
+	const pythonExe = resolveKernelPython(options.targetPython);
+
+	const verProc = Bun.spawnSync({
+		cmd: [pythonExe, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	if (verProc.exitCode !== 0) {
+		throw new ImplSnapshotMigrationError("<interpreter>", verProc.stderr.toString().trim());
+	}
+	const targetPythonVersion = verProc.stdout.toString().trim();
+
+	// Pre-flight check (ERRORS-CTX27-2): verify every record has neutral source BEFORE mutating any file
+	const sourcesToMigrate = new Map<string, string>();
+	for (const entry of manifest.snapshots) {
+		const src = options.sourceOverrides?.[entry.id] ?? entry.python_source;
+		if (typeof src !== "string" || src.trim().length === 0) {
+			throw new ImplSnapshotMigrationError(entry.id, "missing neutral python_source for migration");
+		}
+		sourcesToMigrate.set(entry.id, src);
+	}
+
+	const pyBuildOne = [
+		PYTHON_DILL_PREAMBLE,
+		"import hashlib, json, lzma, os, sys",
+		"src = sys.argv[1]",
+		"names = json.loads(sys.argv[2])",
+		"tmp_path = sys.argv[3]",
+		"exec(compile(src, '<helper>', 'exec'), globals())",
+		"payload = {n: globals()[n] for n in names}",
+		"raw = dill.dumps(payload, protocol=4, recurse=True)",
+		"comp = lzma.compress(raw, preset=0)",
+		"use_lzma = len(comp) * 2 <= len(raw)",
+		"out_bytes = comp if use_lzma else raw",
+		"fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)",
+		"with os.fdopen(fd, 'wb') as fh:",
+		"    fh.write(out_bytes)",
+		"    fh.flush()",
+		"    os.fsync(fh.fileno())",
+		"print(json.dumps({",
+		"    'sha256': hashlib.sha256(out_bytes).hexdigest(),",
+		"    'byte_size': len(out_bytes),",
+		"    'python_version': f'{sys.version_info.major}.{sys.version_info.minor}',",
+		"    'dill_version': getattr(dill, '__version__', '0.4.1'),",
+		"    'compression': 'lzma' if use_lzma else 'raw',",
+		"}))",
+	].join("\n");
+
+	const stagedWrites: { readonly tmpPath: string; readonly destPath: string }[] = [];
+	const updatedEntries: HelperSnapshotManifestEntry[] = [];
+	let migratedCount = 0;
+
+	try {
+		for (const entry of manifest.snapshots) {
+			const src = sourcesToMigrate.get(entry.id) ?? "";
+			const destPath = path.join(snapshotsDir, path.basename(entry.file));
+			const tmpPath = `${destPath}.mig.${process.pid}.${Date.now()}`;
+			const proc = Bun.spawnSync({
+				cmd: [pythonExe, "-c", pyBuildOne, src, JSON.stringify(entry.names), tmpPath],
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			if (proc.exitCode !== 0) {
+				throw new ImplSnapshotMigrationError(entry.id, proc.stderr.toString().trim());
+			}
+			const meta = parseSnapshotMeta(proc.stdout.toString().trim());
+			stagedWrites.push({ tmpPath, destPath });
+			updatedEntries.push({
+				...entry,
+				sha256: meta.sha256,
+				byte_size: meta.byte_size,
+				python_version: meta.python_version,
+				dill_version: meta.dill_version,
+				compression: meta.compression,
+				python_source: src,
+				saved_at: new Date().toISOString(),
+			});
+			migratedCount += 1;
+		}
+
+		for (const w of stagedWrites) {
+			fs.renameSync(w.tmpPath, w.destPath);
+			fs.chmodSync(w.destPath, 0o600);
+		}
+		const nextManifest: HelperSnapshotManifest = {
+			schema_version: 1,
+			snapshots: updatedEntries,
+		};
+		const manifestTmp = `${manifestPath}.mig.${process.pid}.${Date.now()}`;
+		fs.writeFileSync(manifestTmp, JSON.stringify(nextManifest, null, 2), { mode: 0o600 });
+		fs.renameSync(manifestTmp, manifestPath);
+		fs.chmodSync(manifestPath, 0o600);
+	} catch (err) {
+		for (const w of stagedWrites) {
+			if (fs.existsSync(w.tmpPath)) {
+				fs.rmSync(w.tmpPath, { force: true });
+			}
+		}
+		throw err;
+	}
+
+	return { migratedCount, targetPythonVersion };
 }
 
 export async function restoreTrustedHelperSnapshotsWithLoader(options: {
