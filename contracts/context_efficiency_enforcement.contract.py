@@ -338,8 +338,10 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
     "POST-CTX27-11": Clause(
         verification="test",
         text=(
-            "When a top-level session starts, the IPython kernel is started before any user message or ipython "
-            "call, so the workbench report exists and the restored helpers are bound. Source: REQ-CTX27-22."
+            "When a top-level session that owns an artifacts directory starts, the IPython kernel is started before any "
+            "user message or ipython call, so the workbench report exists and the restored helpers are bound; a session "
+            "that owns no artifacts directory starts no kernel and sends no message until its kernel is first used. "
+            "Source: REQ-CTX27-22."
         ),
     ),
     "ERRORS-CTX27-3": Clause(

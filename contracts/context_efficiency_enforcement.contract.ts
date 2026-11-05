@@ -483,7 +483,7 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 		id: "POST-CTX27-11",
 		method: "test",
 		description:
-			"When a top-level session starts, the IPython kernel is started before any user message or ipython call, so the workbench report exists and the restored helpers are bound.",
+			"When a top-level session that owns an artifacts directory starts, the IPython kernel is started before any user message or ipython call, so the workbench report exists and the restored helpers are bound; a session that owns no artifacts directory starts no kernel and sends no message until its kernel is first used.",
 		requirement_ids: ["REQ-CTX27-22"],
 	},
 	"ERRORS-CTX27-3": {

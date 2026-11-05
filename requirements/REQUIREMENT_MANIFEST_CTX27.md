@@ -53,7 +53,7 @@ No contract executes unless all predicates evaluate to TRUE.
   > "the model there on a fresh session was completely ignorant. even though it has the context efficiency directives in its system prompt, it failed to even regurgitate that prose when I asked it a simple question. ... and to top it off it had no idea on how to use the repl or the cards. i want a solution to this. a new session needs to use the tools and techniques I have made." / "we are working on item number 1. the workbench must be started automatically in a new session." / "1 -> a 2 -> a 3 -> a" / "Plan approved. Go. Unmount the context efficiency extension"
 - **Source Prose (SLICE-2, notice redesign, 2026-11-05)**:
   > "no that is not my intent and not how I want it to work. i want the harness to notify the model via a system message that supports the system prompt so that the model is encouraged and inclined to follow the context efficiency rules" / "no i do not want a constant repeating message every turn that just builds up. that is NOT efficient. when the harness loads the workbench issue a system message into the context. it can fire on the next user message if possible, but i thought omp had its own system message bus that was independent of user messages?" / "modify the requirement then proceed. all linters must pass. follow ccabdd. be context efficient."
-- **Our Understanding (SLICE-2)**: When a top-level session starts, omp starts the IPython Kernel, which loads Ketema's Trusted Helper Snapshots by running his existing `restore.py` inside that kernel. omp then sends one developer-role context message through its own message bus, delivered with the user's next message, that lists the loaded helpers (or the failure cause and every refused snapshot) and states the context efficiency rules so the model follows them. The message is sent once per kernel start, never repeated per turn, and never placed in a tool result. The context efficiency extension is not mounted in any session until Ketema re-approves it.
+- **Our Understanding (SLICE-2)**: When a top-level session that owns an artifacts directory starts, omp starts the IPython Kernel, which loads Ketema's Trusted Helper Snapshots by running his existing `restore.py` inside that kernel. omp then sends one developer-role context message through its own message bus, delivered with the user's next message, that lists the loaded helpers (or the failure cause and every refused snapshot) and states the context efficiency rules so the model follows them. The message is sent once per kernel start, never repeated per turn, and never placed in a tool result. Sessions that own no artifacts directory (in-memory sessions) and subagents keep a lazy kernel, because kernels cost memory on this host. The context efficiency extension is not mounted in any session until Ketema re-approves it.
 
 ## 2. The Actor Matrix
 
@@ -141,7 +141,7 @@ No contract executes unless all predicates evaluate to TRUE.
 | REQ-CTX27-19 | Workbench rules | WHEN omp sends the workbench message, omp SHALL end the message with the context efficiency rules approved in Z11. | Test | High | The message reinforces the system prompt at the moment the workbench appears. |
 | REQ-CTX27-20 | No repeat | omp SHALL NOT resend the workbench message after the user's next message for the same kernel start. | Test | High | A message repeated every turn accumulates in the transcript and defeats context efficiency. |
 | REQ-CTX27-21 | No tool-result notice | omp SHALL NOT place workbench message text in any ipython tool result. | Test | High | Notice text mixed into cell output made the model rerun the cell. |
-| REQ-CTX27-22 | Kernel at launch | WHEN a top-level session starts, omp SHALL start the IPython Kernel before the user's first message. | Test | High | The workbench exists when the session begins, not after the first ipython call. |
+| REQ-CTX27-22 | Kernel at launch | WHEN a top-level session that owns an artifacts directory starts, omp SHALL start the IPython Kernel before the user's first message. | Test | High | The workbench exists when a real session begins, not after the first ipython call; in-memory sessions stay lazy to save memory. |
 
 ## 4.5 Non-Functional & Quality Attributes
 
@@ -159,11 +159,12 @@ No contract executes unless all predicates evaluate to TRUE.
 | Z4 | Schema names vs 32-byte slice check | Cut key and column names at 31 characters and exempt them from the 32-byte payload-value slice check | User (CL4) |
 | Z5 | Unpicklable objects during compaction | Drop unpicklable names, list them in `open_items`, snapshot the rest, and compact; refuse only on hash mismatch or write failure | User (CL4) |
 | Z6 | Multi-result turn and session dilution | Cap inline tool text at 1,500 tokens per turn and 6,000 tokens per session | User (CL4) |
-| Z7 | Which sessions start the IPython Kernel at launch | Top-level sessions only; subagents start it on first use | User (CL4) |
+| Z7 | Which sessions start the IPython Kernel at launch | Top-level sessions that own an artifacts directory; in-memory sessions and subagents start it on first use | User (CL4, amended 2026-11-05) |
 | Z8 | Which loader runs at kernel start | Ketema's existing `~/.agents/skills/repl-snapshots/restore.py` | User (CL4) |
 | Z9 | How the workbench load is announced | One developer-role message sent through omp's message bus at load and delivered with the next user message; never a tool-result line, never repeated per turn | User (CL4, 2026-11-05) |
 | Z10 | Context efficiency extension in live sessions | Unmounted in every session | User (CL4) |
 | Z11 | Wording of the context efficiency rules in the workbench message | Draft by the coding agent from Ketema's goal statement (session 01a18024, line 1286); held in one contract constant so Ketema can edit it and the tests follow | User (CL4): authorized proceeding with the draft, wording editable |
+| Z12 | Cost of a kernel at launch vs the session isolation contract | Option 3: start at launch only for sessions that own an artifacts directory, so the existing rule that a lifecycle event for an in-memory session creates nothing still holds; resource management is critical on this host | User (CL4, 2026-11-05): "I choose option 3. resource management is critical on this system." |
 
 ## 5.5 Rejected Alternatives
 
@@ -226,3 +227,4 @@ packages/coding-agent/src/context/context-efficiency-enforcement.ts
 | 2026-11-05 | Ketema Harris | Initial IEEE 29148 manifest for ketema/omp#27 context efficiency enforcement |
 | 2026-11-05 | Ketema Harris | SLICE-2 item 1a: REQ-CTX27-16 workbench helpers load at kernel start; REQ-CTX27-17 context efficiency extension unmounted; REQ-CTX27-18 workbench notice (Z7-Z10) |
 | 2026-11-05 | Ketema Harris | SLICE-2 notice redesign: REQ-CTX27-18 is now a one-time developer-role message; REQ-CTX27-19 to 22 added (rules text, no repeat, no tool-result notice, kernel starts at launch); Z9 replaced, Z11 added |
+| 2026-11-05 | Ketema Harris | Q1 decided (option 3): REQ-CTX27-22 and Z7 narrowed to sessions that own an artifacts directory; Z12 added |
