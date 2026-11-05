@@ -699,6 +699,8 @@ export async function migrateHelperSnapshotsToTargetPython(options: {
 			if (w.bakPath !== null && fs.existsSync(w.bakPath)) {
 				fs.renameSync(w.bakPath, w.destPath);
 				fs.chmodSync(w.destPath, 0o600);
+			} else if (w.bakPath === null && fs.existsSync(w.destPath)) {
+				fs.rmSync(w.destPath, { force: true });
 			}
 		}
 		if (err instanceof ImplSnapshotMigrationError) {

@@ -449,6 +449,17 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 				expect(afterMig.probeResult).toBe("('R017', 1, 'ba7816bf')");
 
 				// F4: fault injection on the 2nd rename (with the first file newly created, bakPath=null) -> must unlink the orphan and restore existing files
+				const preFaultManifest = fs.readFileSync(manifestFile, "utf8");
+				const preFaultDillHashes = new Map<string, string>();
+				for (const fn of fns) {
+					const fp = path.join(migSnapDir, fn.snapshot);
+					if (fs.existsSync(fp)) {
+						preFaultDillHashes.set(
+							fn.snapshot,
+							crypto.createHash("sha256").update(fs.readFileSync(fp)).digest("hex"),
+						);
+					}
+				}
 				const orphanFile = path.join(migSnapDir, fns[0]!.snapshot);
 				fs.unlinkSync(orphanFile); // fns[0] has no pre-existing file on disk (bakPath = null)
 				let renameCalls = 0;
