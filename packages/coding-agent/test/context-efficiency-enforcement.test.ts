@@ -335,11 +335,14 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 					summary: fn.summary,
 					snapshotBasename: fn.snapshot,
 					pythonSource: fn.pythonSource,
+					pythonInterpreter: "python3",
 				});
 			}
 			const goodLoad = await restoreTrustedHelperSnapshotsWithLoader({
 				homeDir: homeRoot,
 				probeCallExpr: "expand_rules(17)",
+				pythonInterpreter: "python3",
+				loaderPath: path.join(homeRoot, "missing-restore.py"),
 			});
 			expect(goodLoad.restoredCount, "POST-CTX27-4 violation: restore.py must restore all 3 functions").toBe(3);
 			expect(goodLoad.probeResult).toBe("R017");
