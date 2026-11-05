@@ -378,7 +378,7 @@ const PYTHON_DILL_PREAMBLE = [
 	"except ImportError:",
 	"    import builtins, marshal, pickle, sys, types",
 	"    dill = types.ModuleType('dill')",
-	"    dill.__version__ = '0.4.0'",
+	"    dill.__version__ = '0.4.1'",
 	"    def _ctx27_pack(obj):",
 	"        if isinstance(obj, types.FunctionType):",
 	"            return ('__fn__', obj.__name__, marshal.dumps(obj.__code__), obj.__defaults__, obj.__kwdefaults__)",
@@ -715,7 +715,11 @@ export async function restoreTrustedHelperSnapshotsWithLoader(options: {
 			options.priorBindingExpr ?? "",
 			options.probeCallExpr,
 		],
-		env: { ...process.env, HOME: path.resolve(options.homeDir) },
+		env: {
+			...process.env,
+			HOME: path.resolve(options.homeDir),
+			PYTHONUSERBASE: process.env.PYTHONUSERBASE ?? path.join(realHome, ".local"),
+		},
 		stdout: "pipe",
 		stderr: "pipe",
 	});
