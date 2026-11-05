@@ -339,13 +339,14 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 			}
 			const realLoad = await restoreTrustedHelperSnapshotsWithLoader({
 				homeDir: realDillHome,
-				probeCallExpr: "(digest_text.__globals__ is globals(), digest_text('abc')[:8])",
+				probeCallExpr:
+					"(sorted(k for k in digest_text.__globals__.keys() if not k.startswith('__')), digest_text('abc')[:8])",
 			});
 			expect(realLoad.restoredCount).toBe(3);
 			expect(
 				realLoad.probeResult,
-				"POST-CTX27-4 violation: helper snapshot must bind __globals__ to __main__ so Python 3.14 + dill 0.4.1 does not pickle module objects in a custom dict",
-			).toBe("(True, 'ba7816bf')");
+				"POST-CTX27-4 violation: helper snapshot must serialize with globals() and recurse=True so Python 3.14 + dill 0.4.1 carries only referenced globals",
+			).toBe("(['hashlib'], 'ba7816bf')");
 		} finally {
 			fs.rmSync(realDillHome, { recursive: true, force: true });
 		}
