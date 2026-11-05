@@ -20,10 +20,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
 import * as natives from "@oh-my-pi/pi-natives";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { createAgentSession } from "../src/sdk";
+import { AuthStorage } from "../src/session/auth-storage";
+import { SessionManager } from "../src/session/session-manager";
 import {
 	assertBudgetInvariant,
 	assertValidEnforcerPreconditions,
-	BudgetInvariantViolationError,
 	CARD_MAX_TOKENS,
 	CARD_NAME_MAX_CHARS,
 	CARD_SIGNATURE_MAX_CHARS,
@@ -64,7 +69,6 @@ import {
 	IMPL_RESULT_TOKEN_THRESHOLD,
 	IMPL_SESSION_INLINE_TOKEN_BUDGET,
 	IMPL_TURN_INLINE_TOKEN_BUDGET,
-	ImplBudgetInvariantViolationError,
 	ImplPreconditionViolationError,
 	ImplSnapshotMigrationError,
 	migrateHelperSnapshotsToTargetPython,
@@ -119,7 +123,7 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 	});
 
 	it("aligns contract and implementation constants and enforces PRE-CTX27-1 and INV-CTX27-1 runtime guards (PRE-CTX27-1, INV-CTX27-1, POST-CTX27-1..5, SEQ-CTX27-1..4, ERRORS-CTX27-1, FORBIDDEN-CTX27-1)", async () => {
-		expect(Object.keys(CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT).length).toBe(15);
+		expect(Object.keys(CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT).length).toBe(17);
 		expect(IMPL_RESULT_TOKEN_THRESHOLD).toBe(RESULT_TOKEN_THRESHOLD);
 		expect(IMPL_TURN_INLINE_TOKEN_BUDGET).toBe(TURN_INLINE_TOKEN_BUDGET);
 		expect(IMPL_SESSION_INLINE_TOKEN_BUDGET).toBe(SESSION_INLINE_TOKEN_BUDGET);
@@ -129,7 +133,6 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 		expect(IMPL_CARD_MAX_TOKENS).toBe(CARD_MAX_TOKENS);
 		expect(IMPL_FIXTURE_TRANSCRIPT_MAX_TOKENS).toBe(FIXTURE_TRANSCRIPT_MAX_TOKENS);
 		expect(IMPL_COMPACTION_CANCELLED_TEXT).toBe(COMPACTION_CANCELLED_TEXT);
-
 		// PRE-CTX27-1: both contract validator and independent implementation reject blank agentDir/sessionId/toolCallId
 		expect(() => assertValidEnforcerPreconditions({ agentDir: "", sessionId: "s1" })).toThrow(
 			PreconditionViolationError,
@@ -143,11 +146,9 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 		);
 
 		// INV-CTX27-1: both contract validator and independent implementation enforce turn/session budget bounds
-		expect(() => assertBudgetInvariant({ turnInlineTokens: 1501, sessionInlineTokens: 0 })).toThrow(
-			BudgetInvariantViolationError,
-		);
+		expect(() => assertBudgetInvariant({ turnInlineTokens: 1501, sessionInlineTokens: 0 })).toThrow(/INV-CTX27-1/);
 		expect(() => assertImplBudgetInvariant({ turnInlineTokens: 1501, sessionInlineTokens: 0 })).toThrow(
-			ImplBudgetInvariantViolationError,
+			/INV-CTX27-1/,
 		);
 	});
 
@@ -671,5 +672,103 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 			fixtureTokens <= FIXTURE_TRANSCRIPT_MAX_TOKENS,
 			`FORBIDDEN-CTX27-1 violation: fixture transcript tokens ${fixtureTokens} exceeded ${FIXTURE_TRANSCRIPT_MAX_TOKENS}`,
 		).toBe(true);
+	});
+
+	it("Test 5 (SDK Integration & Live Catalog Prompt Injection): createAgentSession mounts createContextEfficiencyExtension and injects bounded catalog cards into live session prompt on before_agent_start (SEQ-CTX27-5, POST-CTX27-7)", async () => {
+		const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "omp-ctx27-sdk-test-"));
+		const agentDir = path.join(tempHome, ".omp", "agent");
+		const snapshotsDir = path.join(agentDir, "repl-snapshots");
+		fs.mkdirSync(snapshotsDir, { recursive: true });
+
+		const fns = [
+			{
+				name: "expand_rules",
+				signature: "(n: int) -> str",
+				summary: "Expands rule identifiers",
+				snapshot: "expand_rules.dill",
+				pythonSource: "def expand_rules(n):\n    return f'R{n:03d}'\n",
+			},
+			{
+				name: "tally_rows",
+				signature: "(rows: list) -> int",
+				summary: "Counts non-empty rows",
+				snapshot: "tally_rows.dill",
+				pythonSource: "def tally_rows(rows):\n    return len(rows)\n",
+			},
+			{
+				name: "digest_text",
+				signature: "(s: str) -> str",
+				summary: "SHA-256 hex of text",
+				snapshot: "digest_text.dill",
+				pythonSource: "import hashlib\ndef digest_text(s):\n    return hashlib.sha256(s.encode()).hexdigest()\n",
+			},
+		];
+
+		for (const fn of fns) {
+			await saveTrustedHelperSnapshot({
+				snapshotsDir,
+				name: fn.name,
+				signature: fn.signature,
+				summary: fn.summary,
+				snapshotBasename: fn.snapshot,
+				pythonSource: fn.pythonSource,
+			});
+		}
+
+		const authStorage = await AuthStorage.create(path.join(tempHome, "auth.db"));
+		authStorage.keys.setRuntime("managed-primary", "test-key");
+		authStorage.keys.setRuntime("openai", "test-key");
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempHome, "models.yml"));
+		const testModel = createMockModel({
+			provider: "openai",
+			responses: [{ content: ["Integration test response"] }],
+		});
+
+		const { session, extensionsResult } = await createAgentSession({
+			cwd: tempHome,
+			agentDir,
+			sessionManager: SessionManager.inMemory(tempHome),
+			authStorage,
+			modelRegistry,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			model: testModel,
+			disableExtensionDiscovery: true,
+			skills: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+		});
+
+		try {
+			// SEQ-CTX27-5: createAgentSession mounts createContextEfficiencyExtension into inlineExtensions
+			const hasEnforcerExtension = extensionsResult.extensions.some(
+				ext => ext.handlers.has("before_agent_start") && ext.handlers.has("tool_result"),
+			);
+			expect(
+				hasEnforcerExtension,
+				"SEQ-CTX27-5 violation: createAgentSession did not mount createContextEfficiencyExtension into inlineExtensions",
+			).toBe(true);
+
+			// Trigger turn to fire before_agent_start hook
+			await session.prompt("Integration test trigger prompt");
+
+			// POST-CTX27-7: Effective system prompt must contain bounded catalog cards matching schema
+			const effectivePrompt = session.systemPrompt.join("\n");
+			for (const fn of fns) {
+				expect(
+					effectivePrompt.includes(`"name":"${fn.name}"`),
+					`POST-CTX27-7 violation: prompt missing catalog card for helper ${fn.name}`,
+				).toBe(true);
+				expect(
+					effectivePrompt.includes("def " + fn.name),
+					`POST-CTX27-7 violation: prompt leaked function body for ${fn.name}`,
+				).toBe(false);
+			}
+		} finally {
+			await session.dispose();
+			fs.rmSync(tempHome, { recursive: true, force: true });
+		}
 	});
 });
