@@ -127,7 +127,9 @@ export interface UdtDescriptor {
 	readonly per_key_shape?: Readonly<Record<string, string>>;
 	readonly columns?: readonly string[];
 	readonly row_count?: number;
-	readonly numeric_summary?: Readonly<Record<string, { readonly min: number; readonly max: number; readonly avg: number }>>;
+	readonly numeric_summary?: Readonly<
+		Record<string, { readonly min: number; readonly max: number; readonly avg: number }>
+	>;
 	readonly total_lines?: number;
 	readonly head?: readonly string[];
 	readonly omitted?: number;
