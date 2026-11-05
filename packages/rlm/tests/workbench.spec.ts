@@ -6,7 +6,7 @@
  *
  * CONTRACT AUTHORITY RECORD:
  * - File: contracts/context_efficiency_enforcement.contract.ts
- * - SEQ-CTX27-6, POST-CTX27-8, ERRORS-CTX27-3 (this batch)
+ * - SEQ-CTX27-6, POST-CTX27-8, ERRORS-CTX27-3 (batch 1); POST-CTX27-9, ERRORS-CTX27-3 notice (batch 2)
  *
  * Skips truthfully when the managed kernel interpreter or restore.py is absent on this host.
  */
@@ -18,11 +18,14 @@ import * as os from "node:os";
 import { dirname, join } from "node:path";
 
 import {
+	expectedWorkbenchNotice,
 	validateWorkbenchReport,
 	WORKBENCH_LOADER_PATH_FROM_HOME,
 } from "../../../contracts/context_efficiency_enforcement.contract.ts";
 import { buildKernelEnv, type KernelCaps, type KernelSession } from "../src/bootstrap.ts";
+import { KernelManagerAdapter } from "../src/extension.ts";
 import { type KernelClock, KernelManager } from "../src/kernel.ts";
+import { createRlmToolDefinition } from "../src/tool.ts";
 import { createTransport } from "../src/transport.ts";
 
 const REAL_HOME = os.homedir();
@@ -92,7 +95,7 @@ function writeProbeSnapshot(home: string, overrides: { sha256?: string } = {}): 
 }
 
 /** The real start path: transport + KernelManager, with the kernel process's HOME set to `home`. */
-function makeManager(home: string): KernelManager {
+function makeStack(home: string) {
 	const artifactsDir = join(home, "artifacts");
 	fs.mkdirSync(artifactsDir, { recursive: true });
 	const session: KernelSession = {
@@ -106,7 +109,7 @@ function makeManager(home: string): KernelManager {
 	const caps: KernelCaps = { maxOutputChars: 65536, snapshotMaxBytes: 256 * 1024 * 1024 };
 	const env = { ...buildKernelEnv(session, caps), HOME: home };
 	const transport = createTransport({ interpreter: KERNEL_PYTHON, env, cwd: home, artifactsDir });
-	return new KernelManager(transport, { clock, artifactsDir });
+	return { transport, manager: new KernelManager(transport, { clock, artifactsDir }) };
 }
 
 describe("workbench loads at kernel start (REQ-CTX27-16)", () => {
@@ -116,7 +119,7 @@ describe("workbench loads at kernel start (REQ-CTX27-16)", () => {
 			// Risk tier: HIGH — every fresh session depends on this; Ketema's test session found an empty workbench.
 			const home = makeHome();
 			writeProbeSnapshot(home);
-			const manager = makeManager(home);
+			const { manager } = makeStack(home);
 			try {
 				const first = await manager.execute(
 					`import json\nprint(json.dumps({"probe": wb_probe(), "leaked": sorted(n for n in ${JSON.stringify(LOADER_INTERNALS)} if n in globals())}))`,
@@ -155,7 +158,7 @@ describe("workbench loads at kernel start (REQ-CTX27-16)", () => {
 			// Risk tier: HIGH — a bad snapshot must never leave a fresh session without a working kernel.
 			const home = makeHome();
 			writeProbeSnapshot(home, { sha256: "0".repeat(64) });
-			const manager = makeManager(home);
+			const { manager } = makeStack(home);
 			try {
 				const first = await manager.execute(`print(2 + 2, "wb_probe" in globals())`);
 				expect(
@@ -171,6 +174,102 @@ describe("workbench loads at kernel start (REQ-CTX27-16)", () => {
 						'EXPECTED: {"loaded":[],"refused":[{"record":"wb-probe-v1","reason":"sha256 mismatch"}],"error":null}\n' +
 						"GUIDANCE: report every record restore.py refused, with restore.py's reason",
 				).toEqual({ loaded: [], refused: [{ record: "wb-probe-v1", reason: "sha256 mismatch" }], error: null });
+			} finally {
+				await manager.dispose({ snapshot: false });
+				fs.rmSync(home, { recursive: true, force: true });
+			}
+		},
+		60_000,
+	);
+});
+
+/** A tool-call context with no UI: the kernel start and the first cell run without any prompt. */
+const toolContext = {
+	hasUI: false,
+	setWorkingMessage: (_message?: string): void => {},
+	ui: { select: async (): Promise<string | undefined> => undefined },
+};
+
+/** The real tool path: tool definition over the real adapter, kernel and transport. */
+function makeTool(home: string) {
+	const { transport, manager } = makeStack(home);
+	return { manager, tool: createRlmToolDefinition({ kernel: new KernelManagerAdapter(transport, manager) }) };
+}
+
+describe("workbench notice on the first ipython call (REQ-CTX27-18)", () => {
+	liveTest(
+		"POST-CTX27-9: the first ipython call shows exactly one notice naming the loaded helper",
+		async () => {
+			// Risk tier: HIGH — the notice is how Ketema and the model learn what is on the workbench.
+			const home = makeHome();
+			writeProbeSnapshot(home);
+			const { manager, tool } = makeTool(home);
+			try {
+				const first = await tool.execute(
+					"call-1",
+					{ code: "print('cell-output')" },
+					undefined,
+					undefined,
+					toolContext,
+				);
+				const text = first.content.map(part => part.text).join("\n");
+				const expected = expectedWorkbenchNotice(validateWorkbenchReport(manager.workbenchReport()));
+				expect(
+					expected,
+					"POST-CTX27-9 oracle check: the contracted notice for a clean load of one helper is not the agreed line\n" +
+						'EXPECTED: "Workbench ready: wb_probe"\n' +
+						`ACTUAL: ${JSON.stringify(expected)}\n` +
+						"GUIDANCE: the notice lists the loaded helper names",
+				).toBe("Workbench ready: wb_probe");
+				expect(
+					{
+						notices: text.split("Workbench ready:").length - 1,
+						exact: text.split(expected).length - 1,
+						ranCell: text.includes("cell-output"),
+					},
+					"POST-CTX27-9 violation: the first ipython call does not show exactly one workbench notice\n" +
+						'EXPECTED: {"notices":1,"exact":1,"ranCell":true} — one notice, equal to the contracted line, and the cell still ran\n' +
+						`ACTUAL: first call text=${JSON.stringify(text)}\n` +
+						"GUIDANCE: the first call of a session reports what the workbench loaded, once",
+				).toEqual({ notices: 1, exact: 1, ranCell: true });
+			} finally {
+				await manager.dispose({ snapshot: false });
+				fs.rmSync(home, { recursive: true, force: true });
+			}
+		},
+		60_000,
+	);
+
+	liveTest(
+		"ERRORS-CTX27-3: a missing restore.py is named in the single notice and the cell still runs",
+		async () => {
+			// Risk tier: HIGH — a fresh session with no loader must say so, not look like an empty workbench.
+			const home = makeHome();
+			fs.rmSync(join(home, WORKBENCH_LOADER_PATH_FROM_HOME));
+			const { manager, tool } = makeTool(home);
+			try {
+				const first = await tool.execute("call-1", { code: "print(2 + 2)" }, undefined, undefined, toolContext);
+				const text = first.content.map(part => part.text).join("\n");
+				const report = validateWorkbenchReport(manager.workbenchReport());
+				const expected = expectedWorkbenchNotice(report);
+				expect(
+					report.error,
+					"ERRORS-CTX27-3 precondition: the kernel did not record why the loader could not run\n" +
+						"EXPECTED: a non-empty cause in the report's error\n" +
+						`ACTUAL: ${JSON.stringify(report.error)}\n` +
+						"GUIDANCE: a missing loader is reported as a cause, not as an empty workbench",
+				).not.toBeNull();
+				expect(
+					{
+						notices: text.split("Workbench ready:").length - 1,
+						exact: text.split(expected).length - 1,
+						ranCell: text.includes("4"),
+					},
+					"ERRORS-CTX27-3 violation: the first ipython call does not name the loader failure in one notice\n" +
+						'EXPECTED: {"notices":1,"exact":1,"ranCell":true} — one notice that names the cause, and the cell still ran\n' +
+						`ACTUAL: first call text=${JSON.stringify(text)} expected notice=${JSON.stringify(expected)}\n` +
+						"GUIDANCE: when the loader cannot run the session still starts, and the notice says why",
+				).toEqual({ notices: 1, exact: 1, ranCell: true });
 			} finally {
 				await manager.dispose({ snapshot: false });
 				fs.rmSync(home, { recursive: true, force: true });
