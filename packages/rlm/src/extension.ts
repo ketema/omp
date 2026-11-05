@@ -14,7 +14,7 @@ import { KernelManager } from "./kernel";
 import { RlmSessionLifecycle } from "./session_lifecycle";
 import { createRlmToolDefinition, type RlmToolKernelPort, type RlmToolKernelResult } from "./tool";
 import { createTransport } from "./transport";
-import type { WorkbenchReport } from "./workbench";
+import { WORKBENCH_MESSAGE_TYPE, type WorkbenchReport, workbenchMessage } from "./workbench";
 // =============================================================================
 // Config types
 // =============================================================================
@@ -46,6 +46,7 @@ export interface RlmExtensionKernelPort extends RlmToolKernelPort {
 	retarget(dir: string): Promise<void>;
 	onCompactionComplete(): Promise<void>;
 	flushSnapshot(): Promise<void>;
+	workbenchReport?(): WorkbenchReport | null;
 	compactionNotice(): string | null;
 	restoredSkipped?(): ReadonlyArray<{ readonly name: string; readonly reason: string }>;
 	takeTeardownNotice?(): string | null;
@@ -414,11 +415,23 @@ export function createRlmExtension(
 			},
 		});
 
+		// REQ-CTX27-22 / REQ-CTX27-18: a top-level session starts its kernel at launch, then sends the workbench message once.
+		const announceWorkbench = async (): Promise<void> => {
+			if (Number(api.getFlag("RLM_DEPTH") ?? "0") !== 0) return;
+			const kernel = await lifecycle.ensureKernel();
+			await kernel.ensureStarted();
+			const report = kernel.workbenchReport?.() ?? null;
+			if (report !== null) notify(WORKBENCH_MESSAGE_TYPE, workbenchMessage(report), true);
+		};
+
 		// Lifecycle hooks
 		api.on("auto_compaction_end", () => lifecycle.onCompactionComplete());
 		api.on("session_before_switch", () => lifecycle.preTransitionFlush());
 		api.on("session_before_branch", () => lifecycle.preTransitionFlush());
-		api.on("session_start", (event, ctx) => lifecycle.handleSessionInit(event, ctx));
+		api.on("session_start", async (event, ctx) => {
+			await lifecycle.handleSessionInit(event, ctx);
+			await announceWorkbench();
+		});
 		api.on("session_switch", (event, ctx) => lifecycle.handleSessionInit(event, ctx));
 		api.on("session_branch", (event, ctx) => lifecycle.handleSessionInit(event, ctx));
 		api.on("session_shutdown", () => lifecycle.shutdown());

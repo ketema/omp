@@ -92,3 +92,26 @@ function isWorkbenchReport(value: unknown): value is WorkbenchReport {
 		(error === null || typeof error === "string")
 	);
 }
+
+// REQ-CTX27-18 / REQ-CTX27-19 (redeclared; aligned with contract WORKBENCH_*): the message omp sends once when the workbench loads.
+export const WORKBENCH_MESSAGE_TYPE = "workbench-ready";
+const WORKBENCH_READY_PREFIX = "Workbench ready: ";
+const WORKBENCH_FAILED_SEPARATOR = ". Failed to load: ";
+const WORKBENCH_NONE_LOADED = "none";
+const WORKBENCH_MESSAGE_SEPARATOR = "\n\n";
+const WORKBENCH_RULES =
+	"Context efficiency rules for this session: keep payloads out of the transcript; do data work in the ipython kernel and read a result by asking it one small question (len, keys, first row), never by printing it whole. Call the helpers listed above by name and never rewrite one. Look in memory, git history and transcripts before re-deriving a decision. Send noisy builds, tests and installs to TMUX-OFFLOAD and read back only the summary. Read skill, system and memory text in full.";
+
+/** POST-CTX27-9 / ERRORS-CTX27-3: the notice naming what loaded or why it failed, then the rules. */
+export function workbenchMessage(report: WorkbenchReport): string {
+	const loaded = report.loaded.length > 0 ? report.loaded.join(", ") : WORKBENCH_NONE_LOADED;
+	const failures = [
+		...(report.error === null ? [] : [report.error]),
+		...report.refused.map(refusal => `${refusal.record} (${refusal.reason})`),
+	];
+	const notice =
+		failures.length === 0
+			? `${WORKBENCH_READY_PREFIX}${loaded}`
+			: `${WORKBENCH_READY_PREFIX}${loaded}${WORKBENCH_FAILED_SEPARATOR}${failures.join("; ")}`;
+	return `${notice}${WORKBENCH_MESSAGE_SEPARATOR}${WORKBENCH_RULES}`;
+}

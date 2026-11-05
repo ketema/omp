@@ -8,27 +8,6 @@
 
 import { type } from "@oh-my-pi/omptype";
 import type { KernelBusyAfterInterruptError, KernelExecutionResult } from "./kernel";
-import type { WorkbenchReport } from "./workbench";
-
-// =============================================================================
-// Workbench notice (REQ-CTX27-18; redeclared, aligned with contract WORKBENCH_*)
-// =============================================================================
-
-const WORKBENCH_READY_PREFIX = "Workbench ready: ";
-const WORKBENCH_FAILED_SEPARATOR = ". Failed to load: ";
-const WORKBENCH_NONE_LOADED = "none";
-
-/** POST-CTX27-9 / ERRORS-CTX27-3: the one line the first ipython call opens with. */
-function workbenchNotice(report: WorkbenchReport): string {
-	const loaded = report.loaded.length > 0 ? report.loaded.join(", ") : WORKBENCH_NONE_LOADED;
-	const failures = [
-		...(report.error === null ? [] : [report.error]),
-		...report.refused.map(refusal => `${refusal.record} (${refusal.reason})`),
-	];
-	return failures.length === 0
-		? `${WORKBENCH_READY_PREFIX}${loaded}`
-		: `${WORKBENCH_READY_PREFIX}${loaded}${WORKBENCH_FAILED_SEPARATOR}${failures.join("; ")}`;
-}
 
 // =============================================================================
 // Constants (redeclared; aligned with contract TOOL_*)
@@ -94,8 +73,6 @@ export interface RlmToolKernelPort {
 	kill(): Promise<void>;
 	dispose(): Promise<void>;
 	restoredNames(): readonly string[];
-	/** POST-CTX27-9: what loading the workbench produced at kernel start; null before start. Optional like `acquire`. */
-	workbenchReport?(): WorkbenchReport | null;
 	/**
 	 * POST-TOOL-SESSION-BINDING-1: captures the kernel current NOW and returns a port bound to it. Every call on
 	 * the returned port targets that kernel, or rejects with {@link RlmSessionChangedError} once it is replaced.
@@ -300,13 +277,10 @@ export function createRlmToolDefinition(options: RlmToolDefinitionOptions): {
 				// POST-TOOL-SESSION-BINDING-1: bind this invocation to the kernel current at entry.
 				const bound = await bindToEntryKernel(kernel);
 
-				// First invocation: ensure kernel started with working messages, then read what the workbench loaded
-				let startNotice: string | null = null;
+				// First invocation: ensure kernel started with working messages
 				if (firstInvocation) {
 					firstInvocation = false;
 					await bound.ensureStarted(phase => setWorking(phaseToMessage(phase)));
-					const report = bound.workbenchReport?.() ?? null;
-					if (report !== null) startNotice = workbenchNotice(report);
 				}
 
 				// Execute the cell — busy-kernel choice loop
@@ -361,9 +335,6 @@ export function createRlmToolDefinition(options: RlmToolDefinitionOptions): {
 				if (isRuntimeMissing(result)) {
 					text = new RlmRuntimeMissingError(buildKernelGuidance()).message;
 				}
-
-				// POST-CTX27-9: the first call opens with the workbench notice, once.
-				if (startNotice !== null) text = text === "" ? startNotice : `${startNotice}\n\n${text}`;
 
 				const status: "ok" | "error" | "aborted" = result.status;
 				const isError = status === "error" || status === "aborted";
