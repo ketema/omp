@@ -324,6 +324,8 @@ async function createDefaultKernel(config: RlmKernelConfig, artifactsDir: string
 export interface CreateRlmExtensionOptions {
 	/** Test seam: builds the kernel port for the RESOLVED session artifacts directory (POST-SESSION-RESOLUTION-GATE-1). */
 	readonly createKernel?: (config: RlmKernelConfig, artifactsDir: string) => RlmExtensionKernelPort;
+	/** Test seam: false keeps the lazy kernel lifecycle (no kernel start or workbench message at session start). Default true. */
+	readonly announceWorkbench?: boolean;
 }
 
 /**
@@ -417,6 +419,7 @@ export function createRlmExtension(
 
 		// REQ-CTX27-22 / REQ-CTX27-18: a top-level session starts its kernel at launch, then sends the workbench message once.
 		const announceWorkbench = async (): Promise<void> => {
+			if (options?.announceWorkbench === false) return;
 			if (Number(api.getFlag("RLM_DEPTH") ?? "0") !== 0) return;
 			if (!lifecycle.ownsArtifactsDir()) return;
 			const kernel = await lifecycle.ensureKernel();
