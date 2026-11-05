@@ -1,7 +1,7 @@
 """
 Context Efficiency Enforcement Contract (Python verification twin for ketema/omp#27).
 
-Authoritative contract for SLICE-1 (REQ-CTX27-01..REQ-CTX27-14, INV-CTX27-01..INV-CTX27-07).
+Authoritative contract for SLICE-1 (REQ-CTX27-01..REQ-CTX27-15) and SLICE-2 item 1a (REQ-CTX27-16..REQ-CTX27-18).
 The TypeScript contract in contracts/context_efficiency_enforcement.contract.ts
 mirrors every constant, exception, record, validator, and clause ID.
 The implementation MUST NOT import from either contract file (CL11-F).
@@ -35,6 +35,10 @@ CARD_SNAPSHOT_MAX_CHARS: Final[int] = 24
 PAYLOAD_SLICE_BYTES: Final[int] = 32
 FIXTURE_TRANSCRIPT_MAX_TOKENS: Final[int] = 700
 COMPACTION_CANCELLED_TEXT: Final[str] = "Compaction cancelled"
+WORKBENCH_LOADER_PATH_FROM_HOME: Final[str] = ".agents/skills/repl-snapshots/restore.py"
+WORKBENCH_READY_PREFIX: Final[str] = "Workbench ready: "
+WORKBENCH_FAILED_SEPARATOR: Final[str] = ". Failed to load: "
+WORKBENCH_NONE_LOADED: Final[str] = "none"
 
 # ==============================================================================
 # Artifact 2: Exception Hierarchy
@@ -69,6 +73,10 @@ class PayloadLeakViolationError(ContextEfficiencyContractError):
 class SnapshotMigrationViolationError(ContextEfficiencyContractError):
     """Raised when a helper snapshot cannot be migrated from neutral source (ERRORS-CTX27-2)."""
 
+
+class WorkbenchReportViolationError(ContextEfficiencyContractError):
+    """Raised when a workbench report or notice breaks POST-CTX27-8, POST-CTX27-9, or ERRORS-CTX27-3."""
+
 # ==============================================================================
 # Artifact 3: Immutable Typed Records
 # ==============================================================================
@@ -88,6 +96,19 @@ class HelperCatalogCardRecord:
     snapshot: str
 
 
+@dataclass(frozen=True)
+class WorkbenchRefusal:
+    record: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class WorkbenchReport:
+    loaded: tuple[str, ...]
+    refused: tuple[WorkbenchRefusal, ...]
+    error: str | None
+
+
 # ==============================================================================
 # Artifact 4: Pure Callable Validators
 # ==============================================================================
@@ -105,6 +126,20 @@ def validate_helper_catalog_card(card: HelperCatalogCardRecord, token_count: int
     if token_count > CARD_MAX_TOKENS:
         raise CardSchemaViolationError(f"POST-CTX27-4 violation: card token count {token_count} > {CARD_MAX_TOKENS}")
     return True
+
+
+def expected_workbench_notice(report: WorkbenchReport) -> str:
+    loaded = ", ".join(report.loaded) if report.loaded else WORKBENCH_NONE_LOADED
+    failures = ([report.error] if report.error is not None else []) + [f"{r.record} ({r.reason})" for r in report.refused]
+    if not failures:
+        return f"{WORKBENCH_READY_PREFIX}{loaded}"
+    return f"{WORKBENCH_READY_PREFIX}{loaded}{WORKBENCH_FAILED_SEPARATOR}{'; '.join(failures)}"
+
+
+def validate_workbench_notice(report: WorkbenchReport, notice: str) -> None:
+    expected = expected_workbench_notice(report)
+    if notice != expected:
+        raise WorkbenchReportViolationError(f"POST-CTX27-9 violation: notice {notice!r} != {expected!r}")
 
 
 # ==============================================================================
@@ -193,15 +228,6 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
             "Source: REQ-CTX27-15."
         ),
     ),
-    "POST-CTX27-7": Clause(
-        verification="test",
-        text=(
-            "A session created via createAgentSession with trusted snapshots in snapshotsDir "
-            "triggers before_agent_start and appends bounded catalog cards matching schema "
-            "(<=240 tokens, <=3 cards) to its effective system prompt. "
-            "Source: REQ-CTX27-08, REQ-CTX27-09."
-        ),
-    ),
     "SEQ-CTX27-1": Clause(
         verification="test",
         text=(
@@ -234,15 +260,6 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
             "when the hook returns { cancel: true } (IP-4). Source: REQ-CTX27-11, REQ-CTX27-13."
         ),
     ),
-    "SEQ-CTX27-5": Clause(
-        verification="test",
-        text=(
-            "createAgentSession in packages/coding-agent/src/sdk.ts mounts "
-            "createContextEfficiencyExtension into inlineExtensions for every non-read-only "
-            "session BEFORE initializing ExtensionRunner (IP-3). "
-            "Source: REQ-CTX27-08, REQ-CTX27-09."
-        ),
-    ),
     "ERRORS-CTX27-1": Clause(
         verification="test",
         text=(
@@ -269,6 +286,44 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
             "at 31 characters are exempt), and the F-over + three-cards + compaction-status "
             "transcript excluding user prompts, F-inline, F-turn, and F-session is at most 700 "
             "o200k tokens. Source: INV-CTX27-06, INV-CTX27-07."
+        ),
+    ),
+    "SEQ-CTX27-6": Clause(
+        verification="test",
+        text=(
+            "KernelManager's start sequence runs restore.py inside the IPython kernel AFTER transport "
+            "bootstrap and BEFORE the first cell executes, so the first cell sees every restored helper "
+            "name (IP-5). Source: REQ-CTX27-16."
+        ),
+    ),
+    "POST-CTX27-8": Clause(
+        verification="test",
+        text=(
+            "After kernel start, the workbench report's loaded list equals the names restore.py restored, "
+            "each is bound in the kernel's global namespace, and no other global restore.py defines is "
+            "bound there. Source: REQ-CTX27-16."
+        ),
+    ),
+    "POST-CTX27-9": Clause(
+        verification="test",
+        text=(
+            "The first ipython tool call of a session shows exactly one notice, and its text equals "
+            "expectedWorkbenchNotice(report) for that kernel's workbench report. Source: REQ-CTX27-18."
+        ),
+    ),
+    "ERRORS-CTX27-3": Clause(
+        verification="test",
+        text=(
+            "When restore.py is missing or raises, or refuses a snapshot, kernel start still completes, "
+            "the next cell executes, the report carries the cause in error and every refused record in "
+            "refused, and the notice names them. Source: REQ-CTX27-16."
+        ),
+    ),
+    "FORBIDDEN-CTX27-2": Clause(
+        verification="test",
+        text=(
+            "createAgentSession does not mount createContextEfficiencyExtension in any session: no loaded "
+            "extension registers its tool_result and before_agent_start handlers. Source: REQ-CTX27-17."
         ),
     ),
 }

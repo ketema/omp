@@ -36,6 +36,14 @@ export const CARD_SNAPSHOT_MAX_CHARS = 24;
 export const PAYLOAD_SLICE_BYTES = 32;
 export const FIXTURE_TRANSCRIPT_MAX_TOKENS = 700;
 export const COMPACTION_CANCELLED_TEXT = "Compaction cancelled";
+/** REQ-CTX27-16 (Z8): the loader the kernel runs at start, relative to the kernel process's HOME. */
+export const WORKBENCH_LOADER_PATH_FROM_HOME = ".agents/skills/repl-snapshots/restore.py";
+/** REQ-CTX27-18 (Z9): the workbench notice starts with this text. */
+export const WORKBENCH_READY_PREFIX = "Workbench ready: ";
+/** ERRORS-CTX27-3: failures are appended to the same one-line notice after this text. */
+export const WORKBENCH_FAILED_SEPARATOR = ". Failed to load: ";
+/** REQ-CTX27-18: the loaded-names list when nothing loaded. */
+export const WORKBENCH_NONE_LOADED = "none";
 
 // =============================================================================
 // Artifact 2: Domain Exception Classes
@@ -90,6 +98,13 @@ export class SnapshotMigrationViolationError extends ContextEfficiencyContractEr
 	}
 }
 
+export class WorkbenchReportViolationError extends ContextEfficiencyContractError {
+	constructor(clauseId: string, detail: string) {
+		super(`${clauseId} violation: ${detail}`);
+		this.name = "WorkbenchReportViolationError";
+	}
+}
+
 // =============================================================================
 // Artifact 3: Immutable Typed Records
 // =============================================================================
@@ -129,6 +144,20 @@ export interface AutoCompactMemoryRecord {
 	readonly sha256: string;
 	readonly files_touched: readonly string[];
 	readonly open_items: readonly string[];
+}
+
+/** One snapshot record restore.py refused, with its reason (ERRORS-CTX27-3). */
+export interface WorkbenchRefusal {
+	readonly record: string;
+	readonly reason: string;
+}
+
+/** What loading the workbench at kernel start produced (POST-CTX27-8, ERRORS-CTX27-3). */
+export interface WorkbenchReport {
+	readonly loaded: readonly string[];
+	readonly refused: readonly WorkbenchRefusal[];
+	/** The cause when restore.py is missing or raises; null when it ran. */
+	readonly error: string | null;
 }
 
 // =============================================================================
@@ -240,6 +269,57 @@ export function validateHelperCatalogCard(card: HelperCatalogCard, tokenCount: n
 	return true;
 }
 
+/** REQ-CTX27-18: the exact one-line notice for a workbench report. Pure; used by validateWorkbenchNotice. */
+export function expectedWorkbenchNotice(report: WorkbenchReport): string {
+	const loaded = report.loaded.length > 0 ? report.loaded.join(", ") : WORKBENCH_NONE_LOADED;
+	const failures = [
+		...(report.error === null ? [] : [report.error]),
+		...report.refused.map(r => `${r.record} (${r.reason})`),
+	];
+	return failures.length === 0
+		? `${WORKBENCH_READY_PREFIX}${loaded}`
+		: `${WORKBENCH_READY_PREFIX}${loaded}${WORKBENCH_FAILED_SEPARATOR}${failures.join("; ")}`;
+}
+
+/** POST-CTX27-8 / ERRORS-CTX27-3: a workbench report has the contracted shape. */
+export function validateWorkbenchReport(raw: unknown): WorkbenchReport {
+	if (raw === null || typeof raw !== "object") {
+		throw new WorkbenchReportViolationError("POST-CTX27-8", "report must be an object");
+	}
+	const r = raw as Record<string, unknown>;
+	if (!Array.isArray(r.loaded) || !r.loaded.every(n => typeof n === "string" && n.length > 0)) {
+		throw new WorkbenchReportViolationError("POST-CTX27-8", "loaded must be a list of names");
+	}
+	if (
+		!Array.isArray(r.refused) ||
+		!r.refused.every(
+			x =>
+				x !== null &&
+				typeof x === "object" &&
+				typeof (x as Record<string, unknown>).record === "string" &&
+				typeof (x as Record<string, unknown>).reason === "string",
+		)
+	) {
+		throw new WorkbenchReportViolationError("ERRORS-CTX27-3", "refused must be a list of {record, reason}");
+	}
+	if (r.error !== null && typeof r.error !== "string") {
+		throw new WorkbenchReportViolationError("ERRORS-CTX27-3", "error must be a string or null");
+	}
+	return {
+		loaded: r.loaded as string[],
+		refused: r.refused as WorkbenchRefusal[],
+		error: r.error as string | null,
+	};
+}
+
+/** POST-CTX27-9: the shown notice equals the contracted notice for the report. */
+export function validateWorkbenchNotice(report: WorkbenchReport, notice: string): void {
+	const expected = expectedWorkbenchNotice(report);
+	if (notice !== expected) {
+		throw new WorkbenchReportViolationError("POST-CTX27-9", `notice ${JSON.stringify(notice)} != ${JSON.stringify(expected)}`);
+	}
+}
+
 // =============================================================================
 // Artifact 5: Method-Aware Clause Map
 // =============================================================================
@@ -307,13 +387,6 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 		description:
 			"migrateHelperSnapshotsToTargetPython migrates every snapshot record in manifest.json from its neutral Python source (stored in manifest.json or supplied via sourceOverrides) to targetPython's major.minor version and dill version, atomically updating the snapshot file and manifest.json (python_version, dill_version, sha256, byte_size) so restore.py restores all migrated helpers under targetPython.",
 	},
-	"POST-CTX27-7": {
-		id: "POST-CTX27-7",
-		method: "test",
-		description:
-			"A session created via createAgentSession with trusted snapshots in snapshotsDir triggers before_agent_start and appends bounded catalog cards matching schema (<=240 tokens, <=3 cards) to its effective system prompt.",
-		requirement_ids: ["REQ-CTX27-08", "REQ-CTX27-09"],
-	},
 	"SEQ-CTX27-1": {
 		id: "SEQ-CTX27-1",
 		method: "test",
@@ -341,13 +414,6 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 		description:
 			"ContextEfficiencyEnforcer.runCompactionWithGate invokes runBeforeCompactHook BEFORE committing a compaction entry and aborts with CompactionCancelledError when the hook returns { cancel: true } (IP-4).",
 	},
-	"SEQ-CTX27-5": {
-		id: "SEQ-CTX27-5",
-		method: "test",
-		description:
-			"createAgentSession in packages/coding-agent/src/sdk.ts mounts createContextEfficiencyExtension into inlineExtensions for every non-read-only session BEFORE initializing ExtensionRunner (IP-3).",
-		requirement_ids: ["REQ-CTX27-08", "REQ-CTX27-09"],
-	},
 	"ERRORS-CTX27-1": {
 		id: "ERRORS-CTX27-1",
 		method: "test",
@@ -368,5 +434,40 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 		description:
 			"No 32-byte slice of a filed payload value appears in the assembled prompt outside a descriptor's cut sample string or cut text line (key names and column names cut at 31 characters are exempt), and the F-over + three-cards + compaction-status transcript excluding user prompts, F-inline, F-turn, and F-session is at most 700 o200k tokens.",
 		requirement_ids: ["INV-CTX27-06", "INV-CTX27-07"],
+	},
+	"SEQ-CTX27-6": {
+		id: "SEQ-CTX27-6",
+		method: "test",
+		description:
+			"KernelManager's start sequence runs restore.py inside the IPython kernel AFTER transport bootstrap and BEFORE the first cell executes, so the first cell sees every restored helper name (IP-5).",
+		requirement_ids: ["REQ-CTX27-16"],
+	},
+	"POST-CTX27-8": {
+		id: "POST-CTX27-8",
+		method: "test",
+		description:
+			"After kernel start, the workbench report's loaded list equals the names restore.py restored, each is bound in the kernel's global namespace, and no other global restore.py defines is bound there.",
+		requirement_ids: ["REQ-CTX27-16"],
+	},
+	"POST-CTX27-9": {
+		id: "POST-CTX27-9",
+		method: "test",
+		description:
+			"The first ipython tool call of a session shows exactly one notice, and its text equals expectedWorkbenchNotice(report) for that kernel's workbench report.",
+		requirement_ids: ["REQ-CTX27-18"],
+	},
+	"ERRORS-CTX27-3": {
+		id: "ERRORS-CTX27-3",
+		method: "test",
+		description:
+			"When restore.py is missing or raises, or refuses a snapshot, kernel start still completes, the next cell executes, the report carries the cause in error and every refused record in refused, and the notice names them.",
+		requirement_ids: ["REQ-CTX27-16"],
+	},
+	"FORBIDDEN-CTX27-2": {
+		id: "FORBIDDEN-CTX27-2",
+		method: "test",
+		description:
+			"createAgentSession does not mount createContextEfficiencyExtension in any session: no loaded extension registers its tool_result and before_agent_start handlers.",
+		requirement_ids: ["REQ-CTX27-17"],
 	},
 } as const;

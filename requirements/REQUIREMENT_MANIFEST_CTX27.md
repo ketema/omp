@@ -41,6 +41,7 @@ No contract executes unless all predicates evaluate to TRUE.
 | Catalog Gate | `catalog_gate` |
 | Compaction Gate | `compaction_gate` |
 | IPython Kernel | `ipython_kernel` |
+| Kernel Manager | `kernel_manager` |
 
 ## 1. Intent Traceability
 
@@ -48,6 +49,9 @@ No contract executes unless all predicates evaluate to TRUE.
   > "Build the enforcement in /Users/ketema/projects/omp for ketema/omp#27. The gate counts with natives.countTokens(text, Encoding.O200kBase) from @oh-my-pi/pi-natives. That counter is the proxy. A vendor tokenizer may differ by 10-20 percent. The gate does not retokenize per model. A result under 1,500 tokens is inline only while the turn still has room. A turn admits at most 1,500 tokens of inline tool text. Once the transcript already holds 6,000 tokens of inline tool text, later results are filed even if each is under 1,500. A result of 1,500 tokens or more is always filed. Issue 27's 1.5 KB line is not the threshold. A descriptor is one JSON object of at most 400 tokens. class and name are required. name is artifact_<id>. Key names and column names are cut at 31 characters. Text keeps 5 head lines and 5 tail lines, each cut at 40 characters. That maximum, counted as punctuation, is 308 tokens. A JSON sample string is cut at 40 characters. If the object still exceeds 400 tokens, drop the sample, then the distributions, until it fits. Do not drop class, name, or the cut schema names. A JSON object descriptor copies no values. A card is at most 80 tokens: name at most 16 characters, signature at most 24, summary at most 32, snapshot basename at most 24. That maximum, counted as punctuation, is 76 tokens. A card contains no function body. A trusted helper snapshot is a regular, user-owned, non-symlink file, mode 0600, whose real path stays under ~/.omp/agent/repl-snapshots/. Its SHA-256 and byte size match manifest.json. ~/.agents/skills/repl-snapshots/restore.py loads the declared names and types. A failed load leaves the previous bindings and returns an error. A verified compaction snapshot is ~/.omp/agent/ipython-compact-<session_id>.pkl: a non-empty xz stream whose decompressed bytes begin with pickle magic 0x80, with the SHA-256 stored in the one record. The one record is Memory MCP entry auto-compact-memory-<session_id>-<seq>. Its body is narrative, descriptors, kernel_handles, snapshot_path, sha256, files_touched, open_items. It contains no payload. If dill.dump_session fails because a name is unpicklable, drop those names, list them in open_items, snapshot the rest, and compact. Refuse only when the snapshot hash does not match the record, or the snapshot write fails. Refusal is { cancel: true } from session_before_compact, then CompactionCancelledError, an unchanged compaction-entry count, and the text Compaction cancelled. Search order and recovery are the search-hierarchy and compaction-recovery skills. The IPython kernel is for durable work of at most 30 seconds. eval is for a longer job that is not a build, test, lint, install, or deploy. tmux is only for those five. Done when tests 1-4 pass in CI. The 700-token cap applies only to F-over plus the three cards plus the compaction status line, excluding user prompts and excluding F-inline, F-turn, and F-session. That transcript is at most 700 tokens."
 - **Our Understanding**: `omp` enforces context efficiency through three mechanical gates and prompt assembly: Emission Gate counts tokens with `Encoding.O200kBase`, enforces the 1,500 per-result/per-turn and 6,000 per-session inline budgets, replaces filed outputs with a ≤400-token UDT Descriptor, binds the full payload in IPython Kernel under `artifact_<id>`, and caps display output for that name at 60 lines and 2,048 bytes; Catalog Gate saves helpers to Trusted Helper Snapshots and injects ≤80-token Catalog Cards with zero function bodies on every prompt; Compaction Gate drops unpicklable names to `open_items`, verifies the xz/`0x80`/SHA-256 Compaction Snapshot and single Memory Record, and cancels compaction on hash mismatch or write failure.
 - **Ambiguity Score**: 0
+- **Source Prose (SLICE-2, 2026-11-05)**:
+  > "the model there on a fresh session was completely ignorant. even though it has the context efficiency directives in its system prompt, it failed to even regurgitate that prose when I asked it a simple question. ... and to top it off it had no idea on how to use the repl or the cards. i want a solution to this. a new session needs to use the tools and techniques I have made." / "we are working on item number 1. the workbench must be started automatically in a new session." / "1 -> a 2 -> a 3 -> a" / "Plan approved. Go. Unmount the context efficiency extension"
+- **Our Understanding (SLICE-2)**: When a session's IPython Kernel starts, it loads Ketema's Trusted Helper Snapshots by running his existing `restore.py` inside that kernel, and the session shows one notice naming the loaded helpers or the failure cause. The context efficiency extension is not mounted in any session until Ketema re-approves it.
 
 ## 2. The Actor Matrix
 
@@ -83,6 +87,7 @@ No contract executes unless all predicates evaluate to TRUE.
 | SEQ-2 | Emission Gate `admitToolResult` for a filed result | IPython Kernel binding of `artifact_<id>` | BEFORE returning the UDT Descriptor | The descriptor names an unbound kernel variable |
 | SEQ-3 | `omp` prompt assembly | Catalog Gate `assemblePromptWithCatalogCards` | BEFORE sending the prompt to the model | Saved helper cards are absent from the prompt |
 | SEQ-4 | `omp` `session_before_compact` dispatch | Compaction Gate `runBeforeCompactHook` | BEFORE committing a compaction entry | Unverified or corrupted snapshots compact silently |
+| SEQ-5 | Kernel Manager start sequence | `restore.py` inside IPython Kernel | AFTER kernel bootstrap, BEFORE the first cell executes | A fresh session finds an empty workbench |
 
 ### Integration Points Checklist
 
@@ -92,6 +97,7 @@ No contract executes unless all predicates evaluate to TRUE.
 | IP-2 | Emission Gate | IPython Kernel | `artifact_<id>`, raw payload → SHA-256 parity and capped display | assigned in contracts |
 | IP-3 | Catalog Gate | `omp` prompt assembly | `manifest.json` entries → Catalog Cards | assigned in contracts |
 | IP-4 | `omp` `session_before_compact` | Compaction Gate | sessionId, kernel state → Memory Record or `{ cancel: true }` | assigned in contracts |
+| IP-5 | Kernel Manager | IPython Kernel | `restore.py` → helper names loaded, or the failure cause | assigned in contracts |
 
 ### Lifecycle Paths
 
@@ -127,6 +133,9 @@ No contract executes unless all predicates evaluate to TRUE.
 | REQ-CTX27-12 | Snapshot reload | WHEN `dill.load_session` loads a verified Compaction Snapshot in a fresh Python process, IPython Kernel SHALL restore `artifact_<id>` with the original payload SHA-256. | Test | High | Round-trip durability proof. |
 | REQ-CTX27-13 | Compaction refusal | WHEN the Compaction Snapshot SHA-256 mismatches the Memory Record or the Compaction Snapshot write fails, Compaction Gate SHALL return `{ cancel: true }` from `session_before_compact` so `omp` throws `CompactionCancelledError` with unchanged compaction-entry count and status text `Compaction cancelled`. | Test | High | Fail-closed on corrupt or failed snapshot write. |
 | REQ-CTX27-15 | Snapshot migration | WHEN the managed Python environment upgrades to CPython `3.14.10`, Catalog Gate SHALL migrate every Trusted Helper Snapshot in `manifest.json` from its neutral Python source to the target Python minor version and atomically update `python_version`, `dill_version`, `sha256`, and `byte_size`. | Test | High | Dill code-object bytecode does not cross Python minor versions; neutral source migration preserves every helper across 3.11 to 3.14.10. |
+| REQ-CTX27-16 | Workbench start | WHEN the IPython Kernel of a session starts, Kernel Manager SHALL run `~/.agents/skills/repl-snapshots/restore.py` inside that IPython Kernel BEFORE the first cell executes. | Test | High | A fresh session finds Ketema's helpers on its workbench without being told. |
+| REQ-CTX27-17 | Extension unmount | omp SHALL NOT mount the context efficiency extension in any session. | Test | High | In session 01a1aba2 the mounted extension hid 22 tool results and skill files; suspended until Ketema re-approves. |
+| REQ-CTX27-18 | Workbench notice | WHEN Kernel Manager finishes running `restore.py` at kernel start, omp SHALL show one notice listing the helper names that loaded. | Test | High | The model and Ketema see what is on the workbench. |
 
 ## 4.5 Non-Functional & Quality Attributes
 
@@ -144,6 +153,10 @@ No contract executes unless all predicates evaluate to TRUE.
 | Z4 | Schema names vs 32-byte slice check | Cut key and column names at 31 characters and exempt them from the 32-byte payload-value slice check | User (CL4) |
 | Z5 | Unpicklable objects during compaction | Drop unpicklable names, list them in `open_items`, snapshot the rest, and compact; refuse only on hash mismatch or write failure | User (CL4) |
 | Z6 | Multi-result turn and session dilution | Cap inline tool text at 1,500 tokens per turn and 6,000 tokens per session | User (CL4) |
+| Z7 | Which sessions start the IPython Kernel at launch | Top-level sessions only; subagents start it on first use | User (CL4) |
+| Z8 | Which loader runs at kernel start | Ketema's existing `~/.agents/skills/repl-snapshots/restore.py` | User (CL4) |
+| Z9 | Notice on successful load | Yes: one line listing the loaded helper names | User (CL4) |
+| Z10 | Context efficiency extension in live sessions | Unmounted in every session | User (CL4) |
 
 ## 5.5 Rejected Alternatives
 
@@ -177,6 +190,7 @@ No contract executes unless all predicates evaluate to TRUE.
 | REQ-CTX27-10 | Kernel variable is unpicklable during compaction | Compaction Gate SHALL drop the variable from the snapshot and continue compaction. | Compaction Gate SHALL list the dropped variable name in `open_items`. |
 | REQ-CTX27-13 | Compaction Snapshot write fails or SHA-256 mismatches | Compaction Gate SHALL return `{ cancel: true }` and abort compaction. | omp SHALL throw `CompactionCancelledError` and set status `Compaction cancelled`. |
 | REQ-CTX27-15 | A Trusted Helper Snapshot has no recoverable Python source or fails target compilation during migration | Catalog Gate SHALL abort the migration without modifying `manifest.json` or existing snapshot files. | Catalog Gate SHALL raise an error naming the unmigratable snapshot record ID. |
+| REQ-CTX27-16 | `restore.py` is missing, raises, or refuses a Trusted Helper Snapshot | Kernel Manager SHALL keep the IPython Kernel usable for cell execution. | omp SHALL show one notice naming the failure cause and every refused snapshot. |
 
 ## 8. Completion Promise (Ralph Loop Exit)
 
@@ -201,3 +215,4 @@ packages/coding-agent/src/context/context-efficiency-enforcement.ts
 | Date | Author | Change |
 |------|--------|--------|
 | 2026-11-05 | Ketema Harris | Initial IEEE 29148 manifest for ketema/omp#27 context efficiency enforcement |
+| 2026-11-05 | Ketema Harris | SLICE-2 item 1a: REQ-CTX27-16 workbench helpers load at kernel start; REQ-CTX27-17 context efficiency extension unmounted; REQ-CTX27-18 workbench notice (Z7-Z10) |
