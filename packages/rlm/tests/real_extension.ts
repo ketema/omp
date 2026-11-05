@@ -22,11 +22,19 @@ interface ToolResult {
 	readonly content: Array<{ text: string }>;
 	readonly isError?: boolean;
 }
+/** One artifact the extension saved through `sessionManager.saveArtifact(content, toolType)`; the id is what `artifact://<id>` reads. */
+export interface SavedArtifact {
+	readonly id: string;
+	readonly content: string;
+	readonly toolType: string;
+}
 
 export interface RealSession {
 	readonly root: string;
 	/** Every message the extension sent to the host, in order. */
 	readonly messages: HostMessage[];
+	/** Every artifact saved through the session manager, in order. */
+	readonly artifacts: SavedArtifact[];
 	/** The text of every rlm-warning message. */
 	readonly warnings: string[];
 	/** Fires `type` to every registered handler with `event`; the session's owned directory is `dir` (default: the initial one). */
@@ -64,7 +72,16 @@ export async function openRealSession(
 			messages.push({ ...payload, deliverAs: options?.deliverAs });
 		},
 	};
-	const toolCtx = { hasUI: false, setWorkingMessage() {}, ui: { select: async () => undefined } };
+	const artifacts: SavedArtifact[] = [];
+	// Mirrors ReadonlySessionManager.saveArtifact: resolves the id of the saved copy.
+	const sessionManager = {
+		saveArtifact: async (content: string, toolType: string): Promise<string> => {
+			const id = String(artifacts.length);
+			artifacts.push({ id, content, toolType });
+			return id;
+		},
+	};
+	const toolCtx = { hasUI: false, setWorkingMessage() {}, ui: { select: async () => undefined }, sessionManager };
 	await createRlmExtension(options)(api as never);
 	const emit = async (type: string, event: object = {}, dir: string = initialDir) => {
 		const ctx = { cwd: root, sessionManager: { resolveOwnArtifactsDir: async () => dir } };
@@ -74,6 +91,7 @@ export async function openRealSession(
 	return {
 		root,
 		messages,
+		artifacts,
 		get warnings() {
 			return messages
 				.filter(message => message.customType === "rlm-warning")
