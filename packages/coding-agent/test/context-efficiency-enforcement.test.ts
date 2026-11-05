@@ -48,6 +48,7 @@ import {
 	assemblePromptWithCatalogCards,
 	ContextEfficiencyEnforcer,
 	countO200kTokens,
+	createContextEfficiencyExtension,
 	findLeakedPayloadValueSlices,
 	IMPL_CARD_MAX_TOKENS,
 	IMPL_COMPACTION_CANCELLED_TEXT,
@@ -58,6 +59,7 @@ import {
 	IMPL_RESULT_TOKEN_THRESHOLD,
 	IMPL_SESSION_INLINE_TOKEN_BUDGET,
 	IMPL_TURN_INLINE_TOKEN_BUDGET,
+	restoreTrustedHelperSnapshotsWithLoader,
 	saveTrustedHelperSnapshot,
 } from "../src/context/context-efficiency-enforcement";
 
@@ -286,6 +288,46 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 				`POST-CTX27-4 violation: prompt leaked function body for ${fn.name}`,
 			).toBe(false);
 		}
+
+		// Verify ~/.agents/skills/repl-snapshots/restore.py loads the declared names and types,
+		// and a failed load leaves previous bindings in place and returns an error.
+		const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "omp-ctx27-home-"));
+		try {
+			const homeSnapDir = path.join(homeRoot, ".omp", "agent", "repl-snapshots");
+			for (const fn of fns) {
+				await saveTrustedHelperSnapshot({
+					snapshotsDir: homeSnapDir,
+					name: fn.name,
+					signature: fn.signature,
+					summary: fn.summary,
+					snapshotBasename: fn.snapshot,
+					pythonSource: fn.pythonSource,
+				});
+			}
+			const goodLoad = await restoreTrustedHelperSnapshotsWithLoader({
+				homeDir: homeRoot,
+				probeCallExpr: "expand_rules(17)",
+			});
+			expect(goodLoad.restoredCount, "POST-CTX27-4 violation: restore.py must restore all 3 functions").toBe(3);
+			expect(goodLoad.probeResult).toBe("R017");
+
+			// Corrupt one snapshot file so SHA-256 mismatches -> failed load leaves previous binding in place and returns error
+			fs.writeFileSync(path.join(homeSnapDir, "expand_rules.dill"), "corrupted", { mode: 0o600 });
+			const badLoad = await restoreTrustedHelperSnapshotsWithLoader({
+				homeDir: homeRoot,
+				priorBindingExpr: "expand_rules = lambda x: 'PRIOR_BINDING'",
+				probeCallExpr: "expand_rules(17)",
+			});
+			expect(badLoad.refused.length, "POST-CTX27-4 violation: failed load must report refusal error").toBe(1);
+			expect(
+				badLoad.probeResult,
+				"POST-CTX27-4 violation: failed load must leave previous binding in place",
+			).toBe("PRIOR_BINDING");
+		} finally {
+			fs.rmSync(homeRoot, { recursive: true, force: true });
+		}
+
+		expect(typeof createContextEfficiencyExtension).toBe("function");
 	});
 
 	it("Test 3 (Compaction): drops unpicklable names to open_items, cancels on hash mismatch with CompactionCancelledError, and round-trips payload hash via dill.load_session (POST-CTX27-5, SEQ-CTX27-4, ERRORS-CTX27-1)", async () => {
