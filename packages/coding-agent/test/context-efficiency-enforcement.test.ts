@@ -366,14 +366,11 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 					summary: fn.summary,
 					snapshotBasename: fn.snapshot,
 					pythonSource: fn.pythonSource,
-					pythonInterpreter: "python3",
 				});
 			}
 			const goodLoad = await restoreTrustedHelperSnapshotsWithLoader({
 				homeDir: homeRoot,
 				probeCallExpr: "(expand_rules(17), bool(os.environ.get('PYTHONUSERBASE')))",
-				pythonInterpreter: "python3",
-				loaderPath: path.join(homeRoot, "missing-restore.py"),
 			});
 			expect(goodLoad.restoredCount, "POST-CTX27-4 violation: restore.py must restore all 3 functions").toBe(3);
 			expect(goodLoad.probeResult).toBe("('R017', True)");
@@ -384,18 +381,26 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 				homeDir: homeRoot,
 				priorBindingExpr: "expand_rules = lambda x: 'PRIOR_BINDING'",
 				probeCallExpr: "expand_rules(17)",
-				pythonInterpreter: "python3",
-				loaderPath: path.join(homeRoot, "missing-restore.py"),
 			});
 			expect(badLoad.refused.length, "POST-CTX27-4 violation: failed load must report refusal error").toBe(1);
 			expect(badLoad.probeResult, "POST-CTX27-4 violation: failed load must leave previous binding in place").toBe(
 				"PRIOR_BINDING",
 			);
-			// POST-CTX27-6 & ERRORS-CTX27-2: migrate helper snapshots from neutral source to target Python,
-			// and fail loud without mutating manifest.json when a record lacks source.
+
+			// POST-CTX27-6 & ERRORS-CTX27-2 (F1, F2, F4, F5):
 			const migrateHome = fs.mkdtempSync(path.join(os.tmpdir(), "omp-ctx27-mig-"));
 			try {
 				const migSnapDir = path.join(migrateHome, ".omp", "agent", "repl-snapshots");
+				// F5: missing manifest returns migratedCount: 0 and non-empty probed targetPythonVersion
+				const emptyMig = await migrateHelperSnapshotsToTargetPython({
+					snapshotsDir: migSnapDir,
+				});
+				expect(emptyMig.migratedCount).toBe(0);
+				expect(
+					/^\d+\.\d+$/.test(emptyMig.targetPythonVersion),
+					`POST-CTX27-6 violation: missing-manifest migration must report probed targetPythonVersion, got '${emptyMig.targetPythonVersion}'`,
+				).toBe(true);
+
 				for (const fn of fns) {
 					await saveTrustedHelperSnapshot({
 						snapshotsDir: migSnapDir,
@@ -404,10 +409,16 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 						summary: fn.summary,
 						snapshotBasename: fn.snapshot,
 						pythonSource: fn.pythonSource,
-						pythonInterpreter: "python3",
 					});
 				}
 				const manifestFile = path.join(migSnapDir, "manifest.json");
+
+				// F2: overwrite on-disk .dill files with stale 3.11 dummy bytes so skipping rename (mutant MC) fails both SHA-256 and restore.py!
+				const staleBytes = Buffer.from("STALE_311_BYTES_DO_NOT_RESTORE", "utf8");
+				const staleSha = crypto.createHash("sha256").update(staleBytes).digest("hex");
+				for (const fn of fns) {
+					fs.writeFileSync(path.join(migSnapDir, fn.snapshot), staleBytes, { mode: 0o600 });
+				}
 				const staleManifestText = fs
 					.readFileSync(manifestFile, "utf8")
 					.replaceAll('"python_version":', '"python_version": "3.11",\n      "prior_python_version":');
@@ -415,36 +426,113 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 
 				const migResult = await migrateHelperSnapshotsToTargetPython({
 					snapshotsDir: migSnapDir,
-					targetPython: "python3",
 				});
 				expect(migResult.migratedCount, "POST-CTX27-6 violation: expected all 3 helper snapshots migrated").toBe(3);
 
+				const updatedManifestText = fs.readFileSync(manifestFile, "utf8");
+				for (const fn of fns) {
+					const diskBytes = fs.readFileSync(path.join(migSnapDir, fn.snapshot));
+					const diskSha = crypto.createHash("sha256").update(diskBytes).digest("hex");
+					expect(diskSha, `POST-CTX27-6 violation: ${fn.snapshot} was not replaced on disk`).not.toBe(staleSha);
+					expect(
+						updatedManifestText.includes(`"sha256": "${diskSha}"`),
+						`POST-CTX27-6 violation: manifest.json sha256 does not match migrated ${fn.snapshot} on disk`,
+					).toBe(true);
+				}
+
 				const afterMig = await restoreTrustedHelperSnapshotsWithLoader({
 					homeDir: migrateHome,
-					probeCallExpr: "expand_rules(17)",
-					pythonInterpreter: "python3",
-					loaderPath: path.join(migrateHome, "missing-restore.py"),
+					probeCallExpr: "(expand_rules(17), tally_rows([{'s': 'ok'}])['ok'], digest_text('abc')[:8])",
 				});
 				expect(afterMig.restoredCount).toBe(3);
-				expect(afterMig.probeResult).toBe("R017");
+				expect(afterMig.refused.length).toBe(0);
+				expect(afterMig.probeResult).toBe("('R017', 1, 'ba7816bf')");
 
-				// ERRORS-CTX27-2: remove python_source and set python_version="3.11" -> must throw ImplSnapshotMigrationError and leave manifest untouched
+				// F4: fault injection on the 3rd rename (after 2 .dill files were already replaced on disk) -> must roll back all .dill files and manifest.json byte-for-byte
+				const preFaultManifest = fs.readFileSync(manifestFile, "utf8");
+				const preFaultDillHashes = new Map<string, string>();
+				for (const fn of fns) {
+					const b = fs.readFileSync(path.join(migSnapDir, fn.snapshot));
+					preFaultDillHashes.set(fn.snapshot, crypto.createHash("sha256").update(b).digest("hex"));
+				}
+				let renameCalls = 0;
+				await expect(
+					migrateHelperSnapshotsToTargetPython({
+						snapshotsDir: migSnapDir,
+						sourceOverrides: {
+							expand_rules: "def expand_rules(i):\n    return 'CHANGED_IF_NOT_ROLLED_BACK'\n",
+						},
+						renameFile: (oldP, newP) => {
+							renameCalls += 1;
+							if (renameCalls === 3) {
+								throw new Error("simulated rename failure on 3rd file");
+							}
+							fs.renameSync(oldP, newP);
+						},
+					}),
+				).rejects.toBeInstanceOf(ImplSnapshotMigrationError);
+				expect(renameCalls).toBe(3);
+				expect(
+					fs.readFileSync(manifestFile, "utf8"),
+					"ERRORS-CTX27-2 violation: failed mid-commit migration must leave manifest.json byte-identical",
+				).toBe(preFaultManifest);
+				for (const fn of fns) {
+					const afterFaultBytes = fs.readFileSync(path.join(migSnapDir, fn.snapshot));
+					const afterFaultSha = crypto.createHash("sha256").update(afterFaultBytes).digest("hex");
+					expect(
+						afterFaultSha,
+						`ERRORS-CTX27-2 violation: failed mid-commit migration did not roll back ${fn.snapshot}`,
+					).toBe(preFaultDillHashes.get(fn.snapshot));
+				}
+
+				// F1: remove python_source from expand_rules -> must throw ImplSnapshotMigrationError naming 'expand_rules' and leave manifest.json and all .dill bytes unchanged
 				const brokenManifestText = fs
 					.readFileSync(manifestFile, "utf8")
 					.replace('"python_source":', '"omitted_source":')
 					.replace('"python_version":', '"python_version": "3.11",\n      "prior_ver":');
 				fs.writeFileSync(manifestFile, brokenManifestText, { mode: 0o600 });
 
-				await expect(
-					migrateHelperSnapshotsToTargetPython({
+				let caughtF1: Error | null = null;
+				try {
+					await migrateHelperSnapshotsToTargetPython({
 						snapshotsDir: migSnapDir,
-						targetPython: "python3",
-					}),
-				).rejects.toBeInstanceOf(ImplSnapshotMigrationError);
+					});
+				} catch (err) {
+					caughtF1 = err instanceof Error ? err : new Error(String(err));
+				}
+				expect(caughtF1).toBeInstanceOf(ImplSnapshotMigrationError);
+				expect(
+					caughtF1?.message.includes("expand_rules"),
+					`ERRORS-CTX27-2 violation: error message must name 'expand_rules', got '${caughtF1?.message}'`,
+				).toBe(true);
 				expect(
 					fs.readFileSync(manifestFile, "utf8"),
 					"ERRORS-CTX27-2 violation: failed migration must leave manifest.json unchanged",
 				).toBe(brokenManifestText);
+				for (const fn of fns) {
+					const afterF1Bytes = fs.readFileSync(path.join(migSnapDir, fn.snapshot));
+					const afterF1Sha = crypto.createHash("sha256").update(afterF1Bytes).digest("hex");
+					expect(afterF1Sha).toBe(preFaultDillHashes.get(fn.snapshot));
+				}
+
+				// F3 (CL9-A): an interpreter lacking real dill must fail loud instead of spoofing dill.__version__ = '0.4.1'
+				const noDillWrapper = path.join(migrateHome, "python-no-dill.sh");
+				fs.writeFileSync(
+					noDillWrapper,
+					'#!/bin/sh\nexec python3 -S -c "import sys; sys.modules[\'dill\'] = None; exec(sys.argv[2])" "$@"\n',
+					{ mode: 0o755 },
+				);
+				await expect(
+					saveTrustedHelperSnapshot({
+						snapshotsDir: path.join(migrateHome, "no-dill-snaps"),
+						name: "expand_rules",
+						signature: "(i: int) -> str",
+						summary: "400-branch rule lookup",
+						snapshotBasename: "expand_rules.dill",
+						pythonSource: "def expand_rules(i):\n    return 'R001'\n",
+						pythonInterpreter: noDillWrapper,
+					}),
+				).rejects.toThrow(/POST-CTX27-4 violation/);
 			} finally {
 				fs.rmSync(migrateHome, { recursive: true, force: true });
 			}
