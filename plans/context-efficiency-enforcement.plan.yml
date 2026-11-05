@@ -44,7 +44,7 @@ slices:
   - INV-CTX27-06
   - INV-CTX27-07
   - FORBIDDEN-CTX27-1
-  status: PENDING
+  status: AUDITED
   depends_on: []
   issue: ketema/omp#27
   pivot_note: Shippable enforcement of emission, catalog, compaction, and prompt-assembly gates for ketema/omp#27 verified by Tests 1-4 in CI with the fixture transcript <= 700 o200k tokens.
