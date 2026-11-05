@@ -32,11 +32,11 @@ slices:
   - POST-CTX27-4
   - POST-CTX27-5
   - POST-CTX27-6
-  - SEQ-CTX27-1
+  - POST-CTX27-7
   - SEQ-CTX27-2
   - SEQ-CTX27-3
   - SEQ-CTX27-4
-  - ERRORS-CTX27-1
+  - SEQ-CTX27-5
   - ERRORS-CTX27-2
   - FORBIDDEN-CTX27-1
   clauses_deferred: []
@@ -49,8 +49,7 @@ slices:
   - INV-CTX27-06
   - INV-CTX27-07
   - FORBIDDEN-CTX27-1
-  status: AUDITED
-  depends_on: []
+  status: PENDING
   issue: ketema/omp#27
   pivot_note: Shippable enforcement of emission, catalog, compaction, prompt-assembly, and neutral-source 3.14.10 snapshot migration gates for ketema/omp#27 verified by Tests 1-4 in CI with the fixture transcript <= 700 o200k tokens.
 forgotten_invariants:

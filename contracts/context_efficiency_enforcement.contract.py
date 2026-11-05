@@ -193,6 +193,15 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
             "Source: REQ-CTX27-15."
         ),
     ),
+    "POST-CTX27-7": Clause(
+        verification="test",
+        text=(
+            "A session created via createAgentSession with trusted snapshots in snapshotsDir "
+            "triggers before_agent_start and appends bounded catalog cards matching schema "
+            "(<=240 tokens, <=3 cards) to its effective system prompt. "
+            "Source: REQ-CTX27-08, REQ-CTX27-09."
+        ),
+    ),
     "SEQ-CTX27-1": Clause(
         verification="test",
         text=(
@@ -223,6 +232,15 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
             "ContextEfficiencyEnforcer.runCompactionWithGate invokes runBeforeCompactHook "
             "BEFORE committing a compaction entry and aborts with CompactionCancelledError "
             "when the hook returns { cancel: true } (IP-4). Source: REQ-CTX27-11, REQ-CTX27-13."
+        ),
+    ),
+    "SEQ-CTX27-5": Clause(
+        verification="test",
+        text=(
+            "createAgentSession in packages/coding-agent/src/sdk.ts mounts "
+            "createContextEfficiencyExtension into inlineExtensions for every non-read-only "
+            "session BEFORE initializing ExtensionRunner (IP-3). "
+            "Source: REQ-CTX27-08, REQ-CTX27-09."
         ),
     ),
     "ERRORS-CTX27-1": Clause(
