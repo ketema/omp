@@ -147,29 +147,32 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 			text: fOverPayload,
 		});
 		expect(overRes.mode, "POST-CTX27-1 violation: >=1,500-token result must be filed").toBe("filed");
-		expect(overRes.descriptor).toBeDefined();
+		const overDescriptor = overRes.descriptor;
+		if (!overDescriptor) {
+			throw new Error("POST-CTX27-1 violation: expected filed descriptor");
+		}
 		const descriptorTokens = countO200kTokens(overRes.transcriptText);
 		expect(
 			descriptorTokens <= DESCRIPTOR_MAX_TOKENS,
 			`POST-CTX27-2 violation: descriptor tokens ${descriptorTokens} exceeded ${DESCRIPTOR_MAX_TOKENS}`,
 		).toBe(true);
-		expect(validateUdtDescriptorRecord(overRes.descriptor!, descriptorTokens)).toBe(true);
-		for (const key of overRes.descriptor!.key_schema_union ?? []) {
+		expect(validateUdtDescriptorRecord(overDescriptor, descriptorTokens)).toBe(true);
+		for (const key of overDescriptor.key_schema_union ?? []) {
 			expect(key.length <= SCHEMA_NAME_MAX_CHARS).toBe(true);
 		}
-		for (const val of Object.values(overRes.descriptor!.sample_row_0 ?? {})) {
+		for (const val of Object.values(overDescriptor.sample_row_0 ?? {})) {
 			if (typeof val === "string") {
 				expect(val.length <= SAMPLE_STRING_MAX_CHARS).toBe(true);
 			}
 		}
 
 		// Kernel value hashes equal to payload & display output capped at 60 lines / 2 KB
-		const kernelHash = await enforcer.getKernelArtifactSha256(overRes.descriptor!.name);
+		const kernelHash = await enforcer.getKernelArtifactSha256(overDescriptor.name);
 		expect(
 			kernelHash,
-			`POST-CTX27-3 / SEQ-CTX27-2 violation: kernel artifact SHA-256 mismatch for ${overRes.descriptor!.name}`,
+			`POST-CTX27-3 / SEQ-CTX27-2 violation: kernel artifact SHA-256 mismatch for ${overDescriptor.name}`,
 		).toBe(crypto.createHash("sha256").update(fOverPayload, "utf8").digest("hex"));
-		const displayOut = await enforcer.getKernelDisplayOutput(overRes.descriptor!.name);
+		const displayOut = await enforcer.getKernelDisplayOutput(overDescriptor.name);
 		const displayLines = displayOut.split("\n").length;
 		const displayBytes = Buffer.byteLength(displayOut, "utf8");
 		expect(
@@ -343,7 +346,10 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 			text: fOverPayload,
 		});
 		expect(overRes.mode).toBe("filed");
-		const artifactName = overRes.descriptor!.name;
+		if (!overRes.descriptor) {
+			throw new Error("POST-CTX27-1 violation: expected filed descriptor");
+		}
+		const artifactName = overRes.descriptor.name;
 
 		// Inject an unpicklable generator/lock into the kernel namespace
 		await enforcer.injectUnpicklableKernelVar("unpicklable_gen");
@@ -417,11 +423,14 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 			compactionStatus,
 		].join("\n");
 
+		if (!overRes.descriptor) {
+			throw new Error("POST-CTX27-1 violation: expected filed descriptor");
+		}
 		const payloadValues = rows.map(r => String(r.schema_column_identifier_exceeding_31_characters));
 		const leaks = findLeakedPayloadValueSlices({
 			promptText: fixtureTranscript,
 			payloadValues,
-			descriptor: overRes.descriptor!,
+			descriptor: overRes.descriptor,
 			sliceBytes: PAYLOAD_SLICE_BYTES,
 		});
 		expect(
