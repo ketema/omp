@@ -448,35 +448,32 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 				expect(afterMig.refused.length).toBe(0);
 				expect(afterMig.probeResult).toBe("('R017', 1, 'ba7816bf')");
 
-				// F4: fault injection on the 3rd rename (after 2 .dill files were already replaced on disk) -> must roll back all .dill files and manifest.json byte-for-byte
-				const preFaultManifest = fs.readFileSync(manifestFile, "utf8");
-				const preFaultDillHashes = new Map<string, string>();
-				for (const fn of fns) {
-					const b = fs.readFileSync(path.join(migSnapDir, fn.snapshot));
-					preFaultDillHashes.set(fn.snapshot, crypto.createHash("sha256").update(b).digest("hex"));
-				}
+				// F4: fault injection on the 2nd rename (with the first file newly created, bakPath=null) -> must unlink the orphan and restore existing files
+				const orphanFile = path.join(migSnapDir, fns[0]!.snapshot);
+				fs.unlinkSync(orphanFile); // fns[0] has no pre-existing file on disk (bakPath = null)
 				let renameCalls = 0;
 				await expect(
 					migrateHelperSnapshotsToTargetPython({
 						snapshotsDir: migSnapDir,
-						sourceOverrides: {
-							expand_rules: "def expand_rules(i):\n    return 'CHANGED_IF_NOT_ROLLED_BACK'\n",
-						},
 						renameFile: (oldP, newP) => {
 							renameCalls += 1;
-							if (renameCalls === 3) {
-								throw new Error("simulated rename failure on 3rd file");
+							if (renameCalls === 2) {
+								throw new Error("simulated rename failure on 2nd file");
 							}
 							fs.renameSync(oldP, newP);
 						},
 					}),
 				).rejects.toBeInstanceOf(ImplSnapshotMigrationError);
-				expect(renameCalls).toBe(3);
+				expect(renameCalls).toBe(2);
+				expect(
+					fs.existsSync(orphanFile),
+					"ERRORS-CTX27-2 violation: failed migration left orphan newly-created .dill file when bakPath was null",
+				).toBe(false);
 				expect(
 					fs.readFileSync(manifestFile, "utf8"),
 					"ERRORS-CTX27-2 violation: failed mid-commit migration must leave manifest.json byte-identical",
 				).toBe(preFaultManifest);
-				for (const fn of fns) {
+				for (const fn of fns.slice(1)) {
 					const afterFaultBytes = fs.readFileSync(path.join(migSnapDir, fn.snapshot));
 					const afterFaultSha = crypto.createHash("sha256").update(afterFaultBytes).digest("hex");
 					expect(
@@ -484,6 +481,8 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 						`ERRORS-CTX27-2 violation: failed mid-commit migration did not roll back ${fn.snapshot}`,
 					).toBe(preFaultDillHashes.get(fn.snapshot));
 				}
+				// Restore fns[0] file for subsequent F1 test
+				await migrateHelperSnapshotsToTargetPython({ snapshotsDir: migSnapDir });
 
 				// F1: remove python_source from expand_rules -> must throw ImplSnapshotMigrationError naming 'expand_rules' and leave manifest.json and all .dill bytes unchanged
 				const brokenManifestText = fs
