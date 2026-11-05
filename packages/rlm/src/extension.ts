@@ -113,6 +113,7 @@ export class KernelManagerAdapter implements RlmExtensionKernelPort {
 			errorEname: result.errorEname,
 			durationMs: result.durationMs,
 			kernelRestarted: result.kernelRestarted,
+			...(result.stdoutFull === undefined ? {} : { stdoutFull: result.stdoutFull }),
 		};
 	}
 

@@ -8,6 +8,14 @@
 
 import { type } from "@oh-my-pi/omptype";
 import type { KernelBusyAfterInterruptError, KernelExecutionResult } from "./kernel";
+import {
+	bindOutputCode,
+	countOutputTokens,
+	IPYTHON_ARTIFACT_TOOL_TYPE,
+	IPYTHON_FILE_THRESHOLD_TOKENS,
+	ipythonDescriptor,
+	type SaveArtifact,
+} from "./ipython_filing";
 
 // =============================================================================
 // Constants (redeclared; aligned with contract TOOL_*)
@@ -91,6 +99,8 @@ export interface RlmToolKernelResult {
 	readonly errorEname: string | undefined;
 	readonly durationMs: number;
 	readonly kernelRestarted: boolean | undefined;
+	/** The complete stdout, present only when `stdout` was cut at the kernel's output cap. */
+	readonly stdoutFull?: string;
 }
 
 /** Details attached to every tool result. */
@@ -108,6 +118,8 @@ export interface RlmToolExecuteContext {
 	ui: {
 		select(title: string, options: ReadonlyArray<{ label: string }>): Promise<string | undefined>;
 	};
+	/** The session manager, when the host provides one: the artifact copy of a filed output is saved through it. */
+	sessionManager?: { saveArtifact?: SaveArtifact };
 }
 
 // =============================================================================
@@ -236,6 +248,7 @@ export function createRlmToolDefinition(options: RlmToolDefinitionOptions): {
 
 	let firstInvocation = true;
 	let toolKernelRestarted = false;
+	let nextFiledOutput = 1;
 
 	return {
 		name: TOOL_NAME,
@@ -328,8 +341,23 @@ export function createRlmToolDefinition(options: RlmToolDefinitionOptions): {
 				const kernelRestarted = toolKernelRestarted || result.kernelRestarted === true;
 				toolKernelRestarted = false;
 
+				// REQ-CTX27-23: a large stdout of a cell that raised no error is filed into the kernel and replaced by a descriptor.
+				const filed = await fileLargeStdout(
+					bound,
+					result,
+					nextFiledOutput,
+					ctx?.sessionManager?.saveArtifact?.bind(ctx.sessionManager),
+				);
+				if (filed !== null) nextFiledOutput = filed.n + 1;
+
 				// Text assembly
-				let text = assembleText(result.stdout, result.stderr, result.result, result.traceback, kernelRestarted);
+				let text = assembleText(
+					filed === null ? result.stdout : filed.descriptor,
+					result.stderr,
+					result.result,
+					result.traceback,
+					kernelRestarted,
+				);
 
 				// ERRORS-TOOL-1: runtime-missing detection
 				if (isRuntimeMissing(result)) {
@@ -406,4 +434,33 @@ function isRuntimeMissing(result: KernelExecutionResult): boolean {
 		result.errorEname === "ModuleNotFoundError" &&
 		result.traceback?.includes("No module named 'rlm'") === true
 	);
+}
+
+/**
+ * REQ-CTX27-23 to REQ-CTX27-26: files a large stdout of a cell that raised no error. Binds the full text to the first
+ * free out_<n> in the kernel, saves the same text as a session artifact, and returns the descriptor that replaces the
+ * stdout. Returns null when the stdout stays inline.
+ */
+async function fileLargeStdout(
+	port: RlmToolKernelPort,
+	result: KernelExecutionResult,
+	nextN: number,
+	saveArtifact: SaveArtifact | undefined,
+): Promise<{ n: number; descriptor: string } | null> {
+	if (result.status !== "ok") return null;
+	const text = result.stdoutFull ?? result.stdout;
+	const tokens = countOutputTokens(text);
+	if (tokens < IPYTHON_FILE_THRESHOLD_TOKENS) return null;
+	const bind = await port.execute(bindOutputCode(nextN));
+	const n = Number.parseInt(bind.stdout.trim(), 10);
+	if (bind.status !== "ok" || !Number.isInteger(n)) return null;
+	let artifactId: string | null = null;
+	if (saveArtifact !== undefined) {
+		try {
+			artifactId = (await saveArtifact(text, IPYTHON_ARTIFACT_TOOL_TYPE)) ?? null;
+		} catch {
+			artifactId = null;
+		}
+	}
+	return { n, descriptor: ipythonDescriptor({ n, text, tokens, artifactId }) };
 }

@@ -32,7 +32,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@oh-my-pi/omptype": "catalog:"
+    "@oh-my-pi/omptype": "catalog:",
+    "@oh-my-pi/pi-natives": "catalog:"
   },
   "devDependencies": {
     "@types/bun": "catalog:"

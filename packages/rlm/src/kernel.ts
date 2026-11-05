@@ -110,6 +110,8 @@ export interface KernelExecutionResult {
 	readonly errorEname: string | undefined;
 	readonly durationMs: number;
 	readonly kernelRestarted?: boolean;
+	/** The complete stdout, set only when `stdout` was cut at MAX_OUTPUT_CHARS (REQ-CTX27-23: filing needs the whole text). */
+	readonly stdoutFull?: string;
 }
 
 export interface KernelSnapshotManifest {
@@ -788,6 +790,7 @@ export class KernelManager {
 			traceback: execResult.traceback,
 			errorEname: execResult.errorEname,
 			durationMs: Math.max(0, durationMs),
+			...(stdout.length > MAX_OUTPUT_CHARS ? { stdoutFull: stdout } : {}),
 		};
 	}
 
