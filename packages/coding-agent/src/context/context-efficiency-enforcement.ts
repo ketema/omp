@@ -1,14 +1,17 @@
 /**
  * Context Efficiency Enforcement — Production Implementation for ketema/omp#27.
  *
- * Redeclares all specification constants and types independently (CL11-F:
- * zero imports from contracts/).
+ * Redeclares all specification constants, domain exceptions, and runtime
+ * precondition/invariant/postcondition guards independently (CL11-F: zero
+ * imports from contracts/).
  *
  * Traceability:
+ *   PRE-CTX27-1: ImplPreconditionViolationError, assertImplEnforcerPreconditions
+ *   INV-CTX27-1: ImplBudgetInvariantViolationError, assertImplBudgetInvariant
  *   POST-CTX27-1, SEQ-CTX27-1: countO200kTokens, admitToolResult (1,500 per-result/per-turn, 6,000 per-session)
  *   POST-CTX27-2: buildUdtDescriptor (<= 400 tokens, 31-char schema cut, 5+5 x 40 text, 40-char sample, progressive drop)
- *   POST-CTX27-3, SEQ-CTX27-2: bindKernelArtifact, getKernelArtifactSha256, getKernelDisplayOutput (<= 60 lines / 2,048 bytes)
- *   POST-CTX27-4, SEQ-CTX27-3: saveTrustedHelperSnapshot, assemblePromptWithCatalogCards (<= 80 tokens/card, no bodies)
+ *   POST-CTX27-3, SEQ-CTX27-2: getKernelArtifactSha256, getKernelDisplayOutput (<= 60 lines / 2,048 bytes)
+ *   POST-CTX27-4, SEQ-CTX27-3: saveTrustedHelperSnapshot, restoreTrustedHelperSnapshotsWithLoader, assemblePromptWithCatalogCards
  *   POST-CTX27-5, SEQ-CTX27-4, ERRORS-CTX27-1: runBeforeCompactHook, runCompactionWithGate, verifyCompactionSnapshotInFreshProcess
  *   FORBIDDEN-CTX27-1: findLeakedPayloadValueSlices (no 32-byte payload value slice outside cut sample/text line)
  */
@@ -47,6 +50,65 @@ export const IMPL_FIXTURE_TRANSCRIPT_MAX_TOKENS = 700;
 export const IMPL_COMPACTION_CANCELLED_TEXT = "Compaction cancelled";
 
 const LOW_CARDINALITY_MAX_DISTINCT = 12;
+
+// =============================================================================
+// Redeclared Domain Exception Hierarchy & Assertion Guards (CL11-A / CL11-F)
+// =============================================================================
+
+export class ImplContextEfficiencyError extends Error {
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
+		this.name = new.target.name;
+	}
+}
+
+export class ImplPreconditionViolationError extends ImplContextEfficiencyError {
+	constructor(detail: string) {
+		super(`PRE-CTX27-1 violation: ${detail}`);
+	}
+}
+
+export class ImplBudgetInvariantViolationError extends ImplContextEfficiencyError {
+	constructor(detail: string) {
+		super(`INV-CTX27-1 violation: ${detail}`);
+	}
+}
+
+export function assertImplEnforcerPreconditions(options: {
+	readonly agentDir: string;
+	readonly sessionId: string;
+}): asserts options is { readonly agentDir: string; readonly sessionId: string } {
+	if (typeof options.agentDir !== "string" || options.agentDir.trim().length === 0) {
+		throw new ImplPreconditionViolationError("agentDir must be a non-empty string");
+	}
+	if (typeof options.sessionId !== "string" || options.sessionId.trim().length === 0) {
+		throw new ImplPreconditionViolationError("sessionId must be a non-empty string");
+	}
+}
+
+export function assertImplBudgetInvariant(state: {
+	readonly turnInlineTokens: number;
+	readonly sessionInlineTokens: number;
+}): void {
+	if (
+		!Number.isInteger(state.turnInlineTokens) ||
+		state.turnInlineTokens < 0 ||
+		state.turnInlineTokens > IMPL_TURN_INLINE_TOKEN_BUDGET
+	) {
+		throw new ImplBudgetInvariantViolationError(
+			`turnInlineTokens ${state.turnInlineTokens} outside [0, ${IMPL_TURN_INLINE_TOKEN_BUDGET}]`,
+		);
+	}
+	if (
+		!Number.isInteger(state.sessionInlineTokens) ||
+		state.sessionInlineTokens < 0 ||
+		state.sessionInlineTokens > IMPL_SESSION_INLINE_TOKEN_BUDGET
+	) {
+		throw new ImplBudgetInvariantViolationError(
+			`sessionInlineTokens ${state.sessionInlineTokens} outside [0, ${IMPL_SESSION_INLINE_TOKEN_BUDGET}]`,
+		);
+	}
+}
 
 // =============================================================================
 // Types
@@ -138,6 +200,155 @@ export interface ContextEfficiencyEnforcerOptions {
 }
 
 // =============================================================================
+// Runtime Boundary Guards (skill://typescript-mastery)
+// =============================================================================
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseSnapshotMeta(rawText: string): {
+	readonly sha256: string;
+	readonly byte_size: number;
+	readonly python_version: string;
+	readonly dill_version: string;
+	readonly compression: string;
+} {
+	const parsed: unknown = JSON.parse(rawText);
+	if (
+		!isPlainRecord(parsed) ||
+		typeof parsed.sha256 !== "string" ||
+		typeof parsed.byte_size !== "number" ||
+		typeof parsed.python_version !== "string" ||
+		typeof parsed.dill_version !== "string" ||
+		typeof parsed.compression !== "string"
+	) {
+		throw new ImplContextEfficiencyError("POST-CTX27-4 violation: invalid snapshot metadata from Python serializer");
+	}
+	return {
+		sha256: parsed.sha256,
+		byte_size: parsed.byte_size,
+		python_version: parsed.python_version,
+		dill_version: parsed.dill_version,
+		compression: parsed.compression,
+	};
+}
+
+function parseManifestFile(rawText: string): HelperSnapshotManifest {
+	const parsed: unknown = JSON.parse(rawText);
+	if (!isPlainRecord(parsed) || parsed.schema_version !== 1 || !Array.isArray(parsed.snapshots)) {
+		return { schema_version: 1, snapshots: [] };
+	}
+	const entries: HelperSnapshotManifestEntry[] = [];
+	for (const item of parsed.snapshots) {
+		if (
+			!isPlainRecord(item) ||
+			typeof item.id !== "string" ||
+			typeof item.file !== "string" ||
+			typeof item.sha256 !== "string" ||
+			typeof item.byte_size !== "number" ||
+			typeof item.python_version !== "string" ||
+			typeof item.dill_version !== "string" ||
+			!Array.isArray(item.names) ||
+			!item.names.every((n): n is string => typeof n === "string") ||
+			!isPlainRecord(item.expected_types) ||
+			typeof item.signature !== "string" ||
+			typeof item.summary !== "string" ||
+			typeof item.compression !== "string" ||
+			typeof item.saved_at !== "string"
+		) {
+			continue;
+		}
+		const expectedTypes: Record<string, "callable" | "str"> = {};
+		for (const [k, v] of Object.entries(item.expected_types)) {
+			if (v === "callable" || v === "str") {
+				expectedTypes[k] = v;
+			}
+		}
+		entries.push({
+			id: item.id,
+			file: item.file,
+			sha256: item.sha256,
+			byte_size: item.byte_size,
+			python_version: item.python_version,
+			dill_version: item.dill_version,
+			names: item.names,
+			expected_types: expectedTypes,
+			auto_restore: item.auto_restore === true,
+			signature: item.signature,
+			summary: item.summary,
+			compression: item.compression,
+			saved_at: item.saved_at,
+		});
+	}
+	return { schema_version: 1, snapshots: entries };
+}
+
+function parseRestoreLoaderOutput(rawText: string): {
+	readonly restoredCount: number;
+	readonly refused: readonly { readonly record: string; readonly reason: string }[];
+	readonly probeResult: string;
+} {
+	const parsed: unknown = JSON.parse(rawText);
+	if (
+		!isPlainRecord(parsed) ||
+		typeof parsed.restoredCount !== "number" ||
+		!Array.isArray(parsed.refused) ||
+		typeof parsed.probeResult !== "string"
+	) {
+		throw new ImplContextEfficiencyError("POST-CTX27-4 violation: invalid output from restore.py runner");
+	}
+	const refused: { readonly record: string; readonly reason: string }[] = [];
+	for (const r of parsed.refused) {
+		if (isPlainRecord(r) && typeof r.record === "string" && typeof r.reason === "string") {
+			refused.push({ record: r.record, reason: r.reason });
+		}
+	}
+	return {
+		restoredCount: parsed.restoredCount,
+		refused,
+		probeResult: parsed.probeResult,
+	};
+}
+
+function parseDumpMeta(rawText: string): { readonly sha256: string; readonly dropped: readonly string[] } {
+	const parsed: unknown = JSON.parse(rawText);
+	if (
+		!isPlainRecord(parsed) ||
+		typeof parsed.sha256 !== "string" ||
+		!Array.isArray(parsed.dropped) ||
+		!parsed.dropped.every((d): d is string => typeof d === "string")
+	) {
+		throw new ImplContextEfficiencyError("POST-CTX27-5 violation: invalid compaction dump metadata");
+	}
+	return { sha256: parsed.sha256, dropped: parsed.dropped };
+}
+
+function parseVerifyOutput(rawText: string): {
+	readonly startsWithPickleMagic0x80: boolean;
+	readonly sha256MatchesRecord: string;
+	readonly hasUnpicklableGen: boolean;
+	readonly restoredArtifactSha256: string;
+} {
+	const parsed: unknown = JSON.parse(rawText);
+	if (
+		!isPlainRecord(parsed) ||
+		typeof parsed.startsWithPickleMagic0x80 !== "boolean" ||
+		typeof parsed.sha256MatchesRecord !== "string" ||
+		typeof parsed.hasUnpicklableGen !== "boolean" ||
+		typeof parsed.restoredArtifactSha256 !== "string"
+	) {
+		throw new ImplContextEfficiencyError("POST-CTX27-5 violation: invalid snapshot verification output");
+	}
+	return {
+		startsWithPickleMagic0x80: parsed.startsWithPickleMagic0x80,
+		sha256MatchesRecord: parsed.sha256MatchesRecord,
+		hasUnpicklableGen: parsed.hasUnpicklableGen,
+		restoredArtifactSha256: parsed.restoredArtifactSha256,
+	};
+}
+
+// =============================================================================
 // Token Counter (POST-CTX27-1)
 // =============================================================================
 
@@ -198,10 +409,11 @@ function parseTabularIfStructured(rawText: string): UdtDescriptor | null {
 		.split("\n")
 		.map(l => l.trim())
 		.filter(l => l.length > 0);
-	if (lines.length < 2) return null;
-	const sep = lines[0]?.includes("\t") ? "\t" : lines[0]?.includes(",") ? "," : null;
+	const headerLine = lines[0];
+	if (lines.length < 2 || headerLine === undefined) return null;
+	const sep = headerLine.includes("\t") ? "\t" : headerLine.includes(",") ? "," : null;
 	if (!sep) return null;
-	const rawHeaders = lines[0]!.split(sep).map(h => h.trim());
+	const rawHeaders = headerLine.split(sep).map(h => h.trim());
 	if (rawHeaders.length < 2) return null;
 	const rows = lines.slice(1).map(l => l.split(sep).map(c => c.trim()));
 	if (!rows.every(r => r.length === rawHeaders.length)) return null;
@@ -209,16 +421,19 @@ function parseTabularIfStructured(rawText: string): UdtDescriptor | null {
 	const columns = rawHeaders.map(h => h.slice(0, IMPL_SCHEMA_NAME_MAX_CHARS));
 	const numericSummary: Record<string, { min: number; max: number; avg: number }> = {};
 	for (let colIdx = 0; colIdx < columns.length; colIdx += 1) {
+		const colName = columns[colIdx];
+		if (colName === undefined) continue;
 		const nums: number[] = [];
 		for (const r of rows) {
-			const n = Number(r[colIdx]);
-			if (!Number.isNaN(n) && r[colIdx] !== "") nums.push(n);
+			const cell = r[colIdx];
+			const n = Number(cell);
+			if (cell !== undefined && cell !== "" && !Number.isNaN(n)) nums.push(n);
 		}
 		if (nums.length === rows.length && nums.length > 0) {
 			const min = Math.min(...nums);
 			const max = Math.max(...nums);
 			const avg = Number((nums.reduce((a, b) => a + b, 0) / nums.length).toFixed(4));
-			numericSummary[columns[colIdx]!] = { min, max, avg };
+			numericSummary[colName] = { min, max, avg };
 		}
 	}
 	return {
@@ -277,33 +492,30 @@ export async function saveTrustedHelperSnapshot(input: SaveTrustedHelperSnapshot
 		stderr: "pipe",
 	});
 	if (proc.exitCode !== 0) {
-		throw new Error(`POST-CTX27-4 violation: failed to serialize helper snapshot: ${proc.stderr.toString()}`);
+		throw new ImplContextEfficiencyError(
+			`POST-CTX27-4 violation: failed to serialize helper snapshot: ${proc.stderr.toString()}`,
+		);
 	}
-	const meta = JSON.parse(proc.stdout.toString().trim()) as {
-		sha256: string;
-		byte_size: number;
-		python_version: string;
-		dill_version: string;
-		compression: string;
-	};
+	const meta = parseSnapshotMeta(proc.stdout.toString().trim());
 	fs.renameSync(tmpPath, snapshotPath);
 	fs.chmodSync(snapshotPath, 0o600);
 
 	const manifestPath = path.join(snapshotsDir, "manifest.json");
 	let existing: HelperSnapshotManifestEntry[] = [];
 	if (fs.existsSync(manifestPath)) {
-		const loaded = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as HelperSnapshotManifest;
+		const loaded = parseManifestFile(fs.readFileSync(manifestPath, "utf8"));
 		existing = loaded.snapshots.filter(s => s.id !== input.name);
 	}
+	const id = input.name.slice(0, IMPL_CARD_NAME_MAX_CHARS);
 	const entry: HelperSnapshotManifestEntry = {
-		id: input.name.slice(0, IMPL_CARD_NAME_MAX_CHARS),
+		id,
 		file: basename,
 		sha256: meta.sha256,
 		byte_size: meta.byte_size,
 		python_version: meta.python_version,
 		dill_version: meta.dill_version,
-		names: [input.name.slice(0, IMPL_CARD_NAME_MAX_CHARS)],
-		expected_types: { [input.name.slice(0, IMPL_CARD_NAME_MAX_CHARS)]: "callable" },
+		names: [id],
+		expected_types: { [id]: "callable" },
 		auto_restore: true,
 		signature: input.signature.slice(0, IMPL_CARD_SIGNATURE_MAX_CHARS),
 		summary: input.summary.slice(0, IMPL_CARD_SUMMARY_MAX_CHARS),
@@ -370,13 +582,11 @@ export async function restoreTrustedHelperSnapshotsWithLoader(options: {
 		stderr: "pipe",
 	});
 	if (proc.exitCode !== 0) {
-		throw new Error(`POST-CTX27-4 violation: restore.py execution failed: ${proc.stderr.toString()}`);
+		throw new ImplContextEfficiencyError(
+			`POST-CTX27-4 violation: restore.py execution failed: ${proc.stderr.toString()}`,
+		);
 	}
-	return JSON.parse(proc.stdout.toString().trim()) as {
-		restoredCount: number;
-		refused: { record: string; reason: string }[];
-		probeResult: string;
-	};
+	return parseRestoreLoaderOutput(proc.stdout.toString().trim());
 }
 
 export function assemblePromptWithCatalogCards(
@@ -387,7 +597,7 @@ export function assemblePromptWithCatalogCards(
 	if (!fs.existsSync(manifestPath)) {
 		return { prompt: basePrompt, cards: [] };
 	}
-	const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as HelperSnapshotManifest;
+	const manifest = parseManifestFile(fs.readFileSync(manifestPath, "utf8"));
 	const cards: CatalogCard[] = [];
 	for (const entry of manifest.snapshots) {
 		const snapshotFile = path.join(path.resolve(snapshotsDir), path.basename(entry.file));
@@ -473,19 +683,34 @@ export class ContextEfficiencyEnforcer {
 	#lastCompactionStatusText = "";
 
 	constructor(options: ContextEfficiencyEnforcerOptions) {
+		// PRE-CTX27-1
+		assertImplEnforcerPreconditions(options);
 		this.#agentDir = path.resolve(options.agentDir);
 		this.#sessionId = options.sessionId;
 		this.#pythonExe = resolveKernelPython(options.pythonInterpreter);
 		fs.mkdirSync(this.#agentDir, { recursive: true });
+		// INV-CTX27-1 established at construction
+		assertImplBudgetInvariant({
+			turnInlineTokens: this.#turnInlineTokens,
+			sessionInlineTokens: this.#sessionInlineTokens,
+		});
 	}
 
 	startNewTurn(): void {
 		this.#turnInlineTokens = 0;
+		assertImplBudgetInvariant({
+			turnInlineTokens: this.#turnInlineTokens,
+			sessionInlineTokens: this.#sessionInlineTokens,
+		});
 	}
 
 	resetBudgets(): void {
 		this.#turnInlineTokens = 0;
 		this.#sessionInlineTokens = 0;
+		assertImplBudgetInvariant({
+			turnInlineTokens: this.#turnInlineTokens,
+			sessionInlineTokens: this.#sessionInlineTokens,
+		});
 	}
 
 	getTurnInlineTokens(): number {
@@ -501,6 +726,16 @@ export class ContextEfficiencyEnforcer {
 	}
 
 	async admitToolResult(input: AdmitToolResultInput): Promise<AdmitToolResultOutput> {
+		// PRE-CTX27-1
+		if (typeof input.toolCallId !== "string" || input.toolCallId.trim().length === 0) {
+			throw new ImplPreconditionViolationError("toolCallId must be a non-empty string");
+		}
+		// INV-CTX27-1 at entry
+		assertImplBudgetInvariant({
+			turnInlineTokens: this.#turnInlineTokens,
+			sessionInlineTokens: this.#sessionInlineTokens,
+		});
+
 		const tokenCount = countO200kTokens(input.text);
 		const fitsResultThreshold = tokenCount < IMPL_RESULT_TOKEN_THRESHOLD;
 		const fitsTurnBudget = this.#turnInlineTokens + tokenCount <= IMPL_TURN_INLINE_TOKEN_BUDGET;
@@ -509,6 +744,11 @@ export class ContextEfficiencyEnforcer {
 		if (fitsResultThreshold && fitsTurnBudget && fitsSessionBudget) {
 			this.#turnInlineTokens += tokenCount;
 			this.#sessionInlineTokens += tokenCount;
+			// INV-CTX27-1 at exit
+			assertImplBudgetInvariant({
+				turnInlineTokens: this.#turnInlineTokens,
+				sessionInlineTokens: this.#sessionInlineTokens,
+			});
 			return {
 				mode: "inline",
 				transcriptText: input.text,
@@ -526,6 +766,11 @@ export class ContextEfficiencyEnforcer {
 		this.#descriptors.set(artifactName, descriptor);
 		const transcriptText = JSON.stringify(descriptor);
 
+		// INV-CTX27-1 at exit
+		assertImplBudgetInvariant({
+			turnInlineTokens: this.#turnInlineTokens,
+			sessionInlineTokens: this.#sessionInlineTokens,
+		});
 		return {
 			mode: "filed",
 			transcriptText,
@@ -549,24 +794,24 @@ export class ContextEfficiencyEnforcer {
 			const keyUnionSet = new Set<string>();
 			const rawKeyMap = new Map<string, string>();
 			for (const item of parsedJson) {
-				if (item !== null && typeof item === "object" && !Array.isArray(item)) {
-					for (const k of Object.keys(item as Record<string, unknown>)) {
+				if (isPlainRecord(item)) {
+					for (const k of Object.keys(item)) {
 						const cut = k.slice(0, IMPL_SCHEMA_NAME_MAX_CHARS);
 						keyUnionSet.add(cut);
 						if (!rawKeyMap.has(cut)) rawKeyMap.set(cut, k);
 					}
 				}
 			}
-			const keySchemaUnion = [...keyUnionSet].sort();
+			const keySchemaUnion = [...keyUnionSet].toSorted();
 			const distributions: Record<string, Record<string, number>> = {};
 			for (const cutKey of keySchemaUnion) {
 				const origKey = rawKeyMap.get(cutKey) ?? cutKey;
 				const counts = new Map<string, number>();
 				let totalPresent = 0;
 				for (const item of parsedJson) {
-					if (item !== null && typeof item === "object" && !Array.isArray(item) && origKey in item) {
+					if (isPlainRecord(item) && origKey in item) {
 						totalPresent += 1;
-						const val = (item as Record<string, unknown>)[origKey];
+						const val = item[origKey];
 						if (typeof val === "string" || typeof val === "number" || typeof val === "boolean" || val === null) {
 							const label = String(val).slice(0, IMPL_SAMPLE_STRING_MAX_CHARS);
 							counts.set(label, (counts.get(label) ?? 0) + 1);
@@ -582,10 +827,7 @@ export class ContextEfficiencyEnforcer {
 				}
 			}
 			const first = parsedJson[0];
-			const sampleRow0 =
-				first !== null && typeof first === "object" && !Array.isArray(first)
-					? sanitizeSampleRow(first as Record<string, unknown>)
-					: null;
+			const sampleRow0 = isPlainRecord(first) ? sanitizeSampleRow(first) : null;
 			base = {
 				class: "json_array",
 				name: artifactName,
@@ -594,11 +836,10 @@ export class ContextEfficiencyEnforcer {
 				low_cardinality_distributions: distributions,
 				sample_row_0: sampleRow0,
 			};
-		} else if (isJson && parsedJson !== null && typeof parsedJson === "object") {
-			const obj = parsedJson as Record<string, unknown>;
+		} else if (isJson && isPlainRecord(parsedJson)) {
 			const topKeys: string[] = [];
 			const perKeyShape: Record<string, string> = {};
-			for (const [k, v] of Object.entries(obj)) {
+			for (const [k, v] of Object.entries(parsedJson)) {
 				const cut = k.slice(0, IMPL_SCHEMA_NAME_MAX_CHARS);
 				topKeys.push(cut);
 				perKeyShape[cut] = describeValueShape(v);
@@ -661,7 +902,7 @@ export class ContextEfficiencyEnforcer {
 	async getKernelArtifactSha256(artifactName: string): Promise<string> {
 		const raw = this.#kernelArtifacts.get(artifactName);
 		if (raw === undefined) {
-			throw new Error(`POST-CTX27-3 violation: unknown kernel artifact ${artifactName}`);
+			throw new ImplContextEfficiencyError(`POST-CTX27-3 violation: unknown kernel artifact ${artifactName}`);
 		}
 		return crypto.createHash("sha256").update(raw, "utf8").digest("hex");
 	}
@@ -669,7 +910,7 @@ export class ContextEfficiencyEnforcer {
 	async getKernelDisplayOutput(artifactName: string): Promise<string> {
 		const raw = this.#kernelArtifacts.get(artifactName);
 		if (raw === undefined) {
-			throw new Error(`POST-CTX27-3 violation: unknown kernel artifact ${artifactName}`);
+			throw new ImplContextEfficiencyError(`POST-CTX27-3 violation: unknown kernel artifact ${artifactName}`);
 		}
 		return formatCappedDisplay(raw);
 	}
@@ -737,10 +978,7 @@ export class ContextEfficiencyEnforcer {
 			return { cancel: true };
 		}
 
-		const dumpMeta = JSON.parse(proc.stdout.toString().trim()) as {
-			sha256: string;
-			dropped: string[];
-		};
+		const dumpMeta = parseDumpMeta(proc.stdout.toString().trim());
 		const diskBytes = fs.readFileSync(snapshotPath);
 		const diskSha = crypto.createHash("sha256").update(diskBytes).digest("hex");
 		const recordedSha = options?.corruptHash === true ? "0".repeat(64) : dumpMeta.sha256;
@@ -759,7 +997,7 @@ export class ContextEfficiencyEnforcer {
 			snapshot_path: snapshotPath,
 			sha256: recordedSha,
 			files_touched: [],
-			open_items: dumpMeta.dropped,
+			open_items: [...dumpMeta.dropped],
 		};
 		this.#memoryRecords.set(recordKey, record);
 		return { cancel: false, recordKey, record };
@@ -824,14 +1062,11 @@ export class ContextEfficiencyEnforcer {
 			stderr: "pipe",
 		});
 		if (proc.exitCode !== 0) {
-			throw new Error(`POST-CTX27-5 violation: fresh dill.load_session failed: ${proc.stderr.toString()}`);
+			throw new ImplContextEfficiencyError(
+				`POST-CTX27-5 violation: fresh dill.load_session failed: ${proc.stderr.toString()}`,
+			);
 		}
-		return JSON.parse(proc.stdout.toString().trim()) as {
-			startsWithPickleMagic0x80: boolean;
-			sha256MatchesRecord: string;
-			hasUnpicklableGen: boolean;
-			restoredArtifactSha256: string;
-		};
+		return parseVerifyOutput(proc.stdout.toString().trim());
 	}
 }
 
@@ -860,14 +1095,19 @@ export function createContextEfficiencyExtension(options?: {
 		});
 
 		api.on("tool_result", async (rawEvent: unknown) => {
-			if (!rawEvent || typeof rawEvent !== "object") return undefined;
-			const event = rawEvent as { toolCallId?: string; content?: { type: string; text?: string }[] };
-			const blocks = Array.isArray(event.content) ? event.content : [];
-			const textBlocks = blocks.filter(b => b.type === "text" && typeof b.text === "string");
-			if (textBlocks.length === 0) return undefined;
-			const combined = textBlocks.map(b => b.text ?? "").join("\n");
+			if (!isPlainRecord(rawEvent)) return undefined;
+			const rawContent = rawEvent.content;
+			const blocks = Array.isArray(rawContent) ? rawContent : [];
+			const texts: string[] = [];
+			for (const b of blocks) {
+				if (isPlainRecord(b) && b.type === "text" && typeof b.text === "string") {
+					texts.push(b.text);
+				}
+			}
+			if (texts.length === 0) return undefined;
+			const combined = texts.join("\n");
 			const outcome = await enforcer.admitToolResult({
-				toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : "tool",
+				toolCallId: typeof rawEvent.toolCallId === "string" ? rawEvent.toolCallId : "tool",
 				text: combined,
 			});
 			if (outcome.mode === "inline") return undefined;
@@ -877,13 +1117,17 @@ export function createContextEfficiencyExtension(options?: {
 		});
 
 		api.on("before_agent_start", async (rawEvent: unknown) => {
-			const event =
-				rawEvent && typeof rawEvent === "object" ? (rawEvent as { systemPrompt?: string[] }) : undefined;
+			const existingPrompt: string[] = [];
+			if (isPlainRecord(rawEvent) && Array.isArray(rawEvent.systemPrompt)) {
+				for (const item of rawEvent.systemPrompt) {
+					if (typeof item === "string") existingPrompt.push(item);
+				}
+			}
 			const assembled = assemblePromptWithCatalogCards("", snapshotsDir);
 			if (assembled.cards.length === 0) return undefined;
 			const cardBlock = assembled.cards.map(c => JSON.stringify(c)).join("\n");
 			return {
-				systemPrompt: [...(Array.isArray(event?.systemPrompt) ? event.systemPrompt : []), cardBlock],
+				systemPrompt: [...existingPrompt, cardBlock],
 			};
 		});
 
