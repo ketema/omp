@@ -471,14 +471,14 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 						},
 						renameFile: (oldP, newP) => {
 							renameCalls += 1;
-							if (renameCalls === 2) {
-								throw new Error("simulated rename failure on 2nd file");
+							if (renameCalls === 3) {
+								throw new Error("simulated rename failure on 3rd file");
 							}
 							fs.renameSync(oldP, newP);
 						},
 					}),
 				).rejects.toBeInstanceOf(ImplSnapshotMigrationError);
-				expect(renameCalls).toBe(2);
+				expect(renameCalls).toBe(3);
 				expect(
 					fs.existsSync(orphanFile),
 					"ERRORS-CTX27-2 violation: failed migration left orphan newly-created .dill file when bakPath was null",
