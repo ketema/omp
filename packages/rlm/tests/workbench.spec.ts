@@ -6,7 +6,7 @@
  *
  * CONTRACT AUTHORITY RECORD:
  * - File: contracts/context_efficiency_enforcement.contract.ts
- * - SEQ-CTX27-6, POST-CTX27-8, ERRORS-CTX27-3 (batch 1); POST-CTX27-9, ERRORS-CTX27-3 notice (batch 2)
+ * - SEQ-CTX27-6, POST-CTX27-8, ERRORS-CTX27-3 (batch 1); POST-CTX27-9, POST-CTX27-10, POST-CTX27-11, ERRORS-CTX27-3 message (batch 2)
  *
  * Skips truthfully when the managed kernel interpreter or restore.py is absent on this host.
  */
@@ -18,15 +18,17 @@ import * as os from "node:os";
 import { dirname, join } from "node:path";
 
 import {
-	expectedWorkbenchNotice,
+	expectedWorkbenchMessage,
 	validateWorkbenchReport,
 	WORKBENCH_LOADER_PATH_FROM_HOME,
+	WORKBENCH_MESSAGE_DELIVERY,
+	WORKBENCH_MESSAGE_TYPE,
 } from "../../../contracts/context_efficiency_enforcement.contract.ts";
 import { buildKernelEnv, type KernelCaps, type KernelSession } from "../src/bootstrap.ts";
 import { KernelManagerAdapter } from "../src/extension.ts";
 import { type KernelClock, KernelManager } from "../src/kernel.ts";
 import { createTransport } from "../src/transport.ts";
-import { openRealSession } from "./real_extension.ts";
+import { openRealSession, type RealSession } from "./real_extension.ts";
 
 const REAL_HOME = os.homedir();
 const KERNEL_PYTHON = join(REAL_HOME, ".omp", "agent", "kernel-venv", "bin", "python");
@@ -196,36 +198,51 @@ async function openWorkbenchSession(home: string) {
 	return { manager, session };
 }
 
-describe("workbench notice on the first ipython call (REQ-CTX27-18)", () => {
+/** Every workbench message the session has sent to the host so far. */
+function workbenchMessages(session: RealSession) {
+	return session.messages.filter(message => message.customType === WORKBENCH_MESSAGE_TYPE);
+}
+
+describe("the harness announces the workbench once at session start (REQ-CTX27-18 to REQ-CTX27-22)", () => {
 	liveTest(
-		"POST-CTX27-9: the first ipython call shows exactly one notice naming the loaded helper",
+		"POST-CTX27-9 / POST-CTX27-10 / POST-CTX27-11: session start alone sends one workbench message and no later cell repeats it",
 		async () => {
-			// Risk tier: HIGH — the notice is how Ketema and the model learn what is on the workbench.
+			// Risk tier: HIGH — this message is how the harness tells the model what its workbench holds and how to use it.
 			const home = makeHome();
 			writeProbeSnapshot(home);
 			const { manager, session } = await openWorkbenchSession(home);
 			try {
-				const first = await session.call("print('cell-output')");
-				const text = first.content.map(part => part.text).join("\n");
-				const expected = expectedWorkbenchNotice(validateWorkbenchReport(manager.workbenchReport()));
+				const sent = workbenchMessages(session);
 				expect(
-					expected,
+					{ count: sent.length, display: sent[0]?.display, deliverAs: sent[0]?.deliverAs },
+					"POST-CTX27-9 violation: session start did not send exactly one displayed workbench message for the next turn\n" +
+						'EXPECTED: {"count":1,"display":true,"deliverAs":"nextTurn"} before any user message or ipython call\n' +
+						`ACTUAL: messages=${JSON.stringify(session.messages)}\n` +
+						"GUIDANCE: the harness announces the loaded workbench itself, once, as soon as the kernel has loaded it",
+				).toEqual({ count: 1, display: true, deliverAs: WORKBENCH_MESSAGE_DELIVERY });
+				const expected = expectedWorkbenchMessage(validateWorkbenchReport(manager.workbenchReport()));
+				expect(
+					expected.split("\n\n")[0],
 					"POST-CTX27-9 oracle check: the contracted notice for a clean load of one helper is not the agreed line\n" +
 						'EXPECTED: "Workbench ready: wb_probe"\n' +
-						`ACTUAL: ${JSON.stringify(expected)}\n` +
-						"GUIDANCE: the notice lists the loaded helper names",
+						`ACTUAL: ${JSON.stringify(expected.split("\n\n")[0])}\n` +
+						"GUIDANCE: the message opens by listing the loaded helper names",
 				).toBe("Workbench ready: wb_probe");
 				expect(
-					{
-						notices: text.split("Workbench ready:").length - 1,
-						exact: text.split(expected).length - 1,
-						ranCell: text.includes("cell-output"),
-					},
-					"POST-CTX27-9 violation: the first ipython call does not show exactly one workbench notice\n" +
-						'EXPECTED: {"notices":1,"exact":1,"ranCell":true} — one notice, equal to the contracted line, and the cell still ran\n' +
-						`ACTUAL: first call text=${JSON.stringify(text)}\n` +
-						"GUIDANCE: the first call of a session reports what the workbench loaded, once",
-				).toEqual({ notices: 1, exact: 1, ranCell: true });
+					sent[0]?.content,
+					"POST-CTX27-9 violation: the workbench message text is not the contracted text\n" +
+						`EXPECTED: ${JSON.stringify(expected)}\n` +
+						`ACTUAL: ${JSON.stringify(sent[0]?.content)}\n` +
+						"GUIDANCE: name the loaded helpers, then state the context efficiency rules",
+				).toBe(expected);
+				const first = await session.call("print('cell-output')");
+				expect(
+					{ text: first.content.map(part => part.text).join("\n"), count: workbenchMessages(session).length },
+					"POST-CTX27-10 violation: a later cell carried the workbench notice or the message was sent again\n" +
+						'EXPECTED: {"text":"cell-output\\n","count":1}\n' +
+						`ACTUAL: messages=${JSON.stringify(session.messages)}\n` +
+						"GUIDANCE: the workbench is announced once; cell results hold only the cell's own output",
+				).toEqual({ text: "cell-output\n", count: 1 });
 			} finally {
 				await session.shutdown();
 				fs.rmSync(home, { recursive: true, force: true });
@@ -235,17 +252,22 @@ describe("workbench notice on the first ipython call (REQ-CTX27-18)", () => {
 	);
 
 	liveTest(
-		"ERRORS-CTX27-3: a missing restore.py is named in the single notice and the cell still runs",
+		"ERRORS-CTX27-3: a missing restore.py is named in the workbench message and the cell still runs",
 		async () => {
 			// Risk tier: HIGH — a fresh session with no loader must say so, not look like an empty workbench.
 			const home = makeHome();
 			fs.rmSync(join(home, WORKBENCH_LOADER_PATH_FROM_HOME));
 			const { manager, session } = await openWorkbenchSession(home);
 			try {
-				const first = await session.call("print(2 + 2)");
-				const text = first.content.map(part => part.text).join("\n");
+				const sent = workbenchMessages(session);
+				expect(
+					sent.length,
+					"ERRORS-CTX27-3 violation: session start did not send a workbench message naming the loader failure\n" +
+						"EXPECTED: exactly 1 workbench message before any user message or ipython call\n" +
+						`ACTUAL: messages=${JSON.stringify(session.messages)}\n` +
+						"GUIDANCE: when the loader cannot run the session still starts, and the harness says why",
+				).toBe(1);
 				const report = validateWorkbenchReport(manager.workbenchReport());
-				const expected = expectedWorkbenchNotice(report);
 				expect(
 					report.error,
 					"ERRORS-CTX27-3 precondition: the kernel did not record why the loader could not run\n" +
@@ -254,16 +276,20 @@ describe("workbench notice on the first ipython call (REQ-CTX27-18)", () => {
 						"GUIDANCE: a missing loader is reported as a cause, not as an empty workbench",
 				).not.toBeNull();
 				expect(
-					{
-						notices: text.split("Workbench ready:").length - 1,
-						exact: text.split(expected).length - 1,
-						ranCell: text.includes("4"),
-					},
-					"ERRORS-CTX27-3 violation: the first ipython call does not name the loader failure in one notice\n" +
-						'EXPECTED: {"notices":1,"exact":1,"ranCell":true} — one notice that names the cause, and the cell still ran\n' +
-						`ACTUAL: first call text=${JSON.stringify(text)} expected notice=${JSON.stringify(expected)}\n` +
-						"GUIDANCE: when the loader cannot run the session still starts, and the notice says why",
-				).toEqual({ notices: 1, exact: 1, ranCell: true });
+					sent[0]?.content,
+					"ERRORS-CTX27-3 violation: the workbench message does not name the cause\n" +
+						`EXPECTED: ${JSON.stringify(expectedWorkbenchMessage(report))}\n` +
+						`ACTUAL: ${JSON.stringify(sent[0]?.content)}\n` +
+						"GUIDANCE: the message names the failure cause and still states the context efficiency rules",
+				).toBe(expectedWorkbenchMessage(report));
+				const first = await session.call("print(2 + 2)");
+				expect(
+					first.content.map(part => part.text).join("\n"),
+					"ERRORS-CTX27-3 violation: the kernel is not usable after the loader could not run\n" +
+						'EXPECTED: "4\\n"\n' +
+						`ACTUAL: ${JSON.stringify(first.content)}\n` +
+						"GUIDANCE: a missing loader must not stop the kernel from running cells",
+				).toBe("4\n");
 			} finally {
 				await session.shutdown();
 				fs.rmSync(home, { recursive: true, force: true });

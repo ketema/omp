@@ -44,6 +44,15 @@ export const WORKBENCH_READY_PREFIX = "Workbench ready: ";
 export const WORKBENCH_FAILED_SEPARATOR = ". Failed to load: ";
 /** REQ-CTX27-18: the loaded-names list when nothing loaded. */
 export const WORKBENCH_NONE_LOADED = "none";
+/** REQ-CTX27-18 (Z9): the custom message type omp sends the workbench message under. */
+export const WORKBENCH_MESSAGE_TYPE = "workbench-ready";
+/** REQ-CTX27-18 (Z9): the workbench message is delivered with the user's next message. */
+export const WORKBENCH_MESSAGE_DELIVERY = "nextTurn";
+/** REQ-CTX27-19: the notice and the rules are joined by this text. */
+export const WORKBENCH_MESSAGE_SEPARATOR = "\n\n";
+/** REQ-CTX27-19 (Z11): the rules that end the workbench message. Ketema may edit this wording; tests follow it. */
+export const WORKBENCH_RULES =
+	"Context efficiency rules for this session: keep payloads out of the transcript; do data work in the ipython kernel and read a result by asking it one small question (len, keys, first row), never by printing it whole. Call the helpers listed above by name and never rewrite one. Look in memory, git history and transcripts before re-deriving a decision. Send noisy builds, tests and installs to TMUX-OFFLOAD and read back only the summary. Read skill, system and memory text in full.";
 
 // =============================================================================
 // Artifact 2: Domain Exception Classes
@@ -122,7 +131,9 @@ export interface UdtDescriptorRecord {
 	readonly per_key_shape?: Readonly<Record<string, string>>;
 	readonly columns?: readonly string[];
 	readonly row_count?: number;
-	readonly numeric_summary?: Readonly<Record<string, { readonly min: number; readonly max: number; readonly avg: number }>>;
+	readonly numeric_summary?: Readonly<
+		Record<string, { readonly min: number; readonly max: number; readonly avg: number }>
+	>;
 	readonly total_lines?: number;
 	readonly head?: readonly string[];
 	readonly omitted?: number;
@@ -200,10 +211,7 @@ export function assertBudgetInvariant(state: {
 	}
 }
 
-export function validateUdtDescriptorRecord(
-	record: UdtDescriptorRecord,
-	tokenCount: number,
-): boolean {
+export function validateUdtDescriptorRecord(record: UdtDescriptorRecord, tokenCount: number): boolean {
 	if (!record || typeof record !== "object") {
 		throw new DescriptorSchemaViolationError("descriptor must be an object");
 	}
@@ -269,7 +277,7 @@ export function validateHelperCatalogCard(card: HelperCatalogCard, tokenCount: n
 	return true;
 }
 
-/** REQ-CTX27-18: the exact one-line notice for a workbench report. Pure; used by validateWorkbenchNotice. */
+/** REQ-CTX27-18: the exact one-line notice for a workbench report. Pure; used by expectedWorkbenchMessage. */
 export function expectedWorkbenchNotice(report: WorkbenchReport): string {
 	const loaded = report.loaded.length > 0 ? report.loaded.join(", ") : WORKBENCH_NONE_LOADED;
 	const failures = [
@@ -279,6 +287,11 @@ export function expectedWorkbenchNotice(report: WorkbenchReport): string {
 	return failures.length === 0
 		? `${WORKBENCH_READY_PREFIX}${loaded}`
 		: `${WORKBENCH_READY_PREFIX}${loaded}${WORKBENCH_FAILED_SEPARATOR}${failures.join("; ")}`;
+}
+
+/** REQ-CTX27-18, REQ-CTX27-19: the exact workbench message: the notice, then the rules. Pure; used by validateWorkbenchMessage. */
+export function expectedWorkbenchMessage(report: WorkbenchReport): string {
+	return `${expectedWorkbenchNotice(report)}${WORKBENCH_MESSAGE_SEPARATOR}${WORKBENCH_RULES}`;
 }
 
 /** POST-CTX27-8 / ERRORS-CTX27-3: a workbench report has the contracted shape. */
@@ -312,11 +325,14 @@ export function validateWorkbenchReport(raw: unknown): WorkbenchReport {
 	};
 }
 
-/** POST-CTX27-9: the shown notice equals the contracted notice for the report. */
-export function validateWorkbenchNotice(report: WorkbenchReport, notice: string): void {
-	const expected = expectedWorkbenchNotice(report);
-	if (notice !== expected) {
-		throw new WorkbenchReportViolationError("POST-CTX27-9", `notice ${JSON.stringify(notice)} != ${JSON.stringify(expected)}`);
+/** POST-CTX27-9: the sent message text equals the contracted message for the report. */
+export function validateWorkbenchMessage(report: WorkbenchReport, message: string): void {
+	const expected = expectedWorkbenchMessage(report);
+	if (message !== expected) {
+		throw new WorkbenchReportViolationError(
+			"POST-CTX27-9",
+			`message ${JSON.stringify(message)} != ${JSON.stringify(expected)}`,
+		);
 	}
 }
 
@@ -453,14 +469,28 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 		id: "POST-CTX27-9",
 		method: "test",
 		description:
-			"The first ipython tool call of a session shows exactly one notice, and its text equals expectedWorkbenchNotice(report) for that kernel's workbench report.",
-		requirement_ids: ["REQ-CTX27-18"],
+			"When a top-level session starts, omp sends exactly one custom message of type WORKBENCH_MESSAGE_TYPE, displayed and delivered as WORKBENCH_MESSAGE_DELIVERY, whose text equals expectedWorkbenchMessage(report) for that kernel's workbench report.",
+		requirement_ids: ["REQ-CTX27-18", "REQ-CTX27-19"],
+	},
+	"POST-CTX27-10": {
+		id: "POST-CTX27-10",
+		method: "test",
+		description:
+			"After the workbench message is sent, no ipython tool result carries the workbench notice text, and the message is not sent again for the same kernel start however many cells or turns follow.",
+		requirement_ids: ["REQ-CTX27-20", "REQ-CTX27-21"],
+	},
+	"POST-CTX27-11": {
+		id: "POST-CTX27-11",
+		method: "test",
+		description:
+			"When a top-level session starts, the IPython kernel is started before any user message or ipython call, so the workbench report exists and the restored helpers are bound.",
+		requirement_ids: ["REQ-CTX27-22"],
 	},
 	"ERRORS-CTX27-3": {
 		id: "ERRORS-CTX27-3",
 		method: "test",
 		description:
-			"When restore.py is missing or raises, or refuses a snapshot, kernel start still completes, the next cell executes, the report carries the cause in error and every refused record in refused, and the notice names them.",
+			"When restore.py is missing or raises, or refuses a snapshot, kernel start still completes, the next cell executes, the report carries the cause in error and every refused record in refused, and the workbench message names them.",
 		requirement_ids: ["REQ-CTX27-16"],
 	},
 	"FORBIDDEN-CTX27-2": {

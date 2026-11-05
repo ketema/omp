@@ -14,6 +14,9 @@ type Handler = (event: unknown, ctx?: unknown) => unknown;
 export interface HostMessage {
 	readonly customType?: string;
 	readonly content?: string;
+	readonly display?: boolean;
+	/** How the extension asked the host to deliver it (`sendMessage` options), when it said. */
+	readonly deliverAs?: string;
 }
 interface ToolResult {
 	readonly content: Array<{ text: string }>;
@@ -57,8 +60,8 @@ export async function openRealSession(
 		getFlag(name: string) {
 			return flags[name];
 		},
-		sendMessage(payload: HostMessage) {
-			messages.push(payload);
+		sendMessage(payload: HostMessage, options?: { deliverAs?: string }) {
+			messages.push({ ...payload, deliverAs: options?.deliverAs });
 		},
 	};
 	const toolCtx = { hasUI: false, setWorkingMessage() {}, ui: { select: async () => undefined } };

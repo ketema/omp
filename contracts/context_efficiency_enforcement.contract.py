@@ -39,6 +39,16 @@ WORKBENCH_LOADER_PATH_FROM_HOME: Final[str] = ".agents/skills/repl-snapshots/res
 WORKBENCH_READY_PREFIX: Final[str] = "Workbench ready: "
 WORKBENCH_FAILED_SEPARATOR: Final[str] = ". Failed to load: "
 WORKBENCH_NONE_LOADED: Final[str] = "none"
+WORKBENCH_MESSAGE_TYPE: Final[str] = "workbench-ready"
+WORKBENCH_MESSAGE_DELIVERY: Final[str] = "nextTurn"
+WORKBENCH_MESSAGE_SEPARATOR: Final[str] = "\n\n"
+WORKBENCH_RULES: Final[str] = (
+    "Context efficiency rules for this session: keep payloads out of the transcript; do data work in the ipython "
+    "kernel and read a result by asking it one small question (len, keys, first row), never by printing it whole. "
+    "Call the helpers listed above by name and never rewrite one. Look in memory, git history and transcripts "
+    "before re-deriving a decision. Send noisy builds, tests and installs to TMUX-OFFLOAD and read back only the "
+    "summary. Read skill, system and memory text in full."
+)
 
 # ==============================================================================
 # Artifact 2: Exception Hierarchy
@@ -136,10 +146,14 @@ def expected_workbench_notice(report: WorkbenchReport) -> str:
     return f"{WORKBENCH_READY_PREFIX}{loaded}{WORKBENCH_FAILED_SEPARATOR}{'; '.join(failures)}"
 
 
-def validate_workbench_notice(report: WorkbenchReport, notice: str) -> None:
-    expected = expected_workbench_notice(report)
-    if notice != expected:
-        raise WorkbenchReportViolationError(f"POST-CTX27-9 violation: notice {notice!r} != {expected!r}")
+def expected_workbench_message(report: WorkbenchReport) -> str:
+    return f"{expected_workbench_notice(report)}{WORKBENCH_MESSAGE_SEPARATOR}{WORKBENCH_RULES}"
+
+
+def validate_workbench_message(report: WorkbenchReport, message: str) -> None:
+    expected = expected_workbench_message(report)
+    if message != expected:
+        raise WorkbenchReportViolationError(f"POST-CTX27-9 violation: message {message!r} != {expected!r}")
 
 
 # ==============================================================================
@@ -307,8 +321,25 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
     "POST-CTX27-9": Clause(
         verification="test",
         text=(
-            "The first ipython tool call of a session shows exactly one notice, and its text equals "
-            "expectedWorkbenchNotice(report) for that kernel's workbench report. Source: REQ-CTX27-18."
+            "When a top-level session starts, omp sends exactly one custom message of type "
+            "WORKBENCH_MESSAGE_TYPE, displayed and delivered as WORKBENCH_MESSAGE_DELIVERY, whose text equals "
+            "expectedWorkbenchMessage(report) for that kernel's workbench report. "
+            "Source: REQ-CTX27-18, REQ-CTX27-19."
+        ),
+    ),
+    "POST-CTX27-10": Clause(
+        verification="test",
+        text=(
+            "After the workbench message is sent, no ipython tool result carries the workbench notice text, "
+            "and the message is not sent again for the same kernel start however many cells or turns follow. "
+            "Source: REQ-CTX27-20, REQ-CTX27-21."
+        ),
+    ),
+    "POST-CTX27-11": Clause(
+        verification="test",
+        text=(
+            "When a top-level session starts, the IPython kernel is started before any user message or ipython "
+            "call, so the workbench report exists and the restored helpers are bound. Source: REQ-CTX27-22."
         ),
     ),
     "ERRORS-CTX27-3": Clause(
@@ -316,7 +347,7 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
         text=(
             "When restore.py is missing or raises, or refuses a snapshot, kernel start still completes, "
             "the next cell executes, the report carries the cause in error and every refused record in "
-            "refused, and the notice names them. Source: REQ-CTX27-16."
+            "refused, and the workbench message names them. Source: REQ-CTX27-16."
         ),
     ),
     "FORBIDDEN-CTX27-2": Clause(

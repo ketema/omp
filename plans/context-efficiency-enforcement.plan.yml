@@ -1,7 +1,7 @@
 schema_version: '1.0'
 feature_name: context-efficiency-enforcement
 manifest_path: requirements/REQUIREMENT_MANIFEST_CTX27.md
-manifest_hash: sha256:8546e8ba5234404f4de890be1a2f4147aa42079e4c31dfb7bdfabc55bf099ac2
+manifest_hash: sha256:cafa6986821048e136b703098a19ed040580d27129791a23412d9eb91c0200cb
 created: '2026-11-05'
 last_updated: '2026-11-05'
 status: ACTIVE
@@ -55,10 +55,16 @@ slices:
   - REQ-CTX27-16
   - REQ-CTX27-17
   - REQ-CTX27-18
+  - REQ-CTX27-19
+  - REQ-CTX27-20
+  - REQ-CTX27-21
+  - REQ-CTX27-22
   clauses_in_scope:
   - SEQ-CTX27-6
   - POST-CTX27-8
   - POST-CTX27-9
+  - POST-CTX27-10
+  - POST-CTX27-11
   - ERRORS-CTX27-3
   - FORBIDDEN-CTX27-2
   clauses_deferred: []
@@ -66,7 +72,7 @@ slices:
   - FORBIDDEN-CTX27-2
   status: PENDING
   issue: ketema/omp#27
-  pivot_note: Item 1a. A new session's IPython kernel loads Ketema's helpers via restore.py at start and shows one notice; the context efficiency extension is unmounted. Ketema accepts only after his real-life fresh-session test.
+  pivot_note: Item 1a. A top-level session starts its IPython kernel at launch, the kernel loads Ketema's helpers via restore.py, and omp sends one developer-role message through its message bus (delivered with the next user message) naming what loaded and stating the context efficiency rules. Never repeated per turn, never in a tool result; the context efficiency extension is unmounted. Ketema accepts only after his real-life fresh-session test.
 forgotten_invariants:
 - INV-CTX27-01
 - INV-CTX27-07

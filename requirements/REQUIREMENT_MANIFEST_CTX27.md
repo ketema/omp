@@ -51,7 +51,9 @@ No contract executes unless all predicates evaluate to TRUE.
 - **Ambiguity Score**: 0
 - **Source Prose (SLICE-2, 2026-11-05)**:
   > "the model there on a fresh session was completely ignorant. even though it has the context efficiency directives in its system prompt, it failed to even regurgitate that prose when I asked it a simple question. ... and to top it off it had no idea on how to use the repl or the cards. i want a solution to this. a new session needs to use the tools and techniques I have made." / "we are working on item number 1. the workbench must be started automatically in a new session." / "1 -> a 2 -> a 3 -> a" / "Plan approved. Go. Unmount the context efficiency extension"
-- **Our Understanding (SLICE-2)**: When a session's IPython Kernel starts, it loads Ketema's Trusted Helper Snapshots by running his existing `restore.py` inside that kernel, and the session shows one notice naming the loaded helpers or the failure cause. The context efficiency extension is not mounted in any session until Ketema re-approves it.
+- **Source Prose (SLICE-2, notice redesign, 2026-11-05)**:
+  > "no that is not my intent and not how I want it to work. i want the harness to notify the model via a system message that supports the system prompt so that the model is encouraged and inclined to follow the context efficiency rules" / "no i do not want a constant repeating message every turn that just builds up. that is NOT efficient. when the harness loads the workbench issue a system message into the context. it can fire on the next user message if possible, but i thought omp had its own system message bus that was independent of user messages?" / "modify the requirement then proceed. all linters must pass. follow ccabdd. be context efficient."
+- **Our Understanding (SLICE-2)**: When a top-level session starts, omp starts the IPython Kernel, which loads Ketema's Trusted Helper Snapshots by running his existing `restore.py` inside that kernel. omp then sends one developer-role context message through its own message bus, delivered with the user's next message, that lists the loaded helpers (or the failure cause and every refused snapshot) and states the context efficiency rules so the model follows them. The message is sent once per kernel start, never repeated per turn, and never placed in a tool result. The context efficiency extension is not mounted in any session until Ketema re-approves it.
 
 ## 2. The Actor Matrix
 
@@ -135,7 +137,11 @@ No contract executes unless all predicates evaluate to TRUE.
 | REQ-CTX27-15 | Snapshot migration | WHEN the managed Python environment upgrades to CPython `3.14.10`, Catalog Gate SHALL migrate every Trusted Helper Snapshot in `manifest.json` from its neutral Python source to the target Python minor version and atomically update `python_version`, `dill_version`, `sha256`, and `byte_size`. | Test | High | Dill code-object bytecode does not cross Python minor versions; neutral source migration preserves every helper across 3.11 to 3.14.10. |
 | REQ-CTX27-16 | Workbench start | WHEN the IPython Kernel of a session starts, Kernel Manager SHALL run `~/.agents/skills/repl-snapshots/restore.py` inside that IPython Kernel BEFORE the first cell executes. | Test | High | A fresh session finds Ketema's helpers on its workbench without being told. |
 | REQ-CTX27-17 | Extension unmount | omp SHALL NOT mount the context efficiency extension in any session. | Test | High | In session 01a1aba2 the mounted extension hid 22 tool results and skill files; suspended until Ketema re-approves. |
-| REQ-CTX27-18 | Workbench notice | WHEN Kernel Manager finishes running `restore.py` at kernel start, omp SHALL show one notice listing the helper names that loaded. | Test | High | The model and Ketema see what is on the workbench. |
+| REQ-CTX27-18 | Workbench message | WHEN Kernel Manager finishes running `restore.py` at kernel start in a top-level session, omp SHALL send one developer-role context message that lists the helper names that loaded, delivered with the next user message. | Test | High | The model learns what is on its workbench through the harness message bus, not through a tool result. |
+| REQ-CTX27-19 | Workbench rules | WHEN omp sends the workbench message, omp SHALL end the message with the context efficiency rules approved in Z11. | Test | High | The message reinforces the system prompt at the moment the workbench appears. |
+| REQ-CTX27-20 | No repeat | omp SHALL NOT resend the workbench message after the user's next message for the same kernel start. | Test | High | A message repeated every turn accumulates in the transcript and defeats context efficiency. |
+| REQ-CTX27-21 | No tool-result notice | omp SHALL NOT place workbench message text in any ipython tool result. | Test | High | Notice text mixed into cell output made the model rerun the cell. |
+| REQ-CTX27-22 | Kernel at launch | WHEN a top-level session starts, omp SHALL start the IPython Kernel before the user's first message. | Test | High | The workbench exists when the session begins, not after the first ipython call. |
 
 ## 4.5 Non-Functional & Quality Attributes
 
@@ -155,8 +161,9 @@ No contract executes unless all predicates evaluate to TRUE.
 | Z6 | Multi-result turn and session dilution | Cap inline tool text at 1,500 tokens per turn and 6,000 tokens per session | User (CL4) |
 | Z7 | Which sessions start the IPython Kernel at launch | Top-level sessions only; subagents start it on first use | User (CL4) |
 | Z8 | Which loader runs at kernel start | Ketema's existing `~/.agents/skills/repl-snapshots/restore.py` | User (CL4) |
-| Z9 | Notice on successful load | Yes: one line listing the loaded helper names | User (CL4) |
+| Z9 | How the workbench load is announced | One developer-role message sent through omp's message bus at load and delivered with the next user message; never a tool-result line, never repeated per turn | User (CL4, 2026-11-05) |
 | Z10 | Context efficiency extension in live sessions | Unmounted in every session | User (CL4) |
+| Z11 | Wording of the context efficiency rules in the workbench message | Draft by the coding agent from Ketema's goal statement (session 01a18024, line 1286); held in one contract constant so Ketema can edit it and the tests follow | User (CL4): authorized proceeding with the draft, wording editable |
 
 ## 5.5 Rejected Alternatives
 
@@ -165,6 +172,8 @@ No contract executes unless all predicates evaluate to TRUE.
 | 5 head + 5 tail lines at 40 chars | 10 head + 10 tail lines at 120 chars | Exceeds the 400-token descriptor cap (up to 1,648 tokens on punctuation) |
 | Drop unpicklable names to `open_items` | Refuse compaction on any unpicklable variable | One open socket or generator would permanently block compaction until session death |
 | Per-turn (1,500) + per-session (6,000) budgets | Per-result threshold alone | Fifty 1,400-token results would pass the gate and flood context |
+| Workbench notice as the first line of the first ipython result | Message through omp's message bus | The notice appears only after an ipython call and mixes into cell output; the model reran the cell to separate them |
+| Rules appended to the system prompt on every turn | One message at workbench load | Repeating text every turn accumulates and defeats context efficiency (Ketema, 2026-11-05) |
 
 ## 6. Tool/API Interface Summary
 
@@ -190,7 +199,7 @@ No contract executes unless all predicates evaluate to TRUE.
 | REQ-CTX27-10 | Kernel variable is unpicklable during compaction | Compaction Gate SHALL drop the variable from the snapshot and continue compaction. | Compaction Gate SHALL list the dropped variable name in `open_items`. |
 | REQ-CTX27-13 | Compaction Snapshot write fails or SHA-256 mismatches | Compaction Gate SHALL return `{ cancel: true }` and abort compaction. | omp SHALL throw `CompactionCancelledError` and set status `Compaction cancelled`. |
 | REQ-CTX27-15 | A Trusted Helper Snapshot has no recoverable Python source or fails target compilation during migration | Catalog Gate SHALL abort the migration without modifying `manifest.json` or existing snapshot files. | Catalog Gate SHALL raise an error naming the unmigratable snapshot record ID. |
-| REQ-CTX27-16 | `restore.py` is missing, raises, or refuses a Trusted Helper Snapshot | Kernel Manager SHALL keep the IPython Kernel usable for cell execution. | omp SHALL show one notice naming the failure cause and every refused snapshot. |
+| REQ-CTX27-16 | `restore.py` is missing, raises, or refuses a Trusted Helper Snapshot | Kernel Manager SHALL keep the IPython Kernel usable for cell execution. | omp SHALL send the workbench message naming the failure cause and every refused snapshot. |
 
 ## 8. Completion Promise (Ralph Loop Exit)
 
@@ -216,3 +225,4 @@ packages/coding-agent/src/context/context-efficiency-enforcement.ts
 |------|--------|--------|
 | 2026-11-05 | Ketema Harris | Initial IEEE 29148 manifest for ketema/omp#27 context efficiency enforcement |
 | 2026-11-05 | Ketema Harris | SLICE-2 item 1a: REQ-CTX27-16 workbench helpers load at kernel start; REQ-CTX27-17 context efficiency extension unmounted; REQ-CTX27-18 workbench notice (Z7-Z10) |
+| 2026-11-05 | Ketema Harris | SLICE-2 notice redesign: REQ-CTX27-18 is now a one-time developer-role message; REQ-CTX27-19 to 22 added (rules text, no repeat, no tool-result notice, kernel starts at launch); Z9 replaced, Z11 added |
