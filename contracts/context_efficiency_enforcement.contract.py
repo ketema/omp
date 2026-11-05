@@ -240,6 +240,29 @@ def whole_read_refusal(artifact_id: str, n: int) -> str:
     )
 
 
+# REQ-CTX27-33 (Z18): appended to Ketema's own interactive message as if he typed it. He may edit this wording.
+USER_REMINDER_TEXT: Final[str] = (
+    "Remember to be context efficient. Use your ipython REPL for data work and never paste long output into "
+    "your reply. Have you written this function before? Check memory and your helpers first. "
+    "Follow every skill step exactly."
+)
+
+
+def user_message_with_reminder(text: str, source: str) -> str:
+    """REQ-CTX27-33, REQ-CTX27-34: the message text after the submit hook.
+
+    Appends USER_REMINDER_TEXT on a new line with no marker, tag or label. Unchanged when the source is not
+    "interactive", the text is empty, it begins with /, ! or $, or it already ends with the reminder.
+    """
+    if source != "interactive" or not text.strip():
+        return text
+    if text.lstrip().startswith(("/", "!", "$")):
+        return text
+    if text.endswith(USER_REMINDER_TEXT):
+        return text
+    return f"{text}\n{USER_REMINDER_TEXT}"
+
+
 # ==============================================================================
 # Artifact 5: Method-Aware Clause Map
 # ==============================================================================
@@ -508,6 +531,22 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
             "The first access line of the descriptor ends with IPYTHON_DESCRIPTOR_INSTRUCTION and the artifact "
             "line says that only ranges are read and a whole read is refused (expectedIpythonDescriptor). "
             "Source: REQ-CTX27-32."
+        ),
+    ),
+    "POST-CTX27-21": Clause(
+        verification="test",
+        text=(
+            "The submit hook returns the interactive message followed by a newline and USER_REMINDER_TEXT "
+            "exactly, with no marker, tag or label around the reminder (userMessageWithReminder). "
+            "Source: REQ-CTX27-33."
+        ),
+    ),
+    "POST-CTX27-22": Clause(
+        verification="test",
+        text=(
+            "The submit hook returns the message unchanged when the source is not interactive, the text is "
+            "empty, the text begins with /, ! or $, or the text already ends with USER_REMINDER_TEXT. "
+            "Source: REQ-CTX27-34."
         ),
     ),
     "FORBIDDEN-CTX27-3": Clause(

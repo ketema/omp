@@ -429,6 +429,23 @@ export function wholeReadRefusal(artifactId: string, n: number): string {
 	return `artifact://${artifactId} is the full copy of ${name}. Ask ${name} in ipython (for example ${name}.count("ERROR")) or read a range: artifact://${artifactId}:1-60.`;
 }
 
+/** REQ-CTX27-33 (Z18): appended to Ketema's own interactive message as if he typed it. Ketema may edit this wording; tests follow. */
+export const USER_REMINDER_TEXT =
+	"Remember to be context efficient. Use your ipython REPL for data work and never paste long output into your reply. Have you written this function before? Check memory and your helpers first. Follow every skill step exactly.";
+
+/**
+ * REQ-CTX27-33, REQ-CTX27-34: the message text after the submit hook. Appends USER_REMINDER_TEXT on a new line, with no
+ * marker, tag or label. Unchanged when the source is not "interactive", the text is empty, it begins with `/`, `!` or
+ * `$`, or it already ends with the reminder. Pure.
+ */
+export function userMessageWithReminder(text: string, source: string): string {
+	if (source !== "interactive") return text;
+	if (text.trim() === "") return text;
+	if (/^[/!$]/.test(text.trimStart())) return text;
+	if (text.endsWith(USER_REMINDER_TEXT)) return text;
+	return `${text}\n${USER_REMINDER_TEXT}`;
+}
+
 // =============================================================================
 // Artifact 5: Method-Aware Clause Map
 // =============================================================================
@@ -656,6 +673,20 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 		description:
 			"The first access line of the descriptor ends with IPYTHON_DESCRIPTOR_INSTRUCTION and the artifact line says that only ranges are read and a whole read is refused (expectedIpythonDescriptor).",
 		requirement_ids: ["REQ-CTX27-32"],
+	},
+	"POST-CTX27-21": {
+		id: "POST-CTX27-21",
+		method: "test",
+		description:
+			"The submit hook returns the interactive message followed by a newline and USER_REMINDER_TEXT exactly, with no marker, tag or label around the reminder (userMessageWithReminder).",
+		requirement_ids: ["REQ-CTX27-33"],
+	},
+	"POST-CTX27-22": {
+		id: "POST-CTX27-22",
+		method: "test",
+		description:
+			"The submit hook returns the message unchanged when the source is not interactive, the text is empty, the text begins with /, ! or $, or the text already ends with USER_REMINDER_TEXT.",
+		requirement_ids: ["REQ-CTX27-34"],
 	},
 	"FORBIDDEN-CTX27-3": {
 		id: "FORBIDDEN-CTX27-3",

@@ -41,6 +41,8 @@ export interface RealSession {
 	emit(type: string, event?: object, dir?: string): Promise<void>;
 	/** Fires a tool call to every tool_call handler; the first block result, or undefined when none refused it. */
 	toolCall(toolName: string, input: object): Promise<{ block?: boolean; reason?: string } | undefined>;
+	/** Submits a user message through every input handler, chaining text replacements as the harness does; resolves the final text. */
+	submit(text: string, source?: string): Promise<string>;
 	start(): Promise<void>;
 	shutdown(): Promise<void>;
 	call(code: string): Promise<ToolResult>;
@@ -100,6 +102,15 @@ export async function openRealSession(
 		}
 		return undefined;
 	};
+	const submit = async (text: string, source = "interactive") => {
+		const ctx = { cwd: root, sessionManager: { resolveOwnArtifactsDir: async () => initialDir } };
+		let current = text;
+		for (const handler of handlers.get("input") ?? []) {
+			const result = (await handler({ type: "input", text: current, source }, ctx)) as { text?: string } | undefined;
+			if (result?.text !== undefined) current = result.text;
+		}
+		return current;
+	};
 	const call = (code: string) => tools[0].execute(`c-${crypto.randomUUID()}`, { code }, undefined, undefined, toolCtx);
 	return {
 		root,
@@ -112,6 +123,7 @@ export async function openRealSession(
 		},
 		emit,
 		toolCall,
+		submit,
 		start: () => emit("session_start"),
 		shutdown: () => emit("session_shutdown"),
 		call,

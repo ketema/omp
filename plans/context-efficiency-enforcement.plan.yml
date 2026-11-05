@@ -1,7 +1,7 @@
 schema_version: '1.0'
 feature_name: context-efficiency-enforcement
 manifest_path: requirements/REQUIREMENT_MANIFEST_CTX27.md
-manifest_hash: sha256:4aadd32c15370bdb0309fce1664d64c12e660f9d7c98ca04192b81f86f696da4
+manifest_hash: sha256:e3404e9f08fde9f77e3261eb25bbfa81d9cf3ac1af02060f33bfb629376b5ffe
 created: '2026-11-05'
 last_updated: '2026-11-05'
 status: ACTIVE
@@ -85,6 +85,8 @@ slices:
   - REQ-CTX27-30
   - REQ-CTX27-31
   - REQ-CTX27-32
+  - REQ-CTX27-33
+  - REQ-CTX27-34
   clauses_in_scope:
   - POST-CTX27-12
   - POST-CTX27-13
@@ -95,6 +97,8 @@ slices:
   - POST-CTX27-18
   - POST-CTX27-19
   - POST-CTX27-20
+  - POST-CTX27-21
+  - POST-CTX27-22
   - FORBIDDEN-CTX27-3
   - ERRORS-CTX27-4
   clauses_deferred: []
