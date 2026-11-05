@@ -129,7 +129,9 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 		expect(IMPL_COMPACTION_CANCELLED_TEXT).toBe(COMPACTION_CANCELLED_TEXT);
 
 		// PRE-CTX27-1: both contract validator and independent implementation reject blank agentDir/sessionId/toolCallId
-		expect(() => assertValidEnforcerPreconditions({ agentDir: "", sessionId: "s1" })).toThrow(PreconditionViolationError);
+		expect(() => assertValidEnforcerPreconditions({ agentDir: "", sessionId: "s1" })).toThrow(
+			PreconditionViolationError,
+		);
 		expect(() => new ContextEfficiencyEnforcer({ agentDir: "", sessionId: "s1" })).toThrow(
 			ImplPreconditionViolationError,
 		);
@@ -160,7 +162,9 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 			toolCallId: "call-f-inline",
 			text: fInlineText,
 		});
-		expect(inlineRes.mode, "POST-CTX27-1 / SEQ-CTX27-1 violation: 1,499-token result must stay inline").toBe("inline");
+		expect(inlineRes.mode, "POST-CTX27-1 / SEQ-CTX27-1 violation: 1,499-token result must stay inline").toBe(
+			"inline",
+		);
 		expect(inlineRes.transcriptText).toBe(fInlineText);
 
 		// Reset turn/session for F-over
@@ -229,7 +233,9 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 		const turnRes1 = await enforcer.admitToolResult({ toolCallId: "call-turn-1", text: turnText1 });
 		const turnRes2 = await enforcer.admitToolResult({ toolCallId: "call-turn-2", text: turnText2 });
 		expect(turnRes1.mode, "POST-CTX27-1 violation: first 1,400-token result in turn must be inline").toBe("inline");
-		expect(turnRes2.mode, "POST-CTX27-1 violation: second 1,400-token result in same turn must be filed").toBe("filed");
+		expect(turnRes2.mode, "POST-CTX27-1 violation: second 1,400-token result in same turn must be filed").toBe(
+			"filed",
+		);
 
 		// F-session: with 6,000 tokens of inline tool text already stored, a 100-token result is filed
 		enforcer.resetBudgets();
@@ -306,10 +312,9 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 			expect(card.summary.length <= CARD_SUMMARY_MAX_CHARS).toBe(true);
 			expect(card.snapshot.length <= CARD_SNAPSHOT_MAX_CHARS).toBe(true);
 		}
-		expect(
-			totalCardTokens <= 240,
-			`POST-CTX27-4 violation: 3 cards consumed ${totalCardTokens} tokens (> 240)`,
-		).toBe(true);
+		expect(totalCardTokens <= 240, `POST-CTX27-4 violation: 3 cards consumed ${totalCardTokens} tokens (> 240)`).toBe(
+			true,
+		);
 		for (const fn of fns) {
 			expect(
 				assembled.prompt.includes("def " + fn.name),
@@ -347,10 +352,9 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 				probeCallExpr: "expand_rules(17)",
 			});
 			expect(badLoad.refused.length, "POST-CTX27-4 violation: failed load must report refusal error").toBe(1);
-			expect(
-				badLoad.probeResult,
-				"POST-CTX27-4 violation: failed load must leave previous binding in place",
-			).toBe("PRIOR_BINDING");
+			expect(badLoad.probeResult, "POST-CTX27-4 violation: failed load must leave previous binding in place").toBe(
+				"PRIOR_BINDING",
+			);
 		} finally {
 			fs.rmSync(homeRoot, { recursive: true, force: true });
 		}
@@ -408,11 +412,16 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 		expect(outcome.record.open_items.some(item => item.includes("unpicklable_gen"))).toBe(true);
 		expect(JSON.stringify(outcome.record).includes(fOverPayload.slice(0, 64))).toBe(false);
 
-		const restored = await enforcer.verifyCompactionSnapshotInFreshProcess(outcome.record.snapshot_path, artifactName);
+		const restored = await enforcer.verifyCompactionSnapshotInFreshProcess(
+			outcome.record.snapshot_path,
+			artifactName,
+		);
 		expect(restored.startsWithPickleMagic0x80).toBe(true);
 		expect(restored.sha256MatchesRecord).toBe(outcome.record.sha256);
 		expect(restored.hasUnpicklableGen).toBe(false);
-		expect(restored.restoredArtifactSha256).toBe(crypto.createHash("sha256").update(fOverPayload, "utf8").digest("hex"));
+		expect(restored.restoredArtifactSha256).toBe(
+			crypto.createHash("sha256").update(fOverPayload, "utf8").digest("hex"),
+		);
 	});
 
 	it("Test 4 (Prompt Assembly & Done Budget): forbids 32-byte payload value slices outside cut sample/text lines and keeps the fixture transcript <= 700 o200k tokens (FORBIDDEN-CTX27-1)", async () => {
