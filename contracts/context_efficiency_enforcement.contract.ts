@@ -402,6 +402,7 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 		method: "test",
 		description:
 			"migrateHelperSnapshotsToTargetPython migrates every snapshot record in manifest.json from its neutral Python source (stored in manifest.json or supplied via sourceOverrides) to targetPython's major.minor version and dill version, atomically updating the snapshot file and manifest.json (python_version, dill_version, sha256, byte_size) so restore.py restores all migrated helpers under targetPython.",
+		requirement_ids: ["REQ-CTX27-15"],
 	},
 	"SEQ-CTX27-1": {
 		id: "SEQ-CTX27-1",
@@ -429,6 +430,7 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 		method: "test",
 		description:
 			"ContextEfficiencyEnforcer.runCompactionWithGate invokes runBeforeCompactHook BEFORE committing a compaction entry and aborts with CompactionCancelledError when the hook returns { cancel: true } (IP-4).",
+		requirement_ids: ["REQ-CTX27-11", "REQ-CTX27-13"],
 	},
 	"ERRORS-CTX27-1": {
 		id: "ERRORS-CTX27-1",
