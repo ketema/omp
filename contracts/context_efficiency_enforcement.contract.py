@@ -248,13 +248,38 @@ USER_REMINDER_TEXT: Final[str] = (
 )
 
 
-def user_message_with_reminder(text: str, source: str) -> str:
+def session_holds_reminder(entries: list[object]) -> bool:
+    """REQ-CTX27-34: True when any user message entry among the session history entries holds USER_REMINDER_TEXT.
+
+    A history entry is a message entry whose message has role "user"; its content is a string or a list of parts
+    with a text field.
+    """
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("type") != "message":
+            continue
+        message = entry.get("message")
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "\n".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
+        else:
+            text = ""
+        if USER_REMINDER_TEXT in text:
+            return True
+    return False
+
+
+def user_message_with_reminder(text: str, source: str, reminder_in_session: bool) -> str:
     """REQ-CTX27-33, REQ-CTX27-34: the message text after the submit hook.
 
     Appends USER_REMINDER_TEXT on a new line with no marker, tag or label. Unchanged when the source is not
-    "interactive", the text is empty, it begins with /, ! or $, or it already ends with the reminder.
+    "interactive", the text is empty, it begins with /, ! or $, it already ends with the reminder, or the session
+    already holds the reminder.
     """
-    if source != "interactive" or not text.strip():
+    if reminder_in_session or source != "interactive" or not text.strip():
         return text
     if text.lstrip().startswith(("/", "!", "$")):
         return text
@@ -545,8 +570,16 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
         verification="test",
         text=(
             "The submit hook returns the message unchanged when the source is not interactive, the text is "
-            "empty, the text begins with /, ! or $, or the text already ends with USER_REMINDER_TEXT. "
-            "Source: REQ-CTX27-34."
+            "empty, the text begins with /, ! or $, the text already ends with USER_REMINDER_TEXT, or the "
+            "session already holds the reminder. Source: REQ-CTX27-34."
+        ),
+    ),
+    "POST-CTX27-23": Clause(
+        verification="test",
+        text=(
+            "The session holds the reminder exactly when an earlier user message entry of its history contains "
+            "USER_REMINDER_TEXT (sessionHoldsReminder), so the reminder goes on the first eligible message only, "
+            "including after a resume or a compaction. Source: REQ-CTX27-34."
         ),
     ),
     "FORBIDDEN-CTX27-3": Clause(

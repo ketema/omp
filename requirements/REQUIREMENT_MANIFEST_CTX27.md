@@ -156,7 +156,7 @@ No contract executes unless all predicates evaluate to TRUE.
 | REQ-CTX27-31 | Whole-read refusal | WHEN a read of `artifact://<id>` names an ipython filed output and carries no line range, omp SHALL refuse the call and state in the refusal that the answer comes from `out_<n>` in ipython or from the range form `artifact://<id>:1-60`. | Test | High | In session 01a1add1 the whole 1,189-token text came back into context and cancelled the saving. |
 | REQ-CTX27-32 | Descriptor instruction | omp SHALL state in the descriptor that the answer comes from `out_<n>` in ipython, that the model pastes no filed lines into its reply, and that the model reads the artifact by range only. | Test | High | The model skipped the preferred route and retyped all 100 rows into its reply. |
 | REQ-CTX27-33 | User message reminder | WHEN Ketema submits a message in a top-level interactive session, omp SHALL append the reminder text on a new line to that message, with no marker, tag or label around it, except where REQ-CTX27-34 leaves the message unchanged. | Test | High | A reminder written as part of his own message is the only form the model follows; a labelled one is ignored over time (Ketema, 2026-11-05). |
-| REQ-CTX27-34 | Reminder exclusions | omp SHALL leave a message unchanged when its source is not interactive, when it is empty, when it begins with `/`, `!` or `$`, or when it already ends with the reminder text. | Test | High | Slash, shell and python commands must still run, and a resubmitted message must not collect a second copy. |
+| REQ-CTX27-34 | Reminder exclusions | omp SHALL leave a message unchanged when its source is not interactive, when it is empty, when it begins with `/`, `!` or `$`, when it already ends with the reminder text, or when an earlier user message of the same session already holds the reminder text. | Test | High | Slash, shell and python commands must still run, and the reminder goes on the first eligible message of a session only, including across a resume and a compaction (Ketema, 2026-11-06). |
 
 ## 4.5 Non-Functional & Quality Attributes
 
@@ -186,6 +186,7 @@ No contract executes unless all predicates evaluate to TRUE.
 | Z16 | How the filed output is reached | Two access methods for the same data: the kernel variable (preferred, allows processing) and the existing artifact:// copy (whole unchanged text); the ipython:// protocol comes in a later slice | User (CL4, 2026-11-05) |
 | Z17 | Whole read of a filed artifact | omp refuses the read call only; it does not rewrite the result of any tool, touches no other artifact and no other protocol, so REQ-CTX27-29 stands | User (CL4, 2026-11-05): "let's implement #2 next. that is a quick win. include #3 and #4 as well" |
 | Z18 | Wording and form of the reminder | One contract constant holds the wording so Ketema edits it in one place and the tests follow; the text is appended to his own message exactly as if he typed it, with no wrapper | User (CL4, 2026-11-05): "append it to my user prompt as if I said it on that prompt. do not wrap it in xml or any other indicator" |
+| Z19 | How often the reminder is appended | The first eligible user message of a session only, for now; whether attention drift calls for a later repeat is decided from measured data on CCABDD procedure sessions | User (CL4, 2026-11-06): "lets do step 1 now. Only on the first user message." |
 
 ## 5.5 Rejected Alternatives
 
@@ -258,3 +259,4 @@ packages/coding-agent/src/context/context-efficiency-enforcement.ts
 | 2026-11-05 | Ketema Harris | REQ-CTX27-23 and REQ-CTX27-27: filing threshold lowered from 1,500 to 800 o200k tokens (User, CL4, after the transcript measurement) |
 | 2026-11-05 | Ketema Harris | REQ-CTX27-31 and 32 added: refusal of a whole read of an ipython filed artifact, and the answer-from-the-kernel instruction in the descriptor; Z17 added |
 | 2026-11-05 | Ketema Harris | REQ-CTX27-33 and 34 added: the reminder appended to his interactive messages, with its exclusions; Z18 added |
+| 2026-11-06 | Ketema Harris | REQ-CTX27-34: the reminder goes on the first eligible user message of a session only; Z19 added |

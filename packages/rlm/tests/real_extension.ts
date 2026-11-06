@@ -43,6 +43,8 @@ export interface RealSession {
 	toolCall(toolName: string, input: object): Promise<{ block?: boolean; reason?: string } | undefined>;
 	/** Submits a user message through every input handler, chaining text replacements as the harness does; resolves the final text. */
 	submit(text: string, source?: string): Promise<string>;
+	/** The session history entries the harness exposes through sessionManager.getEntries(); submit() records each message here after the handlers ran, and a test may seed it before the first submit. */
+	readonly history: unknown[];
 	start(): Promise<void>;
 	shutdown(): Promise<void>;
 	call(code: string): Promise<ToolResult>;
@@ -102,13 +104,18 @@ export async function openRealSession(
 		}
 		return undefined;
 	};
+	const history: unknown[] = [];
 	const submit = async (text: string, source = "interactive") => {
-		const ctx = { cwd: root, sessionManager: { resolveOwnArtifactsDir: async () => initialDir } };
+		const ctx = {
+			cwd: root,
+			sessionManager: { resolveOwnArtifactsDir: async () => initialDir, getEntries: () => [...history] },
+		};
 		let current = text;
 		for (const handler of handlers.get("input") ?? []) {
 			const result = (await handler({ type: "input", text: current, source }, ctx)) as { text?: string } | undefined;
 			if (result?.text !== undefined) current = result.text;
 		}
+		history.push({ type: "message", message: { role: "user", content: current } });
 		return current;
 	};
 	const call = (code: string) => tools[0].execute(`c-${crypto.randomUUID()}`, { code }, undefined, undefined, toolCtx);
@@ -124,6 +131,7 @@ export async function openRealSession(
 		emit,
 		toolCall,
 		submit,
+		history,
 		start: () => emit("session_start"),
 		shutdown: () => emit("session_shutdown"),
 		call,

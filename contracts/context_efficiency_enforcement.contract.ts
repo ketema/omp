@@ -434,11 +434,32 @@ export const USER_REMINDER_TEXT =
 	"Remember to be context efficient. Use your ipython REPL for data work and never paste long output into your reply. Have you written this function before? Check memory and your helpers first. Follow every skill step exactly.";
 
 /**
+ * REQ-CTX27-34: true when any user message among the session history `entries` holds USER_REMINDER_TEXT. A history
+ * entry is a message entry whose message has role "user"; its content is a string or a list of parts with `text`. Pure.
+ */
+export function sessionHoldsReminder(entries: readonly unknown[]): boolean {
+	for (const entry of entries) {
+		const holder = entry as { type?: unknown; message?: { role?: unknown; content?: unknown } } | null;
+		if (holder?.type !== "message" || holder.message?.role !== "user") continue;
+		const content = holder.message.content;
+		const text =
+			typeof content === "string"
+				? content
+				: Array.isArray(content)
+					? content.map(part => String((part as { text?: unknown } | null)?.text ?? "")).join("\n")
+					: "";
+		if (text.includes(USER_REMINDER_TEXT)) return true;
+	}
+	return false;
+}
+
+/**
  * REQ-CTX27-33, REQ-CTX27-34: the message text after the submit hook. Appends USER_REMINDER_TEXT on a new line, with no
  * marker, tag or label. Unchanged when the source is not "interactive", the text is empty, it begins with `/`, `!` or
- * `$`, or it already ends with the reminder. Pure.
+ * `$`, it already ends with the reminder, or the session already holds the reminder (`reminderInSession`). Pure.
  */
-export function userMessageWithReminder(text: string, source: string): string {
+export function userMessageWithReminder(text: string, source: string, reminderInSession: boolean): string {
+	if (reminderInSession) return text;
 	if (source !== "interactive") return text;
 	if (text.trim() === "") return text;
 	if (/^[/!$]/.test(text.trimStart())) return text;
@@ -685,7 +706,14 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 		id: "POST-CTX27-22",
 		method: "test",
 		description:
-			"The submit hook returns the message unchanged when the source is not interactive, the text is empty, the text begins with /, ! or $, or the text already ends with USER_REMINDER_TEXT.",
+			"The submit hook returns the message unchanged when the source is not interactive, the text is empty, the text begins with /, ! or $, the text already ends with USER_REMINDER_TEXT, or the session already holds the reminder.",
+		requirement_ids: ["REQ-CTX27-34"],
+	},
+	"POST-CTX27-23": {
+		id: "POST-CTX27-23",
+		method: "test",
+		description:
+			"The session holds the reminder exactly when an earlier user message entry of its history contains USER_REMINDER_TEXT (sessionHoldsReminder), so the reminder goes on the first eligible message only, including after a resume or a compaction.",
 		requirement_ids: ["REQ-CTX27-34"],
 	},
 	"FORBIDDEN-CTX27-3": {
