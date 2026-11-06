@@ -15,7 +15,7 @@ import { KernelManager } from "./kernel";
 import { RlmSessionLifecycle } from "./session_lifecycle";
 import { createRlmToolDefinition, type RlmToolKernelPort, type RlmToolKernelResult } from "./tool";
 import { createTransport } from "./transport";
-import { userMessageWithReminder } from "./user_reminder";
+import { sessionHoldsReminder, userMessageWithReminder } from "./user_reminder";
 import { WORKBENCH_MESSAGE_TYPE, type WorkbenchReport, workbenchMessage } from "./workbench";
 // =============================================================================
 // Config types
@@ -357,6 +357,8 @@ export function createRlmExtension(
 
 		// REQ-CTX27-31: artifact id -> out_<n> number for every filed output whose copy was saved in this session.
 		const filedArtifacts = new Map<string, number>();
+		// REQ-CTX27-34: true once this session is known to hold the reminder, so the history is read at most until then.
+		let reminderInSession = false;
 
 		// registerTool: exactly ONE tool, the ipython tool
 		const toolDef = createRlmToolDefinition({
@@ -445,10 +447,12 @@ export function createRlmExtension(
 		});
 		api.on("session_switch", (event, ctx) => {
 			filedArtifacts.clear();
+			reminderInSession = false;
 			return lifecycle.handleSessionInit(event, ctx);
 		});
 		api.on("session_branch", (event, ctx) => {
 			filedArtifacts.clear();
+			reminderInSession = false;
 			return lifecycle.handleSessionInit(event, ctx);
 		});
 		api.on("session_shutdown", () => lifecycle.shutdown());
@@ -460,12 +464,19 @@ export function createRlmExtension(
 			const n = id === null ? undefined : filedArtifacts.get(id);
 			return id === null || n === undefined ? undefined : { block: true, reason: wholeReadRefusal(id, n) };
 		});
-		// REQ-CTX27-33, REQ-CTX27-34: the reminder joins Ketema's own interactive message as if he typed it.
-		api.on("input", (event: unknown) => {
+		// REQ-CTX27-33, REQ-CTX27-34: the reminder joins the first eligible interactive message of the session, as if Ketema typed it.
+		api.on("input", (event: unknown, ctx: unknown) => {
 			const input = event as { text?: unknown; source?: unknown };
 			if (typeof input.text !== "string" || typeof input.source !== "string") return undefined;
-			const text = userMessageWithReminder(input.text, input.source);
-			return text === input.text ? undefined : { text };
+			if (!reminderInSession) {
+				const sessionManager = (ctx as { sessionManager?: { getEntries?: () => readonly unknown[] } } | null)
+					?.sessionManager;
+				reminderInSession = sessionHoldsReminder(sessionManager?.getEntries?.() ?? []);
+			}
+			const text = userMessageWithReminder(input.text, input.source, reminderInSession);
+			if (text === input.text) return undefined;
+			reminderInSession = true;
+			return { text };
 		});
 	};
 }
