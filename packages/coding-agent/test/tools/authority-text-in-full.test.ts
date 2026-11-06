@@ -29,11 +29,12 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { cfgToolsArtifactSpillThreshold } from "@oh-my-pi/pi-coding-agent/tools/settings";
+import { authorityReadKind as implementationAuthorityReadKind } from "@oh-my-pi/pi-coding-agent/tools/authority-text";
 
 import {
 	authorityReadKind as contractAuthorityReadKind,
 	MEMORY_AUTHORITY_TOOLS,
-} from "../../../../contracts/context_efficiency_enforcement.contract.ts";
+} from "../../../../contracts/context_efficiency_enforcement.contract";
 
 const SPILL_THRESHOLD_BYTES = 50 * 1024;
 
@@ -298,10 +299,7 @@ describe("authority text is never elided (REQ-CTX27-35 to REQ-CTX27-38)", () => 
 
 	it("POST-CTX27-28: the implementation classifier agrees with the contract on every path shape", async () => {
 		// Risk tier: HIGH — the exemption keys on this classifier; a drift between twins would hide or expose the wrong text.
-		// Dynamic only while the module does not exist (RED): a static import would crash the whole file instead of failing this one clause. GREEN replaces it with a static import.
-		const implementation = await import("../../src/tools/authority-text").catch(error => {
-			throw new Error(`POST-CTX27-28 violation: the implementation classifier module is missing: ${String(error)}`);
-		});
+		// POST-CTX27-28: both classifiers are imported statically now that the implementation module exists.
 		const cases: Array<[string, string]> = [
 			["read", "skill://x"],
 			["read", "skill://x/references/y.md"],
@@ -321,7 +319,7 @@ describe("authority text is never elided (REQ-CTX27-35 to REQ-CTX27-38)", () => 
 			["read", ""],
 		];
 		const disagreements = cases.filter(
-			([tool, p]) => implementation.authorityReadKind(tool, p) !== contractAuthorityReadKind(tool, p),
+			([tool, p]) => implementationAuthorityReadKind(tool, p) !== contractAuthorityReadKind(tool, p),
 		);
 		expect(
 			disagreements,
