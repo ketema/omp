@@ -467,6 +467,33 @@ export function userMessageWithReminder(text: string, source: string, reminderIn
 	return `${text}\n${USER_REMINDER_TEXT}`;
 }
 
+/** REQ-CTX27-35, REQ-CTX27-36 (Z20): the kinds of authority text that omp never elides. */
+export type AuthorityKind = "skill" | "xd_doc" | "memory";
+
+/** REQ-CTX27-36: the memory tools whose recall, search and list results are authority text. */
+export const MEMORY_AUTHORITY_TOOLS: readonly string[] = ["memory_recall", "memory_search", "memory_list"];
+
+/**
+ * REQ-CTX27-35, REQ-CTX27-36 (Z20): the kind of authority text a tool call returns, or null for any other call. A `read`
+ * of `skill://...` or of a file under a skills directory (`.omp/agent/skills/`, `.claude/skills/`, `.agents/skills/`) is
+ * "skill"; a `read` of `xd://...` is "xd_doc"; a `write` to `xd://mcp__memory_recall`, `_search` or `_list` (how an MCP tool
+ * executes) is "memory". A trailing line selector (`:5-9`, `:raw`) does not change the kind. Pure.
+ */
+export function authorityReadKind(toolName: string, path: string): AuthorityKind | null {
+	const target = path.trim();
+	if (toolName === "read") {
+		if (/^skill:\/\//i.test(target)) return "skill";
+		if (/\/\.(?:omp\/agent|claude|agents)\/skills\/[^/]+\//.test(target)) return "skill";
+		if (/^xd:\/\//i.test(target)) return "xd_doc";
+		return null;
+	}
+	if (toolName === "write") {
+		const memory = /^xd:\/\/mcp__(memory_[a-z]+)$/i.exec(target);
+		if (memory?.[1] !== undefined && MEMORY_AUTHORITY_TOOLS.includes(memory[1].toLowerCase())) return "memory";
+	}
+	return null;
+}
+
 // =============================================================================
 // Artifact 5: Method-Aware Clause Map
 // =============================================================================
@@ -715,6 +742,41 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 		description:
 			"The session holds the reminder exactly when an earlier user message entry of its history contains USER_REMINDER_TEXT (sessionHoldsReminder), so the reminder goes on the first eligible message only, including after a resume or a compaction.",
 		requirement_ids: ["REQ-CTX27-34"],
+	},
+	"POST-CTX27-24": {
+		id: "POST-CTX27-24",
+		method: "test",
+		description:
+			"A read with no line range whose authorityReadKind is skill (skill:// or a file under a skills directory, including references/) returns the whole file text in one result: no middle elision, no spill artifact and no paging notice, even when the file exceeds tools.artifactSpillThreshold.",
+		requirement_ids: ["REQ-CTX27-35"],
+	},
+	"POST-CTX27-25": {
+		id: "POST-CTX27-25",
+		method: "test",
+		description:
+			"A read whose authorityReadKind is xd_doc, and a write whose authorityReadKind is memory (memory_recall, memory_search, memory_list), returns the whole result text: no middle elision and no spill artifact.",
+		requirement_ids: ["REQ-CTX27-36"],
+	},
+	"POST-CTX27-26": {
+		id: "POST-CTX27-26",
+		method: "test",
+		description:
+			"A read of authority text that carries a line range returns exactly the requested lines, with no middle elision.",
+		requirement_ids: ["REQ-CTX27-37"],
+	},
+	"POST-CTX27-27": {
+		id: "POST-CTX27-27",
+		method: "test",
+		description:
+			"Every result whose authorityReadKind is null is spilled and paged exactly as before: a bash result above tools.artifactSpillThreshold still becomes a head and tail with an artifact, and the setting keeps its value.",
+		requirement_ids: ["REQ-CTX27-38"],
+	},
+	"POST-CTX27-28": {
+		id: "POST-CTX27-28",
+		method: "test",
+		description:
+			"authorityReadKind returns skill for read of skill://x, read of skill://x/references/y.md and read of a path under .omp/agent/skills/, .claude/skills/ or .agents/skills/; xd_doc for read of xd://tool; memory for write to xd://mcp__memory_recall, _search and _list; and null for every other tool and path, including write to xd://mcp__memory_remember.",
+		requirement_ids: ["REQ-CTX27-35", "REQ-CTX27-36"],
 	},
 	"FORBIDDEN-CTX27-3": {
 		id: "FORBIDDEN-CTX27-3",

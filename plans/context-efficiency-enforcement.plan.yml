@@ -1,9 +1,9 @@
 schema_version: '1.0'
 feature_name: context-efficiency-enforcement
 manifest_path: requirements/REQUIREMENT_MANIFEST_CTX27.md
-manifest_hash: sha256:079868c42240fe82b5f5d0c9277f995e217ba00363946ebc61771df808b909cb
+manifest_hash: sha256:dc22a4efea9ba395aeae93a4afab491d46a895b6fead5617a153d6952352e4f7
 created: '2026-11-05'
-last_updated: '2026-11-05'
+last_updated: '2026-11-06'
 status: ACTIVE
 slices:
 - id: SLICE-1
@@ -108,6 +108,24 @@ slices:
   status: PENDING
   issue: ketema/omp#27
   pivot_note: Item 2. Only ipython output changes, plus one refusal. When a cell's stdout reaches 800 o200k tokens, the full text stays in the kernel as out_<n>, omp saves the same text as a session artifact, and the tool result carries a descriptor that names both access methods with the kernel variable preferred and tells the model to answer from the kernel. A whole read of that artifact is refused with a range hint. Every other tool, protocol and thinking block is untouched. The ipython:// protocol is a later slice.
+- id: SLICE-4
+  requirement_ids:
+  - REQ-CTX27-35
+  - REQ-CTX27-36
+  - REQ-CTX27-37
+  - REQ-CTX27-38
+  clauses_in_scope:
+  - POST-CTX27-24
+  - POST-CTX27-25
+  - POST-CTX27-26
+  - POST-CTX27-27
+  - POST-CTX27-28
+  clauses_deferred: []
+  negative_constraints:
+  - FORBIDDEN-CTX27-3
+  status: PENDING
+  issue: ketema/omp#27
+  pivot_note: Item 3. Authority text is never hidden. The generic tool-result spill in tools/output-meta.ts replaces any result above tools.artifactSpillThreshold (50 KB) with a head, a tail and an artifact, and the read tool pages files at that threshold. Skills (skill:// and files under skills directories, including references/), xd:// tool docs and memory recall, search and list results are exempted by tool and path, ranged reads return exactly the requested lines, and every other result keeps the existing spill and paging. The threshold setting is not raised. Proof is a real session, not doubles. Ketema approved the wording and decisions on 2026-11-06.
 forgotten_invariants:
 - INV-CTX27-01
 - INV-CTX27-07

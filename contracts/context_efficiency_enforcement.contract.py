@@ -288,6 +288,36 @@ def user_message_with_reminder(text: str, source: str, reminder_in_session: bool
     return f"{text}\n{USER_REMINDER_TEXT}"
 
 
+# REQ-CTX27-35, REQ-CTX27-36 (Z20): the kinds of authority text that omp never elides.
+AuthorityKind = Literal["skill", "xd_doc", "memory"]
+
+# REQ-CTX27-36: the memory tools whose recall, search and list results are authority text.
+MEMORY_AUTHORITY_TOOLS: Final[tuple[str, ...]] = ("memory_recall", "memory_search", "memory_list")
+
+
+def authority_read_kind(tool_name: str, path: str) -> AuthorityKind | None:
+    """REQ-CTX27-35, REQ-CTX27-36 (Z20): the kind of authority text a tool call returns, or None for any other call.
+
+    A read of skill://... or of a file under a skills directory (.omp/agent/skills/, .claude/skills/,
+    .agents/skills/) is "skill"; a read of xd://... is "xd_doc"; a write to xd://mcp__memory_recall, _search or _list
+    (how an MCP tool executes) is "memory". A trailing line selector does not change the kind.
+    """
+    target = path.strip()
+    if tool_name == "read":
+        if re.match(r"skill://", target, flags=re.IGNORECASE):
+            return "skill"
+        if re.search(r"/\.(?:omp/agent|claude|agents)/skills/[^/]+/", target):
+            return "skill"
+        if re.match(r"xd://", target, flags=re.IGNORECASE):
+            return "xd_doc"
+        return None
+    if tool_name == "write":
+        memory = re.fullmatch(r"xd://mcp__(memory_[a-z]+)", target, flags=re.IGNORECASE)
+        if memory and memory.group(1).lower() in MEMORY_AUTHORITY_TOOLS:
+            return "memory"
+    return None
+
+
 # ==============================================================================
 # Artifact 5: Method-Aware Clause Map
 # ==============================================================================
@@ -580,6 +610,47 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
             "The session holds the reminder exactly when an earlier user message entry of its history contains "
             "USER_REMINDER_TEXT (sessionHoldsReminder), so the reminder goes on the first eligible message only, "
             "including after a resume or a compaction. Source: REQ-CTX27-34."
+        ),
+    ),
+    "POST-CTX27-24": Clause(
+        verification="test",
+        text=(
+            "A read with no line range whose authorityReadKind is skill (skill:// or a file under a skills "
+            "directory, including references/) returns the whole file text in one result: no middle elision, no "
+            "spill artifact and no paging notice, even when the file exceeds tools.artifactSpillThreshold. "
+            "Source: REQ-CTX27-35."
+        ),
+    ),
+    "POST-CTX27-25": Clause(
+        verification="test",
+        text=(
+            "A read whose authorityReadKind is xd_doc, and a write whose authorityReadKind is memory "
+            "(memory_recall, memory_search, memory_list), returns the whole result text: no middle elision and "
+            "no spill artifact. Source: REQ-CTX27-36."
+        ),
+    ),
+    "POST-CTX27-26": Clause(
+        verification="test",
+        text=(
+            "A read of authority text that carries a line range returns exactly the requested lines, with no "
+            "middle elision. Source: REQ-CTX27-37."
+        ),
+    ),
+    "POST-CTX27-27": Clause(
+        verification="test",
+        text=(
+            "Every result whose authorityReadKind is null is spilled and paged exactly as before: a bash result "
+            "above tools.artifactSpillThreshold still becomes a head and tail with an artifact, and the setting "
+            "keeps its value. Source: REQ-CTX27-38."
+        ),
+    ),
+    "POST-CTX27-28": Clause(
+        verification="test",
+        text=(
+            "authorityReadKind returns skill for read of skill://x, read of skill://x/references/y.md and read of "
+            "a path under .omp/agent/skills/, .claude/skills/ or .agents/skills/; xd_doc for read of xd://tool; "
+            "memory for write to xd://mcp__memory_recall, _search and _list; and null for every other tool and "
+            "path, including write to xd://mcp__memory_remember. Source: REQ-CTX27-35, REQ-CTX27-36."
         ),
     ),
     "FORBIDDEN-CTX27-3": Clause(
