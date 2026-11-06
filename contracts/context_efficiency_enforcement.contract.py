@@ -1,12 +1,13 @@
 """
 Context Efficiency Enforcement Contract (Python verification twin for ketema/omp#27).
 
-Authoritative contract for SLICE-1 (REQ-CTX27-01..REQ-CTX27-14, INV-CTX27-01..INV-CTX27-07).
+Authoritative contract for SLICE-1 (REQ-CTX27-01..REQ-CTX27-15) and SLICE-2 item 1a (REQ-CTX27-16..REQ-CTX27-18).
 The TypeScript contract in contracts/context_efficiency_enforcement.contract.ts
 mirrors every constant, exception, record, validator, and clause ID.
 The implementation MUST NOT import from either contract file (CL11-F).
 """
 
+import re
 from dataclasses import dataclass
 from typing import Final, Literal
 
@@ -35,6 +36,32 @@ CARD_SNAPSHOT_MAX_CHARS: Final[int] = 24
 PAYLOAD_SLICE_BYTES: Final[int] = 32
 FIXTURE_TRANSCRIPT_MAX_TOKENS: Final[int] = 700
 COMPACTION_CANCELLED_TEXT: Final[str] = "Compaction cancelled"
+WORKBENCH_LOADER_PATH_FROM_HOME: Final[str] = ".agents/skills/repl-snapshots/restore.py"
+WORKBENCH_READY_PREFIX: Final[str] = "Workbench ready: "
+WORKBENCH_FAILED_SEPARATOR: Final[str] = ". Failed to load: "
+WORKBENCH_NONE_LOADED: Final[str] = "none"
+WORKBENCH_MESSAGE_TYPE: Final[str] = "workbench-ready"
+WORKBENCH_MESSAGE_DELIVERY: Final[str] = "nextTurn"
+WORKBENCH_MESSAGE_SEPARATOR: Final[str] = "\n\n"
+WORKBENCH_RULES: Final[str] = (
+    "Context efficiency rules for this session: keep payloads out of the transcript; do data work in the ipython "
+    "kernel and read a result by asking it one small question (len, keys, first row), never by printing it whole. "
+    "Call the helpers listed above by name and never rewrite one. Look in memory, git history and transcripts "
+    "before re-deriving a decision. Send noisy builds, tests and installs to TMUX-OFFLOAD and read back only the "
+    "summary. Read skill, system and memory text in full."
+)
+IPYTHON_FILE_THRESHOLD_TOKENS: Final[int] = 800
+IPYTHON_OUTPUT_VAR_PREFIX: Final[str] = "out_"
+IPYTHON_DESCRIPTOR_SAMPLE_LINES: Final[int] = 5
+IPYTHON_DESCRIPTOR_LINE_CUT: Final[int] = 100
+IPYTHON_OUTPUT_CEILING_BYTES: Final[int] = 16 * 1024 * 1024
+IPYTHON_ARTIFACT_TOOL_TYPE: Final[str] = "ipython"
+IPYTHON_DESCRIPTION_STATEMENTS: Final[tuple[str, ...]] = (
+    "A filed output has two access methods for the same data.",
+    "Kernel access ranks first because it allows processing before anything enters context.",
+    "artifact:// returns the whole unchanged text and needs paging.",
+    "Rebinding the variable leaves the artifact unchanged.",
+)
 
 # ==============================================================================
 # Artifact 2: Exception Hierarchy
@@ -69,6 +96,14 @@ class PayloadLeakViolationError(ContextEfficiencyContractError):
 class SnapshotMigrationViolationError(ContextEfficiencyContractError):
     """Raised when a helper snapshot cannot be migrated from neutral source (ERRORS-CTX27-2)."""
 
+
+class WorkbenchReportViolationError(ContextEfficiencyContractError):
+    """Raised when a workbench report or notice breaks POST-CTX27-8, POST-CTX27-9, or ERRORS-CTX27-3."""
+
+
+class IpythonFilingViolationError(ContextEfficiencyContractError):
+    """Raised when a filed ipython output breaks POST-CTX27-12 to POST-CTX27-18, FORBIDDEN-CTX27-3, or ERRORS-CTX27-4."""
+
 # ==============================================================================
 # Artifact 3: Immutable Typed Records
 # ==============================================================================
@@ -88,6 +123,19 @@ class HelperCatalogCardRecord:
     snapshot: str
 
 
+@dataclass(frozen=True)
+class WorkbenchRefusal:
+    record: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class WorkbenchReport:
+    loaded: tuple[str, ...]
+    refused: tuple[WorkbenchRefusal, ...]
+    error: str | None
+
+
 # ==============================================================================
 # Artifact 4: Pure Callable Validators
 # ==============================================================================
@@ -105,6 +153,169 @@ def validate_helper_catalog_card(card: HelperCatalogCardRecord, token_count: int
     if token_count > CARD_MAX_TOKENS:
         raise CardSchemaViolationError(f"POST-CTX27-4 violation: card token count {token_count} > {CARD_MAX_TOKENS}")
     return True
+
+
+def expected_workbench_notice(report: WorkbenchReport) -> str:
+    loaded = ", ".join(report.loaded) if report.loaded else WORKBENCH_NONE_LOADED
+    failures = ([report.error] if report.error is not None else []) + [f"{r.record} ({r.reason})" for r in report.refused]
+    if not failures:
+        return f"{WORKBENCH_READY_PREFIX}{loaded}"
+    return f"{WORKBENCH_READY_PREFIX}{loaded}{WORKBENCH_FAILED_SEPARATOR}{'; '.join(failures)}"
+
+
+def expected_workbench_message(report: WorkbenchReport) -> str:
+    return f"{expected_workbench_notice(report)}{WORKBENCH_MESSAGE_SEPARATOR}{WORKBENCH_RULES}"
+
+
+def validate_workbench_message(report: WorkbenchReport, message: str) -> None:
+    expected = expected_workbench_message(report)
+    if message != expected:
+        raise WorkbenchReportViolationError(f"POST-CTX27-9 violation: message {message!r} != {expected!r}")
+
+
+@dataclass(frozen=True)
+class FiledOutputInfo:
+    n: int
+    text: str  # the full kept stdout, after any ceiling cut
+    tokens: int  # o200k tokens of text
+    artifact_id: str | None  # None when the artifact copy could not be saved
+    cut_at_ceiling: bool
+
+
+def expected_ipython_descriptor(info: FiledOutputInfo) -> str:
+    name = f"{IPYTHON_OUTPUT_VAR_PREFIX}{info.n}"
+    lines = info.text[:-1].split("\n") if info.text.endswith("\n") else info.text.split("\n")
+    head = [line[:IPYTHON_DESCRIPTOR_LINE_CUT] for line in lines[:IPYTHON_DESCRIPTOR_SAMPLE_LINES]]
+    tail = (
+        [
+            line[:IPYTHON_DESCRIPTOR_LINE_CUT]
+            for line in lines[max(IPYTHON_DESCRIPTOR_SAMPLE_LINES, len(lines) - IPYTHON_DESCRIPTOR_SAMPLE_LINES) :]
+        ]
+        if len(lines) > IPYTHON_DESCRIPTOR_SAMPLE_LINES
+        else []
+    )
+    size = len(info.text.encode("utf-8"))
+    out = [f"[ipython output filed] {name} | {len(lines)} lines | {size} bytes | {info.tokens} tokens"]
+    if info.cut_at_ceiling:
+        out.append(f"cut: first {IPYTHON_OUTPUT_CEILING_BYTES} bytes kept")
+    out.append(f'open (preferred): {name} in ipython, e.g. {name}.count("ERROR"). {IPYTHON_DESCRIPTOR_INSTRUCTION}')
+    if info.artifact_id is None:
+        out.append("full unchanged copy: unavailable (artifact save failed)")
+    else:
+        out.append(
+            f"full unchanged copy: artifact://{info.artifact_id} (ranges only, e.g. :1-60; a whole read is refused; "
+            f"unchanged if {name} is rebound)"
+        )
+    out.extend(["head:", *head])
+    if tail:
+        out.extend(["tail:", *tail])
+    return "\n".join(out)
+
+
+def validate_ipython_descriptor(info: FiledOutputInfo, result_text: str) -> None:
+    expected = expected_ipython_descriptor(info)
+    if result_text != expected:
+        raise IpythonFilingViolationError(f"POST-CTX27-15 violation: descriptor {result_text!r} != {expected!r}")
+
+
+# REQ-CTX27-32: the instruction that closes the descriptor's first access line.
+IPYTHON_DESCRIPTOR_INSTRUCTION: Final[str] = "Answer from it; paste no lines into your reply."
+
+
+def whole_artifact_read_id(path: str) -> str | None:
+    """REQ-CTX27-31: the artifact id when path reads artifact://<id> (optionally :raw) with no line range, else None.
+
+    Ranged forms (:5, :5-9, :-60, :5+20, :raw:5-9, comma lists) and every other path return None.
+    """
+    match = re.fullmatch(r"artifact://(\d+)(?::raw)?", path.strip(), flags=re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def whole_read_refusal(artifact_id: str, n: int) -> str:
+    """REQ-CTX27-31: the refusal text for a whole read of the artifact copy of out_<n>."""
+    name = f"{IPYTHON_OUTPUT_VAR_PREFIX}{n}"
+    return (
+        f'artifact://{artifact_id} is the full copy of {name}. Ask {name} in ipython (for example {name}.count("ERROR")) '
+        f"or read a range: artifact://{artifact_id}:1-60."
+    )
+
+
+# REQ-CTX27-33 (Z18): appended to Ketema's own interactive message as if he typed it. He may edit this wording.
+USER_REMINDER_TEXT: Final[str] = (
+    "Remember to be context efficient. Use your ipython REPL for data work and never paste long output into "
+    "your reply. Have you written this function before? Check memory and your helpers first. "
+    "Follow every skill step exactly."
+)
+
+
+def session_holds_reminder(entries: list[object]) -> bool:
+    """REQ-CTX27-34: True when any user message entry among the session history entries holds USER_REMINDER_TEXT.
+
+    A history entry is a message entry whose message has role "user"; its content is a string or a list of parts
+    with a text field.
+    """
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("type") != "message":
+            continue
+        message = entry.get("message")
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "\n".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
+        else:
+            text = ""
+        if USER_REMINDER_TEXT in text:
+            return True
+    return False
+
+
+def user_message_with_reminder(text: str, source: str, reminder_in_session: bool) -> str:
+    """REQ-CTX27-33, REQ-CTX27-34: the message text after the submit hook.
+
+    Appends USER_REMINDER_TEXT on a new line with no marker, tag or label. Unchanged when the source is not
+    "interactive", the text is empty, it begins with /, ! or $, it already ends with the reminder, or the session
+    already holds the reminder.
+    """
+    if reminder_in_session or source != "interactive" or not text.strip():
+        return text
+    if text.lstrip().startswith(("/", "!", "$")):
+        return text
+    if text.endswith(USER_REMINDER_TEXT):
+        return text
+    return f"{text}\n{USER_REMINDER_TEXT}"
+
+
+# REQ-CTX27-35, REQ-CTX27-36 (Z20): the kinds of authority text that omp never elides.
+AuthorityKind = Literal["skill", "xd_doc", "memory"]
+
+# REQ-CTX27-36: the memory tools whose recall, search and list results are authority text.
+MEMORY_AUTHORITY_TOOLS: Final[tuple[str, ...]] = ("memory_recall", "memory_search", "memory_list")
+
+
+def authority_read_kind(tool_name: str, path: str) -> AuthorityKind | None:
+    """REQ-CTX27-35, REQ-CTX27-36 (Z20): the kind of authority text a tool call returns, or None for any other call.
+
+    A read of skill://... or of a file under a skills directory (.omp/agent/skills/, .claude/skills/,
+    .agents/skills/) is "skill"; a read of xd://... is "xd_doc"; a write to xd://mcp__memory_recall, _search or _list
+    (how an MCP tool executes) is "memory". A trailing line selector does not change the kind.
+    """
+    target = path.strip()
+    if tool_name == "read":
+        if re.match(r"skill://", target, flags=re.IGNORECASE):
+            return "skill"
+        if re.search(r"/\.(?:omp/agent|claude|agents)/skills/[^/]+/", target):
+            return "skill"
+        if re.match(r"xd://", target, flags=re.IGNORECASE):
+            return "xd_doc"
+        return None
+    if tool_name == "write":
+        memory = re.fullmatch(r"xd://mcp__(memory_[a-z]+)", target, flags=re.IGNORECASE)
+        if memory and memory.group(1).lower() in MEMORY_AUTHORITY_TOOLS:
+            return "memory"
+    return None
 
 
 # ==============================================================================
@@ -193,15 +404,6 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
             "Source: REQ-CTX27-15."
         ),
     ),
-    "POST-CTX27-7": Clause(
-        verification="test",
-        text=(
-            "A session created via createAgentSession with trusted snapshots in snapshotsDir "
-            "triggers before_agent_start and appends bounded catalog cards matching schema "
-            "(<=240 tokens, <=3 cards) to its effective system prompt. "
-            "Source: REQ-CTX27-08, REQ-CTX27-09."
-        ),
-    ),
     "SEQ-CTX27-1": Clause(
         verification="test",
         text=(
@@ -234,15 +436,6 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
             "when the hook returns { cancel: true } (IP-4). Source: REQ-CTX27-11, REQ-CTX27-13."
         ),
     ),
-    "SEQ-CTX27-5": Clause(
-        verification="test",
-        text=(
-            "createAgentSession in packages/coding-agent/src/sdk.ts mounts "
-            "createContextEfficiencyExtension into inlineExtensions for every non-read-only "
-            "session BEFORE initializing ExtensionRunner (IP-3). "
-            "Source: REQ-CTX27-08, REQ-CTX27-09."
-        ),
-    ),
     "ERRORS-CTX27-1": Clause(
         verification="test",
         text=(
@@ -269,6 +462,212 @@ CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Final[dict[str, Clause]] = {
             "at 31 characters are exempt), and the F-over + three-cards + compaction-status "
             "transcript excluding user prompts, F-inline, F-turn, and F-session is at most 700 "
             "o200k tokens. Source: INV-CTX27-06, INV-CTX27-07."
+        ),
+    ),
+    "SEQ-CTX27-6": Clause(
+        verification="test",
+        text=(
+            "KernelManager's start sequence runs restore.py inside the IPython kernel AFTER transport "
+            "bootstrap and BEFORE the first cell executes, so the first cell sees every restored helper "
+            "name (IP-5). Source: REQ-CTX27-16."
+        ),
+    ),
+    "POST-CTX27-8": Clause(
+        verification="test",
+        text=(
+            "After kernel start, the workbench report's loaded list equals the names restore.py restored, "
+            "each is bound in the kernel's global namespace, and no other global restore.py defines is "
+            "bound there. Source: REQ-CTX27-16."
+        ),
+    ),
+    "POST-CTX27-9": Clause(
+        verification="test",
+        text=(
+            "When a top-level session starts, omp sends exactly one custom message of type "
+            "WORKBENCH_MESSAGE_TYPE, displayed and delivered as WORKBENCH_MESSAGE_DELIVERY, whose text equals "
+            "expectedWorkbenchMessage(report) for that kernel's workbench report. "
+            "Source: REQ-CTX27-18, REQ-CTX27-19."
+        ),
+    ),
+    "POST-CTX27-10": Clause(
+        verification="test",
+        text=(
+            "After the workbench message is sent, no ipython tool result carries the workbench notice text, "
+            "and the message is not sent again for the same kernel start however many cells or turns follow. "
+            "Source: REQ-CTX27-20, REQ-CTX27-21."
+        ),
+    ),
+    "POST-CTX27-11": Clause(
+        verification="test",
+        text=(
+            "When a top-level session that owns an artifacts directory starts, the IPython kernel is started before any "
+            "user message or ipython call, so the workbench report exists and the restored helpers are bound; a session "
+            "that owns no artifacts directory starts no kernel and sends no message until its kernel is first used. "
+            "Source: REQ-CTX27-22."
+        ),
+    ),
+    "ERRORS-CTX27-3": Clause(
+        verification="test",
+        text=(
+            "When restore.py is missing or raises, or refuses a snapshot, kernel start still completes, "
+            "the next cell executes, the report carries the cause in error and every refused record in "
+            "refused, and the workbench message names them. Source: REQ-CTX27-16."
+        ),
+    ),
+    "FORBIDDEN-CTX27-2": Clause(
+        verification="test",
+        text=(
+            "createAgentSession does not mount createContextEfficiencyExtension in any session: no loaded "
+            "extension registers its tool_result and before_agent_start handlers. Source: REQ-CTX27-17."
+        ),
+    ),
+    "POST-CTX27-12": Clause(
+        verification="test",
+        text=(
+            "When an ipython cell raises no error and its stdout reaches IPYTHON_FILE_THRESHOLD_TOKENS o200k "
+            "tokens, the kernel variable out_<n> holds exactly the full stdout and the tool result does not "
+            "contain that stdout. Source: REQ-CTX27-23."
+        ),
+    ),
+    "POST-CTX27-13": Clause(
+        verification="test",
+        text=(
+            "Filed outputs are numbered from 1 in each session, and a variable already bound to out_<n> is never "
+            "overwritten: the next free number is used and the descriptor names it. Source: REQ-CTX27-24."
+        ),
+    ),
+    "POST-CTX27-14": Clause(
+        verification="test",
+        text=(
+            "The artifact saved through the session's saveArtifact under IPYTHON_ARTIFACT_TOOL_TYPE holds exactly "
+            "the full stdout, and its id is the one the descriptor names. Source: REQ-CTX27-25."
+        ),
+    ),
+    "POST-CTX27-15": Clause(
+        verification="test",
+        text=(
+            "The tool result text of a filed output equals expectedIpythonDescriptor(info): variable name, line "
+            "count, byte count, token count, both access methods with the kernel variable first and marked "
+            "preferred, then 5 head and 5 tail lines each cut at 100 characters. Source: REQ-CTX27-26."
+        ),
+    ),
+    "POST-CTX27-16": Clause(
+        verification="test",
+        text=(
+            "stderr, tracebacks, expression results and stdout below IPYTHON_FILE_THRESHOLD_TOKENS reach the "
+            "tool result exactly as before: no variable is filed and no artifact is saved. Source: REQ-CTX27-27."
+        ),
+    ),
+    "POST-CTX27-17": Clause(
+        verification="test",
+        text=(
+            "The ipython tool description contains every statement of IPYTHON_DESCRIPTION_STATEMENTS verbatim. "
+            "Source: REQ-CTX27-28."
+        ),
+    ),
+    "POST-CTX27-18": Clause(
+        verification="test",
+        text=(
+            "When stdout exceeds IPYTHON_OUTPUT_CEILING_BYTES, the variable and the artifact hold the first "
+            "IPYTHON_OUTPUT_CEILING_BYTES bytes and the descriptor states the cut. Source: REQ-CTX27-30."
+        ),
+    ),
+    "POST-CTX27-19": Clause(
+        verification="test",
+        text=(
+            "A read of artifact://<id> without a line range, where <id> is the artifact of a filed ipython output, "
+            "is refused with wholeReadRefusal(id, n); a ranged read of it, a read of any other artifact id and a "
+            "read of any other path proceed untouched. Source: REQ-CTX27-31."
+        ),
+    ),
+    "POST-CTX27-20": Clause(
+        verification="test",
+        text=(
+            "The first access line of the descriptor ends with IPYTHON_DESCRIPTOR_INSTRUCTION and the artifact "
+            "line says that only ranges are read and a whole read is refused (expectedIpythonDescriptor). "
+            "Source: REQ-CTX27-32."
+        ),
+    ),
+    "POST-CTX27-21": Clause(
+        verification="test",
+        text=(
+            "The submit hook returns the interactive message followed by a newline and USER_REMINDER_TEXT "
+            "exactly, with no marker, tag or label around the reminder (userMessageWithReminder). "
+            "Source: REQ-CTX27-33."
+        ),
+    ),
+    "POST-CTX27-22": Clause(
+        verification="test",
+        text=(
+            "The submit hook returns the message unchanged when the source is not interactive, the text is "
+            "empty, the text begins with /, ! or $, the text already ends with USER_REMINDER_TEXT, or the "
+            "session already holds the reminder. Source: REQ-CTX27-34."
+        ),
+    ),
+    "POST-CTX27-23": Clause(
+        verification="test",
+        text=(
+            "The session holds the reminder exactly when an earlier user message entry of its history contains "
+            "USER_REMINDER_TEXT (sessionHoldsReminder), so the reminder goes on the first eligible message only, "
+            "including after a resume or a compaction. Source: REQ-CTX27-34."
+        ),
+    ),
+    "POST-CTX27-24": Clause(
+        verification="test",
+        text=(
+            "A read with no line range whose authorityReadKind is skill (skill:// or a file under a skills "
+            "directory, including references/) returns the whole file text in one result: no middle elision, no "
+            "spill artifact and no paging notice, even when the file exceeds tools.artifactSpillThreshold. "
+            "Source: REQ-CTX27-35."
+        ),
+    ),
+    "POST-CTX27-25": Clause(
+        verification="test",
+        text=(
+            "A read whose authorityReadKind is xd_doc, and a write whose authorityReadKind is memory "
+            "(memory_recall, memory_search, memory_list), returns the whole result text: no middle elision and "
+            "no spill artifact. Source: REQ-CTX27-36."
+        ),
+    ),
+    "POST-CTX27-26": Clause(
+        verification="test",
+        text=(
+            "A read of authority text that carries a line range returns exactly the requested lines, with no "
+            "middle elision. Source: REQ-CTX27-37."
+        ),
+    ),
+    "POST-CTX27-27": Clause(
+        verification="test",
+        text=(
+            "Every result whose authorityReadKind is null is spilled and paged exactly as before: a bash result "
+            "above tools.artifactSpillThreshold still becomes a head and tail with an artifact, and the setting "
+            "keeps its value. Source: REQ-CTX27-38."
+        ),
+    ),
+    "POST-CTX27-28": Clause(
+        verification="test",
+        text=(
+            "authorityReadKind returns skill for read of skill://x, read of skill://x/references/y.md and read of "
+            "a path under .omp/agent/skills/, .claude/skills/ or .agents/skills/; xd_doc for read of xd://tool; "
+            "memory for write to xd://mcp__memory_recall, _search and _list; and null for every other tool and "
+            "path, including write to xd://mcp__memory_remember. Source: REQ-CTX27-35, REQ-CTX27-36."
+        ),
+    ),
+    "FORBIDDEN-CTX27-3": Clause(
+        verification="test",
+        text=(
+            "The rlm extension registers exactly one tool, ipython, and no tool_result handler: it never files, "
+            "truncates or rewrites the result of any other tool. Its only tool_call handler is the refusal of "
+            "POST-CTX27-19. Source: REQ-CTX27-29."
+        ),
+    ),
+    "ERRORS-CTX27-4": Clause(
+        verification="test",
+        text=(
+            "When the filed output cannot be bound in the kernel, the stdout is returned unchanged with one added "
+            "line saying that filing the output failed; when the artifact copy cannot be saved, the variable is "
+            "still bound and the descriptor states that the copy is unavailable. "
+            "Source: REQ-CTX27-23, REQ-CTX27-25."
         ),
     ),
 }

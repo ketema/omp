@@ -34,7 +34,7 @@ import { withCredentialRedaction } from "@oh-my-pi/pi-ai/providers/transform-mes
 import { sendsImageInputOnWire } from "@oh-my-pi/pi-ai/providers/vision-guard";
 import { FALLBACK_DIALECT, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { createRlmExtension } from "@oh-my-pi/pi-rlm";
-import { createContextEfficiencyExtension } from "./context/context-efficiency-enforcement";
+import type { Component } from "@oh-my-pi/pi-tui";
 import { $env } from "@oh-my-pi/pi-utils/env";
 import { getAgentDir, getModelDbPath, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import * as logger from "@oh-my-pi/pi-utils/logger";
@@ -2790,12 +2790,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				});
 			} else {
 				inlineExtensions.push(createRlmExtension());
-				inlineExtensions.push(
-					createContextEfficiencyExtension({
-						agentDir,
-						sessionId: sessionManager.getSessionId?.() ?? undefined,
-					}),
-				);
 			}
 			if (customTools.length > 0) {
 				inlineExtensions.push(createCustomToolsExtension(customTools, customToolSourcePaths));

@@ -195,11 +195,16 @@ def _execute_cell(code: str, exec_id: str) -> dict:
         _active_cell_id = None
         _interrupt_event.clear()
 
+    stdout_value = stdout_buf.getvalue()
+    if stdout_value:
+        # REQ-CTX27-23: the harness binds a large stdout to out_<n> from here, so the text never travels twice.
+        _get_ns()["_omp_last_stdout"] = stdout_value
+
     return {
         "type": "done",
         "id": exec_id,
         "code": code_val,
-        "stdout": stdout_buf.getvalue(),
+        "stdout": stdout_value,
         "stderr": stderr_buf.getvalue(),
         "result": result_val,
         "traceback": traceback_str,

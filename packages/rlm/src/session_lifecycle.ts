@@ -58,6 +58,11 @@ export class RlmSessionLifecycle {
 		return this.kernel === null ? [] : this.kernel.restoredNames();
 	}
 
+	/** POST-CTX27-11: whether a lifecycle event has resolved an artifacts directory this session owns. */
+	ownsArtifactsDir(): boolean {
+		return this.incoming?.kind === "resolved";
+	}
+
 	/** POST-TOOL-SESSION-BINDING-1: capture the kernel current NOW (or build it) and return a port bound to it. */
 	acquire(): Promise<RlmToolKernelPort> {
 		const current = this.kernel;

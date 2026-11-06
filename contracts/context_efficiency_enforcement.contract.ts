@@ -36,6 +36,41 @@ export const CARD_SNAPSHOT_MAX_CHARS = 24;
 export const PAYLOAD_SLICE_BYTES = 32;
 export const FIXTURE_TRANSCRIPT_MAX_TOKENS = 700;
 export const COMPACTION_CANCELLED_TEXT = "Compaction cancelled";
+/** REQ-CTX27-16 (Z8): the loader the kernel runs at start, relative to the kernel process's HOME. */
+export const WORKBENCH_LOADER_PATH_FROM_HOME = ".agents/skills/repl-snapshots/restore.py";
+/** REQ-CTX27-18 (Z9): the workbench notice starts with this text. */
+export const WORKBENCH_READY_PREFIX = "Workbench ready: ";
+/** ERRORS-CTX27-3: failures are appended to the same one-line notice after this text. */
+export const WORKBENCH_FAILED_SEPARATOR = ". Failed to load: ";
+/** REQ-CTX27-18: the loaded-names list when nothing loaded. */
+export const WORKBENCH_NONE_LOADED = "none";
+/** REQ-CTX27-18 (Z9): the custom message type omp sends the workbench message under. */
+export const WORKBENCH_MESSAGE_TYPE = "workbench-ready";
+/** REQ-CTX27-18 (Z9): the workbench message is delivered with the user's next message. */
+export const WORKBENCH_MESSAGE_DELIVERY = "nextTurn";
+/** REQ-CTX27-19: the notice and the rules are joined by this text. */
+export const WORKBENCH_MESSAGE_SEPARATOR = "\n\n";
+/** REQ-CTX27-19 (Z11): the rules that end the workbench message. Ketema may edit this wording; tests follow it. */
+export const WORKBENCH_RULES =
+	"Context efficiency rules for this session: keep payloads out of the transcript; do data work in the ipython kernel and read a result by asking it one small question (len, keys, first row), never by printing it whole. Call the helpers listed above by name and never rewrite one. Look in memory, git history and transcripts before re-deriving a decision. Send noisy builds, tests and installs to TMUX-OFFLOAD and read back only the summary. Read skill, system and memory text in full.";
+/** REQ-CTX27-23 (Z13): an ipython cell's stdout is filed at this many o200k tokens. */
+export const IPYTHON_FILE_THRESHOLD_TOKENS = 800;
+/** REQ-CTX27-24 (Z15): the filed kernel variable is this prefix plus the filed-output number. */
+export const IPYTHON_OUTPUT_VAR_PREFIX = "out_";
+/** REQ-CTX27-26: the descriptor shows this many head and tail lines, each cut at IPYTHON_DESCRIPTOR_LINE_CUT characters. */
+export const IPYTHON_DESCRIPTOR_SAMPLE_LINES = 5;
+export const IPYTHON_DESCRIPTOR_LINE_CUT = 100;
+/** REQ-CTX27-30 (Z14): the most stdout one filed output keeps. */
+export const IPYTHON_OUTPUT_CEILING_BYTES = 16 * 1024 * 1024;
+/** REQ-CTX27-25: the tool type the artifact copy is saved under. */
+export const IPYTHON_ARTIFACT_TOOL_TYPE = "ipython";
+/** REQ-CTX27-28: statements the ipython tool description contains verbatim. */
+export const IPYTHON_DESCRIPTION_STATEMENTS: readonly string[] = [
+	"A filed output has two access methods for the same data.",
+	"Kernel access ranks first because it allows processing before anything enters context.",
+	"artifact:// returns the whole unchanged text and needs paging.",
+	"Rebinding the variable leaves the artifact unchanged.",
+];
 
 // =============================================================================
 // Artifact 2: Domain Exception Classes
@@ -90,6 +125,20 @@ export class SnapshotMigrationViolationError extends ContextEfficiencyContractEr
 	}
 }
 
+export class WorkbenchReportViolationError extends ContextEfficiencyContractError {
+	constructor(clauseId: string, detail: string) {
+		super(`${clauseId} violation: ${detail}`);
+		this.name = "WorkbenchReportViolationError";
+	}
+}
+
+export class IpythonFilingViolationError extends ContextEfficiencyContractError {
+	constructor(clauseId: string, detail: string) {
+		super(`${clauseId} violation: ${detail}`);
+		this.name = "IpythonFilingViolationError";
+	}
+}
+
 // =============================================================================
 // Artifact 3: Immutable Typed Records
 // =============================================================================
@@ -107,7 +156,9 @@ export interface UdtDescriptorRecord {
 	readonly per_key_shape?: Readonly<Record<string, string>>;
 	readonly columns?: readonly string[];
 	readonly row_count?: number;
-	readonly numeric_summary?: Readonly<Record<string, { readonly min: number; readonly max: number; readonly avg: number }>>;
+	readonly numeric_summary?: Readonly<
+		Record<string, { readonly min: number; readonly max: number; readonly avg: number }>
+	>;
 	readonly total_lines?: number;
 	readonly head?: readonly string[];
 	readonly omitted?: number;
@@ -129,6 +180,20 @@ export interface AutoCompactMemoryRecord {
 	readonly sha256: string;
 	readonly files_touched: readonly string[];
 	readonly open_items: readonly string[];
+}
+
+/** One snapshot record restore.py refused, with its reason (ERRORS-CTX27-3). */
+export interface WorkbenchRefusal {
+	readonly record: string;
+	readonly reason: string;
+}
+
+/** What loading the workbench at kernel start produced (POST-CTX27-8, ERRORS-CTX27-3). */
+export interface WorkbenchReport {
+	readonly loaded: readonly string[];
+	readonly refused: readonly WorkbenchRefusal[];
+	/** The cause when restore.py is missing or raises; null when it ran. */
+	readonly error: string | null;
 }
 
 // =============================================================================
@@ -171,10 +236,7 @@ export function assertBudgetInvariant(state: {
 	}
 }
 
-export function validateUdtDescriptorRecord(
-	record: UdtDescriptorRecord,
-	tokenCount: number,
-): boolean {
+export function validateUdtDescriptorRecord(record: UdtDescriptorRecord, tokenCount: number): boolean {
 	if (!record || typeof record !== "object") {
 		throw new DescriptorSchemaViolationError("descriptor must be an object");
 	}
@@ -238,6 +300,198 @@ export function validateHelperCatalogCard(card: HelperCatalogCard, tokenCount: n
 		throw new CardSchemaViolationError(`card token count ${tokenCount} > ${CARD_MAX_TOKENS}`);
 	}
 	return true;
+}
+
+/** REQ-CTX27-18: the exact one-line notice for a workbench report. Pure; used by expectedWorkbenchMessage. */
+export function expectedWorkbenchNotice(report: WorkbenchReport): string {
+	const loaded = report.loaded.length > 0 ? report.loaded.join(", ") : WORKBENCH_NONE_LOADED;
+	const failures = [
+		...(report.error === null ? [] : [report.error]),
+		...report.refused.map(r => `${r.record} (${r.reason})`),
+	];
+	return failures.length === 0
+		? `${WORKBENCH_READY_PREFIX}${loaded}`
+		: `${WORKBENCH_READY_PREFIX}${loaded}${WORKBENCH_FAILED_SEPARATOR}${failures.join("; ")}`;
+}
+
+/** REQ-CTX27-18, REQ-CTX27-19: the exact workbench message: the notice, then the rules. Pure; used by validateWorkbenchMessage. */
+export function expectedWorkbenchMessage(report: WorkbenchReport): string {
+	return `${expectedWorkbenchNotice(report)}${WORKBENCH_MESSAGE_SEPARATOR}${WORKBENCH_RULES}`;
+}
+
+/** POST-CTX27-8 / ERRORS-CTX27-3: a workbench report has the contracted shape. */
+export function validateWorkbenchReport(raw: unknown): WorkbenchReport {
+	if (raw === null || typeof raw !== "object") {
+		throw new WorkbenchReportViolationError("POST-CTX27-8", "report must be an object");
+	}
+	const r = raw as Record<string, unknown>;
+	if (!Array.isArray(r.loaded) || !r.loaded.every(n => typeof n === "string" && n.length > 0)) {
+		throw new WorkbenchReportViolationError("POST-CTX27-8", "loaded must be a list of names");
+	}
+	if (
+		!Array.isArray(r.refused) ||
+		!r.refused.every(
+			x =>
+				x !== null &&
+				typeof x === "object" &&
+				typeof (x as Record<string, unknown>).record === "string" &&
+				typeof (x as Record<string, unknown>).reason === "string",
+		)
+	) {
+		throw new WorkbenchReportViolationError("ERRORS-CTX27-3", "refused must be a list of {record, reason}");
+	}
+	if (r.error !== null && typeof r.error !== "string") {
+		throw new WorkbenchReportViolationError("ERRORS-CTX27-3", "error must be a string or null");
+	}
+	return {
+		loaded: r.loaded as string[],
+		refused: r.refused as WorkbenchRefusal[],
+		error: r.error as string | null,
+	};
+}
+
+/** POST-CTX27-9: the sent message text equals the contracted message for the report. */
+export function validateWorkbenchMessage(report: WorkbenchReport, message: string): void {
+	const expected = expectedWorkbenchMessage(report);
+	if (message !== expected) {
+		throw new WorkbenchReportViolationError(
+			"POST-CTX27-9",
+			`message ${JSON.stringify(message)} != ${JSON.stringify(expected)}`,
+		);
+	}
+}
+
+/** What the descriptor of one filed ipython output is built from (REQ-CTX27-26). */
+export interface FiledOutputInfo {
+	readonly n: number;
+	/** The full kept stdout, after any ceiling cut. */
+	readonly text: string;
+	/** o200k tokens of `text`. */
+	readonly tokens: number;
+	/** The artifact id of the saved copy, or null when the copy could not be saved. */
+	readonly artifactId: string | null;
+	/** True when stdout exceeded IPYTHON_OUTPUT_CEILING_BYTES and was cut. */
+	readonly cutAtCeiling: boolean;
+}
+
+/** REQ-CTX27-26, REQ-CTX27-30: the exact descriptor that replaces a filed stdout. Pure; used by validateIpythonDescriptor. */
+export function expectedIpythonDescriptor(info: FiledOutputInfo): string {
+	const name = `${IPYTHON_OUTPUT_VAR_PREFIX}${info.n}`;
+	const lines = info.text.endsWith("\n") ? info.text.slice(0, -1).split("\n") : info.text.split("\n");
+	const cut = (line: string): string => line.slice(0, IPYTHON_DESCRIPTOR_LINE_CUT);
+	const head = lines.slice(0, IPYTHON_DESCRIPTOR_SAMPLE_LINES).map(cut);
+	const tail =
+		lines.length > IPYTHON_DESCRIPTOR_SAMPLE_LINES
+			? lines
+					.slice(Math.max(IPYTHON_DESCRIPTOR_SAMPLE_LINES, lines.length - IPYTHON_DESCRIPTOR_SAMPLE_LINES))
+					.map(cut)
+			: [];
+	const bytes = new TextEncoder().encode(info.text).length;
+	const out = [`[ipython output filed] ${name} | ${lines.length} lines | ${bytes} bytes | ${info.tokens} tokens`];
+	if (info.cutAtCeiling) out.push(`cut: first ${IPYTHON_OUTPUT_CEILING_BYTES} bytes kept`);
+	out.push(`open (preferred): ${name} in ipython, e.g. ${name}.count("ERROR"). ${IPYTHON_DESCRIPTOR_INSTRUCTION}`);
+	out.push(
+		info.artifactId === null
+			? "full unchanged copy: unavailable (artifact save failed)"
+			: `full unchanged copy: artifact://${info.artifactId} (ranges only, e.g. :1-60; a whole read is refused; unchanged if ${name} is rebound)`,
+	);
+	out.push("head:", ...head);
+	if (tail.length > 0) out.push("tail:", ...tail);
+	return out.join("\n");
+}
+
+/** POST-CTX27-15 / POST-CTX27-18: the tool result text equals the contracted descriptor for the filed output. */
+export function validateIpythonDescriptor(info: FiledOutputInfo, resultText: string): void {
+	const expected = expectedIpythonDescriptor(info);
+	if (resultText !== expected) {
+		throw new IpythonFilingViolationError(
+			"POST-CTX27-15",
+			`descriptor ${JSON.stringify(resultText)} != ${JSON.stringify(expected)}`,
+		);
+	}
+}
+
+/** REQ-CTX27-32: the instruction that closes the descriptor's first access line. */
+export const IPYTHON_DESCRIPTOR_INSTRUCTION = "Answer from it; paste no lines into your reply.";
+
+/**
+ * REQ-CTX27-31: the artifact id when `path` is a read of `artifact://<id>` (optionally `:raw`) with no line range,
+ * or null for any other path or any ranged form (`:5`, `:5-9`, `:-60`, `:5+20`, `:raw:5-9`, comma lists). Pure.
+ */
+export function wholeArtifactReadId(path: string): string | null {
+	const match = /^artifact:\/\/(\d+)(?::raw)?$/i.exec(path.trim());
+	return match === null ? null : (match[1] ?? null);
+}
+
+/** REQ-CTX27-31: the refusal text for a whole read of the artifact copy of `out_<n>`. Pure. */
+export function wholeReadRefusal(artifactId: string, n: number): string {
+	const name = `${IPYTHON_OUTPUT_VAR_PREFIX}${n}`;
+	return `artifact://${artifactId} is the full copy of ${name}. Ask ${name} in ipython (for example ${name}.count("ERROR")) or read a range: artifact://${artifactId}:1-60.`;
+}
+
+/** REQ-CTX27-33 (Z18): appended to Ketema's own interactive message as if he typed it. Ketema may edit this wording; tests follow. */
+export const USER_REMINDER_TEXT =
+	"Remember to be context efficient. Use your ipython REPL for data work and never paste long output into your reply. Have you written this function before? Check memory and your helpers first. Follow every skill step exactly.";
+
+/**
+ * REQ-CTX27-34: true when any user message among the session history `entries` holds USER_REMINDER_TEXT. A history
+ * entry is a message entry whose message has role "user"; its content is a string or a list of parts with `text`. Pure.
+ */
+export function sessionHoldsReminder(entries: readonly unknown[]): boolean {
+	for (const entry of entries) {
+		const holder = entry as { type?: unknown; message?: { role?: unknown; content?: unknown } } | null;
+		if (holder?.type !== "message" || holder.message?.role !== "user") continue;
+		const content = holder.message.content;
+		const text =
+			typeof content === "string"
+				? content
+				: Array.isArray(content)
+					? content.map(part => String((part as { text?: unknown } | null)?.text ?? "")).join("\n")
+					: "";
+		if (text.includes(USER_REMINDER_TEXT)) return true;
+	}
+	return false;
+}
+
+/**
+ * REQ-CTX27-33, REQ-CTX27-34: the message text after the submit hook. Appends USER_REMINDER_TEXT on a new line, with no
+ * marker, tag or label. Unchanged when the source is not "interactive", the text is empty, it begins with `/`, `!` or
+ * `$`, it already ends with the reminder, or the session already holds the reminder (`reminderInSession`). Pure.
+ */
+export function userMessageWithReminder(text: string, source: string, reminderInSession: boolean): string {
+	if (reminderInSession) return text;
+	if (source !== "interactive") return text;
+	if (text.trim() === "") return text;
+	if (/^[/!$]/.test(text.trimStart())) return text;
+	if (text.endsWith(USER_REMINDER_TEXT)) return text;
+	return `${text}\n${USER_REMINDER_TEXT}`;
+}
+
+/** REQ-CTX27-35, REQ-CTX27-36 (Z20): the kinds of authority text that omp never elides. */
+export type AuthorityKind = "skill" | "xd_doc" | "memory";
+
+/** REQ-CTX27-36: the memory tools whose recall, search and list results are authority text. */
+export const MEMORY_AUTHORITY_TOOLS: readonly string[] = ["memory_recall", "memory_search", "memory_list"];
+
+/**
+ * REQ-CTX27-35, REQ-CTX27-36 (Z20): the kind of authority text a tool call returns, or null for any other call. A `read`
+ * of `skill://...` or of a file under a skills directory (`.omp/agent/skills/`, `.claude/skills/`, `.agents/skills/`) is
+ * "skill"; a `read` of `xd://...` is "xd_doc"; a `write` to `xd://mcp__memory_recall`, `_search` or `_list` (how an MCP tool
+ * executes) is "memory". A trailing line selector (`:5-9`, `:raw`) does not change the kind. Pure.
+ */
+export function authorityReadKind(toolName: string, path: string): AuthorityKind | null {
+	const target = path.trim();
+	if (toolName === "read") {
+		if (/^skill:\/\//i.test(target)) return "skill";
+		if (/\/\.(?:omp\/agent|claude|agents)\/skills\/[^/]+\//.test(target)) return "skill";
+		if (/^xd:\/\//i.test(target)) return "xd_doc";
+		return null;
+	}
+	if (toolName === "write") {
+		const memory = /^xd:\/\/mcp__(memory_[a-z]+)$/i.exec(target);
+		if (memory?.[1] !== undefined && MEMORY_AUTHORITY_TOOLS.includes(memory[1].toLowerCase())) return "memory";
+	}
+	return null;
 }
 
 // =============================================================================
@@ -306,13 +560,7 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 		method: "test",
 		description:
 			"migrateHelperSnapshotsToTargetPython migrates every snapshot record in manifest.json from its neutral Python source (stored in manifest.json or supplied via sourceOverrides) to targetPython's major.minor version and dill version, atomically updating the snapshot file and manifest.json (python_version, dill_version, sha256, byte_size) so restore.py restores all migrated helpers under targetPython.",
-	},
-	"POST-CTX27-7": {
-		id: "POST-CTX27-7",
-		method: "test",
-		description:
-			"A session created via createAgentSession with trusted snapshots in snapshotsDir triggers before_agent_start and appends bounded catalog cards matching schema (<=240 tokens, <=3 cards) to its effective system prompt.",
-		requirement_ids: ["REQ-CTX27-08", "REQ-CTX27-09"],
+		requirement_ids: ["REQ-CTX27-15"],
 	},
 	"SEQ-CTX27-1": {
 		id: "SEQ-CTX27-1",
@@ -340,13 +588,7 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 		method: "test",
 		description:
 			"ContextEfficiencyEnforcer.runCompactionWithGate invokes runBeforeCompactHook BEFORE committing a compaction entry and aborts with CompactionCancelledError when the hook returns { cancel: true } (IP-4).",
-	},
-	"SEQ-CTX27-5": {
-		id: "SEQ-CTX27-5",
-		method: "test",
-		description:
-			"createAgentSession in packages/coding-agent/src/sdk.ts mounts createContextEfficiencyExtension into inlineExtensions for every non-read-only session BEFORE initializing ExtensionRunner (IP-3).",
-		requirement_ids: ["REQ-CTX27-08", "REQ-CTX27-09"],
+		requirement_ids: ["REQ-CTX27-11", "REQ-CTX27-13"],
 	},
 	"ERRORS-CTX27-1": {
 		id: "ERRORS-CTX27-1",
@@ -368,5 +610,186 @@ export const CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT: Readonly<Record<string, Co
 		description:
 			"No 32-byte slice of a filed payload value appears in the assembled prompt outside a descriptor's cut sample string or cut text line (key names and column names cut at 31 characters are exempt), and the F-over + three-cards + compaction-status transcript excluding user prompts, F-inline, F-turn, and F-session is at most 700 o200k tokens.",
 		requirement_ids: ["INV-CTX27-06", "INV-CTX27-07"],
+	},
+	"SEQ-CTX27-6": {
+		id: "SEQ-CTX27-6",
+		method: "test",
+		description:
+			"KernelManager's start sequence runs restore.py inside the IPython kernel AFTER transport bootstrap and BEFORE the first cell executes, so the first cell sees every restored helper name (IP-5).",
+		requirement_ids: ["REQ-CTX27-16"],
+	},
+	"POST-CTX27-8": {
+		id: "POST-CTX27-8",
+		method: "test",
+		description:
+			"After kernel start, the workbench report's loaded list equals the names restore.py restored, each is bound in the kernel's global namespace, and no other global restore.py defines is bound there.",
+		requirement_ids: ["REQ-CTX27-16"],
+	},
+	"POST-CTX27-9": {
+		id: "POST-CTX27-9",
+		method: "test",
+		description:
+			"When a top-level session starts, omp sends exactly one custom message of type WORKBENCH_MESSAGE_TYPE, displayed and delivered as WORKBENCH_MESSAGE_DELIVERY, whose text equals expectedWorkbenchMessage(report) for that kernel's workbench report.",
+		requirement_ids: ["REQ-CTX27-18", "REQ-CTX27-19"],
+	},
+	"POST-CTX27-10": {
+		id: "POST-CTX27-10",
+		method: "test",
+		description:
+			"After the workbench message is sent, no ipython tool result carries the workbench notice text, and the message is not sent again for the same kernel start however many cells or turns follow.",
+		requirement_ids: ["REQ-CTX27-20", "REQ-CTX27-21"],
+	},
+	"POST-CTX27-11": {
+		id: "POST-CTX27-11",
+		method: "test",
+		description:
+			"When a top-level session that owns an artifacts directory starts, the IPython kernel is started before any user message or ipython call, so the workbench report exists and the restored helpers are bound; a session that owns no artifacts directory starts no kernel and sends no message until its kernel is first used.",
+		requirement_ids: ["REQ-CTX27-22"],
+	},
+	"ERRORS-CTX27-3": {
+		id: "ERRORS-CTX27-3",
+		method: "test",
+		description:
+			"When restore.py is missing or raises, or refuses a snapshot, kernel start still completes, the next cell executes, the report carries the cause in error and every refused record in refused, and the workbench message names them.",
+		requirement_ids: ["REQ-CTX27-16"],
+	},
+	"FORBIDDEN-CTX27-2": {
+		id: "FORBIDDEN-CTX27-2",
+		method: "test",
+		description:
+			"createAgentSession does not mount createContextEfficiencyExtension in any session: no loaded extension registers its tool_result and before_agent_start handlers.",
+		requirement_ids: ["REQ-CTX27-17"],
+	},
+	"POST-CTX27-12": {
+		id: "POST-CTX27-12",
+		method: "test",
+		description:
+			"When an ipython cell raises no error and its stdout reaches IPYTHON_FILE_THRESHOLD_TOKENS o200k tokens, the kernel variable out_<n> holds exactly the full stdout and the tool result does not contain that stdout.",
+		requirement_ids: ["REQ-CTX27-23"],
+	},
+	"POST-CTX27-13": {
+		id: "POST-CTX27-13",
+		method: "test",
+		description:
+			"Filed outputs are numbered from 1 in each session, and a variable already bound to out_<n> is never overwritten: the next free number is used and the descriptor names it.",
+		requirement_ids: ["REQ-CTX27-24"],
+	},
+	"POST-CTX27-14": {
+		id: "POST-CTX27-14",
+		method: "test",
+		description:
+			"The artifact saved through the session's saveArtifact under IPYTHON_ARTIFACT_TOOL_TYPE holds exactly the full stdout, and its id is the one the descriptor names.",
+		requirement_ids: ["REQ-CTX27-25"],
+	},
+	"POST-CTX27-15": {
+		id: "POST-CTX27-15",
+		method: "test",
+		description:
+			"The tool result text of a filed output equals expectedIpythonDescriptor(info): variable name, line count, byte count, token count, both access methods with the kernel variable first and marked preferred, then 5 head and 5 tail lines each cut at 100 characters.",
+		requirement_ids: ["REQ-CTX27-26"],
+	},
+	"POST-CTX27-16": {
+		id: "POST-CTX27-16",
+		method: "test",
+		description:
+			"stderr, tracebacks, expression results and stdout below IPYTHON_FILE_THRESHOLD_TOKENS reach the tool result exactly as before: no variable is filed and no artifact is saved.",
+		requirement_ids: ["REQ-CTX27-27"],
+	},
+	"POST-CTX27-17": {
+		id: "POST-CTX27-17",
+		method: "test",
+		description: "The ipython tool description contains every statement of IPYTHON_DESCRIPTION_STATEMENTS verbatim.",
+		requirement_ids: ["REQ-CTX27-28"],
+	},
+	"POST-CTX27-18": {
+		id: "POST-CTX27-18",
+		method: "test",
+		description:
+			"When stdout exceeds IPYTHON_OUTPUT_CEILING_BYTES, the variable and the artifact hold the first IPYTHON_OUTPUT_CEILING_BYTES bytes and the descriptor states the cut.",
+		requirement_ids: ["REQ-CTX27-30"],
+	},
+	"POST-CTX27-19": {
+		id: "POST-CTX27-19",
+		method: "test",
+		description:
+			"A read of artifact://<id> without a line range, where <id> is the artifact of a filed ipython output, is refused with wholeReadRefusal(id, n); a ranged read of it, a read of any other artifact id and a read of any other path proceed untouched.",
+		requirement_ids: ["REQ-CTX27-31"],
+	},
+	"POST-CTX27-20": {
+		id: "POST-CTX27-20",
+		method: "test",
+		description:
+			"The first access line of the descriptor ends with IPYTHON_DESCRIPTOR_INSTRUCTION and the artifact line says that only ranges are read and a whole read is refused (expectedIpythonDescriptor).",
+		requirement_ids: ["REQ-CTX27-32"],
+	},
+	"POST-CTX27-21": {
+		id: "POST-CTX27-21",
+		method: "test",
+		description:
+			"The submit hook returns the interactive message followed by a newline and USER_REMINDER_TEXT exactly, with no marker, tag or label around the reminder (userMessageWithReminder).",
+		requirement_ids: ["REQ-CTX27-33"],
+	},
+	"POST-CTX27-22": {
+		id: "POST-CTX27-22",
+		method: "test",
+		description:
+			"The submit hook returns the message unchanged when the source is not interactive, the text is empty, the text begins with /, ! or $, the text already ends with USER_REMINDER_TEXT, or the session already holds the reminder.",
+		requirement_ids: ["REQ-CTX27-34"],
+	},
+	"POST-CTX27-23": {
+		id: "POST-CTX27-23",
+		method: "test",
+		description:
+			"The session holds the reminder exactly when an earlier user message entry of its history contains USER_REMINDER_TEXT (sessionHoldsReminder), so the reminder goes on the first eligible message only, including after a resume or a compaction.",
+		requirement_ids: ["REQ-CTX27-34"],
+	},
+	"POST-CTX27-24": {
+		id: "POST-CTX27-24",
+		method: "test",
+		description:
+			"A read with no line range whose authorityReadKind is skill (skill:// or a file under a skills directory, including references/) returns the whole file text in one result: no middle elision, no spill artifact and no paging notice, even when the file exceeds tools.artifactSpillThreshold.",
+		requirement_ids: ["REQ-CTX27-35"],
+	},
+	"POST-CTX27-25": {
+		id: "POST-CTX27-25",
+		method: "test",
+		description:
+			"A read whose authorityReadKind is xd_doc, and a write whose authorityReadKind is memory (memory_recall, memory_search, memory_list), returns the whole result text: no middle elision and no spill artifact.",
+		requirement_ids: ["REQ-CTX27-36"],
+	},
+	"POST-CTX27-26": {
+		id: "POST-CTX27-26",
+		method: "test",
+		description:
+			"A read of authority text that carries a line range returns exactly the requested lines, with no middle elision.",
+		requirement_ids: ["REQ-CTX27-37"],
+	},
+	"POST-CTX27-27": {
+		id: "POST-CTX27-27",
+		method: "test",
+		description:
+			"Every result whose authorityReadKind is null is spilled and paged exactly as before: a bash result above tools.artifactSpillThreshold still becomes a head and tail with an artifact, and the setting keeps its value.",
+		requirement_ids: ["REQ-CTX27-38"],
+	},
+	"POST-CTX27-28": {
+		id: "POST-CTX27-28",
+		method: "test",
+		description:
+			"authorityReadKind returns skill for read of skill://x, read of skill://x/references/y.md and read of a path under .omp/agent/skills/, .claude/skills/ or .agents/skills/; xd_doc for read of xd://tool; memory for write to xd://mcp__memory_recall, _search and _list; and null for every other tool and path, including write to xd://mcp__memory_remember.",
+		requirement_ids: ["REQ-CTX27-35", "REQ-CTX27-36"],
+	},
+	"FORBIDDEN-CTX27-3": {
+		id: "FORBIDDEN-CTX27-3",
+		method: "test",
+		description:
+			"The rlm extension registers exactly one tool, ipython, and no tool_result handler: it never files, truncates or rewrites the result of any other tool. Its only tool_call handler is the refusal of POST-CTX27-19.",
+		requirement_ids: ["REQ-CTX27-29"],
+	},
+	"ERRORS-CTX27-4": {
+		id: "ERRORS-CTX27-4",
+		method: "test",
+		description:
+			"When the filed output cannot be bound in the kernel, the stdout is returned unchanged with one added line saying that filing the output failed; when the artifact copy cannot be saved, the variable is still bound and the descriptor states that the copy is unavailable.",
+		requirement_ids: ["REQ-CTX27-23", "REQ-CTX27-25"],
 	},
 } as const;

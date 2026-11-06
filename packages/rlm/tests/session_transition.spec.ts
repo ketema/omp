@@ -564,7 +564,7 @@ describe("POST-SESSION-RESOLUTION-GATE-1: no kernel is constructed against an un
 		const c = await persistedSession(dir, "C");
 		const { created, createKernel } = recordingKernels();
 		const { api, registry } = makeRegistry();
-		await createRlmExtension({ createKernel })(api as never);
+		await createRlmExtension({ createKernel, announceWorkbench: false })(api as never);
 		await emit(registry, "session_start", {}, hostContext(dir, a.sm));
 
 		const toB = emit(

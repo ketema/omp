@@ -6,9 +6,11 @@
  * parity"): every public method of the real transport exists here (optional interface members only when scripted), and
  * the observable results of the calls it answers have the shapes the real runner returns.
  *
- * Scripted AT CONSTRUCTION; records every call.
+ * Scripted AT CONSTRUCTION; records every call except the start-time workbench cell, which it answers the way a real
+ * kernel with no saved snapshots does (REQ-CTX27-16), so scripts keep numbering only the cells their test runs.
  */
 import type { KernelSnapshotWriteResult } from "../src/kernel.ts";
+import { WORKBENCH_LOAD_CELL } from "../src/workbench.ts";
 
 export interface TransportResult {
 	code: number;
@@ -52,6 +54,9 @@ export function makeScriptedTransport(script: TransportScript = {}) {
 			await script.start?.();
 		},
 		async execute(id: string, code: string): Promise<TransportResult> {
+			if (code === WORKBENCH_LOAD_CELL) {
+				return { code: 0, stdout: '{"loaded": [], "refused": [], "error": null}\n', stderr: "", result: "" };
+			}
 			execCount += 1;
 			calls.push({ kind: "execute", detail: `${id}:${code}` });
 			const result = await script.execute?.(id, code, execCount);

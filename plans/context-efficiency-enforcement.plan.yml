@@ -1,9 +1,9 @@
 schema_version: '1.0'
 feature_name: context-efficiency-enforcement
 manifest_path: requirements/REQUIREMENT_MANIFEST_CTX27.md
-manifest_hash: sha256:05d5fb81e6f766a886f4c3f491e36b96df3e3b21c5c5b92e9347e59715a03c58
+manifest_hash: sha256:dc22a4efea9ba395aeae93a4afab491d46a895b6fead5617a153d6952352e4f7
 created: '2026-11-05'
-last_updated: '2026-11-05'
+last_updated: '2026-11-06'
 status: ACTIVE
 slices:
 - id: SLICE-1
@@ -32,11 +32,9 @@ slices:
   - POST-CTX27-4
   - POST-CTX27-5
   - POST-CTX27-6
-  - POST-CTX27-7
   - SEQ-CTX27-2
   - SEQ-CTX27-3
   - SEQ-CTX27-4
-  - SEQ-CTX27-5
   - ERRORS-CTX27-2
   - FORBIDDEN-CTX27-1
   clauses_deferred: []
@@ -52,6 +50,82 @@ slices:
   status: AUDITED
   issue: ketema/omp#27
   pivot_note: Shippable enforcement of emission, catalog, compaction, prompt-assembly, and neutral-source 3.14.10 snapshot migration gates for ketema/omp#27 verified by Tests 1-4 in CI with the fixture transcript <= 700 o200k tokens.
+- id: SLICE-2
+  requirement_ids:
+  - REQ-CTX27-16
+  - REQ-CTX27-17
+  - REQ-CTX27-18
+  - REQ-CTX27-19
+  - REQ-CTX27-20
+  - REQ-CTX27-21
+  - REQ-CTX27-22
+  clauses_in_scope:
+  - SEQ-CTX27-6
+  - POST-CTX27-8
+  - POST-CTX27-9
+  - POST-CTX27-10
+  - POST-CTX27-11
+  - ERRORS-CTX27-3
+  - FORBIDDEN-CTX27-2
+  clauses_deferred: []
+  negative_constraints:
+  - FORBIDDEN-CTX27-2
+  status: PENDING
+  issue: ketema/omp#27
+  pivot_note: Item 1a. A top-level session that owns an artifacts directory starts its IPython kernel at launch, the kernel loads Ketema's helpers via restore.py, and omp sends one developer-role message through its message bus (delivered with the next user message) naming what loaded and stating the context efficiency rules. In-memory sessions and subagents stay lazy (option 3, Q1). Never repeated per turn, never in a tool result; the context efficiency extension is unmounted. Ketema accepts only after his real-life fresh-session test.
+- id: SLICE-3
+  requirement_ids:
+  - REQ-CTX27-23
+  - REQ-CTX27-24
+  - REQ-CTX27-25
+  - REQ-CTX27-26
+  - REQ-CTX27-27
+  - REQ-CTX27-28
+  - REQ-CTX27-29
+  - REQ-CTX27-30
+  - REQ-CTX27-31
+  - REQ-CTX27-32
+  - REQ-CTX27-33
+  - REQ-CTX27-34
+  clauses_in_scope:
+  - POST-CTX27-12
+  - POST-CTX27-13
+  - POST-CTX27-14
+  - POST-CTX27-15
+  - POST-CTX27-16
+  - POST-CTX27-17
+  - POST-CTX27-18
+  - POST-CTX27-19
+  - POST-CTX27-20
+  - POST-CTX27-21
+  - POST-CTX27-22
+  - POST-CTX27-23
+  - FORBIDDEN-CTX27-3
+  - ERRORS-CTX27-4
+  clauses_deferred: []
+  negative_constraints:
+  - FORBIDDEN-CTX27-3
+  status: PENDING
+  issue: ketema/omp#27
+  pivot_note: Item 2. Only ipython output changes, plus one refusal. When a cell's stdout reaches 800 o200k tokens, the full text stays in the kernel as out_<n>, omp saves the same text as a session artifact, and the tool result carries a descriptor that names both access methods with the kernel variable preferred and tells the model to answer from the kernel. A whole read of that artifact is refused with a range hint. Every other tool, protocol and thinking block is untouched. The ipython:// protocol is a later slice.
+- id: SLICE-4
+  requirement_ids:
+  - REQ-CTX27-35
+  - REQ-CTX27-36
+  - REQ-CTX27-37
+  - REQ-CTX27-38
+  clauses_in_scope:
+  - POST-CTX27-24
+  - POST-CTX27-25
+  - POST-CTX27-26
+  - POST-CTX27-27
+  - POST-CTX27-28
+  clauses_deferred: []
+  negative_constraints:
+  - FORBIDDEN-CTX27-3
+  status: PENDING
+  issue: ketema/omp#27
+  pivot_note: Item 3. Authority text is never hidden. The generic tool-result spill in tools/output-meta.ts replaces any result above tools.artifactSpillThreshold (50 KB) with a head, a tail and an artifact, and the read tool pages files at that threshold. Skills (skill:// and files under skills directories, including references/), xd:// tool docs and memory recall, search and list results are exempted by tool and path, ranged reads return exactly the requested lines, and every other result keeps the existing spill and paging. The threshold setting is not raised. Proof is a real session, not doubles. Ketema approved the wording and decisions on 2026-11-06.
 forgotten_invariants:
 - INV-CTX27-01
 - INV-CTX27-07

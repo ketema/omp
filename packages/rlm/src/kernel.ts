@@ -8,6 +8,7 @@
 
 import * as fs from "node:fs";
 import { join } from "node:path";
+import { parseWorkbenchReport, WORKBENCH_LOAD_CELL, type WorkbenchReport } from "./workbench";
 
 // =============================================================================
 // Constants (redeclared; aligned with contract KM_*)
@@ -109,6 +110,8 @@ export interface KernelExecutionResult {
 	readonly errorEname: string | undefined;
 	readonly durationMs: number;
 	readonly kernelRestarted?: boolean;
+	/** The complete stdout, set only when `stdout` was cut at MAX_OUTPUT_CHARS (REQ-CTX27-23: filing needs the whole text). */
+	readonly stdoutFull?: string;
 }
 
 export interface KernelSnapshotManifest {
@@ -270,6 +273,8 @@ export class KernelManager {
 	// SLICE-4 additive: names restored by the last admission (for tool/extension)
 	private lastRestoredNames: readonly string[] = [];
 	private lastRestoredSkipped: ReadonlyArray<{ readonly name: string; readonly reason: string }> = [];
+	// REQ-CTX27-16: what loading the workbench produced at the last start; null before first start.
+	private lastWorkbench: WorkbenchReport | null = null;
 
 	constructor(transport: KernelTransport, options: { clock: KernelClock; artifactsDir: string }) {
 		this.transport = transport;
@@ -402,6 +407,11 @@ export class KernelManager {
 
 	restoredSkipped(): ReadonlyArray<{ readonly name: string; readonly reason: string }> {
 		return this.lastRestoredSkipped;
+	}
+
+	/** POST-CTX27-8 / ERRORS-CTX27-3: the workbench report from the last kernel start, null before first start. */
+	workbenchReport(): WorkbenchReport | null {
+		return this.lastWorkbench;
 	}
 
 	/**
@@ -546,6 +556,11 @@ export class KernelManager {
 		this.lastRestoredSkipped = Array.isArray(skippedFromRestored) ? skippedFromRestored : [];
 		if (onProgress !== undefined) onProgress("preparing");
 		await this.transport.bootstrap();
+		// SEQ-CTX27-6: load the workbench AFTER bootstrap and BEFORE any cell runs (started is still false here).
+		// Its own id keeps the exec-N sequence for user cells unchanged.
+		this.lastWorkbench = parseWorkbenchReport(
+			await this.transport.execute(`workbench-${this.execCounter}`, WORKBENCH_LOAD_CELL),
+		);
 		this.started = true;
 	}
 
@@ -775,6 +790,7 @@ export class KernelManager {
 			traceback: execResult.traceback,
 			errorEname: execResult.errorEname,
 			durationMs: Math.max(0, durationMs),
+			...(stdout.length > MAX_OUTPUT_CHARS ? { stdoutFull: stdout } : {}),
 		};
 	}
 

@@ -35,7 +35,6 @@ import {
 	CARD_SNAPSHOT_MAX_CHARS,
 	CARD_SUMMARY_MAX_CHARS,
 	COMPACTION_CANCELLED_TEXT,
-	CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT,
 	DESCRIPTOR_MAX_TOKENS,
 	DISPLAY_MAX_BYTES,
 	DISPLAY_MAX_LINES,
@@ -123,7 +122,6 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 	});
 
 	it("aligns contract and implementation constants and enforces PRE-CTX27-1 and INV-CTX27-1 runtime guards (PRE-CTX27-1, INV-CTX27-1, POST-CTX27-1..5, SEQ-CTX27-1..4, ERRORS-CTX27-1, FORBIDDEN-CTX27-1)", async () => {
-		expect(Object.keys(CONTRACT_CONTEXT_EFFICIENCY_ENFORCEMENT).length).toBe(17);
 		expect(IMPL_RESULT_TOKEN_THRESHOLD).toBe(RESULT_TOKEN_THRESHOLD);
 		expect(IMPL_TURN_INLINE_TOKEN_BUDGET).toBe(TURN_INLINE_TOKEN_BUDGET);
 		expect(IMPL_SESSION_INLINE_TOKEN_BUDGET).toBe(SESSION_INLINE_TOKEN_BUDGET);
@@ -494,7 +492,7 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 					expect(
 						afterFaultSha,
 						`ERRORS-CTX27-2 violation: failed mid-commit migration did not roll back ${fn.snapshot}`,
-					).toBe(preFaultDillHashes.get(fn.snapshot));
+					).toBe(preFaultDillHashes.get(fn.snapshot) ?? "");
 				}
 				// Restore fns[0] file for subsequent F1 test
 				await migrateHelperSnapshotsToTargetPython({ snapshotsDir: migSnapDir });
@@ -526,7 +524,7 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 				for (const fn of fns) {
 					const afterF1Bytes = fs.readFileSync(path.join(migSnapDir, fn.snapshot));
 					const afterF1Sha = crypto.createHash("sha256").update(afterF1Bytes).digest("hex");
-					expect(afterF1Sha).toBe(preFaultDillHashes.get(fn.snapshot));
+					expect(afterF1Sha).toBe(preFaultDillHashes.get(fn.snapshot) ?? "");
 				}
 
 				// F3 (CL9-A): an interpreter lacking real dill must fail loud instead of spoofing dill.__version__ = '0.4.1'
@@ -674,46 +672,11 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 		).toBe(true);
 	});
 
-	it("Test 5 (SDK Integration & Live Catalog Prompt Injection): createAgentSession mounts createContextEfficiencyExtension and injects bounded catalog cards into live session prompt on before_agent_start (SEQ-CTX27-5, POST-CTX27-7)", async () => {
+	it("Test 5 (SDK): createAgentSession does not mount createContextEfficiencyExtension in any session (FORBIDDEN-CTX27-2)", async () => {
+		// Risk tier: HIGH — in session 01a1aba2 the mounted extension hid 22 tool results and skill files from the model.
 		const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "omp-ctx27-sdk-test-"));
 		const agentDir = path.join(tempHome, ".omp", "agent");
-		const snapshotsDir = path.join(agentDir, "repl-snapshots");
-		fs.mkdirSync(snapshotsDir, { recursive: true });
-
-		const fns = [
-			{
-				name: "expand_rules",
-				signature: "(n: int) -> str",
-				summary: "Expands rule identifiers",
-				snapshot: "expand_rules.dill",
-				pythonSource: "def expand_rules(n):\n    return f'R{n:03d}'\n",
-			},
-			{
-				name: "tally_rows",
-				signature: "(rows: list) -> int",
-				summary: "Counts non-empty rows",
-				snapshot: "tally_rows.dill",
-				pythonSource: "def tally_rows(rows):\n    return len(rows)\n",
-			},
-			{
-				name: "digest_text",
-				signature: "(s: str) -> str",
-				summary: "SHA-256 hex of text",
-				snapshot: "digest_text.dill",
-				pythonSource: "import hashlib\ndef digest_text(s):\n    return hashlib.sha256(s.encode()).hexdigest()\n",
-			},
-		];
-
-		for (const fn of fns) {
-			await saveTrustedHelperSnapshot({
-				snapshotsDir,
-				name: fn.name,
-				signature: fn.signature,
-				summary: fn.summary,
-				snapshotBasename: fn.snapshot,
-				pythonSource: fn.pythonSource,
-			});
-		}
+		fs.mkdirSync(agentDir, { recursive: true });
 
 		const authStorage = await AuthStorage.create(path.join(tempHome, "auth.db"));
 		authStorage.keys.setRuntime("managed-primary", "test-key");
@@ -742,30 +705,16 @@ describe("Context Efficiency Enforcement (ketema/omp#27)", () => {
 		});
 
 		try {
-			// SEQ-CTX27-5: createAgentSession mounts createContextEfficiencyExtension into inlineExtensions
-			const hasEnforcerExtension = extensionsResult.extensions.some(
+			const mounted = extensionsResult.extensions.filter(
 				ext => ext.handlers.has("before_agent_start") && ext.handlers.has("tool_result"),
 			);
 			expect(
-				hasEnforcerExtension,
-				"SEQ-CTX27-5 violation: createAgentSession did not mount createContextEfficiencyExtension into inlineExtensions",
-			).toBe(true);
-
-			// Trigger turn to fire before_agent_start hook
-			await session.prompt("Integration test trigger prompt");
-
-			// POST-CTX27-7: Effective system prompt must contain bounded catalog cards matching schema
-			const effectivePrompt = session.systemPrompt.join("\n");
-			for (const fn of fns) {
-				expect(
-					effectivePrompt.includes(`"name":"${fn.name}"`),
-					`POST-CTX27-7 violation: prompt missing catalog card for helper ${fn.name}`,
-				).toBe(true);
-				expect(
-					effectivePrompt.includes("def " + fn.name),
-					`POST-CTX27-7 violation: prompt leaked function body for ${fn.name}`,
-				).toBe(false);
-			}
+				mounted.length,
+				"FORBIDDEN-CTX27-2 violation: createAgentSession mounted an extension that registers tool_result and before_agent_start\n" +
+					"EXPECTED: 0 such extensions in a live session\n" +
+					`ACTUAL: ${mounted.length}\n` +
+					"GUIDANCE: the context efficiency extension stays unmounted until Ketema re-approves it",
+			).toBe(0);
 		} finally {
 			await session.dispose();
 			fs.rmSync(tempHome, { recursive: true, force: true });

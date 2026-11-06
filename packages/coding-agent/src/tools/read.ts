@@ -85,6 +85,7 @@ import {
 	scanConflictLines,
 	scanFileForConflicts,
 } from "./conflict-detect";
+import { authorityReadKind } from "./authority-text";
 import { executeReadUrl, fetchReadUrl, parseReadUrlTarget } from "./fetch";
 import { approvalDirectoryKey } from "./approval-cache";
 import { approvalTargetKey, approvalTargetNamesFile, isApprovalPublicUrl } from "./approval-targets";
@@ -200,6 +201,8 @@ import { cfgImagesAutoResize } from "../modes/settings";
 const MAX_PROFILE_SUMMARY_BYTES = 32 * 1024 * 1024;
 /** Largest URL-located file a bare `:raw` read inlines; bigger ones must page with bounded ranges. */
 const MAX_URL_RAW_INLINE_BYTES = DEFAULT_MAX_BYTES;
+/** POST-CTX27-24: line cap for a skill file read with no range; large enough that no skill file is ever paged. */
+const AUTHORITY_FILE_MAX_LINES = 1_000_000;
 /** Largest file buffered whole for the local read path and speculative snapshots. */
 export const SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
 /** LF byte, scanned natively to find line boundaries in a buffered file. */
@@ -2517,8 +2520,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					let startLineDisplay = startLine + 1;
 
 					const DEFAULT_LIMIT = this.#defaultLimit;
-					const effectiveLimit = limit ?? DEFAULT_LIMIT;
-					let maxLinesToCollect = Math.min(effectiveLimit + leadingContext + trailingContext, DEFAULT_MAX_LINES);
+					// POST-CTX27-24: a skill file read with no range is returned whole, never paged or capped.
+					const wholeAuthorityFile =
+						limit === undefined && offset === undefined && authorityReadKind("read", absolutePath) === "skill";
+					const effectiveLimit = wholeAuthorityFile ? AUTHORITY_FILE_MAX_LINES : (limit ?? DEFAULT_LIMIT);
+					const lineCap = wholeAuthorityFile ? AUTHORITY_FILE_MAX_LINES : DEFAULT_MAX_LINES;
+					let maxLinesToCollect = Math.min(effectiveLimit + leadingContext + trailingContext, lineCap);
 					let selectedLineLimit = effectiveLimit + leadingContext + trailingContext;
 					// Scale byte budget with line limit so the configured line count actually fits
 					// (~512 bytes/line, never below the shared default). Pages that would otherwise
@@ -2528,6 +2535,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					// their worst-case width is reserved (at most half the threshold). Artifact-storage
 					// pages never spill, so they keep the full budget.
 					const budgetFor = (firstLine: number, lineCount: number): number => {
+						if (wholeAuthorityFile) return Number.MAX_SAFE_INTEGER;
 						const scaled = Math.max(DEFAULT_MAX_BYTES, lineCount * 512);
 						if (located?.spec.artifactStore) return scaled;
 						const threshold = resolveArtifactSpillThreshold(this.session.settings);
@@ -2567,7 +2575,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						leadingContext = 0;
 						startLine = requestedStart;
 						startLineDisplay = startLine + 1;
-						maxLinesToCollect = Math.min(effectiveLimit + trailingContext, DEFAULT_MAX_LINES);
+						maxLinesToCollect = Math.min(effectiveLimit + trailingContext, lineCap);
 						selectedLineLimit = effectiveLimit + trailingContext;
 						maxBytesForRead = budgetFor(startLine, maxLinesToCollect);
 						lineWindow = await collectWindow(startLine, maxLinesToCollect, maxBytesForRead, selectedLineLimit);

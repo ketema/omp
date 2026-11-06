@@ -14,20 +14,37 @@ type Handler = (event: unknown, ctx?: unknown) => unknown;
 export interface HostMessage {
 	readonly customType?: string;
 	readonly content?: string;
+	readonly display?: boolean;
+	/** How the extension asked the host to deliver it (`sendMessage` options), when it said. */
+	readonly deliverAs?: string;
 }
 interface ToolResult {
 	readonly content: Array<{ text: string }>;
 	readonly isError?: boolean;
+}
+/** One artifact the extension saved through `sessionManager.saveArtifact(content, toolType)`; the id is what `artifact://<id>` reads. */
+export interface SavedArtifact {
+	readonly id: string;
+	readonly content: string;
+	readonly toolType: string;
 }
 
 export interface RealSession {
 	readonly root: string;
 	/** Every message the extension sent to the host, in order. */
 	readonly messages: HostMessage[];
+	/** Every artifact saved through the session manager, in order. */
+	readonly artifacts: SavedArtifact[];
 	/** The text of every rlm-warning message. */
 	readonly warnings: string[];
 	/** Fires `type` to every registered handler with `event`; the session's owned directory is `dir` (default: the initial one). */
 	emit(type: string, event?: object, dir?: string): Promise<void>;
+	/** Fires a tool call to every tool_call handler; the first block result, or undefined when none refused it. */
+	toolCall(toolName: string, input: object): Promise<{ block?: boolean; reason?: string } | undefined>;
+	/** Submits a user message through every input handler, chaining text replacements as the harness does; resolves the final text. */
+	submit(text: string, source?: string): Promise<string>;
+	/** The session history entries the harness exposes through sessionManager.getEntries(); submit() records each message here after the handlers ran, and a test may seed it before the first submit. */
+	readonly history: unknown[];
 	start(): Promise<void>;
 	shutdown(): Promise<void>;
 	call(code: string): Promise<ToolResult>;
@@ -57,26 +74,64 @@ export async function openRealSession(
 		getFlag(name: string) {
 			return flags[name];
 		},
-		sendMessage(payload: HostMessage) {
-			messages.push(payload);
+		sendMessage(payload: HostMessage, options?: { deliverAs?: string }) {
+			messages.push({ ...payload, deliverAs: options?.deliverAs });
 		},
 	};
-	const toolCtx = { hasUI: false, setWorkingMessage() {}, ui: { select: async () => undefined } };
+	const artifacts: SavedArtifact[] = [];
+	// Mirrors ReadonlySessionManager.saveArtifact: resolves the id of the saved copy.
+	const sessionManager = {
+		saveArtifact: async (content: string, toolType: string): Promise<string> => {
+			const id = String(artifacts.length);
+			artifacts.push({ id, content, toolType });
+			return id;
+		},
+	};
+	const toolCtx = { hasUI: false, setWorkingMessage() {}, ui: { select: async () => undefined }, sessionManager };
 	await createRlmExtension(options)(api as never);
 	const emit = async (type: string, event: object = {}, dir: string = initialDir) => {
 		const ctx = { cwd: root, sessionManager: { resolveOwnArtifactsDir: async () => dir } };
 		for (const handler of handlers.get(type) ?? []) await handler({ type, ...event }, ctx);
 	};
+	const toolCall = async (toolName: string, input: object) => {
+		const ctx = { cwd: root, sessionManager: { resolveOwnArtifactsDir: async () => initialDir } };
+		for (const handler of handlers.get("tool_call") ?? []) {
+			const result = await handler(
+				{ type: "tool_call", toolCallId: `t-${crypto.randomUUID()}`, toolName, input },
+				ctx,
+			);
+			if (result) return result as { block?: boolean; reason?: string };
+		}
+		return undefined;
+	};
+	const history: unknown[] = [];
+	const submit = async (text: string, source = "interactive") => {
+		const ctx = {
+			cwd: root,
+			sessionManager: { resolveOwnArtifactsDir: async () => initialDir, getEntries: () => [...history] },
+		};
+		let current = text;
+		for (const handler of handlers.get("input") ?? []) {
+			const result = (await handler({ type: "input", text: current, source }, ctx)) as { text?: string } | undefined;
+			if (result?.text !== undefined) current = result.text;
+		}
+		history.push({ type: "message", message: { role: "user", content: current } });
+		return current;
+	};
 	const call = (code: string) => tools[0].execute(`c-${crypto.randomUUID()}`, { code }, undefined, undefined, toolCtx);
 	return {
 		root,
 		messages,
+		artifacts,
 		get warnings() {
 			return messages
 				.filter(message => message.customType === "rlm-warning")
 				.map(message => String(message.content));
 		},
 		emit,
+		toolCall,
+		submit,
+		history,
 		start: () => emit("session_start"),
 		shutdown: () => emit("session_shutdown"),
 		call,

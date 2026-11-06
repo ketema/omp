@@ -23,6 +23,7 @@ import {
 	truncateTail,
 } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { formatOutputNotice, type OutputMeta, type TruncationMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
+import { authorityReadKind } from "./authority-text";
 import { renderError } from "./tool-errors";
 import {
 	cfgToolsArtifactHeadBytes,
@@ -754,8 +755,13 @@ async function wrappedExecute(
 	try {
 		let result = await originalExecute.call(this, toolCallId, params, signal, onUpdate, context);
 
-		// Spill large results to artifact, truncate to tail
-		result = await spillLargeResultToArtifact(result, this.name, context);
+		// POST-CTX27-25: authority text (skills, xd:// docs, memory results) is never spilled or middle-elided. Every other
+		// result keeps the existing spill (POST-CTX27-27).
+		const targetPath = typeof params?.path === "string" ? params.path : "";
+		if (authorityReadKind(this.name, targetPath) === null) {
+			// Spill large results to artifact, truncate to tail
+			result = await spillLargeResultToArtifact(result, this.name, context);
+		}
 
 		// Append notices from meta
 		const meta: OutputMeta | undefined = result.details?.meta;

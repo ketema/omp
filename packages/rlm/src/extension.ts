@@ -9,11 +9,14 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { bootstrapManagedVenv, buildKernelEnv } from "./bootstrap";
 import { EMBEDDED_RUNTIME_SOURCES, ensureExtractedAssets } from "./embedded_assets";
+import { wholeArtifactReadId, wholeReadRefusal } from "./ipython_filing";
 import type { KernelClock, KernelExecutionResult, KernelTransport } from "./kernel";
 import { KernelManager } from "./kernel";
 import { RlmSessionLifecycle } from "./session_lifecycle";
 import { createRlmToolDefinition, type RlmToolKernelPort, type RlmToolKernelResult } from "./tool";
 import { createTransport } from "./transport";
+import { sessionHoldsReminder, userMessageWithReminder } from "./user_reminder";
+import { WORKBENCH_MESSAGE_TYPE, type WorkbenchReport, workbenchMessage } from "./workbench";
 // =============================================================================
 // Config types
 // =============================================================================
@@ -45,6 +48,7 @@ export interface RlmExtensionKernelPort extends RlmToolKernelPort {
 	retarget(dir: string): Promise<void>;
 	onCompactionComplete(): Promise<void>;
 	flushSnapshot(): Promise<void>;
+	workbenchReport?(): WorkbenchReport | null;
 	compactionNotice(): string | null;
 	restoredSkipped?(): ReadonlyArray<{ readonly name: string; readonly reason: string }>;
 	takeTeardownNotice?(): string | null;
@@ -74,7 +78,7 @@ interface StructuralExtensionAPI {
 	registerTool(tool: any): void;
 	registerFlag(name: string, opts?: { type: "boolean" | "string"; default?: boolean | string }): void;
 	registerCommand(name: string, opts: { handler: (args: string, ctx: unknown) => Promise<void> }): void;
-	on(event: string, handler: (event: unknown, ctx: unknown) => void | Promise<void>): void;
+	on(event: string, handler: (event: unknown, ctx: unknown) => unknown): void;
 	getFlag(name: string): string | boolean | undefined;
 	sendMessage(payload: unknown, options?: { triggerTurn?: boolean; deliverAs?: string }): void;
 }
@@ -111,6 +115,7 @@ export class KernelManagerAdapter implements RlmExtensionKernelPort {
 			errorEname: result.errorEname,
 			durationMs: result.durationMs,
 			kernelRestarted: result.kernelRestarted,
+			...(result.stdoutFull === undefined ? {} : { stdoutFull: result.stdoutFull }),
 		};
 	}
 
@@ -141,6 +146,10 @@ export class KernelManagerAdapter implements RlmExtensionKernelPort {
 
 	restoredNames(): readonly string[] {
 		return this.manager.restoredNames();
+	}
+
+	workbenchReport(): WorkbenchReport | null {
+		return this.manager.workbenchReport();
 	}
 
 	restoredSkipped(): ReadonlyArray<{ readonly name: string; readonly reason: string }> {
@@ -318,6 +327,8 @@ async function createDefaultKernel(config: RlmKernelConfig, artifactsDir: string
 export interface CreateRlmExtensionOptions {
 	/** Test seam: builds the kernel port for the RESOLVED session artifacts directory (POST-SESSION-RESOLUTION-GATE-1). */
 	readonly createKernel?: (config: RlmKernelConfig, artifactsDir: string) => RlmExtensionKernelPort;
+	/** Test seam: false keeps the lazy kernel lifecycle (no kernel start or workbench message at session start). Default true. */
+	readonly announceWorkbench?: boolean;
 }
 
 /**
@@ -344,8 +355,14 @@ export function createRlmExtension(
 			},
 		});
 
+		// REQ-CTX27-31: artifact id -> out_<n> number for every filed output whose copy was saved in this session.
+		const filedArtifacts = new Map<string, number>();
+		// REQ-CTX27-34: true once this session is known to hold the reminder, so the history is read at most until then.
+		let reminderInSession = false;
+
 		// registerTool: exactly ONE tool, the ipython tool
 		const toolDef = createRlmToolDefinition({
+			onFiled: (artifactId: string, n: number) => filedArtifacts.set(artifactId, n),
 			kernel: {
 				ensureStarted(onProgress?: (phase: "starting" | "restoring" | "preparing") => void) {
 					return lifecycle.ensureKernel().then(k => k.ensureStarted(onProgress));
@@ -409,13 +426,57 @@ export function createRlmExtension(
 			},
 		});
 
+		// REQ-CTX27-22 / REQ-CTX27-18: a top-level session starts its kernel at launch, then sends the workbench message once.
+		const announceWorkbench = async (): Promise<void> => {
+			if (options?.announceWorkbench === false) return;
+			if (Number(api.getFlag("RLM_DEPTH") ?? "0") !== 0) return;
+			if (!lifecycle.ownsArtifactsDir()) return;
+			const kernel = await lifecycle.ensureKernel();
+			await kernel.ensureStarted();
+			const report = kernel.workbenchReport?.() ?? null;
+			if (report !== null) notify(WORKBENCH_MESSAGE_TYPE, workbenchMessage(report), true);
+		};
+
 		// Lifecycle hooks
 		api.on("auto_compaction_end", () => lifecycle.onCompactionComplete());
 		api.on("session_before_switch", () => lifecycle.preTransitionFlush());
 		api.on("session_before_branch", () => lifecycle.preTransitionFlush());
-		api.on("session_start", (event, ctx) => lifecycle.handleSessionInit(event, ctx));
-		api.on("session_switch", (event, ctx) => lifecycle.handleSessionInit(event, ctx));
-		api.on("session_branch", (event, ctx) => lifecycle.handleSessionInit(event, ctx));
+		api.on("session_start", async (event, ctx) => {
+			await lifecycle.handleSessionInit(event, ctx);
+			await announceWorkbench();
+		});
+		api.on("session_switch", (event, ctx) => {
+			filedArtifacts.clear();
+			reminderInSession = false;
+			return lifecycle.handleSessionInit(event, ctx);
+		});
+		api.on("session_branch", (event, ctx) => {
+			filedArtifacts.clear();
+			reminderInSession = false;
+			return lifecycle.handleSessionInit(event, ctx);
+		});
 		api.on("session_shutdown", () => lifecycle.shutdown());
+		// REQ-CTX27-31: refuse a whole read of the artifact copy of a filed output; every other call proceeds untouched.
+		api.on("tool_call", (event: unknown) => {
+			const call = event as { toolName?: string; input?: { path?: unknown } };
+			if (call.toolName !== "read" || typeof call.input?.path !== "string") return undefined;
+			const id = wholeArtifactReadId(call.input.path);
+			const n = id === null ? undefined : filedArtifacts.get(id);
+			return id === null || n === undefined ? undefined : { block: true, reason: wholeReadRefusal(id, n) };
+		});
+		// REQ-CTX27-33, REQ-CTX27-34: the reminder joins the first eligible interactive message of the session, as if Ketema typed it.
+		api.on("input", (event: unknown, ctx: unknown) => {
+			const input = event as { text?: unknown; source?: unknown };
+			if (typeof input.text !== "string" || typeof input.source !== "string") return undefined;
+			if (!reminderInSession) {
+				const sessionManager = (ctx as { sessionManager?: { getEntries?: () => readonly unknown[] } } | null)
+					?.sessionManager;
+				reminderInSession = sessionHoldsReminder(sessionManager?.getEntries?.() ?? []);
+			}
+			const text = userMessageWithReminder(input.text, input.source, reminderInSession);
+			if (text === input.text) return undefined;
+			reminderInSession = true;
+			return { text };
+		});
 	};
 }

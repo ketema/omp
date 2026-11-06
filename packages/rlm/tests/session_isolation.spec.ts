@@ -543,6 +543,14 @@ describe("SLICE-2: Session Artifacts Isolation", () => {
 			expect(bootOpLine).toBeDefined();
 			const bootOp = JSON.parse(bootOpLine!) as { id: string };
 			emitStdout(`${JSON.stringify({ type: "result", id: bootOp.id, stdout: "", stderr: "" })}\n`);
+			// REQ-CTX27-16: kernel start then runs the workbench cell; answer it the way a kernel with no saved helpers does.
+			await new Promise(r => setTimeout(r, 5));
+			const workbenchOpLine = stdinWrittenLines.find(l => l.includes('"execute"'));
+			expect(workbenchOpLine).toBeDefined();
+			const workbenchOp = JSON.parse(workbenchOpLine!) as { id: string };
+			emitStdout(
+				`${JSON.stringify({ type: "done", id: workbenchOp.id, code: 0, stdout: '{"loaded": [], "refused": [], "error": null}\n' })}\n`,
+			);
 
 			await ensureStartedPromise;
 

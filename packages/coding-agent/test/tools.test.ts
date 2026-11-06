@@ -1156,7 +1156,7 @@ describe("Coding Agent Tools", () => {
 			}
 		});
 
-		it("bounds oversized URL reads like plain files, except pages of artifact storage", async () => {
+		it("bounds oversized URL reads like plain files, except skill files and pages of artifact storage", async () => {
 			const payload = Array.from({ length: 3000 }, (_, index) => `payload line ${index}`).join("\n");
 			const skillDir = path.join(testDir, "skills", "demo");
 			fs.mkdirSync(skillDir, { recursive: true });
@@ -1205,12 +1205,24 @@ describe("Coding Agent Tools", () => {
 			};
 
 			try {
-				for (const url of ["skill://demo/ref.md", "agent://Worker/report"]) {
+				// POST-CTX27-27: a non-authority URL result above the threshold still spills with a head and tail.
+				for (const url of ["agent://Worker/report"]) {
 					const result = await spillReadTool.execute(`spill-${url}`, { path: url }, undefined, undefined, context);
 					const output = getTextOutput(result);
 					expect(result.details?.meta?.truncation?.artifactId).toBeDefined();
 					expect(Buffer.byteLength(output, "utf-8")).toBeLessThan(20 * 1024);
 				}
+				// POST-CTX27-24 (REQ-CTX27-35): a skill file above the threshold arrives whole, with no artifact and no elision.
+				const skillResult = await spillReadTool.execute(
+					"whole-skill-ref",
+					{ path: "skill://demo/ref.md" },
+					undefined,
+					undefined,
+					context,
+				);
+				expect(skillResult.details?.meta?.truncation?.artifactId).toBeUndefined();
+				expect(getTextOutput(skillResult)).toContain("payload line 2999");
+				expect(getTextOutput(skillResult)).not.toMatch(/middle lines|elided/i);
 				// Line pages of a URL-located file stop at the threshold and name their continuation.
 				for (const url of ["local://big.md:1-3000", "agent://Lines:1-3000"]) {
 					const result = await spillReadTool.execute(`page-${url}`, { path: url }, undefined, undefined, context);
