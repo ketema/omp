@@ -2549,7 +2549,7 @@ describe("AgentSession message pipeline", () => {
 			authStorage.close();
 		}
 	});
-	it("passes turnToolCallCount on ToolCallEvent reflecting all tool calls in the assistant message", async () => {
+	it("passes turnToolNames on ToolCallEvent listing every tool call in the assistant message", async () => {
 		using tempDir = TempDir.createSync("@pi-turn-tool-count-");
 		const api = "test-turn-tool-count";
 		let requests = 0;
@@ -2599,11 +2599,11 @@ describe("AgentSession message pipeline", () => {
 			maxTokens: 1024,
 		} as ModelSpec<Api>) as Model<Api>;
 
-		const observedCounts: Array<number | undefined> = [];
-		const countInspector: ExtensionFactory = pi => {
+		const observedNames: Array<readonly string[] | undefined> = [];
+		const namesInspector: ExtensionFactory = pi => {
 			pi.on("tool_call", async event => {
 				if (event.toolName !== "bash") return undefined;
-				observedCounts.push((event as { turnToolCallCount?: number }).turnToolCallCount);
+				observedNames.push((event as { turnToolNames?: readonly string[] }).turnToolNames);
 				return undefined;
 			});
 		};
@@ -2623,7 +2623,7 @@ describe("AgentSession message pipeline", () => {
 			}),
 			model,
 			disableExtensionDiscovery: true,
-			extensions: [countInspector],
+			extensions: [namesInspector],
 			skills: [],
 			contextFiles: [],
 			promptTemplates: [],
@@ -2636,7 +2636,10 @@ describe("AgentSession message pipeline", () => {
 
 		try {
 			await session.sendUserMessage("run two");
-			expect(observedCounts).toEqual([2, 2]);
+			expect(observedNames).toEqual([
+				["bash", "bash"],
+				["bash", "bash"],
+			]);
 		} finally {
 			await session.dispose();
 			authStorage.close();
