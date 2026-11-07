@@ -5465,6 +5465,9 @@ export class AgentSession implements SettingsScope {
 					toolName: ctx.tool.name,
 					toolCallId: ctx.toolCall.id,
 					input: normalizeToolEventInput(ctx.tool.name, resolveToolEventInput(ctx.tool, eventArgs)),
+					turnToolCalls: ctx.assistantMessage.content.flatMap(block =>
+						block.type === "toolCall" ? [{ name: block.name, input: block.arguments }] : [],
+					),
 				},
 				signal,
 			);

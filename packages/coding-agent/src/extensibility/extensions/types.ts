@@ -1336,6 +1336,8 @@ export interface PlanReviewResolvedEvent {
 interface ToolCallEventBase {
 	type: "tool_call";
 	toolCallId: string;
+	/** Name and input of every call in the assistant message containing this call, in call order (this call included). */
+	turnToolCalls?: readonly { name: string; input: unknown }[];
 }
 
 export interface BashToolCallEvent extends ToolCallEventBase {
