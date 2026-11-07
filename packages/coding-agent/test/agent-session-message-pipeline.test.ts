@@ -2549,6 +2549,99 @@ describe("AgentSession message pipeline", () => {
 			authStorage.close();
 		}
 	});
+	it("passes turnToolCallCount on ToolCallEvent reflecting all tool calls in the assistant message", async () => {
+		using tempDir = TempDir.createSync("@pi-turn-tool-count-");
+		const api = "test-turn-tool-count";
+		let requests = 0;
+		registerCustomApi(api, () => {
+			requests++;
+			const stream = new AssistantMessageEventStream();
+			queueMicrotask(() => {
+				if (requests === 1) {
+					const message = createAssistantMessage("");
+					const toolCall1 = {
+						type: "toolCall",
+						id: "call-count-1",
+						name: "bash",
+						arguments: { command: "echo call1" },
+					} as const;
+					const toolCall2 = {
+						type: "toolCall",
+						id: "call-count-2",
+						name: "bash",
+						arguments: { command: "echo call2" },
+					} as const;
+					message.content = [toolCall1, toolCall2];
+					message.stopReason = "toolUse";
+					stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
+					stream.push({ type: "toolcall_end", contentIndex: 0, toolCall: toolCall1 as never, partial: message });
+					stream.push({ type: "toolcall_start", contentIndex: 1, partial: message });
+					stream.push({ type: "toolcall_end", contentIndex: 1, toolCall: toolCall2 as never, partial: message });
+					stream.push({ type: "done", reason: "toolUse", message });
+				} else {
+					const message = createAssistantMessage("done");
+					stream.push({ type: "done", reason: "stop", message });
+				}
+			});
+			return stream;
+		});
+
+		const model = buildModel({
+			id: "local-count-model",
+			name: "Local Count Model",
+			api,
+			provider: "ollama",
+			baseUrl: "http://127.0.0.1:11434",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 4096,
+			maxTokens: 1024,
+		} as ModelSpec<Api>) as Model<Api>;
+
+		const observedCounts: Array<number | undefined> = [];
+		const countInspector: ExtensionFactory = pi => {
+			pi.on("tool_call", async event => {
+				if (event.toolName !== "bash") return undefined;
+				observedCounts.push((event as { turnToolCallCount?: number }).turnToolCallCount);
+				return undefined;
+			});
+		};
+
+		const authStorage = await AuthStorage.create(tempDir.join("auth.db"));
+		const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
+		const { session } = await createAgentSession({
+			cwd: tempDir.path(),
+			agentDir: tempDir.path(),
+			sessionManager: SessionManager.inMemory(tempDir.path()),
+			authStorage,
+			modelRegistry,
+			settings: Settings.isolated({
+				"compaction.enabled": false,
+				"bash.autoBackground.enabled": false,
+				"bashInterceptor.enabled": false,
+			}),
+			model,
+			disableExtensionDiscovery: true,
+			extensions: [countInspector],
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+			toolNames: ["bash"],
+		});
+
+		try {
+			await session.sendUserMessage("run two");
+			expect(observedCounts).toEqual([2, 2]);
+		} finally {
+			await session.dispose();
+			authStorage.close();
+		}
+	});
 	it("delivers tool_call and tool_result additionalContext on the next provider request", async () => {
 		using tempDir = TempDir.createSync("@pi-tool-call-context-");
 		const api = "test-tool-call-context";
