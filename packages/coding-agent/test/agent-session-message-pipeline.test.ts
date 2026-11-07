@@ -2549,7 +2549,7 @@ describe("AgentSession message pipeline", () => {
 			authStorage.close();
 		}
 	});
-	it("passes turnToolNames on ToolCallEvent listing every tool call in the assistant message", async () => {
+	it("passes turnToolCalls (name and input of every call) on ToolCallEvent for the whole assistant message", async () => {
 		using tempDir = TempDir.createSync("@pi-turn-tool-count-");
 		const api = "test-turn-tool-count";
 		let requests = 0;
@@ -2599,11 +2599,12 @@ describe("AgentSession message pipeline", () => {
 			maxTokens: 1024,
 		} as ModelSpec<Api>) as Model<Api>;
 
-		const observedNames: Array<readonly string[] | undefined> = [];
+		type BatchCall = { name: string; input: unknown };
+		const observedCalls: Array<readonly BatchCall[] | undefined> = [];
 		const namesInspector: ExtensionFactory = pi => {
 			pi.on("tool_call", async event => {
 				if (event.toolName !== "bash") return undefined;
-				observedNames.push((event as { turnToolNames?: readonly string[] }).turnToolNames);
+				observedCalls.push((event as { turnToolCalls?: readonly BatchCall[] }).turnToolCalls);
 				return undefined;
 			});
 		};
@@ -2636,10 +2637,11 @@ describe("AgentSession message pipeline", () => {
 
 		try {
 			await session.sendUserMessage("run two");
-			expect(observedNames).toEqual([
-				["bash", "bash"],
-				["bash", "bash"],
-			]);
+			const batch = [
+				{ name: "bash", input: { command: "echo call1" } },
+				{ name: "bash", input: { command: "echo call2" } },
+			];
+			expect(observedCalls).toEqual([batch, batch]);
 		} finally {
 			await session.dispose();
 			authStorage.close();
