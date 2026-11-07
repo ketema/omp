@@ -1336,6 +1336,8 @@ export interface PlanReviewResolvedEvent {
 interface ToolCallEventBase {
 	type: "tool_call";
 	toolCallId: string;
+	/** Total tool calls emitted in the assistant message containing this call (1 if standalone). */
+	turnToolCallCount?: number;
 }
 
 export interface BashToolCallEvent extends ToolCallEventBase {
