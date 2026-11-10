@@ -46,6 +46,15 @@ sound for a build's lifetime.
 | 7 | G08-IPYTHON-PROMPT | **Two lines inside `TOOL_DESCRIPTION`** (`packages/rlm/src/tool.ts`): the literal/statically-inspectable write-path rule, and the `dill.dump_session` bare-filename rule. Origin `d77c5e1f1d`. **Lost in the 2026-10-14 reconcile; restored by `dbe99396e8`.** | `bun test packages/rlm/tests/tool.spec.ts -t "F-269"` |
 | 8 | G07-PINNED-SPAWN (spawn half) | Per-spawn `model` on subagent dispatch: `if ("model" in item) spawn.model = item.model` in `packages/coding-agent/src/task/index.ts`. Omitting `model` falls back to on-disk config | `spawn-model.test.ts`, `vibe/spawn-model-role.test.ts` |
 | 9 | G11-SHELL-ENV-PARITY | `packages/coding-agent/src/utils/shell-snapshot-fn-env.sh` and session shell-env parity | `extension-session-shell-env.test.ts` |
+| 10 | G16-RAW-IO-LOCK-SAFETY (PRs #51, #58, #60; issue #15586) | omp keeps its SQLite locks when its read, write, grep and shell tools touch database files, by going through a raw-IO helper. Artifacts: `packages/coding-agent/src/tools/raw-io-{client,lines,protocol,worker}.ts`, `crates/pi-vfs/src/helper.rs`, `contracts/raw_io_helper.contract.{py,ts}`. Also from #58: RLM isolation flags are admitted before CLI validation (`contracts/rlm-tool.contract.ts`). | `bun test` the `packages/coding-agent/test/tools/` files named `raw-io-*`, `grep-walker-raw-io`, `shell-opens-raw-io` and `read-prefix-raw-io`; `grep -c -a raw-io <binary>` is above 0 (21 in the 2026-11-06 build) |
+| 11 | G17-CONTEXT-WORKBENCH (PRs #61 to #64; issue #27) | Context efficiency for the model: the kernel autostarts the helper workbench (`packages/rlm/src/workbench.ts`), filed tool results are live kernel variables (`packages/rlm/src/ipython_filing.ts`), skill, `xd://` doc and memory text is never elided (`packages/coding-agent/src/tools/authority-text.ts`, used by `read.ts` and `output-meta.ts`), and the first user message carries the reminder (`packages/rlm/src/user_reminder.ts`, wired in `packages/rlm/src/extension.ts`). | `bun test packages/coding-agent/test/tools/authority-text-in-full.test.ts packages/rlm/tests/ipython_filing.spec.ts packages/rlm/tests/user_reminder.spec.ts`; `grep -c -a "Remember to be context efficient" <binary>`, `grep -c -a workbench-ready <binary>` and `grep -c -a artifact_ <binary>` are each above 0 |
+| 12 | G18-TURN-TOOL-CALLS (PR #66; issue #65) | `ToolCallEvent.turnToolCalls`: name and input of every call in the assistant message, set on each call's event in `#beforeToolCall` (`packages/coding-agent/src/session/agent-session.ts`; type in `src/extensibility/extensions/types.ts`). The State Batch Guard hook in `ketema/omp-hooks` depends on it. | `bun test packages/coding-agent/test/agent-session-message-pipeline.test.ts -t "passes turnToolCalls"`; `grep -c -a turnToolCalls <binary>` is above 0. **The 2026-11-06 deployed build has 0: it predates #66.** |
+| 13 | G19-FORK-GATE (PR #47) | This file and `scripts/verify-fork-customizations.sh`. | `sh scripts/verify-fork-customizations.sh` exits 0 |
+| 14 | G20-CONSTITUTIONAL-OS-CI (PRs #48, #50) | `.github/workflows/auto-add-to-project.yml` (adds issues and PRs to the Constitutional OS project) and `.github/workflows/plan-schema.yml` (neutered plan-schema placeholder). | both files exist on `main` |
+
+Rows 10 to 14 were added on 2026-11-10 (issue #67). `scripts/verify-fork-customizations.sh` does **not** check them yet: it passes 12 checks that cover rows 1 to 9. Until the script is extended, "verify by" for rows 10 to 14 is run by hand. A passing script run does not prove these rows survived.
+
+By-hand results on 2026-11-10, run against `main` at `5dd4cdf805` (bun 1.4.4): row 11, 21 tests pass; row 12, 1 test passes; row 10, 34 pass and **1 fails** (`raw-io-lines.test.ts`, "does not accumulate a 48 MiB single line with no newline", POST-RAWIO-3: parent RSS grew 25 to 27 MiB against a 24 MiB limit, 3 of 3 runs). The failure has not been investigated; it may be this machine or a real regression in the raw-IO line pager.
 
 ### Deliberately NOT carried
 
@@ -55,6 +64,7 @@ sound for a build's lifetime.
 | G05-UPSTREAM-SYNC-MARKERS, G06-FORK-MERGES | Historical topology/markers; superseded, dropped by disposition. |
 | G13-OLD-PROMPT, G14-OLD-PINNED-TIPS, G15-ORIGIN-UPSTREAM | Superseded or already upstream. |
 | `packages/coding-agent/src/utils/git.ts` | **Not ours to keep.** Upstream removed it in `2a7db5855d` (pi-vcs crate unifying Git and Jujutsu). A prior replay resurrected it by accident; `148c11294a` correctly deleted it again. Its absence is *correct*, not a regression. |
+| `createContextEfficiencyExtension` (`packages/coding-agent/src/context/context-efficiency-enforcement.ts`, PRs #61 to #63) | **Present but intentionally unmounted.** `packages/coding-agent/src/sdk.ts` does not call it on `main`: PR #64 unmounted it because the extension hid skills and tools from the model (Ketema, 2026-11-05). Do not re-mount it in `createAgentSession` without an explicit decision. Row 11 is the replacement. |
 
 ## Post-reconcile audit procedure
 
@@ -100,6 +110,18 @@ scripts/verify-fork-customizations.sh --binary <deployed omp> --tests --live
 Exit 0 only if every check passes; a check that cannot run fails. Do not report
 "customizations preserved" without this output for the build being promoted.
 When a row changes, update its check in the script in the same change.
+
+## Registry maintenance (added 2026-11-10, issue #67)
+
+A customization is part of the fork only when it has a row in the checklist above.
+
+1. **Same PR.** A PR that adds or changes fork behavior (anything lost by taking upstream's version of a file) MUST add or update its row in that PR: the artifacts, the runtime surface, a test that fails if it is removed, and a marker in the built binary.
+2. **Explicit none.** A PR that adds no row writes `Registry: none, <reason>` in its description.
+3. **Before any build that will be deployed.** List the PRs merged to `main` since the last reconcile (`gh pr list -R ketema/omp --state merged`) and compare them with the PR numbers named in this file. Every fork PR must be named here or be marked as not a customization. Add the missing row through a PR first.
+4. **Row and check move together.** When a row is added or changed, its check in `scripts/verify-fork-customizations.sh` changes in the same PR.
+5. **Reconcile.** The fork's `upstream` branch on `origin` mirrors `can1357/oh-my-pi`. Refresh it to the target stable release before a reconcile, then merge it; the `omp-fork-build-deploy` and `fork-reconcile` skills hold the procedure.
+
+**Enforcement status (2026-11-10).** Rules 1 to 3 are reminders only: the project rule `.omp/RULES.md` and the `omp-fork-build-deploy` skill. No gate stops a merge or a deploy that breaks them. Rule 4 is not met for rows 10 to 14 yet. A follow-up must add the gates.
 
 ## Out-of-tree files that interact with the fork
 
