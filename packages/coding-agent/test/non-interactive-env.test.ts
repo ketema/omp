@@ -175,7 +175,7 @@ describe("buildNonInteractiveEnv askpass resolver restoration", () => {
 		if (process.platform === "win32") return;
 		const fixture = await makeAskpassFixture(0o755);
 		try {
-			const env = buildNonInteractiveEnv({ SSH_ASKPASS: fixture.path }, {}, process.platform);
+			const env = buildNonInteractiveEnv({ SSH_ASKPASS: fixture.path }, { baseEnv: {}, platform: process.platform });
 
 			if (env.SSH_ASKPASS !== fixture.path) {
 				throw new Error(
@@ -257,7 +257,7 @@ describe("buildNonInteractiveEnv askpass resolver restoration", () => {
 		if (process.platform === "win32") return;
 		const fixture = await makeAskpassFixture(0o644);
 		try {
-			const env = buildNonInteractiveEnv({ SSH_ASKPASS: fixture.path }, {}, process.platform);
+			const env = buildNonInteractiveEnv({ SSH_ASKPASS: fixture.path }, { baseEnv: {}, platform: process.platform });
 
 			if (env.SSH_ASKPASS === fixture.path) {
 				throw new Error(

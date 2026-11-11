@@ -3,13 +3,13 @@
 //! platform's `sys` module.
 
 use std::{
-	ffi::{c_char, c_int},
+	ffi::{OsString, c_char, c_int},
 	io,
 	os::{
 		fd::{AsRawFd, OwnedFd, RawFd},
-		unix::ffi::OsStrExt,
+		unix::ffi::{OsStrExt, OsStringExt},
 	},
-	path::Path,
+	path::{Path, PathBuf},
 };
 
 use parking_lot::RwLock;
@@ -137,6 +137,26 @@ fn open_file_in(s: &mut Scratch, dir: RawFd, name: &[u8]) -> io::Result<(Handle,
 		return Err(not_regular());
 	}
 	Ok((fd, info))
+}
+
+/// The absolute path an open directory handle names now: the walker opens files
+/// by name below a listed directory, and the raw-IO helper (row 10) opens by path.
+#[cfg(target_os = "macos")]
+pub(crate) fn handle_path(h: &Handle) -> io::Result<PathBuf> {
+	let mut buf = vec![0u8; libc::PATH_MAX as usize];
+	// SAFETY: `F_GETPATH` writes a NUL-terminated path of at most `PATH_MAX` bytes into `buf`.
+	if unsafe { libc::fcntl(h.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) } == -1 {
+		return Err(io::Error::last_os_error());
+	}
+	let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+	buf.truncate(len);
+	Ok(PathBuf::from(OsString::from_vec(buf)))
+}
+
+/// See the macOS variant.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn handle_path(h: &Handle) -> io::Result<PathBuf> {
+	std::fs::read_link(format!("/proc/self/fd/{}", h.as_raw_fd()))
 }
 
 /// Appends the file's bytes at offset `buf.len()` into `buf`'s spare

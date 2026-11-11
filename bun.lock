@@ -202,6 +202,7 @@
       "version": "18.1.14",
       "dependencies": {
         "@oh-my-pi/omptype": "catalog:",
+        "@oh-my-pi/pi-natives": "catalog:",
       },
       "devDependencies": {
         "@types/bun": "catalog:",

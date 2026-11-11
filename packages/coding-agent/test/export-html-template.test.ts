@@ -192,7 +192,7 @@ describe("HTML export template", () => {
 			}
 		}
 		const extraWorkspaces: string[] = [];
-		for (const entry of await fs.promises.readdir(path.join(repoRoot, "packages"), { withFileTypes: true })) {
+		for (const entry of await fs.readdir(path.join(repoRoot, "packages"), { withFileTypes: true })) {
 			if (!entry.isDirectory() || `packages/${entry.name}` === packageRel) continue;
 			const manifestFile = Bun.file(path.join(repoRoot, "packages", entry.name, "package.json"));
 			if (!(await manifestFile.exists())) continue;

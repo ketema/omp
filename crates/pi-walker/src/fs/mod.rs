@@ -597,6 +597,14 @@ impl Session {
 	pub async fn open_file_at(&mut self, dir: &Dir, name: &[u8]) -> io::Result<(File, FileInfo)> {
 		let (repr, info) = match (&mut self.imp, &dir.repr) {
 			(Imp::Native(s), DirRepr::Native(h)) => {
+				#[cfg(unix)]
+				if !pi_vfs::helper::in_helper_process() {
+					// Row 10: a descriptor this process opens and closes on a SQLite file releases the
+					// connection's POSIX locks, so a regular file is opened by the raw-IO helper instead.
+					let path = native::handle_path(h)?
+						.join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
+					return helper_open(&path).await;
+				}
 				let (handle, info) = native::open_file_at(s, h, name)?;
 				(FileRepr::Native(handle), info)
 			},
@@ -613,6 +621,10 @@ impl Session {
 	pub async fn open_file(&mut self, path: &Path) -> io::Result<(File, FileInfo)> {
 		let (repr, info) = match &mut self.imp {
 			Imp::Native(s) => {
+				#[cfg(unix)]
+				if !pi_vfs::helper::in_helper_process() {
+					return helper_open(path).await;
+				}
 				let (handle, info) = native::open_file(s, path)?;
 				(FileRepr::Native(handle), info)
 			},
@@ -737,3 +749,11 @@ async fn list_with(
 
 #[cfg(test)]
 mod tests;
+
+/// The raw-IO helper's open of the regular file at `path` (row 10), as a provider-style file.
+#[cfg(unix)]
+async fn helper_open(path: &Path) -> io::Result<(File, FileInfo)> {
+	static HOST: std::sync::LazyLock<pi_vfs::Fs> = std::sync::LazyLock::new(pi_vfs::Fs::native);
+	let (file, info) = provider::open_file(&HOST, path).await?;
+	Ok((File { repr: FileRepr::Provider(file), size: info.size, pos: 0 }, info))
+}

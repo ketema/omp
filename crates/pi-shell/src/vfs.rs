@@ -139,6 +139,24 @@ impl VfsFs {
 		host_path(path).is_ok_and(|host| self.fs.read().is_native_local(host))
 	}
 
+	/// Whether the raw-IO helper (registry row 10) opens `path`: in the omp process on unix, a native-local
+	/// path that is a regular file or does not exist yet. A descriptor this process opens and closes on a
+	/// SQLite file releases the connection's POSIX locks, so redirects and builtin opens of such files run
+	/// in the helper; FIFOs, devices and ttys keep the in-process open.
+	#[cfg(unix)]
+	fn opens_in_helper(&self, path: &BStr) -> bool {
+		!pi_vfs::helper::in_helper_process()
+			&& host_path(path).is_ok_and(|host| {
+				self.fs.read().is_native_local(host)
+					&& std::fs::metadata(host).map_or(true, |meta| meta.is_file())
+			})
+	}
+
+	#[cfg(not(unix))]
+	const fn opens_in_helper(&self, _path: &BStr) -> bool {
+		false
+	}
+
 	/// `native()` for a native-local `path`; otherwise `provider` run on the
 	/// runtime with the current filesystem and the host spelling of `path`.
 	fn route<T, F>(
@@ -151,12 +169,27 @@ impl VfsFs {
 		T: Send + 'static,
 		F: Future<Output = io::Result<T>> + Send + 'static,
 	{
+		self.route_with(path, false, native, provider)
+	}
+
+	/// [`Self::route`], with `force_provider` sending a native-local `path` to `provider` too.
+	fn route_with<T, F>(
+		&self,
+		path: &BStr,
+		force_provider: bool,
+		native: impl FnOnce() -> FsPoll<T>,
+		provider: impl FnOnce(pi_vfs::Fs, PathBuf) -> F,
+	) -> FsPoll<T>
+	where
+		T: Send + 'static,
+		F: Future<Output = io::Result<T>> + Send + 'static,
+	{
 		let host = match host_path(path) {
 			Ok(host) => host,
 			Err(err) => return FsPoll::Ready(Err(err)),
 		};
 		let current = self.fs.read();
-		if current.is_native_local(host) {
+		if !force_provider && current.is_native_local(host) {
 			drop(current);
 			return native();
 		}
@@ -169,8 +202,9 @@ impl VfsFs {
 impl Fs for VfsFs {
 	fn open(&mut self, path: &BStr, flags: OpenFlags, mode: u32) -> FsPoll<Box<dyn File>> {
 		let rt = self.rt.clone();
-		self.route(
+		self.route_with(
 			path,
+			self.opens_in_helper(path),
 			|| match StdFs::default().open(path, flags, mode) {
 				FsPoll::Ready(Err(err)) => FsPoll::Ready(Err(name_the_limit(err))),
 				opened => opened,

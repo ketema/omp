@@ -253,5 +253,6 @@ export function buildNonInteractiveEnv(
 		Object.assign(env, WINDOWS_PYTHON_UTF8_ENV);
 	}
 	// G02-SSH-ASKPASS (registry row 4): askpass resolution wins over the inherited and per-command env.
-	return { ...env, ...resolveAskpassEnvironment({ ...baseEnv, ...overrides }) };
+	const merged = overrides ? { ...env, ...overrides } : env;
+	return { ...merged, ...resolveAskpassEnvironment({ ...baseEnv, ...overrides }) };
 }

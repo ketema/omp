@@ -527,11 +527,13 @@ impl Shell {
 		};
 		task::future(env, "shell.run", async move {
 			let (chunk_tx, drain_handle) = bridge_chunks(on_chunk);
-			let result = inner
+			let failure_tx = begin_stream_failure_check(&chunk_tx);
+			let mut result: Result<ShellRunResult> = inner
 				.run(run_options, chunk_tx, cancel_token.into_core())
 				.await
 				.map(Into::into)
 				.map_err(|err| Error::from_reason(err.to_string()));
+			finish_stream_failure_check(failure_tx, &mut result).await;
 			await_drain(drain_handle, &result).await;
 			result
 		})
@@ -610,14 +612,54 @@ pub fn execute_shell<'env>(
 	};
 	task::future(env, "shell.execute", async move {
 		let (chunk_tx, drain_handle) = bridge_chunks(on_chunk);
-		let result = core_execute_shell(exec_options, chunk_tx, cancel_token.into_core())
-			.await
-			.map(Into::into)
-			.map_err(|err| Error::from_reason(err.to_string()));
+		let failure_tx = begin_stream_failure_check(&chunk_tx);
+		let mut result: Result<ShellRunResult> =
+			core_execute_shell(exec_options, chunk_tx, cancel_token.into_core())
+				.await
+				.map(Into::into)
+				.map_err(|err| Error::from_reason(err.to_string()));
+		finish_stream_failure_check(failure_tx, &mut result).await;
 		await_drain(drain_handle, &result).await;
 		result
 	})
 }
+
+/// Raw-IO helper (registry row 10): a shell redirect pump ends its stream at a helper failure the
+/// way a closed pipe does, so a run checks for one afterwards and fails naming the operation and
+/// path (ERRORS-RAWIO-1b). Returns the sender the failure message goes out on.
+#[cfg(unix)]
+fn begin_stream_failure_check(
+	chunk_tx: &Option<flume::Sender<String>>,
+) -> Option<flume::Sender<String>> {
+	pi_vfs::helper::clear_stream_failure();
+	chunk_tx.clone()
+}
+
+#[cfg(not(unix))]
+const fn begin_stream_failure_check(_: &Option<flume::Sender<String>>) {}
+
+/// Reports a failure recorded since [`begin_stream_failure_check`] as output and a non-zero exit.
+/// Always releases the sender, so the output bridge can drain.
+#[cfg(unix)]
+async fn finish_stream_failure_check(
+	failure_tx: Option<flume::Sender<String>>,
+	result: &mut Result<ShellRunResult>,
+) {
+	if let Some(message) = pi_vfs::helper::take_stream_failure() {
+		if let Some(tx) = &failure_tx {
+			let _ = tx.send_async(format!("{message}\n")).await;
+		}
+		if let Ok(run) = result
+			&& run.exit_code == Some(0)
+		{
+			run.exit_code = Some(1);
+		}
+	}
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::unused_async, reason = "matches the unix signature")]
+async fn finish_stream_failure_check(_: (), _: &mut Result<ShellRunResult>) {}
 
 /// Capacity (in chunks) of the queue between the output readers (pipe or PTY)
 /// and the JS forwarding pump. One queued chunk is at most one read (≤64 KiB),

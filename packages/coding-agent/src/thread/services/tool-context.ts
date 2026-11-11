@@ -46,6 +46,7 @@ export interface WireSessionView {
 	readonly leafId: string | null;
 	readonly header: SessionHeader | null;
 	readonly ensureOnDisk: () => Promise<void>;
+	readonly resolveOwnArtifactsDir: () => Promise<string | null>;
 	readonly allocateArtifactPath: (toolType: string) => Promise<{ id?: string; path?: string }>;
 	readonly saveArtifact: (content: string, toolType: string) => Promise<string | undefined>;
 	readonly getArtifactPath: (id: string) => Promise<string | null>;
@@ -119,6 +120,10 @@ export class ToolContextSessionView implements ReadonlySessionManager {
 
 	ensureOnDisk(): Promise<void> {
 		return this.#wire.ensureOnDisk();
+	}
+
+	resolveOwnArtifactsDir(): Promise<string | null> {
+		return this.#wire.resolveOwnArtifactsDir();
 	}
 
 	allocateArtifactPath(toolType: string): Promise<{ id?: string; path?: string }> {
@@ -198,6 +203,7 @@ function wireSessionView(manager: ReadonlySessionManager): WireSessionView {
 		leafId: manager.getLeafId(),
 		header: manager.getHeader(),
 		ensureOnDisk: () => manager.ensureOnDisk(),
+		resolveOwnArtifactsDir: () => manager.resolveOwnArtifactsDir(),
 		allocateArtifactPath: toolType => manager.allocateArtifactPath(toolType),
 		saveArtifact: (content, toolType) => manager.saveArtifact(content, toolType),
 		getArtifactPath: id => manager.getArtifactPath(id),

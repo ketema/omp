@@ -457,7 +457,7 @@ impl From<std::fs::File> for File {
 #[cfg(unix)]
 impl From<crate::helper::HelperFile> for File {
 	fn from(file: crate::helper::HelperFile) -> Self {
-		Self { repr: Repr::Helper(file) }
+		Self { repr: Repr::Helper(file), read_cancel: None }
 	}
 }
 
@@ -605,6 +605,11 @@ impl File {
 	pub fn is_cancelled(&self) -> bool {
 		match &self.repr {
 			Repr::Native(_) => self
+				.read_cancel
+				.as_ref()
+				.is_some_and(|cancel| cancel.token.is_cancelled()),
+			#[cfg(unix)]
+			Repr::Helper(_) => self
 				.read_cancel
 				.as_ref()
 				.is_some_and(|cancel| cancel.token.is_cancelled()),

@@ -1154,7 +1154,6 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					new Uint8Array(Buffer.from(cleanContent, "utf8")),
 					this.session.rawIoHelperOptions,
 				);
-				invalidateFsScanAfterWrite(absolutePath);
 				this.session.bumpFileMutationVersion?.(absolutePath);
 				const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent, displayPath);
 				const writeLine = `Successfully wrote ${cleanBytes} bytes to ${displayPath}`;

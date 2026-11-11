@@ -170,7 +170,11 @@ impl Chunk {
 						self.end = n;
 					},
 					Err(e) if e.kind() == io::ErrorKind::Interrupted => {},
-					Err(_) => self.eof = true,
+					Err(e) => {
+						#[cfg(unix)]
+						pi_vfs::helper::record_stream_failure(&e);
+						self.eof = true;
+					},
 				}
 				continue;
 			}
@@ -178,7 +182,12 @@ impl Chunk {
 				Ok(n) if n > 0 => self.start += n,
 				Err(e) if e.kind() == io::ErrorKind::Interrupted => {},
 				// The reader is gone (EPIPE) or the object failed.
-				_ => return Poll::Ready(()),
+				Err(e) => {
+					#[cfg(unix)]
+					pi_vfs::helper::record_stream_failure(&e);
+					return Poll::Ready(());
+				},
+				Ok(_) => return Poll::Ready(()),
 			}
 		}
 		// A burst moved: let the engine run, then go on.
