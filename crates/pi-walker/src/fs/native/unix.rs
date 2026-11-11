@@ -140,11 +140,13 @@ fn open_file_in(s: &mut Scratch, dir: RawFd, name: &[u8]) -> io::Result<(Handle,
 }
 
 /// The absolute path an open directory handle names now: the walker opens files
-/// by name below a listed directory, and the raw-IO helper (row 10) opens by path.
+/// by name below a listed directory, and the raw-IO helper (row 10) opens by
+/// path.
 #[cfg(target_os = "macos")]
 pub(crate) fn handle_path(h: &Handle) -> io::Result<PathBuf> {
 	let mut buf = vec![0u8; libc::PATH_MAX as usize];
-	// SAFETY: `F_GETPATH` writes a NUL-terminated path of at most `PATH_MAX` bytes into `buf`.
+	// SAFETY: `F_GETPATH` writes a NUL-terminated path of at most `PATH_MAX`
+	// bytes into `buf`.
 	if unsafe { libc::fcntl(h.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) } == -1 {
 		return Err(io::Error::last_os_error());
 	}

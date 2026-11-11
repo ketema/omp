@@ -624,9 +624,10 @@ pub fn execute_shell<'env>(
 	})
 }
 
-/// Raw-IO helper (registry row 10): a shell redirect pump ends its stream at a helper failure the
-/// way a closed pipe does, so a run checks for one afterwards and fails naming the operation and
-/// path (ERRORS-RAWIO-1b). Returns the sender the failure message goes out on.
+/// Raw-IO helper (registry row 10): a shell redirect pump ends its stream at a
+/// helper failure the way a closed pipe does, so a run checks for one
+/// afterwards and fails naming the operation and path (ERRORS-RAWIO-1b).
+/// Returns the sender the failure message goes out on.
 #[cfg(unix)]
 fn begin_stream_failure_check(
 	chunk_tx: &Option<flume::Sender<String>>,
@@ -638,8 +639,9 @@ fn begin_stream_failure_check(
 #[cfg(not(unix))]
 const fn begin_stream_failure_check(_: &Option<flume::Sender<String>>) {}
 
-/// Reports a failure recorded since [`begin_stream_failure_check`] as output and a non-zero exit.
-/// Always releases the sender, so the output bridge can drain.
+/// Reports a failure recorded since [`begin_stream_failure_check`] as output
+/// and a non-zero exit. Always releases the sender, so the output bridge can
+/// drain.
 #[cfg(unix)]
 async fn finish_stream_failure_check(
 	failure_tx: Option<flume::Sender<String>>,

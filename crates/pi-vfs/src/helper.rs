@@ -130,12 +130,15 @@ pub fn is_raw_io_helper_failure(err: &io::Error) -> bool {
 		|| err.to_string().starts_with("Raw-I/O Helper failed during ")
 }
 
-/// The first Raw-I/O Helper failure a shell redirect pump hit since [`clear_stream_failure`]. A pump
-/// ends its stream at the first error, as a closed pipe would, so the shell run checks this slot to
-/// fail the command naming the operation and path (ERRORS-RAWIO-1b) instead of reporting success.
+/// The first Raw-I/O Helper failure a shell redirect pump hit since
+/// [`clear_stream_failure`]. A pump ends its stream at the first error, as a
+/// closed pipe would, so the shell run checks this slot to fail the command
+/// naming the operation and path (ERRORS-RAWIO-1b) instead of reporting
+/// success.
 static STREAM_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// Records `err` as the stream failure when it is a helper failure; other errors are ignored.
+/// Records `err` as the stream failure when it is a helper failure; other
+/// errors are ignored.
 pub fn record_stream_failure(err: &io::Error) {
 	if is_raw_io_helper_failure(err) {
 		STREAM_FAILURE

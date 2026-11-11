@@ -77,7 +77,9 @@ in_binary "row 7b dill bare-filename rule is in the binary" 'with a bare filenam
 # Row 8: per-call model is upstream's task.perCallModel (fork passthrough dropped in the v18.18.7 reconcile, #70);
 # the feature is off by default, so the operator config must turn it on (follow-up for aliases: #72).
 in_binary "row 8  upstream per-call model (task.perCallModel) is in the binary" 'perCallModelAllow'
-if grep -Eq '^[[:space:]]+perCallModel:[[:space:]]*"?on"?[[:space:]]*$' "$HOME/.omp/agent/config.yml" 2>/dev/null; then pass "row 8  ~/.omp/agent/config.yml enables task.perCallModel"; else fail "row 8  ~/.omp/agent/config.yml enables task.perCallModel" "task.perCallModel is not 'on'; per-call model is rejected"; fi
+# OMP_CONFIG overrides the path to check a config before it is deployed (the live file is the default).
+CONFIG="${OMP_CONFIG:-$HOME/.omp/agent/config.yml}"
+if grep -Eq '^[[:space:]]+perCallModel:[[:space:]]*"?on"?[[:space:]]*$' "$CONFIG" 2>/dev/null; then pass "row 8  $CONFIG enables task.perCallModel"; else fail "row 8  $CONFIG enables task.perCallModel" "task.perCallModel is not 'on'; per-call model is rejected"; fi
 # Row 9: shell env parity
 in_binary "row 9  shell-snapshot-fn-env is in the binary" 'shell-snapshot-fn-env'
 

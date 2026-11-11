@@ -175,8 +175,9 @@ enum Haystack {
 	Stream(File),
 }
 
-/// A raw-IO helper failure (row 10, REQ-L15586) must fail the search: a helper that died or
-/// refused is not an unreadable file, and skipping it would report a clean, incomplete result.
+/// A raw-IO helper failure (row 10, REQ-L15586) must fail the search: a helper
+/// that died or refused is not an unreadable file, and skipping it would report
+/// a clean, incomplete result.
 fn helper_failure_or(err: &io::Error, otherwise: GrepResult) -> Result<GrepResult, GrepError> {
 	if pi_vfs::is_raw_io_helper_failure(err) {
 		Err(GrepError::Search(err.to_string()))
@@ -528,16 +529,16 @@ impl Drop for HaltOnDrop {
 
 /// Everything a search task needs, owned so tasks can be spawned.
 struct Shared {
-	engine:    Arc<Engine>,
-	multiline: bool,
-	spans:     bool,
-	mode:      Mode,
-	params:    ScanParams,
-	fs:        Fs,
-	root:      PathBuf,
-	filter:    PathFilter,
-	opts:      GrepOptions,
-	halt:      Arc<AtomicBool>,
+	engine:         Arc<Engine>,
+	multiline:      bool,
+	spans:          bool,
+	mode:           Mode,
+	params:         ScanParams,
+	fs:             Fs,
+	root:           PathBuf,
+	filter:         PathFilter,
+	opts:           GrepOptions,
+	halt:           Arc<AtomicBool>,
 	/// The first raw-IO helper failure a search worker met (row 10).
 	helper_failure: std::sync::Mutex<Option<String>>,
 }
@@ -555,12 +556,14 @@ impl Shared {
 		self.halt.load(Ordering::Relaxed)
 	}
 
-	/// Records a raw-IO helper failure and halts the search; other errors are not recorded.
+	/// Records a raw-IO helper failure and halts the search; other errors are
+	/// not recorded.
 	fn note_helper_failure(&self, err: &io::Error) {
 		if !pi_vfs::is_raw_io_helper_failure(err) {
 			return;
 		}
-		self.helper_failure
+		self
+			.helper_failure
 			.lock()
 			.unwrap_or_else(std::sync::PoisonError::into_inner)
 			.get_or_insert_with(|| err.to_string());
@@ -568,7 +571,8 @@ impl Shared {
 	}
 
 	fn take_helper_failure(&self) -> Option<String> {
-		self.helper_failure
+		self
+			.helper_failure
 			.lock()
 			.unwrap_or_else(std::sync::PoisonError::into_inner)
 			.take()

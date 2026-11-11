@@ -139,10 +139,12 @@ impl VfsFs {
 		host_path(path).is_ok_and(|host| self.fs.read().is_native_local(host))
 	}
 
-	/// Whether the raw-IO helper (registry row 10) opens `path`: in the omp process on unix, a native-local
-	/// path that is a regular file or does not exist yet. A descriptor this process opens and closes on a
-	/// SQLite file releases the connection's POSIX locks, so redirects and builtin opens of such files run
-	/// in the helper; FIFOs, devices and ttys keep the in-process open.
+	/// Whether the raw-IO helper (registry row 10) opens `path`: in the omp
+	/// process on unix, a native-local path that is a regular file or does not
+	/// exist yet. A descriptor this process opens and closes on a SQLite file
+	/// releases the connection's POSIX locks, so redirects and builtin opens of
+	/// such files run in the helper; FIFOs, devices and ttys keep the in-process
+	/// open.
 	#[cfg(unix)]
 	fn opens_in_helper(&self, path: &BStr) -> bool {
 		!pi_vfs::helper::in_helper_process()
@@ -172,7 +174,8 @@ impl VfsFs {
 		self.route_with(path, false, native, provider)
 	}
 
-	/// [`Self::route`], with `force_provider` sending a native-local `path` to `provider` too.
+	/// [`Self::route`], with `force_provider` sending a native-local `path` to
+	/// `provider` too.
 	fn route_with<T, F>(
 		&self,
 		path: &BStr,
