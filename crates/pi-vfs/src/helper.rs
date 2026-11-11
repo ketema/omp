@@ -88,6 +88,14 @@ pub fn in_helper_process() -> bool {
 	IN_HELPER_PROCESS.load(Ordering::Relaxed)
 }
 
+/// True when this process routes regular-file opens through the Raw-I/O Helper:
+/// it is the omp process (the `.node` addon) and not the helper child itself.
+/// The walker and the embedded shell ask this before opening a host file, so
+/// plain Rust test binaries keep their direct opens.
+pub fn routes_opens() -> bool {
+	!in_helper_process() && module_is_node_addon()
+}
+
 /// Error wrapper marking a Raw-I/O Helper startup or transport failure so
 /// callers (`grep`, `pi-walker`, embedded shell) never swallow it as an
 /// ordinary skipped file.
@@ -128,6 +136,39 @@ pub fn is_raw_io_helper_failure(err: &io::Error) -> bool {
 	err.get_ref()
 		.is_some_and(|inner| inner.is::<RawIoHelperFailure>())
 		|| err.to_string().starts_with("Raw-I/O Helper failed during ")
+}
+
+/// The first Raw-I/O Helper failure a shell redirect pump hit since
+/// [`clear_stream_failure`]. A pump ends its stream at the first error, as a
+/// closed pipe would, so the shell run checks this slot to fail the command
+/// naming the operation and path (ERRORS-RAWIO-1b) instead of reporting
+/// success.
+static STREAM_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Records `err` as the stream failure when it is a helper failure; other
+/// errors are ignored.
+pub fn record_stream_failure(err: &io::Error) {
+	if is_raw_io_helper_failure(err) {
+		STREAM_FAILURE
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner)
+			.get_or_insert_with(|| err.to_string());
+	}
+}
+
+/// Forgets any recorded stream failure; a shell run calls it before it starts.
+pub fn clear_stream_failure() {
+	*STREAM_FAILURE
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
+/// Takes the recorded stream failure, if any.
+pub fn take_stream_failure() -> Option<String> {
+	STREAM_FAILURE
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner)
+		.take()
 }
 
 fn write_u8(w: &mut impl Write, v: u8) -> io::Result<()> {

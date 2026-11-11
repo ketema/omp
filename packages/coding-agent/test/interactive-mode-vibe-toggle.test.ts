@@ -187,7 +187,7 @@ describe("InteractiveMode vibe mode toggle", () => {
 			builtInToolNames: registryTools.map(tool => tool.name),
 			createVibeTools: () => VIBE_TOOL_NAMES.map(stubTool),
 		});
-		mode = new InteractiveMode(session, "test", undefined, undefined, undefined, undefined, new EventBus());
+		mode = new InteractiveMode(session, "test", undefined, undefined, undefined, new EventBus());
 	});
 
 	afterEach(async () => {
@@ -466,7 +466,6 @@ describe("InteractiveMode vibe mode toggle", () => {
 			undefined,
 			undefined,
 			undefined,
-			undefined,
 			new EventBus(),
 		);
 
@@ -533,7 +532,7 @@ describe("InteractiveMode vibe mode toggle", () => {
 			});
 			return {
 				session: opened,
-				mode: new InteractiveMode(opened, "test", undefined, undefined, undefined, undefined, new EventBus()),
+				mode: new InteractiveMode(opened, "test", undefined, undefined, undefined, new EventBus()),
 			};
 		};
 
@@ -607,7 +606,7 @@ describe("InteractiveMode vibe mode toggle", () => {
 			});
 			return {
 				session: opened,
-				mode: new InteractiveMode(opened, "test", undefined, undefined, undefined, undefined, new EventBus()),
+				mode: new InteractiveMode(opened, "test", undefined, undefined, undefined, new EventBus()),
 			};
 		};
 
