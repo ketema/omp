@@ -1,0 +1,263 @@
+# Retroactive plan for the v18.18.7 reconcile (ketema/omp#70). See requirements/REQUIREMENT_MANIFEST_RECONCILE_V18_18_7.md.
+schema_version: '1.0'
+feature_name: reconcile-v18.18.7
+manifest_path: requirements/REQUIREMENT_MANIFEST_RECONCILE_V18_18_7.md
+manifest_hash: sha256:23d003d35d81e444b818b386169cf98371615139359690ec7b685b34cb3da50d
+created: '2026-11-11'
+last_updated: '2026-11-11'
+status: ACTIVE
+retroactive: true
+audit_scope:
+  commit_range: '5280099794..5ac31fdae1 (first-parent: PR #74 merge 52ba3512e9, PR #75 merge 5ac31fdae1); fork tree before = 5280099794'
+  reconcile_commits:
+  - efd85d5864
+  - 66944977af
+  - 865f59b1d7
+  - f3cb1cc464
+  - 4b9f3b8630
+  - 558ca985e1
+  - dedca4bb7e (signed adoption commit, tree identical to 5ac31fdae1)
+  upstream_baseline: tag v18.18.7 = e325ffc73a; explicit base tag v18.13.0
+  file_bound: 'git diff --name-only 5280099794 5ac31fdae1 INTERSECT git diff --name-only v18.18.7 5ac31fdae1 (56 paths: the fork-owned code this
+    reconcile touched). Upstream-only changes (4,669 other paths) are out of scope. The 56 paths are listed per slice below.'
+  out_of_scope:
+  - upstream code at v18.18.7 that the fork does not change
+  - vendored brush-core and pi-builtins exec (removed by upstream; fork no longer carries them)
+slices:
+- id: SLICE-1
+  requirement_ids:
+  - REQ-RECON-01
+  - REQ-RECON-02
+  - REQ-RECON-03
+  - REQ-RECON-11
+  - REQ-RECON-13
+  clauses_in_scope: []
+  clauses_deferred: []
+  negative_constraints:
+  - INV-RECON-01
+  - INV-RECON-02
+  status: GREEN_COMPLETE
+  depends_on: []
+  issue: https://github.com/ketema/omp/issues/70
+  files: []
+  verification_evidence:
+  - git rev-parse origin/main^{tree} equals dedca4bb7e^{tree}
+  - git merge-base --is-ancestor dedca4bb7e origin/main
+  - git ls-remote origin refs/heads/upstream = e325ffc73a
+  - git show -s --format=%G? on the six reconcile commits
+  pivot_note: 'Merge method and delivery: explicit v18.13.0 base, RED sentinel efd85d5864, signed tree-adoption commit dedca4bb7e (PR #74), history
+    merge PR #75. No repo files of its own; verified by commit and ref inspection.'
+  no_contract_clauses_reason: Process obligations, verified by execution or inspection; no contract owns them.
+- id: SLICE-2
+  requirement_ids:
+  - REQ-RECON-06
+  - REQ-RECON-14
+  clauses_in_scope: []
+  clauses_deferred:
+  - PRE-1
+  - PRE-2
+  - POST-1
+  - POST-2
+  - POST-3
+  - POST-4
+  - INV-1
+  - FORBIDDEN-1
+  - FORBIDDEN-2
+  - SEQ-1
+  - SEQ-2
+  - SEQ-3
+  - ERRORS-1
+  - IP-1
+  - IP-2
+  - IP-3
+  negative_constraints: []
+  status: GREEN_COMPLETE
+  depends_on: []
+  issue: https://github.com/ketema/omp/issues/70
+  files:
+  - packages/coding-agent/src/config/model-resolver.ts
+  - packages/coding-agent/src/config/settings.ts
+  - packages/coding-agent/src/modes/interactive-mode.ts
+  - packages/coding-agent/src/sdk.ts
+  - packages/coding-agent/src/session/session-tools.ts
+  - packages/coding-agent/test/model-resolver.test.ts
+  - packages/coding-agent/test/interactive-mode-vibe-toggle.test.ts
+  - packages/coding-agent/test/vibe/spawn-model-role.test.ts
+  verification_evidence:
+  - packages/coding-agent/test/task/model-approval.test.ts and task-preflight pass or equal baseline
+  - verify-fork-customizations row 8 passes with OMP_CONFIG and with the live config after
+  pivot_note: 'Take upstream''s per-call model, drop the fork passthrough, keep model-resolver fallback loop and exactOnly. Enablement lives in
+    the operator config (HomeDirectory PR #844). Aliases and arrays: ketema/omp#72. Note on clauses_deferred: all 16 clauses of contracts/spawn-model.contract.ts
+    are superseded by upstream task.perCallModel; the contract is not amended or removed on main.'
+- id: SLICE-3
+  requirement_ids:
+  - REQ-RECON-04
+  - REQ-RECON-07
+  - REQ-RECON-08
+  - REQ-L15586-01
+  - REQ-L15586-04
+  - REQ-L15586-07
+  - REQ-L15586-08
+  - REQ-L15586-28
+  clauses_in_scope:
+  - PRE-RAWIO-1
+  - POST-RAWIO-2
+  - POST-RAWIO-5
+  - POST-RAWIO-6
+  - SEQ-RAWIO-2
+  - SEQ-RAWIO-3
+  - ERRORS-RAWIO-1
+  - ERRORS-RAWIO-1b
+  - FORBIDDEN-RAWIO-1
+  - FORBIDDEN-RAWIO-1b
+  - FORBIDDEN-RAWIO-2
+  - FORBIDDEN-RAWIO-2b
+  clauses_deferred: []
+  negative_constraints:
+  - INV-RECON-04
+  status: GREEN_COMPLETE
+  depends_on: []
+  issue: https://github.com/ketema/omp/issues/70
+  files:
+  - crates/pi-natives/src/lib.rs
+  - crates/pi-natives/src/shell.rs
+  - crates/pi-shell/src/sys/pump.rs
+  - crates/pi-shell/src/vfs.rs
+  - crates/pi-vfs/src/file.rs
+  - crates/pi-vfs/src/fs.rs
+  - crates/pi-vfs/src/helper.rs
+  - crates/pi-vfs/src/lib.rs
+  - crates/pi-vfs/src/native/mod.rs
+  - crates/pi-walker/src/fs/mod.rs
+  - crates/pi-walker/src/fs/native/unix.rs
+  - crates/pi-walker/src/grep/run.rs
+  - packages/coding-agent/src/cli.ts
+  - packages/coding-agent/src/cli/find-cli.ts
+  - packages/coding-agent/src/cli/worker-selectors.ts
+  - packages/coding-agent/src/internal-urls/url-filesystem.ts
+  - packages/coding-agent/src/speculation/host.ts
+  - packages/coding-agent/src/tools/grep.ts
+  - packages/coding-agent/src/tools/index.ts
+  - packages/coding-agent/src/tools/read.ts
+  - packages/coding-agent/src/tools/sqlite-reader.ts
+  - packages/coding-agent/src/tools/write.ts
+  - packages/coding-agent/src/tools/output-meta.ts
+  - packages/coding-agent/src/tools/conflict-detect.ts
+  - packages/coding-agent/src/thread/services/tool-context.ts
+  - packages/coding-agent/test/read-speculation.test.ts
+  - packages/coding-agent/test/tools.test.ts
+  verification_evidence:
+  - packages/coding-agent/test/tools/{raw-io-*,grep-walker-raw-io,shell-opens-raw-io,read-prefix-raw-io}.test.ts all pass
+  - 'cargo test -p pi-vfs -p pi-walker -p pi-shell -p pi-natives --lib: only ostype_is_msys fails, also on baseline'
+  - row 10 memory test fails 3/3 on baseline-equivalent main and on adopted tree (ketema/omp#55)
+  pivot_note: 'Port the Raw-I/O Helper routing onto upstream''s pi-walker and pi-shell: native grep and walker ignore-file reads via helper_open
+    and handle_path, shell redirects and builtins via VfsFs opens_in_helper, helper-failure propagation in grep, pump and natives shell run/execute,
+    all gated by pi_vfs::helper::routes_opens() (omp addon process only). Contract clauses are the existing 15586 clauses; the contract was not
+    amended for the port (see manifest section 4 item 1).'
+  contract_refs:
+  - contracts/raw_io_helper.contract.ts
+  - contracts/raw_io_helper.contract.py
+  - contracts/rlm-tool.contract.ts
+  related_plan: plans/15586-lock-loss.plan.yml SLICE-3, SLICE-4, SLICE-5, SLICE-6, SLICE-8
+- id: SLICE-4
+  requirement_ids:
+  - REQ-RECON-02
+  - REQ-RECON-04
+  - REQ-RECON-05
+  clauses_in_scope:
+  - PRE-AR-1
+  - POST-AR-1
+  - POST-AR-2
+  - POST-AR-3
+  - POST-AR-5
+  - SEQ-AR-2
+  - SEQ-AR-3
+  - ERRORS-AR-2
+  clauses_deferred:
+  - POST-AR-4
+  - SEQ-AR-1
+  - SEQ-AR-4
+  - ERRORS-AR-1
+  negative_constraints:
+  - INV-RECON-03
+  - INV-RECON-05
+  status: GREEN_COMPLETE
+  depends_on: []
+  issue: https://github.com/ketema/omp/issues/70
+  files:
+  - packages/coding-agent/src/exec/non-interactive-env.ts
+  - packages/coding-agent/src/extensibility/extensions/types.ts
+  - packages/coding-agent/src/extensibility/shared-events.ts
+  - packages/coding-agent/src/main.ts
+  - packages/coding-agent/src/session/agent-session.ts
+  - packages/coding-agent/src/session/session-manager.ts
+  - packages/coding-agent/test/non-interactive-env.test.ts
+  - packages/coding-agent/test/agent-session-message-pipeline.test.ts
+  - packages/coding-agent/test/export-html-template.test.ts
+  - packages/coding-agent/test/task/worktree.test.ts
+  - packages/tui/src/terminal.ts
+  verification_evidence:
+  - packages/coding-agent/test/non-interactive-env.test.ts passes
+  - turnToolCalls test passes in isolation (agent-session-message-pipeline.test.ts)
+  - verify-fork-customizations rows 4 and 9 pass
+  - createContextEfficiencyExtension still unmounted (row 11 verify)
+  pivot_note: 'Textual conflict resolutions that keep both intents: terminal.ts (TSP_OSC_PREFIX plus native modifiers), agent-session.ts and extension
+    types (turnToolCalls row 12, session-move events), session-manager.ts (seance dir), non-interactive-env.ts (upstream override merge, then
+    askpass resolution, row 4). Test deltas against the pristine tag are the six test files listed. Note on clauses_deferred: askpass plan SLICE-2
+    clauses are deferred as they belong to the follow-up askpass slice, not this reconcile.'
+  contract_refs:
+  - contracts/omp_ssh_askpass_restoration.contract.ts
+- id: SLICE-5
+  requirement_ids:
+  - REQ-RECON-04
+  - REQ-RECON-10
+  - REQ-RECON-12
+  clauses_in_scope: []
+  clauses_deferred: []
+  negative_constraints: []
+  status: GREEN_COMPLETE
+  depends_on: []
+  issue: https://github.com/ketema/omp/issues/70
+  files:
+  - requirements/FORK_CUSTOMIZATIONS.md
+  - scripts/verify-fork-customizations.sh
+  - .github/workflows/ci.yml
+  - .gitignore
+  - bun.lock
+  - nix/bun.nix
+  - package.json
+  - packages/coding-agent/package.json
+  - rust-toolchain.toml
+  - scripts/ci-test-ts.ts
+  verification_evidence:
+  - 'sh scripts/verify-fork-customizations.sh --binary ~/bin/omp --wrapper ~/bin/myomp --tests --live: 19 passed, 0 failed (2026-11-11)'
+  - bun.lock produced by bun install, not hand edited
+  pivot_note: 'Registry rows 8 and 10 rewritten, not-carried table extended, verify script row 8 checks perCallModel and honors OMP_CONFIG; format
+    fixes; CI and lockfile regeneration. The taxonomy classification (REQ-RECON-10) lives in ketema/HomeDirectory (PR #844), outside this repo.'
+  no_contract_clauses_reason: Registry and tooling files; verified by running the script.
+- id: SLICE-6
+  requirement_ids:
+  - REQ-RECON-08
+  - REQ-RECON-09
+  - REQ-RECON-15
+  clauses_in_scope: []
+  clauses_deferred: []
+  negative_constraints: []
+  status: GREEN_COMPLETE
+  depends_on: []
+  issue: https://github.com/ketema/omp/issues/70
+  files: []
+  verification_evidence:
+  - ~/bin/omp sha256 c522b78a99f9b1920e78b7b6b404086823d71f163a2e85e6d9f7a63186cdd3c2; codesign -v --strict clean; omp --version 18.18.7
+  - backup ~/bin/omp.bak-20261111-558ca985
+  - full TS suite failure set equals baseline (141) plus four fork-main failures
+  pivot_note: Build, sign, deploy and parity evidence. No repo files. Evidence is recorded in memory omp-v18.18.7-reconcile-deploy-2026-11-11.
+  no_contract_clauses_reason: Execution evidence, not a testable clause.
+pivot_guidance:
+- 'Retroactive plan (2026-11-11): written after PRs #74 and #75 merged and the build was deployed. Status values record the observed end state,
+  not a gate that was passed in order.'
+- 'Independence: slices do not depend on each other for audit; SLICE-3 is the only slice that exercises contract clauses.'
+- 'Gate 0 expected results: SLICE-1, SLICE-5 and SLICE-6 have no contract clauses by design (execution or inspection). SLICE-2 defers a superseded
+  contract. SLICE-3 reuses 15586 clauses without amendment. These are declared gaps, not fabrications.'
+forgotten_invariants:
+- INV-L15586-01
