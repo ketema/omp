@@ -74,15 +74,19 @@ if grep -q 'kernel-state' "$TREE/.gitignore" 2>/dev/null; then pass "row 6  .git
 # Row 7: the two TOOL_DESCRIPTION guardrail lines reach the binary
 in_binary "row 7a write-path rule is in the binary" 'statically-inspectable string'
 in_binary "row 7b dill bare-filename rule is in the binary" 'with a bare filename only'
-# Row 8: per-spawn model
-in_binary "row 8  per-spawn model assignment is in the binary" 'spawn\.model = item\.model'
+# Row 8: per-call model is upstream's task.perCallModel (fork passthrough dropped in the v18.18.7 reconcile, #70);
+# the feature is off by default, so the operator config must turn it on (follow-up for aliases: #72).
+in_binary "row 8  upstream per-call model (task.perCallModel) is in the binary" 'perCallModelAllow'
+# OMP_CONFIG overrides the path to check a config before it is deployed (the live file is the default).
+CONFIG="${OMP_CONFIG:-$HOME/.omp/agent/config.yml}"
+if grep -Eq '^[[:space:]]+perCallModel:[[:space:]]*"?on"?[[:space:]]*$' "$CONFIG" 2>/dev/null; then pass "row 8  $CONFIG enables task.perCallModel"; else fail "row 8  $CONFIG enables task.perCallModel" "task.perCallModel is not 'on'; per-call model is rejected"; fi
 # Row 9: shell env parity
 in_binary "row 9  shell-snapshot-fn-env is in the binary" 'shell-snapshot-fn-env'
 
 if [ "$RUN_TESTS" = 1 ]; then
 	echo
 	for t in packages/rlm packages/coding-agent/test/non-interactive-env.test.ts \
-		packages/coding-agent/test/spawn-model.test.ts packages/tui/test/native-modifier-detection.test.ts \
+		packages/coding-agent/test/task/model-approval.test.ts packages/tui/test/native-modifier-detection.test.ts \
 		packages/coding-agent/test/extension-session-shell-env.test.ts; do
 		if (cd "$TREE" && bun test "$t" >/dev/null 2>&1); then pass "tests  $t"; else fail "tests  $t" "bun test failed"; fi
 	done

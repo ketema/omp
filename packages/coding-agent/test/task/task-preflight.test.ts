@@ -168,6 +168,29 @@ describe("task async preflight", () => {
 		expect(jobs.getJob("Valid")).toBeUndefined();
 	});
 
+	it.each([false, true])("treats a blank per-call model as omitted (batch=%s)", async batch => {
+		mockDiscovery();
+		const runSubprocess = vi.spyOn(executorModule, "runSubprocess").mockResolvedValue(resultFor("BlankModel"));
+		const tool = await TaskTool.create(
+			createSession({ manager: manager(), settings: { "async.enabled": false, "task.batch": batch } }),
+		);
+
+		const result = await tool.execute(
+			"blank-model",
+			(batch
+				? {
+						context: "Shared context.",
+						tasks: [{ name: "BlankModel", agent: "task", task: "Do work.", model: "" }],
+					}
+				: { name: "BlankModel", agent: "task", task: "Do work.", model: "" }) as TaskParams,
+		);
+
+		expect(result.isError).toBeFalsy();
+		expect(runSubprocess).toHaveBeenCalledTimes(1);
+		// A blank selector is absence: the task uses its configured model, not a per-call route.
+		expect(runSubprocess.mock.calls[0]?.[0]?.perCallModelGrants).toBeUndefined();
+	});
+
 	it("names the searched agent directories, home-shortened, when the agent is unknown", async () => {
 		const home = await fs.mkdtemp(path.join(os.tmpdir(), "omp-unknown-agent-"));
 		try {
@@ -189,38 +212,5 @@ describe("task async preflight", () => {
 		} finally {
 			await fs.rm(home, { recursive: true, force: true });
 		}
-	});
-
-	it("routes a per-call model on a task item into the spawn", async () => {
-		mockDiscovery();
-		const runSubprocess = vi.spyOn(executorModule, "runSubprocess").mockResolvedValue(resultFor("Router"));
-		const jobs = manager();
-		const tool = await TaskTool.create(
-			createSession({ manager: jobs, settings: { "async.enabled": false, "task.batch": true } }),
-		);
-
-		await tool.execute("per-call-model", {
-			context: "Shared context.",
-			tasks: [{ name: "Router", agent: "task", task: "Do the work.", model: "p/requested:high" }],
-		} as TaskParams);
-
-		expect(runSubprocess.mock.calls[0]?.[0]?.modelOverride).toEqual(["p/requested:high"]);
-	});
-
-	it("rejects an ambiguous per-call model before dispatching the item", async () => {
-		mockDiscovery();
-		const runSubprocess = vi.spyOn(executorModule, "runSubprocess").mockResolvedValue(resultFor("unexpected"));
-		const jobs = manager();
-		const tool = await TaskTool.create(
-			createSession({ manager: jobs, settings: { "async.enabled": false, "task.batch": true } }),
-		);
-
-		const result = await tool.execute("ambiguous-model", {
-			context: "Shared context.",
-			tasks: [{ name: "Ambiguous", agent: "task", task: "Do the work.", model: "default" }],
-		} as TaskParams);
-
-		expect(textOf(result)).toContain('"@default"');
-		expect(runSubprocess).not.toHaveBeenCalled();
 	});
 });
