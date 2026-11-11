@@ -147,7 +147,7 @@ impl VfsFs {
 	/// open.
 	#[cfg(unix)]
 	fn opens_in_helper(&self, path: &BStr) -> bool {
-		!pi_vfs::helper::in_helper_process()
+		pi_vfs::helper::routes_opens()
 			&& host_path(path).is_ok_and(|host| {
 				self.fs.read().is_native_local(host)
 					&& std::fs::metadata(host).map_or(true, |meta| meta.is_file())

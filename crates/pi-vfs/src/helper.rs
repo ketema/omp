@@ -88,6 +88,14 @@ pub fn in_helper_process() -> bool {
 	IN_HELPER_PROCESS.load(Ordering::Relaxed)
 }
 
+/// True when this process routes regular-file opens through the Raw-I/O Helper:
+/// it is the omp process (the `.node` addon) and not the helper child itself.
+/// The walker and the embedded shell ask this before opening a host file, so
+/// plain Rust test binaries keep their direct opens.
+pub fn routes_opens() -> bool {
+	!in_helper_process() && module_is_node_addon()
+}
+
 /// Error wrapper marking a Raw-I/O Helper startup or transport failure so
 /// callers (`grep`, `pi-walker`, embedded shell) never swallow it as an
 /// ordinary skipped file.

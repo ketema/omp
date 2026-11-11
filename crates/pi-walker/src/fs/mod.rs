@@ -598,7 +598,7 @@ impl Session {
 		let (repr, info) = match (&mut self.imp, &dir.repr) {
 			(Imp::Native(s), DirRepr::Native(h)) => {
 				#[cfg(unix)]
-				if !pi_vfs::helper::in_helper_process() {
+				if pi_vfs::helper::routes_opens() {
 					// Row 10: a descriptor this process opens and closes on a SQLite
 					// file releases the connection's POSIX locks, so a regular file
 					// is opened by the raw-IO helper instead.
@@ -623,7 +623,7 @@ impl Session {
 		let (repr, info) = match &mut self.imp {
 			Imp::Native(s) => {
 				#[cfg(unix)]
-				if !pi_vfs::helper::in_helper_process() {
+				if pi_vfs::helper::routes_opens() {
 					return helper_open(path).await;
 				}
 				let (handle, info) = native::open_file(s, path)?;
