@@ -67,9 +67,6 @@ slices:
   - SEQ-2
   - SEQ-3
   - ERRORS-1
-  - IP-1
-  - IP-2
-  - IP-3
   negative_constraints: []
   status: GREEN_COMPLETE
   depends_on: []
@@ -112,7 +109,20 @@ slices:
   - FORBIDDEN-RAWIO-1b
   - FORBIDDEN-RAWIO-2
   - FORBIDDEN-RAWIO-2b
-  clauses_deferred: []
+  clauses_deferred:
+  - POST-RAWIO-1
+  - POST-RAWIO-1b
+  - POST-RAWIO-2b
+  - POST-RAWIO-2c
+  - SEQ-RAWIO-1
+  - POST-RAWIO-3
+  - POST-RAWIO-3b
+  - POST-RAWIO-3c
+  - POST-RAWIO-4
+  - ERRORS-RAWIO-1c
+  - ERRORS-RAWIO-1d
+  - ERRORS-RAWIO-1e
+  - FORBIDDEN-RAWIO-3
   negative_constraints:
   - INV-RECON-04
   status: GREEN_COMPLETE
@@ -178,6 +188,9 @@ slices:
   - SEQ-AR-1
   - SEQ-AR-4
   - ERRORS-AR-1
+  - FORBIDDEN-AR-1
+  - FORBIDDEN-AR-2
+  - FORBIDDEN-AR-3
   negative_constraints:
   - INV-RECON-03
   - INV-RECON-05
