@@ -524,12 +524,7 @@ pub fn run_vfs_helper_loop() -> ! {
 	let mut remaining_ops = std::env::var(RAW_IO_VFS_HELPER_FAULT_ENV)
 		.ok()
 		.and_then(|val| val.strip_prefix("fail_after_ops:")?.parse::<usize>().ok());
-	unsafe {
-		std::env::remove_var(RAW_IO_VFS_HELPER_FLAG);
-		std::env::remove_var("BUN_BE_BUN");
-		std::env::remove_var("__OMP_VFS_HELPER_ADDON");
-		std::env::remove_var(RAW_IO_VFS_HELPER_FAULT_ENV);
-	}
+    // Avoid mutating process-wide environment variables to prevent data races under multi-threaded tokio workers.
 	// Duplicate stdout for the framing channel and redirect fd 1 to /dev/null
 	// so any accidental stdout print inside the child cannot corrupt the pipe.
 	let protocol_out_fd = unsafe { libc::dup(libc::STDOUT_FILENO) };
@@ -856,7 +851,7 @@ impl HelperConn {
 
 		cmd.stdin(Stdio::piped())
 			.stdout(Stdio::piped())
-			.stderr(Stdio::null());
+			.stderr(Stdio::inherit());
 
 		let mut child = cmd.spawn().map_err(|err| format!("spawn failed: {err}"))?;
 		let stdin = child

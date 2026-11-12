@@ -121,7 +121,7 @@ describe("SLICE-5 (POST-RAWIO-4): InternalUrlFilesystem.readPrefix routes host f
 				'process.on("message", (msg: unknown) => {',
 				'  if (msg && typeof msg === "object" && "id" in msg && typeof msg.id === "string") {',
 				'    process.send?.({ type: "started", id: msg.id });',
-				'    process.send?.({ type: "error", id: msg.id, error: "EIO: simulated helper disk error" });',
+				'    process.send?.({ type: "error", id: msg.id, operation: (msg as any).operation || "read", targetPath: (msg as any).targetPath || "", error: "EIO: simulated helper disk error" });',
 				"  }",
 				"});",
 			].join("\n"),

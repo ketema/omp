@@ -1,4 +1,5 @@
 #!/bin/sh
+set -eu
 # Verify requirements/FORK_CUSTOMIZATIONS.md against a DEPLOYED build, not just
 # the source tree. Source presence and passing tests are not enough: the
 # 2026-10-14 reconcile shipped docs without runtime effect, and the 2026-10-26
@@ -88,7 +89,7 @@ if [ "$RUN_TESTS" = 1 ]; then
 	for t in packages/rlm packages/coding-agent/test/non-interactive-env.test.ts \
 		packages/coding-agent/test/task/model-approval.test.ts packages/tui/test/native-modifier-detection.test.ts \
 		packages/coding-agent/test/extension-session-shell-env.test.ts; do
-		if (cd "$TREE" && bun test "$t" >/dev/null 2>&1); then pass "tests  $t"; else fail "tests  $t" "bun test failed"; fi
+		if (cd "$TREE" && env -u PI_CONFIG_FILES bun test "$t" >/dev/null 2>&1); then pass "tests  $t"; else fail "tests  $t" "bun test failed"; fi
 	done
 fi
 

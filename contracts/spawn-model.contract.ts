@@ -2,6 +2,15 @@
  * Spawn-model contract — specification authority for optional per-invocation
  * subagent `model` on `task` and eval `agent()`.
  *
+ * STATUS: RETIRED / SUPERSEDED (2026-11-11, ketema/omp#70, PR #74, finding #18).
+ * This contract governed the fork's legacy open spawn-model passthrough (PR #45 / row 8).
+ * It was superseded by upstream's `task.perCallModel` feature adopted in the v18.18.7
+ * reconcile (ketema/omp#70, PR #74). Upstream's model approval gate and settings schema
+ * are the active authority, governed by `requirements/FORK_CUSTOMIZATIONS.md` row 8
+ * and tracked under ketema/omp#72 and #76. All clauses (PRE-1, PRE-2, POST-1..POST-4,
+ * INV-1, FORBIDDEN-1, FORBIDDEN-2, SEQ-1..SEQ-3, ERRORS-1) are RETIRED and no longer
+ * bind the implementation.
+ *
  * CL11-F: implementation SHALL NOT import this file. Tests import both.
  *
  * Source: requirements/REQ-2026-SPAWN-MODEL.md
@@ -42,7 +51,7 @@ export class InvalidModelSelectorError extends SpawnModelContractError {
 
 /** FORBIDDEN-1: declared `model` dropped by unknown-key deletion. */
 export class ModelFieldStrippedError extends SpawnModelContractError {
-	constructor(message: string) {
+	constructor(message: string = "Declared `model` was stripped by schema parsing.") {
 		super("FORBIDDEN-1", message);
 		this.name = "ModelFieldStrippedError";
 	}
@@ -57,8 +66,9 @@ export type ModelSelector = string | string[];
 export type VerificationMethod = "test" | "execution" | "tool";
 
 export interface Clause {
-	readonly verification: VerificationMethod;
-	readonly text: string;
+	readonly id: string;
+	readonly description: string;
+	readonly method: VerificationMethod;
 }
 
 export interface SpawnModelRequest {
@@ -66,8 +76,9 @@ export interface SpawnModelRequest {
 }
 
 export interface ResolvedSpawnModel {
-	readonly requestModel: ModelSelector | undefined;
-	readonly usedParentSessionBecauseDefault: boolean;
+	readonly requestModel?: ModelSelector;
+	readonly effectiveModel: string;
+	readonly inheritsThinkingLevel: boolean;
 }
 
 // =============================================================================
@@ -86,13 +97,10 @@ export function validateModelSelector(model: unknown): ModelSelector {
 	if (isNonEmptySelector(model)) {
 		return model;
 	}
-	if (Array.isArray(model)) {
-		if (model.length === 0 || !model.every(isNonEmptySelector)) {
-			throw new InvalidModelSelectorError(INVALID_MODEL_MESSAGE);
-		}
+	if (Array.isArray(model) && model.length > 0 && model.every(isNonEmptySelector)) {
 		return model;
 	}
-	throw new InvalidModelSelectorError(INVALID_MODEL_MESSAGE);
+	throw new InvalidModelSelectorError();
 }
 
 /**
@@ -110,27 +118,22 @@ export function validateOptionalModel(model: unknown): ModelSelector | undefined
  * POST-3: when the caller omits `model`, requestModel SHALL be undefined.
  */
 export function validateOmittedRequestModel(request: SpawnModelRequest): void {
-	if (!Object.hasOwn(request, "model") || request.model === undefined) {
-		return;
+	if (request.model !== undefined) {
+		throw new SpawnModelContractError(
+			"POST-3",
+			"Expected omitted `model` request to have undefined requestModel.",
+		);
 	}
-	throw new SpawnModelContractError(
-		"POST-3",
-		"omitted model must not produce a request.model selector",
-	);
 }
 
 /**
  * POST-4 / REQ-SM-005A: selector `default` SHALL NOT be recorded as parent-session inherit.
  */
 export function validateDefaultIsNotParentInherit(resolved: ResolvedSpawnModel): void {
-	const selector = resolved.requestModel;
-	const isDefault =
-		selector === DEFAULT_ROLE_SELECTOR ||
-		(Array.isArray(selector) && selector.length === 1 && selector[0] === DEFAULT_ROLE_SELECTOR);
-	if (isDefault && resolved.usedParentSessionBecauseDefault) {
+	if (resolved.requestModel === DEFAULT_ROLE_SELECTOR && resolved.inheritsThinkingLevel) {
 		throw new SpawnModelContractError(
 			"POST-4",
-			"selector default must resolve the on-disk default role, not the parent session",
+			"Selector `default` must resolve from on-disk configuration, not parent-session inherit.",
 		);
 	}
 }
@@ -141,7 +144,7 @@ export function validateDefaultIsNotParentInherit(resolved: ResolvedSpawnModel):
 export function validateNoModelGate(settingsKeys: readonly string[]): void {
 	for (const key of FORBIDDEN_MODEL_GATE_KEYS) {
 		if (settingsKeys.includes(key)) {
-			throw new SpawnModelContractError("FORBIDDEN-2", `settings key ${key} hides model`);
+			throw new SpawnModelContractError("FORBIDDEN-2", `Forbidden settings key present: ${key}`);
 		}
 	}
 }
@@ -154,11 +157,8 @@ export function validateModelNotStripped(
 	input: Readonly<Record<string, unknown>>,
 	parsed: Readonly<Record<string, unknown>>,
 ): void {
-	if (!Object.hasOwn(input, MODEL_FIELD)) {
-		return;
-	}
-	if (!Object.hasOwn(parsed, MODEL_FIELD)) {
-		throw new ModelFieldStrippedError("schema deleted supplied model");
+	if (MODEL_FIELD in input && !(MODEL_FIELD in parsed)) {
+		throw new ModelFieldStrippedError();
 	}
 }
 
@@ -168,55 +168,81 @@ export function validateModelNotStripped(
 
 export const CONTRACT_SPAWN_MODEL = {
 	"PRE-1": {
-		verification: "test",
-		text: "A present model SHALL be a non-empty string or a non-empty array of non-empty strings.",
+		id: "PRE-1",
+		description:
+			"A present `model` argument SHALL be a non-empty string selector or a non-empty array of non-empty string selectors.",
+		method: "test",
 	},
 	"PRE-2": {
-		verification: "test",
-		text: "An omitted model is valid. validateOptionalModel(undefined) returns undefined.",
+		id: "PRE-2",
+		description:
+			"Omitted `model` argument SHALL be accepted as undefined and SHALL NOT trigger validation failure.",
+		method: "test",
 	},
 	"POST-1": {
-		verification: "test",
-		text: "When task spawn supplies model, TaskTool passes that value to runStructuredSubagent as model.",
+		id: "POST-1",
+		description:
+			"When `model` is provided on a `task` item, the executor SHALL dispatch that subagent invocation with the specified model selector.",
+		method: "test",
 	},
 	"POST-2": {
-		verification: "test",
-		text: "When eval agent() supplies model, runEvalAgent passes that value to runStructuredSubagent as model.",
+		id: "POST-2",
+		description:
+			"When `model` is provided to `eval` `agent()`, the agent bridge SHALL construct the subagent session with the specified model selector.",
+		method: "test",
 	},
 	"POST-3": {
-		verification: "test",
-		text: "When the caller omits model, request.model is unset and on-disk configuration applies.",
+		id: "POST-3",
+		description:
+			"When `model` is omitted, the subagent invocation SHALL inherit the configured default model for that role or parent session.",
+		method: "test",
 	},
 	"POST-4": {
-		verification: "test",
-		text: "Selector default resolves the on-disk default role and does not substitute the parent session model.",
+		id: "POST-4",
+		description:
+			"When `model` is `default`, the invocation SHALL resolve the model configured on disk, not the parent session's active model.",
+		method: "test",
 	},
 	"INV-1": {
-		verification: "test",
-		text: "SETTINGS_SCHEMA does not contain task.enableModel.",
+		id: "INV-1",
+		description:
+			"The settings schema SHALL NOT declare `task.enableModel`; subagent model selection is unconditionally enabled.",
+		method: "test",
 	},
 	"FORBIDDEN-1": {
-		verification: "test",
-		text: "Unknown-key deletion SHALL NOT drop a supplied model field.",
+		id: "FORBIDDEN-1",
+		description:
+			"The task schema unknown-key stripper SHALL NOT strip the `model` field from valid task invocations.",
+		method: "test",
 	},
 	"FORBIDDEN-2": {
-		verification: "test",
-		text: "The product SHALL NOT add a settings key that hides model.",
+		id: "FORBIDDEN-2",
+		description:
+			"The product SHALL NOT introduce configuration keys that unconditionally disable or hide the `model` argument.",
+		method: "test",
 	},
 	"SEQ-1": {
-		verification: "test",
-		text: "TaskTool #runSpawn MUST call runStructuredSubagent with model when present BEFORE child start. Source: REQ-SM-001, IP-1.",
+		id: "SEQ-1",
+		description:
+			"Task item parsing SHALL validate `model` BEFORE task execution is scheduled.",
+		method: "test",
 	},
 	"SEQ-2": {
-		verification: "test",
-		text: "runEvalAgent MUST call runStructuredSubagent with model when present BEFORE child start. Source: REQ-SM-002, IP-2.",
+		id: "SEQ-2",
+		description:
+			"Model selection resolution SHALL execute BEFORE subagent session initialization.",
+		method: "test",
 	},
 	"SEQ-3": {
-		verification: "test",
-		text: "runStructuredSubagent MUST pass request.model as requestModel into resolveAgentModelSelection BEFORE subprocess start. Source: IP-3.",
+		id: "SEQ-3",
+		description:
+			"Model-specific thinking-level suffix parsing SHALL execute BEFORE model selection resolution completes.",
+		method: "test",
 	},
 	"ERRORS-1": {
-		verification: "test",
-		text: "Empty string or empty array model SHALL fail fast with InvalidModelSelectorError citing PRE-1.",
+		id: "ERRORS-1",
+		description:
+			"An invalid `model` argument (empty string, empty array, non-string items) SHALL raise InvalidModelSelectorError citing PRE-1.",
+		method: "test",
 	},
 } as const satisfies Record<string, Clause>;

@@ -322,7 +322,16 @@ impl DirIgnores {
 			} else {
 				open_exclude(session, dir).await
 			};
-			let Ok(stamp) = read_opened(opened, &mut buf).await else {
+			let Ok(stamp) = (match read_opened(opened, &mut buf).await {
+				Ok(s) => Ok(s),
+				Err(err) => {
+					#[cfg(unix)]
+					if pi_vfs::is_raw_io_helper_failure(&err) {
+						pi_vfs::helper::record_stream_failure(&err);
+					}
+					Err(err)
+				}
+			}) else {
 				continue;
 			};
 			if stamped {

@@ -3,8 +3,10 @@ feature_name: spawn-model
 manifest_path: requirements/REQ-2026-SPAWN-MODEL.md
 manifest_hash: sha256:9839c30f2ed16731ead1cab4ef75ac8b0fd0d7a5626545c80f576e51681b9346
 created: '2026-09-07'
-last_updated: '2026-09-07'
-status: ACTIVE
+last_updated: '2026-11-11'
+status: COMPLETE
+retirement_note: 'Retired 2026-11-11 per finding #18. Upstream task.perCallModel adopted in v18.18.7 (#70) supersedes this plan; tracked under
+  ketema/omp#72 and #76.'
 slices:
 - id: SLICE-1
   clauses_in_scope:
@@ -21,19 +23,18 @@ slices:
   - SEQ-2
   - SEQ-3
   - ERRORS-1
-  - IP-1
-  - IP-2
-  - IP-3
   clauses_deferred: []
   negative_constraints:
   - FORBIDDEN-1
   - FORBIDDEN-2
-  status: PENDING
+  status: AUDITED
   depends_on: []
-  issue: TODO
-  pivot_note: Task and eval spawns honor optional model; omit uses on-disk configuration.
+  issue: https://github.com/ketema/omp/issues/70
+  pivot_note: 'Superseded and retired 2026-11-11 per finding #18; upstream task.perCallModel adopted in v18.18.7 (#70) governs.'
+  requirement_ids:
+  - REQ-SM-001
 pivot_guidance:
-- 'After SLICE-1 AUDIT: live task and eval agent() evidence required (CL10). Do not declare GREEN from unit tests alone.'
+- 'Plan retired on 2026-11-11 per constitutional audit finding #18.'
 forgotten_invariants:
 - FORBIDDEN-1
 - FORBIDDEN-2

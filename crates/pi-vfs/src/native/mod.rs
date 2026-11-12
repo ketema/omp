@@ -38,7 +38,7 @@ use crate::{
 
 pub(crate) fn open(path: &Path, options: &OpenOptions) -> io::Result<File> {
 	#[cfg(unix)]
-	if !crate::helper::in_helper_process() {
+	if crate::helper::routes_opens() {
 		return crate::helper::HelperFile::open(path, options).map(File::from);
 	}
 	options.to_std().open(path).map(File::from)
@@ -46,35 +46,26 @@ pub(crate) fn open(path: &Path, options: &OpenOptions) -> io::Result<File> {
 
 pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
 	#[cfg(unix)]
-	{
-		crate::helper::read_all(path)
+	if crate::helper::routes_opens() {
+		return crate::helper::read_all(path);
 	}
-	#[cfg(not(unix))]
-	{
-		fs::read(path)
-	}
+	fs::read(path)
 }
 
 pub(crate) fn write(path: &Path, contents: &[u8]) -> io::Result<()> {
 	#[cfg(unix)]
-	{
-		crate::helper::write_all(path, contents)
+	if crate::helper::routes_opens() {
+		return crate::helper::write_all(path, contents);
 	}
-	#[cfg(not(unix))]
-	{
-		fs::write(path, contents)
-	}
+	fs::write(path, contents)
 }
 
 pub(crate) fn copy(from: &Path, to: &Path) -> io::Result<u64> {
 	#[cfg(unix)]
-	{
-		crate::helper::copy_file(from, to)
+	if crate::helper::routes_opens() {
+		return crate::helper::copy_file(from, to);
 	}
-	#[cfg(not(unix))]
-	{
-		fs::copy(from, to)
-	}
+	fs::copy(from, to)
 }
 
 // Windows path stats carry handle identity when the object can be opened for
