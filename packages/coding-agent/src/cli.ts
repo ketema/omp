@@ -167,7 +167,7 @@ async function runSmokeTest(): Promise<void> {
 	const statsServer = await startServer(0);
 	try {
 		const response = await fetch(`http://127.0.0.1:${statsServer.port}/`);
-		if (!response.ok) throw new Error(`stats dashboard smoke failed: HTTP ${response.status}`);
+		if (!response.ok) { const body = await response.text(); throw new Error(`stats dashboard smoke failed: HTTP ${response.status} - ${body}`); }
 		const html = await response.text();
 		if (!html.includes('<div id="root"></div>') || !html.includes("index.js")) {
 			throw new Error("stats dashboard smoke failed: dashboard HTML was not served");
