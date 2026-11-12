@@ -16,7 +16,7 @@ function reader(content: string | Uint8Array) {
 
 const opts = { maxLines: 3, maxBytes: 10_000, chunkBytes: 7 } as const;
 
-describe("pageLinesThroughHelper", () => {
+describe("pageLinesThroughHelper (POST-RAWIO-3)", () => {
 	it("returns one window across chunk boundaries and reports more", async () => {
 		const r = reader("alpha\nbravo\ncharlie\ndelta\necho\n");
 		const page = await pageLinesThroughHelper(r.read, r.bytes.length, { ...opts, startLine0: 1 });
