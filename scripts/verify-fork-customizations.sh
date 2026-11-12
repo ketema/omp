@@ -1,4 +1,5 @@
 #!/bin/sh
+set -eu
 # Verify requirements/FORK_CUSTOMIZATIONS.md against a DEPLOYED build, not just
 # the source tree. Source presence and passing tests are not enough: the
 # 2026-10-14 reconcile shipped docs without runtime effect, and the 2026-10-26

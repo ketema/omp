@@ -84,7 +84,7 @@ bun test packages/rlm
 bun test packages/rlm/tests/tool.spec.ts -t "F-269"
 
 # Row 8: per-spawn model selector
-bun test packages/coding-agent/test/spawn-model.test.ts
+bun test packages/coding-agent/test/task/model-approval.test.ts
 
 # Rows 4, 5, 9
 bun test packages/coding-agent/test/non-interactive-env.test.ts
