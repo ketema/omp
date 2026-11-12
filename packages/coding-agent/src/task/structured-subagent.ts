@@ -422,11 +422,8 @@ function preflightPerCallModel(
 	const disabled = perCallModelDisabledReason(settings, request.invocationKind);
 	if (disabled) fail(disabled);
 	if (isBundledSeance(agent)) fail(`Per-call model is not supported for the \`${SEANCE_AGENT_NAME}\` agent.`);
-	if (hasModelOverride) {
-		fail(
-			`Per-call model conflicts with task.agentModelOverrides for agent "${agent.name}". Omit model to use the configured override.`,
-		);
-	}
+	// Fork customization (ketema/omp#76): an explicit per-call model overrides task.agentModelOverrides.
+	// hasModelOverride is not blocked when the caller explicitly specifies a model.
 	if (userTaggedEffort) {
 		fail(
 			`Per-call model conflicts with the user's \`^model:level\` tag for agent "${agent.name}". Omit model to use the tagged model and effort.`,

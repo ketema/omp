@@ -142,7 +142,10 @@ function configuredRoleGrantPatterns(settings: Settings): PerCallModelAdvertisem
 
 /** The allowlist compares canonical identities literally; it never resolves or case-folds entries. */
 function allowlistAdmitsIdentity(allow: string[], identity: string): boolean {
-	return allow.length === 0 || allow.some(entry => entry.trim() === identity);
+	return allow.length === 0 || allow.some(entry => {
+		const t = entry.trim();
+		return t === identity || t === "*" || t === "*/*";
+	});
 }
 
 /**
@@ -296,7 +299,10 @@ function computeGranted(
 	catalog: Model<Api>[],
 ): boolean {
 	if (!allowlistsAdmitIdentity(perCallAllowlists(grants.settings), target)) return false;
+	const allow = cfgTaskPerCallModelAllow.get(grants.settings);
+	if (allow.some(e => e.trim() === "*" || e.trim() === "*/*")) return true;
 	return perCallModelGrantPatterns(grants).some(pattern => {
+		if (pattern.trim() === "*" || pattern.trim() === "*/*") return true;
 		// Full-catalog literals win even when unavailable, so :low and [1m] never broaden a grant.
 		const exact = exactIdentity(pattern, catalog);
 		if (exact !== undefined) return exact === target;

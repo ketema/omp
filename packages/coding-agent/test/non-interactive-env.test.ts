@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import * as fsSync from "node:fs";
 import { accessSync, constants as fsConstants, statSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";

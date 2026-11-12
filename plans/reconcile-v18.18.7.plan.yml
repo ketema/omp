@@ -52,7 +52,12 @@ slices:
   requirement_ids:
   - REQ-RECON-06
   - REQ-RECON-14
-  clauses_in_scope: []
+  clauses_in_scope:
+  - PRE-MR-1
+  - POST-MR-1
+  - POST-MR-2
+  - INV-MR-1
+  - ERRORS-MR-1
   clauses_deferred:
   - PRE-1
   - PRE-2

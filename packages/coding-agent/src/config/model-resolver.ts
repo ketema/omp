@@ -1923,6 +1923,14 @@ export function sessionModelDiscoveryProviders(
  * primary resolution unchanged so the existing error path still surfaces
  * a meaningful failure downstream.
  */
+/**
+ * DbC Behavioral Contract: resolveModelOverrideWithAuthFallback (PR #45 / #70)
+ * PRE-MR-1: modelPatterns must be an array of candidate model pattern strings.
+ * POST-MR-1: If a candidate pattern resolves to an authenticated model, return that model with authFallbackUsed=false.
+ * POST-MR-2: If configured patterns fail authentication and parentActiveModelPattern is authenticated, return fallback model with authFallbackUsed=true.
+ * INV-MR-1: Disabled providers configured in settings are never selected.
+ * ERRORS-MR-1: If neither candidate nor fallback resolves with authentication, return primary resolution for downstream error reporting.
+ */
 export async function resolveModelOverrideWithAuthFallback(
 	modelPatterns: string[],
 	parentActiveModelPattern: string | undefined,
