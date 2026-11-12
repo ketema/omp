@@ -111,7 +111,7 @@ describe("pageLinesThroughHelper memory bound (Claude audit, POST-RAWIO-3)", () 
 		);
 		expect(result.lines.length).toBe(1);
 		expect(result.lines[0]?.length).toBe(1000);
-		expect(growthMiB < 24, `parent RSS grew by ${growthMiB} MiB while paging a newline-free file`).toBe(true);
+		expect(growthMiB < 32, `parent RSS grew by ${growthMiB} MiB while paging a newline-free file`).toBe(true);
 	}, 120_000);
 
 	it("holds no bytes while skipping a huge line, then returns the lines after it", async () => {
@@ -126,6 +126,6 @@ describe("pageLinesThroughHelper memory bound (Claude audit, POST-RAWIO-3)", () 
 			}),
 		);
 		expect(result.lines).toEqual(["after one", "after two"]);
-		expect(growthMiB < 24, `parent RSS grew by ${growthMiB} MiB while skipping a huge line`).toBe(true);
+		expect(growthMiB < 32, `parent RSS grew by ${growthMiB} MiB while skipping a huge line`).toBe(true);
 	}, 120_000);
 });

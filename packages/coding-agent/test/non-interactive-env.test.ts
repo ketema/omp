@@ -148,12 +148,18 @@ describe("buildNonInteractiveEnv askpass resolver restoration", () => {
 		return undefined;
 	}
 
-	const executableGenericAskpassFallback = discoverExecutableGenericAskpassFallback();
-	const skipFallbackDependentRegression =
-		process.platform !== "win32" && executableGenericAskpassFallback === undefined;
-	const fallbackDependentRegressionName = skipFallbackDependentRegression
-		? "rejects a non-executable parent SSH_ASKPASS and still applies the native askpass environment (POST-AR-5 skip: no executable generic askpass fallback is discoverable)"
-		: "rejects a non-executable parent SSH_ASKPASS and still applies the native askpass environment";
+	// Enforces: POST-AR-3, SEQ-AR-3, ERRORS-AR-2
+	let executableGenericAskpassFallback = discoverExecutableGenericAskpassFallback();
+	if (executableGenericAskpassFallback === undefined && process.platform !== "win32") {
+		const fallbackDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "omp-fallback-askpass-"));
+		const fallbackPath = path.join(fallbackDir, "ssh-askpass");
+		fsSync.writeFileSync(fallbackPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+		executableGenericAskpassFallback = fallbackPath;
+		process.env.PATH = `${fallbackDir}${path.delimiter}${process.env.PATH ?? ""}`;
+	}
+	const skipFallbackDependentRegression = false;
+	const fallbackDependentRegressionName =
+		"rejects a non-executable parent SSH_ASKPASS but still applies the native askpass environment (POST-AR-3, POST-AR-5, SEQ-AR-3)";
 
 	it("prefers a valid executable parent SSH_ASKPASS, retains its path, and applies the native askpass environment", async () => {
 		/**
