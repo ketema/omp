@@ -421,8 +421,14 @@ export function invalidModelSelectorReason(
 	}
 
 	if (Array.isArray(model)) {
-		if (model.length === 0 || !model.every(item => typeof item === "string" && isValidSingleSelector(item, gate.settings))) {
-			return `${label} has an invalid \`model\` candidate array. Every candidate must be a valid provider/model-id or role alias.`;
+		if (model.length === 0) {
+			return `${label} has an empty \`model\` candidate array.`;
+		}
+		for (let i = 0; i < model.length; i++) {
+			const item = model[i];
+			if (typeof item !== "string" || !isValidSingleSelector(item, gate.settings)) {
+				return `${label} has an invalid \`model\` candidate at index ${i}: ${JSON.stringify(item)}. Every candidate must be a valid provider/model-id or role alias.`;
+			}
 		}
 		return undefined;
 	}
@@ -658,9 +664,12 @@ export async function resolveEffectiveSubagentPolicy(
 				const resolved = resolveModelOverride(candidates, { getAvailable: () => available }, request.session.settings);
 				if (!resolved.model) return { patterns: candidates.map(c => c.trim()), role: undefined };
 				const base = formatModelStringWithRouting(resolved.model);
-				// Preserve explicit thinking level suffix if specified on the first matching candidate pattern
-				const matched = candidates.find(c => c.trim().startsWith(resolved.model?.id ?? "") || c.trim().includes(resolved.model?.id ?? ""));
-				const effort = matched && matched.includes(":") ? matched.slice(matched.indexOf(":")) : "";
+				// Preserve explicit thinking level suffix from the first matching candidate pattern or alias (e.g. @smol:high)
+				const matched = candidates.find(c => {
+					const bare = c.trim().split(":")[0]?.trim() ?? "";
+					return bare.startsWith("@") || bare.startsWith("pi/") || bare.startsWith(resolved.model?.id ?? "") || bare.includes(resolved.model?.id ?? "");
+				});
+				const effort = matched && matched.includes(":") ? matched.slice(matched.indexOf(":")) : (resolved.thinkingLevel ? `:${resolved.thinkingLevel}` : "");
 				return { patterns: [`${base}${effort}`], role: undefined };
 		  })()
 		: resolveAgentModelSelection(modelResolution);

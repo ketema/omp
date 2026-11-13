@@ -1646,6 +1646,32 @@ describe("per-call model preflight", () => {
 		expect(policy.perCallModelGrants).toBeDefined();
 	});
 
+	it("POST-PCM-ALIAS: preserves explicit effort tag on role alias (e.g. @smol:high)", async () => {
+		mockDiscovery({ ...AGENT, model: ["mock/agent-own"] });
+		const policy = await resolveEffectiveSubagentPolicy(
+			request({
+				session: perCallSession({
+					"task.perCallModel": "on",
+					modelRoles: { smol: "mock/target" },
+				}),
+				perCallModel: "@smol:high",
+			}),
+		);
+		expect(policy.modelOverride).toEqual(["mock/target:high"]);
+		expect(policy.perCallModelGrants).toBeDefined();
+	});
+
+	it("POST-PCM-ARRAY / ERRORS-PCM-1: rejects candidate array with invalid candidate at specific index", async () => {
+		mockDiscovery();
+		await expect(
+			resolveEffectiveSubagentPolicy(
+				request({
+					session: perCallSession({ "task.perCallModel": "on" }),
+					perCallModel: ["mock/target", "not a valid selector!"],
+				}),
+			),
+		).rejects.toThrow(/invalid `model` candidate at index 1/);
+	});
 	it("POST-PCM-ARRAY: resolves candidate arrays with fallback under task.perCallModel", async () => {
 		mockDiscovery({ ...AGENT, model: ["mock/agent-own"] });
 		const policy = await resolveEffectiveSubagentPolicy(
