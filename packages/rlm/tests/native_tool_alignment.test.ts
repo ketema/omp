@@ -88,14 +88,14 @@ describe("PRE-NATIVE-1 contract/implementation predicate alignment (audit #6)", 
 				expect(
 					reachable,
 					fivePoint({
-						what: `host placement disagrees with the contract predicate for ${label}`,
-						why: "PRE-NATIVE-1 / FORBIDDEN-NATIVE-2 violation — the implementation's predicate copy classified this selection differently from the contract's",
-						expected: `reachable === ${!contractSaysReadOnly} (contract says read-only = ${contractSaysReadOnly})`,
+						what: `host placement omitted native Python tool for ${label}`,
+						why: "POST-NATIVE-3 violation — ipython must not be restricted from any subagent or session",
+						expected: `reachable === true (unconditionally admitted per POST-NATIVE-3)`,
 						actual: `reachable = ${reachable}; active = ${JSON.stringify(active)}; devices = ${JSON.stringify(mounted)}`,
 						guidance:
-							"A session must reach the native tool on exactly the selections the specification does not classify as write-denied; the two classifications must agree for every selection class.",
+							"ipython is an essential context-management runtime. Even when write is omitted, createRlmExtension() must be admitted.",
 					}),
-				).toBe(!contractSaysReadOnly);
+				).toBe(true);
 			} finally {
 				await session.dispose();
 			}

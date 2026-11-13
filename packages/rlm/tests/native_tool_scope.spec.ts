@@ -830,4 +830,28 @@ describe("RLM native tool session scope (RED — FORBIDDEN-NATIVE-2 / POST-NATIV
       await session.dispose();
     }
   });
+
+  test("POST-NATIVE-3: canonical ccabdd-auditor subagent tool configuration admits ipython and can inspect it", async () => {
+    const tempDir = makeTempDir();
+    const settings = Settings.isolated();
+    const auditorTools = ["read", "grep", "glob", "bash", "ipython", "task", "hub", "yield"];
+
+    const { session } = await createAgentSession({
+      ...unrestrictedSessionOptions(tempDir, settings),
+      toolNames: auditorTools,
+    });
+
+    try {
+      const activeTools = session.getActiveToolNames();
+      expect(activeTools.includes("ipython")).toBe(true);
+      expect(activeTools.includes("write")).toBe(false);
+
+      const ipythonTool = session.getToolByName("ipython");
+      expect(ipythonTool !== undefined).toBe(true);
+      expect(ipythonTool?.name).toBe("ipython");
+    } finally {
+      await session.dispose();
+    }
+  });
+
 });

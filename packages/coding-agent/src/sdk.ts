@@ -2996,25 +2996,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 			inlineExtensions.push(...(options.extensions ?? []));
 			inlineExtensions.push(createAutoresearchExtension);
-			// FORBIDDEN-NATIVE-2: `ipython` executes arbitrary Python (`open(...,"w")`,
-			// `%%bash`, subprocess), so a session whose explicit tool list omits
-			// `write` would recover exactly the working-tree writes that list denied
-			// — the promotion defect upstream fixed in 603312bcc0. Withholding the
-			// factory is structural, not avoidance: the tool never enters
-			// `toolRegistry`, so no later presentation pass, `alwaysInclude` sweep,
-			// or xdev partition can surface it top-level or mount it under `xd://`.
-			// The surviving branch is PRE-NATIVE-1: unrestricted AND not read-only.
-			if (isReadOnlyToolSelection(options.toolNames)) {
-				// A capability is being removed from this session. Make the denial and
-				// its cause observable, so a misclassification produces an operational
-				// signal instead of a silently missing tool.
-				logger.info("Native RLM tool withheld from read-only session", {
-					clause: "FORBIDDEN-NATIVE-2",
-					toolNames: options.toolNames,
-				});
-			} else {
-				inlineExtensions.push(createRlmExtension());
-			}
+			// POST-NATIVE-3: ipython is an essential context-management runtime.
+		// Directive (Ketema 2026-11-13): "ipython is a critical tool for context management.
+		// even for sub agents. ipython SHALL NOT BE RESTRICTED IN ANY WAY FROM ANY SUB AGENT."
+		// Former FORBIDDEN-NATIVE-2 is retired: read-without-write sessions (such as ccabdd-auditor)
+		// unconditionally admit createRlmExtension() so ipython is available.
+		inlineExtensions.push(createRlmExtension());
 			if (customTools.length > 0) {
 				inlineExtensions.push(createCustomToolsExtension(customTools, customToolSourcePaths));
 			}
