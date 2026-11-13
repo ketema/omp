@@ -1,0 +1,58 @@
+schema_version: '1.0'
+feature_name: reconcile-v18.20.0
+manifest_path: requirements/REQUIREMENT_MANIFEST_RECONCILE_V18_20_0.md
+manifest_hash: sha256:cfd06cdb154cc2d6ec4223ed33d014167e9f89571a43a67f35f418c56c3dbd5a
+created: '2026-11-13'
+last_updated: '2026-11-13'
+status: ACTIVE
+audit_scope:
+  commit_range: 'fec965e829..HEAD'
+  upstream_baseline: 'tag v18.20.0; explicit base tag v18.18.7'
+slices:
+  - id: SLICE-1
+    name: Unrestricted Subagent IPython
+    status: GREEN_COMPLETE
+    requirement_ids:
+      - REQ-RLM-0002
+    clauses_in_scope:
+      - POST-NATIVE-3
+    negative_constraints:
+      - FORBIDDEN-NATIVE-1
+    scope:
+      - contracts/rlm-native-tool.contract.ts
+      - packages/coding-agent/src/sdk.ts
+      - packages/rlm/tests/native_tool_scope.spec.ts
+  - id: SLICE-2
+    name: Per-Call Model Unification (Issue #72)
+    status: GREEN_COMPLETE
+    requirement_ids:
+      - REQ-PCM-0001
+      - REQ-PCM-0002
+      - REQ-PCM-0003
+      - REQ-PCM-0004
+    clauses_in_scope:
+      - PRE-PCM-1
+      - POST-PCM-1
+      - POST-PCM-2
+      - POST-PCM-3
+      - INV-PCM-1
+      - ERRORS-PCM-1
+    negative_constraints:
+      - INV-PCM-1
+    scope:
+      - contracts/per_call_model.contract.ts
+      - packages/coding-agent/src/task/structured-subagent.ts
+      - packages/coding-agent/test/task/structured-subagent.test.ts
+  - id: SLICE-3
+    name: Upstream v18.20.0 Tree Adoption & Customization Verification
+    status: PENDING
+    requirement_ids:
+      - REQ-RECON-01
+      - REQ-RECON-02
+    clauses_in_scope:
+      - POST-RECON-1
+    negative_constraints:
+      - FORBIDDEN-RECON-1
+    scope:
+      - requirements/REQUIREMENT_MANIFEST_RECONCILE_V18_20_0.md
+      - packages/coding-agent/src/cli/find-cli.ts
