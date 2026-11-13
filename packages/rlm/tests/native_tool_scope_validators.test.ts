@@ -3,7 +3,7 @@
  *
  * These exercise the executable validators that live INSIDE the contract
  * authority (contracts/rlm-native-tool.contract.ts), not the host session
- * implementation. They prove FORBIDDEN-NATIVE-2 is runtime-enforceable and that
+ * implementation. They prove POST-NATIVE-3 is runtime-enforceable and that
  * its read-only predicate classifies every tool-selection class correctly. They
  * pass at RED time by construction and do NOT satisfy the RED requirement — the
  * RED signal lives in native_tool_scope.spec.ts, which drives a live session.
@@ -17,7 +17,7 @@
  *                       (isReadOnlyToolSelection(toolNames) is false; an explicit
  *                       toolNames list omitting 'write' is read-only, while an
  *                       absent list is the full default set)."
- * - FORBIDDEN-NATIVE-2: "A read-only session (isReadOnlyToolSelection(toolNames)
+ * - POST-NATIVE-3: "A read-only session (isReadOnlyToolSelection(toolNames)
  *                       is true) SHALL NOT surface ipython in
  *                       getActiveToolNames() ..."
  * - ERROR (RlmNativeToolContractError): carries the violated `clauseId`.
@@ -135,7 +135,7 @@ describe("read-only tool-selection predicate (CONTRACT VERIFICATION — PRE-NATI
      *   omitting 'write'"
      * - Category: positive (Class C interior representative)
      * - Risk tier: HIGH — misclassifying Class C re-opens the escalation
-     *   FORBIDDEN-NATIVE-2 forbids
+     *   POST-NATIVE-3 forbids
      *
      * FOUR-CRITERIA TEST VALIDITY GATE:
      *   [x] C1 VALID: cites PRE-NATIVE-1
@@ -191,17 +191,17 @@ describe("read-only tool-selection predicate (CONTRACT VERIFICATION — PRE-NATI
   });
 });
 
-describe("read-only native-tool gate (CONTRACT VERIFICATION — FORBIDDEN-NATIVE-2)", () => {
-  test("FORBIDDEN-NATIVE-2: the gate rejects a read-only surface that exposes the native tool, naming the clause", () => {
+describe("read-only native-tool gate (CONTRACT VERIFICATION — POST-NATIVE-3)", () => {
+  test("POST-NATIVE-3: the gate rejects a read-only surface that exposes the native tool, naming the clause", () => {
     /**
      * CONTRACT TRACEABILITY:
-     * - Enforces: FORBIDDEN-NATIVE-2 + ERROR (RlmNativeToolContractError carries
+     * - Enforces: POST-NATIVE-3 + ERROR (RlmNativeToolContractError carries
      *   the violated clauseId)
      * - Category: error
      * - Risk tier: HIGH — a gate that cannot reject is decorative (CL11-A)
      *
      * FOUR-CRITERIA TEST VALIDITY GATE:
-     *   [x] C1 VALID: cites FORBIDDEN-NATIVE-2
+     *   [x] C1 VALID: cites POST-NATIVE-3
      *   [x] C2 VALUABLE: NO — asserts the exact error type, the exact clauseId,
      *       and that the message names the offending tool; a silently-passing or
      *       mis-attributed gate fails it
@@ -246,7 +246,7 @@ describe("read-only native-tool gate (CONTRACT VERIFICATION — FORBIDDEN-NATIVE
       (caught as Error).message.includes(NATIVE_TOOL_NAME),
       fivePoint({
         what: "read-only gate failure does not name the exposed tool",
-        why: "FORBIDDEN-NATIVE-2 violation — the diagnostic omits the tool whose exposure caused the failure",
+        why: "POST-NATIVE-3 violation — the diagnostic omits the tool whose exposure caused the failure",
         expected: `the failure message names ${NATIVE_TOOL_NAME}`,
         actual: `message = ${JSON.stringify((caught as Error).message)}`,
         guidance:
@@ -255,16 +255,16 @@ describe("read-only native-tool gate (CONTRACT VERIFICATION — FORBIDDEN-NATIVE
     ).toBe(true);
   });
 
-  test("FORBIDDEN-NATIVE-2: the gate accepts a read-only surface without the native tool", () => {
+  test("POST-NATIVE-3: the gate accepts a read-only surface without the native tool", () => {
     /**
      * CONTRACT TRACEABILITY:
-     * - Enforces: FORBIDDEN-NATIVE-2 (compliant branch)
+     * - Enforces: POST-NATIVE-3 (compliant branch)
      * - Category: positive
      * - Risk tier: HIGH — a gate that rejects compliant surfaces would block the
      *   very fix the clause demands
      *
      * FOUR-CRITERIA TEST VALIDITY GATE:
-     *   [x] C1 VALID: cites FORBIDDEN-NATIVE-2
+     *   [x] C1 VALID: cites POST-NATIVE-3
      *   [x] C2 VALUABLE: NO — an always-throwing gate fails here while passing
      *       the rejection test, so the pair pins both branches
      *   [x] C3 NON-DUPLICATIVE: complementary branch to the rejection test
@@ -293,17 +293,17 @@ describe("read-only native-tool gate (CONTRACT VERIFICATION — FORBIDDEN-NATIVE
     ).toBeNull();
   });
 
-  test("FORBIDDEN-NATIVE-2: the gate is scoped by the read-only predicate and does not fire for an absent tool list", () => {
+  test("POST-NATIVE-3: the gate is scoped by the read-only predicate and does not fire for an absent tool list", () => {
     /**
      * CONTRACT TRACEABILITY:
-     * - Enforces: FORBIDDEN-NATIVE-2 ("A read-only session ... SHALL NOT ...")
+     * - Enforces: POST-NATIVE-3 ("A read-only session ... SHALL NOT ...")
      *   read together with PRE-NATIVE-1 (an absent list is NOT read-only)
      * - Category: negative (scope boundary)
      * - Risk tier: HIGH — a gate that fires for every session would contradict
      *   POST-NATIVE-1, which requires the tool present for default sessions
      *
      * FOUR-CRITERIA TEST VALIDITY GATE:
-     *   [x] C1 VALID: cites FORBIDDEN-NATIVE-2 and PRE-NATIVE-1
+     *   [x] C1 VALID: cites POST-NATIVE-3 and PRE-NATIVE-1
      *   [x] C2 VALUABLE: NO — dropping the predicate guard from the gate leaves
      *       the predicate tests passing and fails only this one
      *   [x] C3 NON-DUPLICATIVE: observes the gate's scoping, not the predicate's
@@ -323,7 +323,7 @@ describe("read-only native-tool gate (CONTRACT VERIFICATION — FORBIDDEN-NATIVE
       caught,
       fivePoint({
         what: "read-only gate fired for a session with no explicit tool list",
-        why: "FORBIDDEN-NATIVE-2 violation — the read-only prohibition was applied to a session holding the full default grant, contradicting POST-NATIVE-1",
+        why: "POST-NATIVE-3 violation — the read-only prohibition was applied to a session holding the full default grant, contradicting POST-NATIVE-1",
         expected: "no error is raised when the session has no explicit tool list, even if the native tool is present",
         actual: `raised = ${caught === null ? "nothing" : String(caught)}`,
         guidance:
@@ -332,17 +332,17 @@ describe("read-only native-tool gate (CONTRACT VERIFICATION — FORBIDDEN-NATIVE
     ).toBeNull();
   });
 
-  test("FORBIDDEN-NATIVE-2: the gate fails loud on a read-only surface it cannot inspect", () => {
+  test("POST-NATIVE-3: the gate fails loud on a read-only surface it cannot inspect", () => {
     /**
      * CONTRACT TRACEABILITY:
-     * - Enforces: FORBIDDEN-NATIVE-2 + ERROR (RlmNativeToolContractError) —
+     * - Enforces: POST-NATIVE-3 + ERROR (RlmNativeToolContractError) —
      *   enforcement must not fail open (CL9-A: no silent fallback)
      * - Category: error (fault injection at the enforcement boundary)
      * - Risk tier: HIGH — a gate that passes an uninspectable surface would let
      *   the escalation through whenever the surface shape changes
      *
      * FOUR-CRITERIA TEST VALIDITY GATE:
-     *   [x] C1 VALID: cites FORBIDDEN-NATIVE-2
+     *   [x] C1 VALID: cites POST-NATIVE-3
      *   [x] C2 VALUABLE: NO — injects the fault at the earliest point the check
      *       could be bypassed (the surface it reads) and asserts the exact error
      *       type and clause attribution
@@ -363,7 +363,7 @@ describe("read-only native-tool gate (CONTRACT VERIFICATION — FORBIDDEN-NATIVE
       caught,
       fivePoint({
         what: "read-only gate accepted a surface it could not inspect",
-        why: "FORBIDDEN-NATIVE-2 violation — enforcement failed open when the tool surface was not readable",
+        why: "POST-NATIVE-3 violation — enforcement failed open when the tool surface was not readable",
         expected: "a contract error is raised when a read-only session's tool surface cannot be inspected",
         actual: `raised = ${caught === null ? "nothing" : String(caught)}`,
         guidance:
@@ -375,7 +375,7 @@ describe("read-only native-tool gate (CONTRACT VERIFICATION — FORBIDDEN-NATIVE
       (caught as RlmNativeToolContractError).clauseId,
       fivePoint({
         what: "uninspectable-surface rejection reported the wrong clause",
-        why: "FORBIDDEN-NATIVE-2 violation — the raised error does not attribute the failure to the clause being enforced",
+        why: "POST-NATIVE-3 violation — the raised error does not attribute the failure to the clause being enforced",
         expected: 'the raised error carries clauseId "POST-NATIVE-3"',
         actual: `clauseId = ${JSON.stringify((caught as RlmNativeToolContractError).clauseId)}`,
         guidance:

@@ -1601,7 +1601,7 @@ describe("per-call model preflight", () => {
 	it.each([
 		["off", "eval"],
 		["eval", "task"],
-	] as const)("rejects model under task.perCallModel: %s for %s calls", async (mode, invocationKind) => {
+	] as const)("PRE-PCM-1 / ERRORS-PCM-1: rejects model under task.perCallModel: %s for %s calls", async (mode, invocationKind) => {
 		mockDiscovery();
 		await expect(
 			resolveEffectiveSubagentPolicy(
@@ -1617,7 +1617,7 @@ describe("per-call model preflight", () => {
 	it.each([
 		["on", "task"],
 		["eval", "eval"],
-	] as const)("routes an approved model above the agent's own under %s for %s calls", async (mode, invocationKind) => {
+	] as const)("POST-PCM-EXPLICIT / INV-PCM-1: routes an approved model above the agent's own under %s for %s calls", async (mode, invocationKind) => {
 		mockDiscovery({ ...AGENT, model: ["mock/agent-own"] });
 		const policy = await resolveEffectiveSubagentPolicy(
 			request({

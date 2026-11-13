@@ -112,6 +112,7 @@ import {
   NATIVE_TOOL_LOAD_MODE,
   NATIVE_TOOL_NAME,
 } from "../../../contracts/rlm-native-tool.contract.ts";
+import { assertMountedIpython } from "../../../contracts/rlm-host-mount.contract.ts";
 
 /** 5-point failure message (CL11-D). Point 5 is behavioral: WHAT, never HOW. */
 const fivePoint = (points: {
@@ -503,11 +504,12 @@ describe("RLM native tool session scope (RED — FORBIDDEN-NATIVE-2 / POST-NATIV
       // ASSERT (contract bridge)
       try {
         assertActiveIpython({ activeToolNames });
+        assertMountedIpython({ toolNames: activeToolNames });
       } catch (cause) {
         throw new Error(
           fivePoint({
             what: "contract validator rejected the live full-default session surface",
-            why: `POST-NATIVE-1 violation — ${(cause as Error).message}`,
+            why: `POST-NATIVE-1 / POST-MOUNT-1 violation — ${(cause as Error).message}`,
             expected: "the contract validator accepts the session's active tool array for a non-read-only selection",
             actual: `active tools = ${JSON.stringify(activeToolNames)}`,
             guidance:
