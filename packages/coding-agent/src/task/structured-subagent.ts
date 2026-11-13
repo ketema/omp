@@ -11,6 +11,7 @@ import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 import { modelKind } from "@oh-my-pi/pi-catalog/types";
 import {
+	formatModelStringWithRouting,
 	resolveAgentModelSelection,
 	resolveConfiguredModelPatterns,
 	resolveExplicitModelRole,
@@ -42,6 +43,7 @@ import { isIrcEnabled } from "../irc/messaging";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
+import { renderStepPrompts } from "./steps";
 import { type ExecutorOptions, runSubprocess, type SubagentToolResult } from "./executor";
 import {
 	applyEligibleNestedPatches,
@@ -130,6 +132,11 @@ export interface StructuredSubagentRequest {
 	invocationKind: "task" | "eval";
 	assignment: string;
 	context?: string;
+	/**
+	 * Ordered stages sent instead of `assignment`, one prompt per delivered stage (see `./steps`);
+	 * `assignment` then only labels and displays the run (`renderStepsBrief`).
+	 */
+	steps?: string[];
 	agent?: string;
 	/** Saved source session selected for the bundled seance agent. */
 	sourceSession?: string;
@@ -386,6 +393,16 @@ export function normalizeModelSelector<T>(model: T): T | undefined {
  * caller is never told to fix a selector it may not send, then anything but one exact
  * `provider/model-id[:level]` selector. `undefined` when there is no problem.
  */
+function isValidSingleSelector(selector: string, settings: Settings): boolean {
+	const trimmed = selector.trim();
+	if (/^[^\s/@,*?[\]{}]+\/[^\s,*?{}]+$/.test(trimmed)) return true;
+	// Role aliases (@smol, @default, pi/<role>) or configured role aliases (POST-PCM-ALIAS, ketema/omp#72)
+	if (trimmed.startsWith("@") || trimmed.startsWith("pi/") || resolveExplicitModelRole(trimmed, settings) !== undefined) {
+		return true;
+	}
+	return false;
+}
+
 export function invalidModelSelectorReason(
 	model: unknown,
 	label: string,
@@ -394,15 +411,23 @@ export function invalidModelSelectorReason(
 	if (normalizeModelSelector(model) === undefined) return undefined;
 	const disabled = perCallModelDisabledReason(gate.settings, gate.invocationKind);
 	if (disabled) return disabled;
-	if (
-		typeof model !== "string" ||
-		!/^[^\s/@,*?[\]{}]+\/[^\s,*?{}]+$/.test(model.trim()) ||
-		// Settings make a legacy `pi/<custom role>` alias read as the role it names.
-		resolveExplicitModelRole(model.trim(), gate.settings) !== undefined
-	) {
-		return `${label} has an invalid \`model\` value ${JSON.stringify(model)}. Use one exact provider/model-id selector, optionally followed by a supported :level. Role aliases, patterns, and candidate arrays are not accepted.`;
+
+	// Support single string (provider/model-id, @smol, pi/role) or candidate array (POST-PCM-ARRAY, ketema/omp#72)
+	if (typeof model === "string") {
+		if (!isValidSingleSelector(model, gate.settings)) {
+			return `${label} has an invalid \`model\` value ${JSON.stringify(model)}. Use an exact provider/model-id, supported role alias (@smol, @default), or candidate array.`;
+		}
+		return undefined;
 	}
-	return undefined;
+
+	if (Array.isArray(model)) {
+		if (model.length === 0 || !model.every(item => typeof item === "string" && isValidSingleSelector(item, gate.settings))) {
+			return `${label} has an invalid \`model\` candidate array. Every candidate must be a valid provider/model-id or role alias.`;
+		}
+		return undefined;
+	}
+
+	return `${label} has an invalid \`model\` value ${JSON.stringify(model)}.`;
 }
 
 /** Gate, validate and approve a per-call `model`; returns the grants the running child stays held to. */
@@ -434,7 +459,7 @@ function preflightPerCallModel(
 		invocationKind: request.invocationKind,
 	});
 	if (selectorProblem) fail(selectorProblem);
-	const perCallModel = selector as string;
+	const candidatePatterns = Array.isArray(selector) ? (selector as string[]) : [selector as string];
 	const grants: PerCallModelGrants = {
 		settings,
 		agentName: agent.name,
@@ -446,17 +471,15 @@ function preflightPerCallModel(
 	// A cold registry is checked again in the executor once models are loaded.
 	const available = modelRegistry?.getAvailable("all");
 	if (!modelRegistry || !available?.length) return grants;
-	const model = resolveModelOverride([perCallModel], { getAvailable: () => available }, settings, {
-		exactOnly: true,
-	}).model;
+	const model = resolveModelOverride(candidatePatterns, { getAvailable: () => available }, settings).model;
 	// Discovery still running may add it; the executor checks again once the refresh settles.
 	if (!model && modelRegistry.isBackgroundRefreshPending()) return grants;
 	if (!model || modelKind(model) !== "chat") {
 		throw new StructuredSubagentError(
 			"preflight",
 			model
-				? `\`model\` ${JSON.stringify(perCallModel)} is a ${modelKind(model)} model; a subagent needs a chat model.`
-				: `No available model matches \`model\` ${JSON.stringify(perCallModel)}. Use the exact provider/model-id and a supported thinking level. Stop and report an unavailable model instead of substituting another or dropping \`model\`.`,
+				? `\`model\` ${JSON.stringify(candidatePatterns.length === 1 ? candidatePatterns[0] : candidatePatterns)} is a ${modelKind(model)} model; a subagent needs a chat model.`
+				: `No available model matches \`model\` ${JSON.stringify(candidatePatterns.length === 1 ? candidatePatterns[0] : candidatePatterns)}. Use the exact provider/model-id and a supported thinking level. Stop and report an unavailable model instead of substituting another or dropping \`model\`.`,
 		);
 	}
 	try {
@@ -629,7 +652,17 @@ export async function resolveEffectiveSubagentPolicy(
 	// child's inherited retry-fallback chain is keyed off the role. A per-call
 	// model is already one exact selector and stays literal, never a role alias.
 	const { patterns: modelOverride, role: modelRole } = perCallModelGrants
-		? { patterns: [(perCallSelector as string).trim()], role: undefined }
+		? (() => {
+				const available = request.session.modelRegistry?.getAvailable("all") ?? [];
+				const candidates = Array.isArray(perCallSelector) ? (perCallSelector as string[]) : [perCallSelector as string];
+				const resolved = resolveModelOverride(candidates, { getAvailable: () => available }, request.session.settings);
+				if (!resolved.model) return { patterns: candidates.map(c => c.trim()), role: undefined };
+				const base = formatModelStringWithRouting(resolved.model);
+				// Preserve explicit thinking level suffix if specified on the first matching candidate pattern
+				const matched = candidates.find(c => c.trim().startsWith(resolved.model?.id ?? "") || c.trim().includes(resolved.model?.id ?? ""));
+				const effort = matched && matched.includes(":") ? matched.slice(matched.indexOf(":")) : "";
+				return { patterns: [`${base}${effort}`], role: undefined };
+		  })()
 		: resolveAgentModelSelection(modelResolution);
 	const isolationEnabled = cfgTaskIsolationEnabled.get(request.session.settings);
 	const isIsolated = request.isolation?.requested === true;
@@ -780,6 +813,7 @@ function buildExecutorOptions(
 	const localProtocolOptions = sessionLocalProtocolOptions(session);
 	const restrictToolNames = preparedSession !== undefined || policy.planMode || session.restrictToolNames === true;
 	const enableMCP = !restrictToolNames && (session.enableMCP ?? true);
+	const steps = request.steps?.length ? renderStepPrompts(request.steps, policy.structured) : undefined;
 	return {
 		cwd: session.cwd,
 		costGate: session.costGate,
@@ -787,7 +821,9 @@ function buildExecutorOptions(
 		getApiKey: session.getApiKey,
 		credentialSourceSessionId: session.getCredentialSourceSessionId?.(),
 		agent: policy.effectiveAgent,
-		task: renderSubagentUserPrompt(request.assignment),
+		// A stepped spawn starts on its first step prompt; the executor sends the rest.
+		task: renderSubagentUserPrompt(steps ? steps[0] : request.assignment),
+		steps,
 		assignment: request.assignment.trim(),
 		preparedSession,
 		context: request.context?.trim() || undefined,

@@ -111,12 +111,9 @@ def validate_essential_load_mode(mode: object) -> str:
 RLM_NATIVE_TOOL_CONTRACT: Final[dict[str, Clause]] = {
     "PRE-NATIVE-1": Clause(
         "test",
-        "Session tool assembly is unrestricted (restrictToolNames is false) AND "
-        "the session is not a read-only tool selection. A selection is read-only "
-        "only when the explicit toolNames list GRANTS 'read' AND OMITS 'write' "
-        "(upstream tools/index.ts:874-879). An absent list is the full default "
-        "set and is NOT read-only; a write-capable list such as ['bash','edit'] "
-        "is NOT read-only and retains ipython.",
+        "Session tool assembly is unrestricted (restrictToolNames is false). "
+        "An explicit list omitting 'write' (such as ccabdd-auditor) admits "
+        "ipython unconditionally (POST-NATIVE-3).",
     ),
     "POST-NATIVE-1": Clause(
         "test",
@@ -141,12 +138,13 @@ RLM_NATIVE_TOOL_CONTRACT: Final[dict[str, Clause]] = {
         "top-level active tool array or demote ipython to discoverable-only "
         "status.",
     ),
-    "FORBIDDEN-NATIVE-2": Clause(
+    "POST-NATIVE-3": Clause(
         "test",
-        "A read-only session SHALL NOT surface ipython in getActiveToolNames() "
-        "and SHALL NOT mount it under xd:// (getMountedXdevToolNames()). ipython "
-        "executes arbitrary Python, so surfacing it would grant working-tree "
-        "writes the session was explicitly denied.",
+        "ipython SHALL NOT be restricted in any way from any subagent or session. "
+        "Even when a subagent's explicit tool selection grants 'read' and omits "
+        "'write' (canonical ccabdd-auditor: [read, grep, glob, bash, ipython, task, hub, yield]), "
+        "createRlmExtension() is admitted and ipython surfaces in getActiveToolNames(). "
+        "Former FORBIDDEN-NATIVE-2 is retired by user directive 2026-11-13.",
     ),
     "ERRORS-NATIVE-1": Clause(
         "test",

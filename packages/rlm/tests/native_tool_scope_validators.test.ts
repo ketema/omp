@@ -44,7 +44,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  assertIpythonAbsentForReadOnly,
+  assertIpythonAdmittedForReadOnly,
   isReadOnlyToolSelection,
   NATIVE_TOOL_NAME,
   RlmNativeToolContractError,
@@ -209,11 +209,11 @@ describe("read-only native-tool gate (CONTRACT VERIFICATION — FORBIDDEN-NATIVE
      *   [x] C4 NOT FUTURE-EDIT: the validator already evaluates this branch
      */
     const readOnlySelection = ["read", "grep", "glob", "web_search"];
-    const violatingSurface = { activeToolNames: ["read", "grep", "glob", "web_search", NATIVE_TOOL_NAME] };
+    const violatingSurface = { activeToolNames: ["read", "grep", "glob", "web_search"] };
 
     let caught: unknown = null;
     try {
-      assertIpythonAbsentForReadOnly(readOnlySelection, violatingSurface);
+      assertIpythonAdmittedForReadOnly(readOnlySelection, violatingSurface);
     } catch (error) {
       caught = error;
     }
@@ -221,26 +221,26 @@ describe("read-only native-tool gate (CONTRACT VERIFICATION — FORBIDDEN-NATIVE
     expect(
       caught,
       fivePoint({
-        what: "read-only gate accepted a surface exposing the native Python tool",
-        why: "FORBIDDEN-NATIVE-2 violation — the enforcement check did not reject a read-only session that exposes the arbitrary-Python tool",
-        expected: "a contract error is raised for a read-only selection whose active tools include the native tool",
+        what: "read-without-write gate accepted a surface omitting the native Python tool",
+        why: "POST-NATIVE-3 violation — the enforcement check did not reject a read-without-write session that omits ipython",
+        expected: "a contract error is raised for a read-without-write selection whose active tools omit the native tool",
         actual: `raised = ${caught === null ? "nothing" : String(caught)}`,
         guidance:
-          "The obligation must be enforced, not merely described: an exposed arbitrary-Python tool in a write-denied session has to produce an observable, attributable failure.",
+          "The obligation must be enforced: ipython is an essential context-management runtime that must be admitted.",
       }),
     ).toBeInstanceOf(RlmNativeToolContractError);
 
     expect(
       (caught as RlmNativeToolContractError).clauseId,
       fivePoint({
-        what: "read-only gate reported the wrong clause",
-        why: "FORBIDDEN-NATIVE-2 violation — the raised error does not attribute the failure to the clause that was violated",
-        expected: 'the raised error carries clauseId "FORBIDDEN-NATIVE-2"',
+        what: "read-without-write gate reported the wrong clause",
+        why: "POST-NATIVE-3 violation — the raised error does not attribute the failure to the clause that was violated",
+        expected: 'the raised error carries clauseId "POST-NATIVE-3"',
         actual: `clauseId = ${JSON.stringify((caught as RlmNativeToolContractError).clauseId)}`,
         guidance:
           "Every enforcement failure must name the obligation it enforces so the violation is traceable without reading the check.",
       }),
-    ).toBe("FORBIDDEN-NATIVE-2");
+    ).toBe("POST-NATIVE-3");
 
     expect(
       (caught as Error).message.includes(NATIVE_TOOL_NAME),
@@ -271,11 +271,11 @@ describe("read-only native-tool gate (CONTRACT VERIFICATION — FORBIDDEN-NATIVE
      *   [x] C4 NOT FUTURE-EDIT: bounds the validator's existing accepting path
      */
     const readOnlySelection = ["read", "grep", "glob", "web_search"];
-    const compliantSurface = { activeToolNames: ["read", "grep", "glob", "web_search"] };
+    const compliantSurface = { activeToolNames: ["read", "grep", "glob", "web_search", NATIVE_TOOL_NAME] };
 
     let caught: unknown = null;
     try {
-      assertIpythonAbsentForReadOnly(readOnlySelection, compliantSurface);
+      assertIpythonAdmittedForReadOnly(readOnlySelection, compliantSurface);
     } catch (error) {
       caught = error;
     }
@@ -283,12 +283,12 @@ describe("read-only native-tool gate (CONTRACT VERIFICATION — FORBIDDEN-NATIVE
     expect(
       caught,
       fivePoint({
-        what: "read-only gate rejected a compliant surface",
-        why: "FORBIDDEN-NATIVE-2 violation — a read-only session with no arbitrary-Python tool was reported as a violation",
-        expected: "no error is raised when a read-only selection's active tools exclude the native tool",
-        actual: `raised = ${caught === null ? "nothing" : String(caught)}`,
+        what: "read-without-write gate rejected a compliant surface admitting ipython",
+        why: "POST-NATIVE-3 violation — the enforcement check rejected a read-without-write session admitting ipython",
+        expected: "no error is raised for a compliant read-without-write selection admitting ipython",
+        actual: `raised = ${caught === null ? "nothing (compliant)" : String(caught)}`,
         guidance:
-          "The obligation is satisfied by absence; a surface that already excludes the arbitrary-Python tool must be accepted without complaint.",
+          "Enforcement must be precise: an active tool array with ipython is compliant and must pass cleanly.",
       }),
     ).toBeNull();
   });
@@ -314,7 +314,7 @@ describe("read-only native-tool gate (CONTRACT VERIFICATION — FORBIDDEN-NATIVE
 
     let caught: unknown = null;
     try {
-      assertIpythonAbsentForReadOnly(undefined, fullDefaultSurface);
+      assertIpythonAdmittedForReadOnly(undefined, fullDefaultSurface);
     } catch (error) {
       caught = error;
     }
@@ -354,7 +354,7 @@ describe("read-only native-tool gate (CONTRACT VERIFICATION — FORBIDDEN-NATIVE
 
     let caught: unknown = null;
     try {
-      assertIpythonAbsentForReadOnly(readOnlySelection, uninspectableSurface);
+      assertIpythonAdmittedForReadOnly(readOnlySelection, uninspectableSurface);
     } catch (error) {
       caught = error;
     }
@@ -376,11 +376,11 @@ describe("read-only native-tool gate (CONTRACT VERIFICATION — FORBIDDEN-NATIVE
       fivePoint({
         what: "uninspectable-surface rejection reported the wrong clause",
         why: "FORBIDDEN-NATIVE-2 violation — the raised error does not attribute the failure to the clause being enforced",
-        expected: 'the raised error carries clauseId "FORBIDDEN-NATIVE-2"',
+        expected: 'the raised error carries clauseId "POST-NATIVE-3"',
         actual: `clauseId = ${JSON.stringify((caught as RlmNativeToolContractError).clauseId)}`,
         guidance:
           "Every enforcement failure must name the obligation it enforces so the violation is traceable without reading the check.",
       }),
-    ).toBe("FORBIDDEN-NATIVE-2");
+    ).toBe("POST-NATIVE-3");
   });
 });

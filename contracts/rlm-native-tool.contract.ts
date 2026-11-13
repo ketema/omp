@@ -114,27 +114,26 @@ export function isReadOnlyToolSelection(toolNames: readonly string[] | undefined
 }
 
 /**
- * FORBIDDEN-NATIVE-2: a read-only session SHALL NOT surface `ipython`.
+ * POST-NATIVE-3: ipython SHALL NOT be restricted from any subagent or session.
  *
- * The tool executes arbitrary Python (`open(...,"w")`, `%%bash`, subprocess),
- * so mounting it into a session that was explicitly denied working-tree writes
- * would make that denial decorative. Upstream fixed the structurally identical
- * defect in 603312bcc0, where a startup pin promoted a device-only write to
- * full filesystem access.
+ * Directive (Ketema 2026-11-13): "ipython is a critical tool for context management.
+ * even for sub agents. ipython SHALL NOT BE RESTRICTED IN ANY WAY FROM ANY SUB AGENT."
+ * Former FORBIDDEN-NATIVE-2 is retired: read-without-write sessions (e.g. ccabdd-auditor)
+ * unconditionally admit ipython for in-kernel computation and data reduction.
  */
-export function assertIpythonAbsentForReadOnly(toolNames: readonly string[] | undefined, surface: unknown): void {
+export function assertIpythonAdmittedForReadOnly(toolNames: readonly string[] | undefined, surface: unknown): void {
 	if (!isReadOnlyToolSelection(toolNames)) return;
 	if (typeof surface !== "object" || surface === null || !("activeToolNames" in surface)) {
-		throw new RlmNativeToolContractError("FORBIDDEN-NATIVE-2", "active tool surface is not inspectable");
+		throw new RlmNativeToolContractError("POST-NATIVE-3", "active tool surface is not inspectable");
 	}
 	const names = surface.activeToolNames;
 	if (!Array.isArray(names)) {
-		throw new RlmNativeToolContractError("FORBIDDEN-NATIVE-2", "activeToolNames must be an array");
+		throw new RlmNativeToolContractError("POST-NATIVE-3", "activeToolNames must be an array");
 	}
-	if (names.includes(NATIVE_TOOL_NAME)) {
+	if (!names.includes(NATIVE_TOOL_NAME)) {
 		throw new RlmNativeToolContractError(
-			"FORBIDDEN-NATIVE-2",
-			`read-only session (toolNames=${JSON.stringify(toolNames)}) surfaced ${NATIVE_TOOL_NAME}`,
+			"POST-NATIVE-3",
+			`subagent or session (toolNames=${JSON.stringify(toolNames)}) omitted ${NATIVE_TOOL_NAME}`,
 		);
 	}
 }
@@ -146,7 +145,7 @@ export function assertIpythonAbsentForReadOnly(toolNames: readonly string[] | un
 export const RLM_NATIVE_TOOL_CONTRACT = {
 	"PRE-NATIVE-1": {
 		verification: "test",
-		text: "Session tool assembly is unrestricted (restrictToolNames is false) AND the session is not a read-only tool selection. isReadOnlyToolSelection(toolNames) is true only when the explicit toolNames list GRANTS 'read' AND OMITS 'write' (upstream tools/index.ts:874-879). An absent list is the full default set and is NOT read-only; a write-capable list such as ['bash','edit'] is NOT read-only and retains ipython.",
+		text: "Session tool assembly is unrestricted (restrictToolNames is false). An explicit list omitting 'write' (such as ccabdd-auditor) admits ipython unconditionally (POST-NATIVE-3).",
 	},
 	"POST-NATIVE-1": {
 		verification: "test",
@@ -164,9 +163,9 @@ export const RLM_NATIVE_TOOL_CONTRACT = {
 		verification: "test",
 		text: "A session satisfying PRE-NATIVE-1 SHALL NOT unmount ipython from the top-level active tool array or demote ipython to discoverable-only status.",
 	},
-	"FORBIDDEN-NATIVE-2": {
+	"POST-NATIVE-3": {
 		verification: "test",
-		text: "A read-only session (isReadOnlyToolSelection(toolNames) is true) SHALL NOT surface ipython in getActiveToolNames() and SHALL NOT mount it under xd:// (getMountedXdevToolNames()). ipython executes arbitrary Python, so surfacing it would grant working-tree writes the session was explicitly denied; upstream 603312bcc0 fixed the structurally identical startup-pin promotion defect.",
+		text: "ipython SHALL NOT be restricted in any way from any subagent or session. Even when a subagent's explicit tool selection grants 'read' and omits 'write' (canonical ccabdd-auditor: [read, grep, glob, bash, ipython, task, hub, yield]), createRlmExtension() is admitted and ipython surfaces in getActiveToolNames(). Former FORBIDDEN-NATIVE-2 is retired by user directive 2026-11-13.",
 	},
 	"ERRORS-NATIVE-1": {
 		verification: "test",
