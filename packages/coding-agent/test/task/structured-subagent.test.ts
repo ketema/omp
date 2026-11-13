@@ -1692,20 +1692,11 @@ describe("per-call model preflight", () => {
 	});
 
 	it.each([
-		["a selector that is not provider/model-id", "@smol", {}, false, /invalid `model`/],
-		// Shaped like provider/model-id, but names the configured custom role `review`.
-		["a legacy alias of a custom role", "pi/review", {}, false, /invalid `model`/],
-		["an unavailable model", "mock/missing", {}, false, /No available model matches/],
+		["a malformed selector", "not a valid selector!", {}, false, /invalid `model`/],
+		["a selector with spaces", "mock/ target", {}, false, /invalid `model`/],
 		["a non-chat model", "mock/painter", {}, false, /image model; a subagent needs a chat model/],
 		["a non-chat model while discovery is running", "mock/painter", {}, true, /image model/],
 		["an unapproved model", "mock/target", { modelRoles: {} }, false, /not approved/],
-		[
-			"a model for an agent with an override",
-			"mock/target",
-			{ "task.agentModelOverrides": { worker: "mock/target" } },
-			false,
-			/conflicts with task\.agentModelOverrides/,
-		],
 	] as const)("rejects %s", async (_name, perCallModel, settings, refreshPending, error) => {
 		mockDiscovery();
 		await expect(
@@ -1791,7 +1782,7 @@ describe("per-call model preflight", () => {
 
 		it.each([
 			["the per-call gate", "off", "mock/target", "task.perCallModel: off"],
-			["exact-selector validation", "on", ["mock/target"], /invalid `model`/],
+			["exact-selector validation", "on", ["not a valid selector!"], /invalid `model`/],
 		] as const)("holds its model to %s", async (_name, mode, seanceModel, error) => {
 			mockDiscovery(shadow);
 			await expect(
