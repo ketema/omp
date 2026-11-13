@@ -30,22 +30,22 @@ PER_CALL_MODEL_CONTRACT: Final[dict[str, Clause]] = {
         "task.perCallModel is enabled for the active invocationKind ('on' or 'task' for task items/subagents, 'on' or 'eval' for eval bridge).",
         ("REQ-PCM-0001",),
     ),
-    "POST-PCM-ALIAS": Clause(
+    "POST-PCM-1": Clause(
         "test",
-        "A role alias (e.g. '@smol', '@default', 'pi/<role>', or configured agent roles in agent/config.yml) resolves deterministically to the concrete model configured for that role, maintaining operator trust boundaries.",
+        "A role alias (e.g. '@smol', '@default', 'pi/<role>', or configured agent roles in agent/config.yml) resolves deterministically to the concrete model configured for that role, maintaining operator trust boundaries. Specifically, '@default' resolves to the parent session active model pattern if active, or to the configured default role.",
         ("REQ-PCM-0002",),
     ),
-    "POST-PCM-EXPLICIT": Clause(
+    "POST-PCM-2": Clause(
         "test",
         "An explicit model string (e.g. 'provider/model-id', 'provider/model-id:level') passed to subagent task items, eval agent(), or workpool() is validated and admitted without whitelist rejection.",
         ("REQ-PCM-0003",),
     ),
-    "POST-PCM-ARRAY": Clause(
+    "POST-PCM-3": Clause(
         "test",
         "A candidate array of model selectors (e.g. ['@smol', 'provider/model-id']) resolves to the first available approved model in the sequence, preserving fallback cascade order.",
         ("REQ-PCM-0004",),
     ),
-    "INV-PCM-OPERATOR-BOUNDARY": Clause(
+    "INV-PCM-1": Clause(
         "test",
         "Operator allowlists (task.perCallModelAllow) and trust boundaries remain binding: project settings can narrow but never broaden per-call model approvals.",
         ("REQ-PCM-0005",),

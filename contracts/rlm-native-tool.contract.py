@@ -35,8 +35,8 @@ class RlmNativeToolContractError(Exception):
 
     def __init__(self, message: str, *, clause: str = "") -> None:
         self.clause = clause
+        self.clause_id = clause
         super().__init__(f"{clause} violation: {message}" if clause else message)
-
 
 # =============================================================================
 # 3. Dataclasses / value carriers
