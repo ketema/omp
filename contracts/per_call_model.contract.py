@@ -45,6 +45,11 @@ PER_CALL_MODEL_CONTRACT: Final[dict[str, Clause]] = {
         "A candidate array of model selectors (e.g. ['@smol', 'provider/model-id']) resolves to the first available approved model in the sequence, preserving fallback cascade order.",
         ("REQ-PCM-0004",),
     ),
+    "SEQ-PCM-1": Clause(
+        "test",
+        "When a subagent task dispatch carries a perCallModel selector, runStructuredSubagent resolves and passes the approved model override into the spawned child session executor options.",
+        ("REQ-PCM-0003",),
+    ),
     "INV-PCM-1": Clause(
         "test",
         "Operator allowlists (task.perCallModelAllow) and trust boundaries remain binding: project settings can narrow but never broaden per-call model approvals.",

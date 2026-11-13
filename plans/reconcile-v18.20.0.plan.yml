@@ -53,6 +53,7 @@ slices:
       - POST-PCM-1
       - POST-PCM-2
       - POST-PCM-3
+      - SEQ-PCM-1
       - INV-PCM-1
       - ERRORS-PCM-1
     negative_constraints:

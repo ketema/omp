@@ -1687,6 +1687,20 @@ describe("per-call model preflight", () => {
 		expect(policy.perCallModelGrants).toBeDefined();
 	});
 
+	it("SEQ-PCM-1: passes resolved perCallModel override into child executor options", async () => {
+		mockDiscovery({ ...AGENT, model: ["mock/agent-own"] });
+		const req = request({
+			session: perCallSession({
+				"task.perCallModel": "on",
+				modelRoles: { smol: "mock/target" },
+			}),
+			perCallModel: "@smol",
+		});
+		const policy = await resolveEffectiveSubagentPolicy(req);
+		expect(policy.modelOverride).toEqual(["mock/target"]);
+		expect(policy.perCallModelGrants).toBeDefined();
+	});
+
 	it.each(["SDK overlay", "nested subagent"])("reloads removed on-disk role grants through an %s", async kind => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-task-grant-reload-"));
 		const projectDir = path.join(root, "project");

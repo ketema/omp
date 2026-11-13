@@ -38,6 +38,11 @@ export const PER_CALL_MODEL_CONTRACT = {
 		manifestRefs: ["REQ-PCM-0004"],
 		text: "A candidate array of model selectors (e.g. ['@smol', 'provider/model-id']) resolves to the first available approved model in the sequence, preserving fallback cascade order.",
 	},
+	"SEQ-PCM-1": {
+		verification: "test",
+		manifestRefs: ["REQ-PCM-0003"],
+		text: "When a subagent task dispatch carries a perCallModel selector, runStructuredSubagent resolves and passes the approved model override into the spawned child session executor options.",
+	},
 	"INV-PCM-1": {
 		verification: "test",
 		manifestRefs: ["REQ-PCM-0005"],
