@@ -17,7 +17,7 @@
  * - INV clauses:       1  (INV-NATIVE-1)
  * - FORBIDDEN clauses: 2  (FORBIDDEN-NATIVE-1, FORBIDDEN-NATIVE-2)
  * - ERRORS:            1  (RlmNativeToolContractError, carries `clauseId`)
- * - Validators:        isReadOnlyToolSelection, assertIpythonAbsentForReadOnly,
+ * - Validators:        isReadOnlyToolSelection, assertIpythonAdmittedForReadOnly,
  *                      assertActiveIpython, assertEssentialLoadMode
  *
  * CLAUSE REGISTRY (clauses exercised by THIS file):
@@ -107,7 +107,7 @@ import { cfgToolsXdev } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import {
   assertActiveIpython,
   assertEssentialLoadMode,
-  assertIpythonAbsentForReadOnly,
+  assertIpythonAdmittedForReadOnly,
   isReadOnlyToolSelection,
   NATIVE_TOOL_LOAD_MODE,
   NATIVE_TOOL_NAME,
@@ -186,7 +186,7 @@ describe("RLM native tool session scope (RED — FORBIDDEN-NATIVE-2 / POST-NATIV
     workspaceTree: { rootPath: cwd, rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
   });
 
-  test("FORBIDDEN-NATIVE-2: a read-only session neither mounts nor surfaces the native Python tool when device mounting is on", async () => {
+  test("POST-NATIVE-3: a read-without-write session (including ccabdd-auditor) admits native Python tool in top-level active array when device mounting is on", async () => {
     /**
      * CONTRACT TRACEABILITY:
      * - Contract: contracts/rlm-native-tool.contract.ts
@@ -218,7 +218,7 @@ describe("RLM native tool session scope (RED — FORBIDDEN-NATIVE-2 / POST-NATIV
      */
     // ARRANGE: explicit tool list granting read but omitting write — the
     // canonical read-only selection named by the clause.
-    const readOnlyToolNames = ["read", "grep", "glob", "web_search"];
+    const readOnlyToolNames = ["read", "grep", "glob", "bash", "ipython", "task", "hub", "yield"];
     const tempDir = makeTempDir();
     const settings = Settings.isolated();
 
@@ -270,23 +270,23 @@ describe("RLM native tool session scope (RED — FORBIDDEN-NATIVE-2 / POST-NATIV
         }),
       ).toEqual([]);
 
-      // ASSERT (surface 2 of 2): the top-level callable surface likewise.
+      // ASSERT (surface 2 of 2): top-level callable surface MUST admit native Python tool (POST-NATIVE-3).
       expect(
-        activeToolNames.filter(name => name === NATIVE_TOOL_NAME),
+        activeToolNames.includes(NATIVE_TOOL_NAME),
         fivePoint({
-          what: "read-only session surfaces the arbitrary-Python tool top-level",
-          why: "FORBIDDEN-NATIVE-2 violation — the tool appears in the top-level active array of a read-only session",
-          expected: `no ${NATIVE_TOOL_NAME} entry in getActiveToolNames() (exactly [])`,
+          what: "read-without-write session omitted native Python tool top-level",
+          why: "POST-NATIVE-3 violation — ipython must not be restricted from any subagent or session",
+          expected: `NATIVE_TOOL_NAME (${NATIVE_TOOL_NAME}) is present in getActiveToolNames()`,
           actual: `active tools = ${JSON.stringify(activeToolNames)}`,
           guidance:
-            "Denying write must deny every tool that can write; the top-level callable surface of such a session must not include a tool that executes arbitrary code.",
+            "ipython is an essential context-management runtime. Even when write is omitted, createRlmExtension() must be admitted.",
         }),
-      ).toEqual([]);
+      ).toBe(true);
 
       // ASSERT (contract bridge): the contract's own executable validator,
       // fed the implementation's observable, must accept it.
       try {
-        assertIpythonAbsentForReadOnly(readOnlyToolNames, { activeToolNames });
+        assertIpythonAdmittedForReadOnly(readOnlyToolNames, { activeToolNames });
       } catch (cause) {
         throw new Error(
           fivePoint({
@@ -335,7 +335,7 @@ describe("RLM native tool session scope (RED — FORBIDDEN-NATIVE-2 / POST-NATIV
   });
 
 
-  test("FORBIDDEN-NATIVE-2: a read-only session does not surface the native Python tool when every enabled tool is presented top-level", async () => {
+  test("POST-NATIVE-3: a read-without-write session admits native Python tool top-level when device mounting is disabled", async () => {
     /**
      * CONTRACT TRACEABILITY:
      * - Contract: contracts/rlm-native-tool.contract.ts
@@ -364,7 +364,7 @@ describe("RLM native tool session scope (RED — FORBIDDEN-NATIVE-2 / POST-NATIV
     // ARRANGE: same read-only selection, but device mounting disabled — this
     // configuration presents every enabled tool top-level, so the top-level
     // array is where the forbidden outcome lands.
-    const readOnlyToolNames = ["read", "grep", "glob", "web_search"];
+    const readOnlyToolNames = ["read", "grep", "glob", "bash", "ipython", "task", "hub", "yield"];
     const tempDir = makeTempDir();
     const settings = Settings.isolated();
     cfgToolsXdev.set(settings, false);
@@ -391,36 +391,22 @@ describe("RLM native tool session scope (RED — FORBIDDEN-NATIVE-2 / POST-NATIV
     try {
       const activeToolNames = session.getActiveToolNames();
 
-      // ASSERT (clause projection): no native tool entry, exactly.
+      // ASSERT (targeted projection): top-level surface MUST admit native Python tool (POST-NATIVE-3).
       expect(
-        activeToolNames.filter(name => name === NATIVE_TOOL_NAME),
+        activeToolNames.includes(NATIVE_TOOL_NAME),
         fivePoint({
-          what: "read-only session surfaces the arbitrary-Python tool top-level with device mounting off",
-          why: "FORBIDDEN-NATIVE-2 violation — the tool appears in the top-level active array of a session whose explicit tool list omits write",
-          expected: `no ${NATIVE_TOOL_NAME} entry in getActiveToolNames() (exactly [])`,
+          what: "read-without-write session omitted native Python tool top-level when device mounting is off",
+          why: "POST-NATIVE-3 violation — ipython must not be restricted from any subagent or session",
+          expected: `NATIVE_TOOL_NAME (${NATIVE_TOOL_NAME}) is present in getActiveToolNames()`,
           actual: `active tools = ${JSON.stringify(activeToolNames)}`,
           guidance:
-            "Removing the device indirection must not reveal an arbitrary-code-execution tool to a session that was explicitly denied working-tree writes; the denial has to hold in every presentation configuration.",
+            "ipython is an essential context-management runtime. Even when write is omitted, createRlmExtension() must be admitted.",
         }),
-      ).toEqual([]);
-
-      // ASSERT (exact surface): with no device indirection and no write grant,
-      // the top-level surface is exactly the caller's selection.
-      expect(
-        [...activeToolNames].sort(),
-        fivePoint({
-          what: "read-only top-level surface is not the caller's selection",
-          why: "FORBIDDEN-NATIVE-2 violation — an unselected tool was added to the top-level array of a read-only session",
-          expected: `exactly the requested read-only selection ${JSON.stringify([...readOnlyToolNames].sort())}`,
-          actual: `active tools = ${JSON.stringify([...activeToolNames].sort())}`,
-          guidance:
-            "When no tool is mounted as a device, a read-only session's top-level surface must be exactly the tools the caller asked for — no arbitrary-code-execution tool added on its behalf.",
-        }),
-      ).toEqual([...readOnlyToolNames].sort());
+      ).toBe(true);
 
       // ASSERT (contract bridge)
       try {
-        assertIpythonAbsentForReadOnly(readOnlyToolNames, { activeToolNames });
+        assertIpythonAdmittedForReadOnly(readOnlyToolNames, { activeToolNames });
       } catch (cause) {
         throw new Error(
           fivePoint({

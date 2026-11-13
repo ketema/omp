@@ -87,7 +87,7 @@ export function assertMountedIpython(surface: unknown): asserts surface is Mount
 export const RLM_HOST_MOUNT_CONTRACT = {
 	"PRE-MOUNT-1": {
 		verification: "test",
-		text: "Session tool assembly is unrestricted (restrictToolNames is false) AND the session is not a read-only tool selection, as defined by isReadOnlyToolSelection() in rlm-native-tool.contract.ts (explicit toolNames GRANTING 'read' AND OMITTING 'write'). POST-MOUNT-1, SEQ-MOUNT-1, INV-MOUNT-1 and FORBIDDEN-MOUNT-1 below are all conditioned on this precondition and make NO claim about read-only sessions, for which rlm-native-tool.contract.ts FORBIDDEN-NATIVE-2 is the governing authority and REQUIRES ipython to be absent (CL11-C: one authority per domain; these two files MUST NOT disagree about REQ-RLM-0002).",
+		text: "Session tool assembly is unrestricted (restrictToolNames is false). Even when a session or subagent omits 'write', ipython is unconditionally admitted per rlm-native-tool.contract.ts POST-NATIVE-3.",
 	},
 	"POST-MOUNT-1": {
 		verification: "test",
