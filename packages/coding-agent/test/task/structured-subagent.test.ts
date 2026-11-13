@@ -1631,6 +1631,36 @@ describe("per-call model preflight", () => {
 		expect(policy.parentActiveModelPattern).toBeUndefined();
 	});
 
+	it("POST-PCM-ALIAS: resolves configured role aliases (such as @smol or @review) under task.perCallModel", async () => {
+		mockDiscovery({ ...AGENT, model: ["mock/agent-own"] });
+		const policy = await resolveEffectiveSubagentPolicy(
+			request({
+				session: perCallSession({
+					"task.perCallModel": "on",
+					modelRoles: { smol: "mock/target", review: "mock/target" },
+				}),
+				perCallModel: "@smol",
+			}),
+		);
+		expect(policy.modelOverride).toEqual(["mock/target"]);
+		expect(policy.perCallModelGrants).toBeDefined();
+	});
+
+	it("POST-PCM-ARRAY: resolves candidate arrays with fallback under task.perCallModel", async () => {
+		mockDiscovery({ ...AGENT, model: ["mock/agent-own"] });
+		const policy = await resolveEffectiveSubagentPolicy(
+			request({
+				session: perCallSession({
+					"task.perCallModel": "on",
+					modelRoles: { smol: "mock/target" },
+				}),
+				perCallModel: ["mock/missing", "@smol"],
+			}),
+		);
+		expect(policy.modelOverride).toEqual(["mock/target"]);
+		expect(policy.perCallModelGrants).toBeDefined();
+	});
+
 	it.each(["SDK overlay", "nested subagent"])("reloads removed on-disk role grants through an %s", async kind => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-task-grant-reload-"));
 		const projectDir = path.join(root, "project");
