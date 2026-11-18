@@ -83,6 +83,7 @@ import {
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { toolResult } from "./tool-result";
 import { maybeWriteSnapshotHeader, stripWriteContent } from "./write-content";
+import { docTopicsReadable } from "./xdev";
 
 import {
 	cfgLspDiagnosticsDeduplicate,
@@ -629,7 +630,10 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 	readonly label = "Write";
 	get description(): string {
 		const deviceOnly = this.session.deviceOnlyWrite === true && this.session.pendingFullWriteDescription !== true;
-		return prompt.render(deviceOnly ? writeDeviceOnlyDescription : writeDescription);
+		// The archive/SQLite target grammar lives in `xd://read/sources`; inline it when that doc is unreachable.
+		return prompt.render(deviceOnly ? writeDeviceOnlyDescription : writeDescription, {
+			readActive: docTopicsReadable(this.session),
+		});
 	}
 	readonly parameters = writeSchema;
 	readonly strict = true;
@@ -1131,6 +1135,14 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			if (kind) {
 				throw new ToolError(`Cannot write '${path}': it is a ${kind}, not a regular file or directory.`);
 			}
+			// Overwriting a live SQLite database or `-shm` destroys it (issue #15586).
+			if (existing) {
+				try {
+					assertNotHeldOpen(absolutePath);
+				} catch (error) {
+					throw new ToolError(`Cannot write '${path}': ${(error as Error).message}`);
+				}
+			}
 			// REQ-L15586-05 / REQ-L15586-31 / SEQ-2 (POST-RAWIO-3b, POST-RAWIO-3c, FORBIDDEN-RAWIO-3):
 			// Classify every host file target out of process via the Raw-I/O Helper
 			// before any in-process open, and write SQLite-Family targets through
@@ -1165,14 +1177,6 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					content: [{ type: "text", text: resultText }],
 					details: { resolvedPath: absolutePath },
 				};
-			}
-			// Overwriting a live SQLite database or `-shm` destroys it (issue #15586).
-			if (existing) {
-				try {
-					assertNotHeldOpen(absolutePath);
-				} catch (error) {
-					throw new ToolError(`Cannot write '${path}': ${(error as Error).message}`);
-				}
 			}
 			// Check if file exists and is auto-generated before overwriting.
 			if (existing) {
@@ -1231,14 +1235,24 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			}
 
 			const { writethrough, deferred } = this.#lspWritethrough();
-			const diagnostics = await writethrough(absolutePath, writeContent, signal, undefined, batchRequest, dst =>
-				deferred?.begin(dst),
+			// Linters read a shebang's execute bits (Ruff's EXE001), so they are set once the final
+			// bytes land, before the writethrough collects diagnostics for them.
+			let madeExecutable = false;
+			const diagnostics = await writethrough(
+				absolutePath,
+				writeContent,
+				signal,
+				undefined,
+				batchRequest,
+				dst => deferred?.begin(dst),
+				async committed => {
+					madeExecutable = await maybeMarkExecutableForShebang(absolutePath, committed);
+				},
 			);
 			if (!deferred || batchRequest?.flush === false) {
 				this.session.bumpFileMutationVersion?.(absolutePath);
 			}
 			const finalContent = diagnostics.finalContent;
-			const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, finalContent);
 
 			const header = maybeWriteSnapshotHeader(this.session, absolutePath, finalContent, displayPath);
 			const finalBytes = finalContent === writeContent ? writeBytes : Buffer.byteLength(finalContent, "utf8");
