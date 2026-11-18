@@ -699,9 +699,9 @@ jobs:
          - name: Install pinned uv (job-local, checksum-verified)
            shell: bash
            env:
-              UV_VERSION: "0.13.5"
+              UV_VERSION: "0.13.9"
               UV_ARCHIVE: uv-x86_64-unknown-linux-gnu
-              UV_SHA256: f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f
+              UV_SHA256: a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5
            run: |
               set -euo pipefail
               dest="$RUNNER_TEMP/uv-bin"
@@ -717,6 +717,7 @@ jobs:
                 exit 1
               fi
               echo "uv $got installed job-locally at $dest"
+              "$dest/uv" python install 3.14.10
          - name: RLM selection tests (real ci-test-ts.ts dispatch)
            run: bun test scripts/ci-test-ts.test.ts
          - name: Test RLM package (TS) - real SessionManager, default path, atomicity

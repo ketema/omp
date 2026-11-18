@@ -1135,6 +1135,14 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			if (kind) {
 				throw new ToolError(`Cannot write '${path}': it is a ${kind}, not a regular file or directory.`);
 			}
+			// Overwriting a live SQLite database or `-shm` destroys it (issue #15586).
+			if (existing) {
+				try {
+					assertNotHeldOpen(absolutePath);
+				} catch (error) {
+					throw new ToolError(`Cannot write '${path}': ${(error as Error).message}`);
+				}
+			}
 			// REQ-L15586-05 / REQ-L15586-31 / SEQ-2 (POST-RAWIO-3b, POST-RAWIO-3c, FORBIDDEN-RAWIO-3):
 			// Classify every host file target out of process via the Raw-I/O Helper
 			// before any in-process open, and write SQLite-Family targets through
@@ -1169,14 +1177,6 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					content: [{ type: "text", text: resultText }],
 					details: { resolvedPath: absolutePath },
 				};
-			}
-			// Overwriting a live SQLite database or `-shm` destroys it (issue #15586).
-			if (existing) {
-				try {
-					assertNotHeldOpen(absolutePath);
-				} catch (error) {
-					throw new ToolError(`Cannot write '${path}': ${(error as Error).message}`);
-				}
 			}
 			// Check if file exists and is auto-generated before overwriting.
 			if (existing) {

@@ -115,8 +115,8 @@ describe("workpool model validation", () => {
 
 	for (const { mode, model, reason } of [
 		// The gate wins over the selector check, so an invalid selector still reports the disabled gate.
-		{ mode: "off", model: "@smol", reason: /task\.perCallModel: off/ },
-		{ mode: "on", model: "@smol", reason: /invalid `model` value/ },
+		{ mode: "off", model: "not valid selector!", reason: /task\.perCallModel: off/ },
+		{ mode: "on", model: "not valid selector!", reason: /invalid `model` value/ },
 	]) {
 		it(`rejects ${JSON.stringify(model)} under ${mode} before registering a pool`, async () => {
 			vi.spyOn(discovery, "discoverAgents").mockResolvedValue({ agents: [SCOUT], projectAgentsDir: null });
