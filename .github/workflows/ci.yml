@@ -331,15 +331,8 @@ jobs:
            shell: bash
            run: |
               set -euo pipefail
-              # The fallback must match the tree under test: `latest` can carry a different ABI than this
-              # source (POST-CI-NATIVE-ABI-1). A version with no published tarball fails the step.
-              version="$(node -p "require('./packages/natives/package.json').version")"
-              tarball="$(npm view "@oh-my-pi/pi-natives-linux-x64@${version}" dist.tarball)"
-              if [ -z "$tarball" ]; then
-                echo "::error::no published @oh-my-pi/pi-natives-linux-x64@${version} matches this tree's natives version"
-                exit 1
-              fi
-              echo "Fetching natives ${version}: $tarball"
+              tarball="$(npm view @oh-my-pi/pi-natives-linux-x64@latest dist.tarball)"
+              echo "Fetching $tarball"
               curl -fsSL --retry 3 "$tarball" | tar -xz -C "$RUNNER_TEMP"
               mkdir -p ci-natives/natives-linux-x64-baseline ci-natives/natives-linux-x64-modern
               cp "$RUNNER_TEMP/package/pi_natives.linux-x64-baseline.node" ci-natives/natives-linux-x64-baseline/
@@ -358,19 +351,15 @@ jobs:
               elif [ -n "$MATCHED" ]; then
                 echo "::notice title=Native addons not source-matched::No main build matches this PR's native sources; testing against main's newest addon build ($MATCHED). Native changes are validated post-merge on main and at release."
               else
-                echo "::notice title=Native addons from npm::No main-built addon cache entry is available; testing against the npm release addons matching this tree's natives version."
+                echo "::notice title=Native addons from npm::No main-built addon cache entry is available; testing against the latest npm release addons."
               fi
 
-         # ---- source build: main, and PRs with no exact cache entry ----
-         # The fork changes crates/ (raw-IO helper routing), so neither main's
-         # newest addon nor the upstream npm release contains the code the
-         # raw-IO tests exercise. A PR whose native inputs have no exact cache
-         # entry builds the pair here, over whatever the steps above placed.
+         # ---- main path: bazel build of the linux-x64 pair ----
          - id: cache
-           if: github.event_name != 'pull_request' || steps.natives-cache.outputs.cache-hit != 'true'
+           if: github.event_name != 'pull_request'
            uses: ./.github/actions/bazel-cache
          - name: Build linux-x64 native addons
-           if: github.event_name != 'pull_request' || steps.natives-cache.outputs.cache-hit != 'true'
+           if: github.event_name != 'pull_request'
            run: |
               set -eo pipefail
               if [ "$(ulimit -Sn)" != unlimited ] && [ "$(ulimit -Sn)" -lt 65536 ]; then ulimit -Sn 65536 || true; fi
@@ -393,7 +382,7 @@ jobs:
          # thousands of actions is the failure mode that made CI slow — make
          # it visible in the run summary instead of discovering it weeks in.
          - name: Report bazel cache stats
-           if: github.event_name != 'pull_request' || steps.natives-cache.outputs.cache-hit != 'true'
+           if: github.event_name != 'pull_request'
            shell: bash
            run: |
               # Bazel runs with --color=yes (config=ci); strip ANSI before
@@ -426,16 +415,6 @@ jobs:
               "$loader" "$RUNNER_TEMP/smoke-addons.js" \
                 "$PWD/ci-natives/natives-linux-x64-baseline/pi_natives.linux-x64-baseline.node" \
                 "$PWD/ci-natives/natives-linux-x64-modern/pi_natives.linux-x64-modern.node"
-         # A PR that built from source saves its pair under the same key, so
-         # later pushes that leave the native inputs alone skip the build. The
-         # entry is readable by this PR's ref only.
-         - name: Save PR-built native addon cache entry
-           if: github.event_name == 'pull_request' && steps.natives-cache.outputs.cache-hit != 'true'
-           continue-on-error: true
-           uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-           with:
-              path: ci-natives
-              key: ${{ steps.natives-key.outputs.key }}
          # Only main saves: an entry saved on any other ref is readable by
          # that ref alone yet counts against the shared 10 GB repo quota,
          # whose LRU eviction has already cost the darwin release archives.
@@ -594,9 +573,6 @@ jobs:
          - uses: ./.github/actions/native-artifacts
            with:
               targets: linux-x64-baseline linux-x64-modern
-         # context-efficiency and extension tests need `uv` and a kernel
-         # interpreter with dill.
-         - uses: ./.github/actions/kernel-env
          - name: Test coding-agent native/unit bucket
            env:
               OMP_TEST_CONCURRENCY: "4"
@@ -692,38 +668,6 @@ jobs:
               OMP_TEST_CONCURRENCY: "4"
            run: bun run ci:test:coding-agent:runtime
 
-   # packages/rlm is in no ci-test-ts.ts shared bucket: its specs mutate process-global state, import the
-   # real SessionManager (native addon), and spawn real Python kernels bootstrapped with `uv`. It gets its
-   # own visibly named check so a green run is genuine evidence about it. The runner (ci-test-ts.ts) scrubs
-   # credentials from the test processes; the job adds no secrets and no token scope beyond `contents: read`.
-   test_rlm:
-      name: Test RLM (TS + Python)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
-      needs: [native_addons]
-      if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
-      timeout-minutes: 30
-      steps:
-         - uses: actions/checkout@v4
-         - uses: ./.github/actions/bun-install
-         - uses: ./.github/actions/native-artifacts
-           with:
-              targets: linux-x64-baseline linux-x64-modern
-              stash: ${{ needs.native_addons.outputs.stash }}
-         # The suite's default-path tests bootstrap the kernel venv with `uv`, the workbench tests need the
-         # kernel venv and loader a workstation has, and the Python suite runs through uv.
-         - uses: ./.github/actions/kernel-env
-         - name: RLM selection tests (real ci-test-ts.ts dispatch)
-           run: bun test scripts/ci-test-ts.test.ts
-         - name: Test RLM package (TS) - real SessionManager, default path, atomicity
-           if: ${{ !cancelled() }}
-           run: bun run ci:test:rlm
-         - name: Test RLM Python recovery/quarantine (locked uv env)
-           if: ${{ !cancelled() }}
-           env:
-              UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/rlm-python-env
-              UV_CACHE_DIR: ${{ runner.temp }}/rlm-uv-cache
-           run: bun run ci:test:rlm:python
-
    test_smoke:
       name: Test CLI smoke (TS)
       runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
@@ -770,10 +714,9 @@ jobs:
          needs.test_coding_agent_ui.result == 'success' &&
          needs.test_coding_agent_runtime.result == 'success' &&
          needs.test_coding_agent_native.result == 'success' &&
-         needs.test_rlm.result == 'success' &&
          needs.test_smoke.result == 'success' && needs.check.result == 'success' &&
          needs.install_methods.result == 'success' }}
-      needs: [release_metadata, check, rust_validate, native_addons, native_addons_cross, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_rlm, test_smoke, install_methods]
+      needs: [release_metadata, check, rust_validate, native_addons, native_addons_cross, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods]
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@v4

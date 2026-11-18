@@ -1,0 +1,183 @@
+name: Fork CI
+
+# The fork's own checks (ketema/omp#80). Upstream's ci.yml is kept byte-identical
+# to upstream and is disabled in this repository's Actions settings: its release
+# jobs never run here and its main jobs need runners the fork does not have.
+# This workflow answers two questions only: do the fork's customizations
+# (requirements/FORK_CUSTOMIZATIONS.md) still work, and does the fork's native
+# code behave on Linux, which a macOS workstation cannot exercise.
+# At reconcile time upstream's suite is run by hand (`bun run test`) and its
+# failing set compared with upstream's own.
+
+on:
+   pull_request:
+   push:
+      branches: [main]
+   workflow_dispatch:
+
+concurrency:
+   group: fork-ci-${{ github.ref }}
+   cancel-in-progress: true
+
+permissions:
+   contents: read
+
+env:
+   NATIVES_X64_TARGETS: natives-linux-x64-baseline natives-linux-x64-modern
+   OMP_TEST_TIMEOUT: "120"
+
+jobs:
+   check:
+      name: Fork lint and type check
+      runs-on: ubuntu-22.04
+      timeout-minutes: 20
+      steps:
+         - uses: actions/checkout@v4
+         - uses: ./.github/actions/bun-install
+         - name: Lint, format and type check
+           run: bun run ci:check:full
+
+   natives:
+      name: Fork native addons (linux-x64, from source)
+      runs-on: ubuntu-22.04
+      timeout-minutes: 180
+      steps:
+         - uses: actions/checkout@v4
+         - name: Compute native addon cache key
+           id: key
+           shell: bash
+           env:
+              NATIVE_INPUTS_HASH: ${{ hashFiles('Cargo.toml', 'Cargo.lock', 'MODULE.bazel', 'MODULE.bazel.lock', 'rust-toolchain.toml', 'rustfmt.toml', '.bazelrc', '.bazelignore', '.bazelversion', 'bazel/**', 'crates/**', 'BUILD.bazel') }}
+           run: echo "key=fork-natives-linux-x64-v1-$NATIVE_INPUTS_HASH" >> "$GITHUB_OUTPUT"
+         # Exact key only: an addon built from other native sources would not
+         # contain the code under test. An entry saved on main is readable by
+         # every pull request; one saved on a pull request only by that ref.
+         - name: Restore source-matched addons
+           id: cache
+           uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+           with:
+              path: ci-natives
+              key: ${{ steps.key.outputs.key }}
+         - id: bazel
+           if: steps.cache.outputs.cache-hit != 'true'
+           uses: ./.github/actions/bazel-cache
+         - name: Build linux-x64 native addons
+           if: steps.cache.outputs.cache-hit != 'true'
+           run: |
+              set -eo pipefail
+              if [ "$(ulimit -Sn)" != unlimited ] && [ "$(ulimit -Sn)" -lt 65536 ]; then ulimit -Sn 65536 || true; fi
+              # One addon per invocation: linking both at once exhausts the
+              # runner's memory (see upstream ci.yml's native_addons job).
+              for target in $NATIVES_X64_TARGETS; do
+                bazelisk --bazelrc="${{ steps.bazel.outputs.rc }}" build "//:$target"
+              done
+              for target in $NATIVES_X64_TARGETS; do
+                mkdir -p "ci-natives/$target"
+                cp -L bazel-bin/"$target"/*.node "ci-natives/$target/"
+              done
+         - name: Smoke native addons
+           shell: bash
+           run: |
+              set -euo pipefail
+              cat > "$RUNNER_TEMP/smoke-addons.js" <<'EOF'
+              for (const f of process.argv.slice(2)) {
+               const m = require(f);
+               if (!m || Object.keys(m).length === 0) {
+               	console.error(`addon failed to load: ${f}`);
+               	process.exit(1);
+               }
+              }
+              EOF
+              node "$RUNNER_TEMP/smoke-addons.js" \
+                "$PWD/ci-natives/natives-linux-x64-baseline/pi_natives.linux-x64-baseline.node" \
+                "$PWD/ci-natives/natives-linux-x64-modern/pi_natives.linux-x64-modern.node"
+         - name: Save source-matched addons
+           if: steps.cache.outputs.cache-hit != 'true'
+           continue-on-error: true
+           uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+           with:
+              path: ci-natives
+              key: ${{ steps.key.outputs.key }}
+         - name: Upload linux-x64 native addon artifact
+           uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+           with:
+              name: natives-linux-x64
+              path: ci-natives/natives-linux-x64-*/*.node
+              if-no-files-found: error
+              retention-days: 1
+
+   customizations:
+      name: Fork customization tests
+      runs-on: ubuntu-22.04
+      needs: [natives]
+      timeout-minutes: 30
+      steps:
+         - uses: actions/checkout@v4
+         - uses: ./.github/actions/bun-install
+         - uses: ./.github/actions/native-artifacts
+           with:
+              targets: linux-x64-baseline linux-x64-modern
+         - uses: ./.github/actions/kernel-env
+         # One process per file: several of these suites hold process-wide
+         # state (raw-IO helper, SQLite locks). Every file runs; the step
+         # fails at the end if any did.
+         - name: Registry rows and raw-IO lock safety
+           shell: bash
+           run: |
+              set -uo pipefail
+              files=(
+                packages/coding-agent/test/non-interactive-env.test.ts
+                packages/coding-agent/test/extension-session-shell-env.test.ts
+                packages/coding-agent/test/agent-session-message-pipeline.test.ts
+                packages/coding-agent/test/task/model-approval.test.ts
+                packages/coding-agent/test/task/structured-subagent.test.ts
+                packages/coding-agent/test/eval/workpool-bridge.test.ts
+                packages/coding-agent/test/tools/authority-text-in-full.test.ts
+                packages/coding-agent/test/tools/grep-walker-raw-io.test.ts
+                packages/coding-agent/test/tools/raw-io-error-regressions.test.ts
+                packages/coding-agent/test/tools/raw-io-helper.test.ts
+                packages/coding-agent/test/tools/raw-io-lifecycle.test.ts
+                packages/coding-agent/test/tools/raw-io-lines.test.ts
+                packages/coding-agent/test/tools/raw-io-protocol-liveness.test.ts
+                packages/coding-agent/test/tools/raw-io-resolver-regressions.test.ts
+                packages/coding-agent/test/tools/raw-io-timeout-settlement.test.ts
+                packages/coding-agent/test/tools/read-prefix-raw-io.test.ts
+                packages/coding-agent/test/tools/shell-opens-raw-io.test.ts
+                packages/coding-agent/test/tools/sqlite.test.ts
+                packages/coding-agent/test/tools/write-tool-unexited-block.test.ts
+                packages/tui/test/native-modifier-detection.test.ts
+              )
+              failed=()
+              for f in "${files[@]}"; do
+                echo "::group::$f"
+                if ! bun test "$f" --timeout=120000; then failed+=("$f"); fi
+                echo "::endgroup::"
+              done
+              if [ "${#failed[@]}" -gt 0 ]; then
+                printf '::error title=Failing fork test file::%s\n' "${failed[@]}"
+                exit 1
+              fi
+
+   rlm:
+      name: Fork RLM (TS + Python)
+      runs-on: ubuntu-22.04
+      needs: [natives]
+      timeout-minutes: 30
+      steps:
+         - uses: actions/checkout@v4
+         - uses: ./.github/actions/bun-install
+         - uses: ./.github/actions/native-artifacts
+           with:
+              targets: linux-x64-baseline linux-x64-modern
+         - uses: ./.github/actions/kernel-env
+         - name: RLM selection tests (real ci-test-ts.ts dispatch)
+           run: bun test scripts/ci-test-ts.test.ts
+         - name: Test RLM package (TS)
+           if: ${{ !cancelled() }}
+           run: bun run ci:test:rlm
+         - name: Test RLM Python recovery/quarantine (locked uv env)
+           if: ${{ !cancelled() }}
+           env:
+              UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/rlm-python-env
+              UV_CACHE_DIR: ${{ runner.temp }}/rlm-uv-cache
+           run: bun run ci:test:rlm:python
