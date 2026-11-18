@@ -3017,11 +3017,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			inlineExtensions.push(...(options.topLevelExtensions ?? []));
 			inlineExtensions.push(createAutoresearchExtension);
 			// POST-NATIVE-3: ipython is an essential context-management runtime.
-		// Directive (Ketema 2026-11-13): "ipython is a critical tool for context management.
-		// even for sub agents. ipython SHALL NOT BE RESTRICTED IN ANY WAY FROM ANY SUB AGENT."
-		// Former FORBIDDEN-NATIVE-2 is retired: read-without-write sessions (such as ccabdd-auditor)
-		// unconditionally admit createRlmExtension() so ipython is available.
-		inlineExtensions.push(createRlmExtension());
+			// Directive (Ketema 2026-11-13): "ipython is a critical tool for context management.
+			// even for sub agents. ipython SHALL NOT BE RESTRICTED IN ANY WAY FROM ANY SUB AGENT."
+			// Former FORBIDDEN-NATIVE-2 is retired: read-without-write sessions (such as ccabdd-auditor)
+			// unconditionally admit createRlmExtension() so ipython is available.
+			inlineExtensions.push(createRlmExtension());
 			if (customTools.length > 0) {
 				inlineExtensions.push(createCustomToolsExtension(customTools, customToolSourcePaths));
 			}

@@ -151,7 +151,7 @@ export interface StructuredSubagentRequest {
 	 * and `workpool()`): gated by `task.perCallModel`, exact-only, and limited to
 	 * operator-approved models.
 	 */
-	perCallModel?: string;
+	perCallModel?: string | string[];
 	/**
 	 * The model-facing `model` of a task call naming the `seance` agent. Honoured as
 	 * the source-session override only when that name resolves to the bundled seance;
@@ -397,7 +397,11 @@ function isValidSingleSelector(selector: string, settings: Settings): boolean {
 	const trimmed = selector.trim();
 	if (/^[^\s/@,*?[\]{}]+\/[^\s,*?{}]+$/.test(trimmed)) return true;
 	// Role aliases (@smol, @default, pi/<role>) or configured role aliases (POST-PCM-ALIAS, ketema/omp#72)
-	if (trimmed.startsWith("@") || trimmed.startsWith("pi/") || resolveExplicitModelRole(trimmed, settings) !== undefined) {
+	if (
+		trimmed.startsWith("@") ||
+		trimmed.startsWith("pi/") ||
+		resolveExplicitModelRole(trimmed, settings) !== undefined
+	) {
 		return true;
 	}
 	return false;
@@ -660,18 +664,34 @@ export async function resolveEffectiveSubagentPolicy(
 	const { patterns: modelOverride, role: modelRole } = perCallModelGrants
 		? (() => {
 				const available = request.session.modelRegistry?.getAvailable("all") ?? [];
-				const candidates = Array.isArray(perCallSelector) ? (perCallSelector as string[]) : [perCallSelector as string];
-				const resolved = resolveModelOverride(candidates, { getAvailable: () => available }, request.session.settings);
+				const candidates = Array.isArray(perCallSelector)
+					? (perCallSelector as string[])
+					: [perCallSelector as string];
+				const resolved = resolveModelOverride(
+					candidates,
+					{ getAvailable: () => available },
+					request.session.settings,
+				);
 				if (!resolved.model) return { patterns: candidates.map(c => c.trim()), role: undefined };
 				const base = formatModelStringWithRouting(resolved.model);
 				// Preserve explicit thinking level suffix from the first matching candidate pattern or alias (e.g. @smol:high)
 				const matched = candidates.find(c => {
 					const bare = c.trim().split(":")[0]?.trim() ?? "";
-					return bare.startsWith("@") || bare.startsWith("pi/") || bare.startsWith(resolved.model?.id ?? "") || bare.includes(resolved.model?.id ?? "");
+					return (
+						bare.startsWith("@") ||
+						bare.startsWith("pi/") ||
+						bare.startsWith(resolved.model?.id ?? "") ||
+						bare.includes(resolved.model?.id ?? "")
+					);
 				});
-				const effort = matched && matched.includes(":") ? matched.slice(matched.indexOf(":")) : (resolved.thinkingLevel ? `:${resolved.thinkingLevel}` : "");
+				const effort =
+					matched && matched.includes(":")
+						? matched.slice(matched.indexOf(":"))
+						: resolved.thinkingLevel
+							? `:${resolved.thinkingLevel}`
+							: "";
 				return { patterns: [`${base}${effort}`], role: undefined };
-		  })()
+			})()
 		: resolveAgentModelSelection(modelResolution);
 	const isolationEnabled = cfgTaskIsolationEnabled.get(request.session.settings);
 	const isIsolated = request.isolation?.requested === true;

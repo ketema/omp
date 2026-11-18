@@ -1601,35 +1601,41 @@ describe("per-call model preflight", () => {
 	it.each([
 		["off", "eval"],
 		["eval", "task"],
-	] as const)("PRE-PCM-1 / ERRORS-PCM-1: rejects model under task.perCallModel: %s for %s calls", async (mode, invocationKind) => {
-		mockDiscovery();
-		await expect(
-			resolveEffectiveSubagentPolicy(
-				request({
-					session: perCallSession({ "task.perCallModel": mode }),
-					invocationKind,
-					perCallModel: "@smol",
-				}),
-			),
-		).rejects.toThrow(`task.perCallModel: ${mode}`);
-	});
+	] as const)(
+		"PRE-PCM-1 / ERRORS-PCM-1: rejects model under task.perCallModel: %s for %s calls",
+		async (mode, invocationKind) => {
+			mockDiscovery();
+			await expect(
+				resolveEffectiveSubagentPolicy(
+					request({
+						session: perCallSession({ "task.perCallModel": mode }),
+						invocationKind,
+						perCallModel: "@smol",
+					}),
+				),
+			).rejects.toThrow(`task.perCallModel: ${mode}`);
+		},
+	);
 
 	it.each([
 		["on", "task"],
 		["eval", "eval"],
-	] as const)("POST-PCM-EXPLICIT / INV-PCM-1: routes an approved model above the agent's own under %s for %s calls", async (mode, invocationKind) => {
-		mockDiscovery({ ...AGENT, model: ["mock/agent-own"] });
-		const policy = await resolveEffectiveSubagentPolicy(
-			request({
-				session: perCallSession({ "task.perCallModel": mode, modelRoles: { review: "mock/target" } }),
-				invocationKind,
-				perCallModel: "mock/target:high",
-			}),
-		);
-		expect(policy.modelOverride).toEqual(["mock/target:high"]);
-		// A requested model never falls back to the parent's.
-		expect(policy.parentActiveModelPattern).toBeUndefined();
-	});
+	] as const)(
+		"POST-PCM-EXPLICIT / INV-PCM-1: routes an approved model above the agent's own under %s for %s calls",
+		async (mode, invocationKind) => {
+			mockDiscovery({ ...AGENT, model: ["mock/agent-own"] });
+			const policy = await resolveEffectiveSubagentPolicy(
+				request({
+					session: perCallSession({ "task.perCallModel": mode, modelRoles: { review: "mock/target" } }),
+					invocationKind,
+					perCallModel: "mock/target:high",
+				}),
+			);
+			expect(policy.modelOverride).toEqual(["mock/target:high"]);
+			// A requested model never falls back to the parent's.
+			expect(policy.parentActiveModelPattern).toBeUndefined();
+		},
+	);
 
 	it("POST-PCM-ALIAS: resolves configured role aliases (such as @smol or @review) under task.perCallModel", async () => {
 		mockDiscovery({ ...AGENT, model: ["mock/agent-own"] });

@@ -142,10 +142,13 @@ function configuredRoleGrantPatterns(settings: Settings): PerCallModelAdvertisem
 
 /** The allowlist compares canonical identities literally; it never resolves or case-folds entries. */
 function allowlistAdmitsIdentity(allow: string[], identity: string): boolean {
-	return allow.length === 0 || allow.some(entry => {
-		const t = entry.trim();
-		return t === identity || t === "*" || t === "*/*";
-	});
+	return (
+		allow.length === 0 ||
+		allow.some(entry => {
+			const t = entry.trim();
+			return t === identity || t === "*" || t === "*/*";
+		})
+	);
 }
 
 /**
