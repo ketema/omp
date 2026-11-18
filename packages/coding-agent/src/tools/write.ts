@@ -1,6 +1,7 @@
 import type { WriteToolDetails } from "@oh-my-pi/pi-tui/tools/write";
 import { Database } from "bun:sqlite";
 import { assertNotHeldOpen } from "@oh-my-pi/pi-utils/held-file";
+import { heldFileKind } from "@oh-my-pi/pi-natives/sqlite-locks";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -1135,12 +1136,17 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			if (kind) {
 				throw new ToolError(`Cannot write '${path}': it is a ${kind}, not a regular file or directory.`);
 			}
-			// Overwriting a live SQLite database or `-shm` destroys it (issue #15586).
+			// Overwriting a database or `-shm` that a SQLite connection in this process has
+			// open destroys it (issue #15586), by any write route, so refuse before the raw-IO
+			// path. A file held only by a file lock keeps the raw-IO route below.
 			if (existing) {
-				try {
-					assertNotHeldOpen(absolutePath);
-				} catch (error) {
-					throw new ToolError(`Cannot write '${path}': ${(error as Error).message}`);
+				const held = heldFileKind(absolutePath);
+				if (held === "database" || held === "wal-index") {
+					try {
+						assertNotHeldOpen(absolutePath);
+					} catch (error) {
+						throw new ToolError(`Cannot write '${path}': ${(error as Error).message}`);
+					}
 				}
 			}
 			// REQ-L15586-05 / REQ-L15586-31 / SEQ-2 (POST-RAWIO-3b, POST-RAWIO-3c, FORBIDDEN-RAWIO-3):
@@ -1177,6 +1183,14 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					content: [{ type: "text", text: resultText }],
 					details: { resolvedPath: absolutePath },
 				};
+			}
+			// Overwriting any other file this process holds locked would destroy it (issue #15586).
+			if (existing) {
+				try {
+					assertNotHeldOpen(absolutePath);
+				} catch (error) {
+					throw new ToolError(`Cannot write '${path}': ${(error as Error).message}`);
+				}
 			}
 			// Check if file exists and is auto-generated before overwriting.
 			if (existing) {

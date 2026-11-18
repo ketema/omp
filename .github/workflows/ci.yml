@@ -361,12 +361,16 @@ jobs:
                 echo "::notice title=Native addons from npm::No main-built addon cache entry is available; testing against the npm release addons matching this tree's natives version."
               fi
 
-         # ---- main path: bazel build of the linux-x64 pair ----
+         # ---- source build: main, and PRs with no exact cache entry ----
+         # The fork changes crates/ (raw-IO helper routing), so neither main's
+         # newest addon nor the upstream npm release contains the code the
+         # raw-IO tests exercise. A PR whose native inputs have no exact cache
+         # entry builds the pair here, over whatever the steps above placed.
          - id: cache
-           if: github.event_name != 'pull_request'
+           if: github.event_name != 'pull_request' || steps.natives-cache.outputs.cache-hit != 'true'
            uses: ./.github/actions/bazel-cache
          - name: Build linux-x64 native addons
-           if: github.event_name != 'pull_request'
+           if: github.event_name != 'pull_request' || steps.natives-cache.outputs.cache-hit != 'true'
            run: |
               set -eo pipefail
               if [ "$(ulimit -Sn)" != unlimited ] && [ "$(ulimit -Sn)" -lt 65536 ]; then ulimit -Sn 65536 || true; fi
@@ -389,7 +393,7 @@ jobs:
          # thousands of actions is the failure mode that made CI slow — make
          # it visible in the run summary instead of discovering it weeks in.
          - name: Report bazel cache stats
-           if: github.event_name != 'pull_request'
+           if: github.event_name != 'pull_request' || steps.natives-cache.outputs.cache-hit != 'true'
            shell: bash
            run: |
               # Bazel runs with --color=yes (config=ci); strip ANSI before
@@ -422,6 +426,16 @@ jobs:
               "$loader" "$RUNNER_TEMP/smoke-addons.js" \
                 "$PWD/ci-natives/natives-linux-x64-baseline/pi_natives.linux-x64-baseline.node" \
                 "$PWD/ci-natives/natives-linux-x64-modern/pi_natives.linux-x64-modern.node"
+         # A PR that built from source saves its pair under the same key, so
+         # later pushes that leave the native inputs alone skip the build. The
+         # entry is readable by this PR's ref only.
+         - name: Save PR-built native addon cache entry
+           if: github.event_name == 'pull_request' && steps.natives-cache.outputs.cache-hit != 'true'
+           continue-on-error: true
+           uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+           with:
+              path: ci-natives
+              key: ${{ steps.natives-key.outputs.key }}
          # Only main saves: an entry saved on any other ref is readable by
          # that ref alone yet counts against the shared 10 GB repo quota,
          # whose LRU eviction has already cost the darwin release archives.
@@ -580,6 +594,9 @@ jobs:
          - uses: ./.github/actions/native-artifacts
            with:
               targets: linux-x64-baseline linux-x64-modern
+         # context-efficiency and extension tests need `uv` and a kernel
+         # interpreter with dill.
+         - uses: ./.github/actions/kernel-env
          - name: Test coding-agent native/unit bucket
            env:
               OMP_TEST_CONCURRENCY: "4"
@@ -692,32 +709,9 @@ jobs:
            with:
               targets: linux-x64-baseline linux-x64-modern
               stash: ${{ needs.native_addons.outputs.stash }}
-         # The suite's default-path tests bootstrap the kernel venv with `uv`, and the Python suite runs
-         # through it. Install the pinned release into a job-local dir: nothing global, the downloaded archive
-         # must match the pinned sha256 (published beside the release asset) before it is unpacked, and a
-         # version mismatch fails the job. No installer script is piped into a shell.
-         - name: Install pinned uv (job-local, checksum-verified)
-           shell: bash
-           env:
-              UV_VERSION: "0.13.9"
-              UV_ARCHIVE: uv-x86_64-unknown-linux-gnu
-              UV_SHA256: a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5
-           run: |
-              set -euo pipefail
-              dest="$RUNNER_TEMP/uv-bin"
-              mkdir -p "$dest"
-              curl -fsSL --retry 3 -o "$RUNNER_TEMP/$UV_ARCHIVE.tar.gz" \
-                "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_ARCHIVE}.tar.gz"
-              echo "${UV_SHA256}  $RUNNER_TEMP/$UV_ARCHIVE.tar.gz" | sha256sum --check --strict -
-              tar -xzf "$RUNNER_TEMP/$UV_ARCHIVE.tar.gz" -C "$dest" --strip-components=1
-              echo "$dest" >> "$GITHUB_PATH"
-              got="$("$dest/uv" --version | awk '{print $2}')"
-              if [ "$got" != "$UV_VERSION" ]; then
-                echo "::error::expected uv $UV_VERSION, got $got"
-                exit 1
-              fi
-              echo "uv $got installed job-locally at $dest"
-              "$dest/uv" python install 3.14.10
+         # The suite's default-path tests bootstrap the kernel venv with `uv`, the workbench tests need the
+         # kernel venv and loader a workstation has, and the Python suite runs through uv.
+         - uses: ./.github/actions/kernel-env
          - name: RLM selection tests (real ci-test-ts.ts dispatch)
            run: bun test scripts/ci-test-ts.test.ts
          - name: Test RLM package (TS) - real SessionManager, default path, atomicity
