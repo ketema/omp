@@ -73,28 +73,28 @@ describe("pageLinesThroughHelper memory bound (Claude audit, POST-RAWIO-3)", () 
 	const MIB = 1024 * 1024;
 
 	/** A reader that fabricates a file on demand, so the test itself never holds the whole file. */
-function syntheticReader(totalBytes: number, tail = "") {
-	const tailBytes = new TextEncoder().encode(tail);
-	const size = totalBytes + tailBytes.length;
-	let maxAllocatedBytes = 0;
-	let totalBytesRead = 0;
-	return {
-		size,
-		getMaxAllocated: () => maxAllocatedBytes,
-		getTotalBytesRead: () => totalBytesRead,
-		read: async (offset: number, length: number): Promise<Uint8Array> => {
-			const chunkSize = Math.max(0, Math.min(length, size - offset));
-			maxAllocatedBytes = Math.max(maxAllocatedBytes, chunkSize);
-			totalBytesRead += chunkSize;
-			const out = new Uint8Array(chunkSize);
-			out.fill(0x61);
-			for (let at = Math.max(offset, totalBytes); at < offset + out.length; at++) {
-				out[at - offset] = tailBytes[at - totalBytes] ?? 0x0a;
-			}
-			return out;
-		},
-	};
-}
+	function syntheticReader(totalBytes: number, tail = "") {
+		const tailBytes = new TextEncoder().encode(tail);
+		const size = totalBytes + tailBytes.length;
+		let maxAllocatedBytes = 0;
+		let totalBytesRead = 0;
+		return {
+			size,
+			getMaxAllocated: () => maxAllocatedBytes,
+			getTotalBytesRead: () => totalBytesRead,
+			read: async (offset: number, length: number): Promise<Uint8Array> => {
+				const chunkSize = Math.max(0, Math.min(length, size - offset));
+				maxAllocatedBytes = Math.max(maxAllocatedBytes, chunkSize);
+				totalBytesRead += chunkSize;
+				const out = new Uint8Array(chunkSize);
+				out.fill(0x61);
+				for (let at = Math.max(offset, totalBytes); at < offset + out.length; at++) {
+					out[at - offset] = tailBytes[at - totalBytes] ?? 0x0a;
+				}
+				return out;
+			},
+		};
+	}
 
 	async function peakGrowthMiB<T>(work: () => Promise<T>): Promise<{ result: T; growthMiB: number }> {
 		Bun.gc(true);

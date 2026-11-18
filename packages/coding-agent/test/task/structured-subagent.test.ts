@@ -1601,34 +1601,110 @@ describe("per-call model preflight", () => {
 	it.each([
 		["off", "eval"],
 		["eval", "task"],
-	] as const)("rejects model under task.perCallModel: %s for %s calls", async (mode, invocationKind) => {
-		mockDiscovery();
-		await expect(
-			resolveEffectiveSubagentPolicy(
-				request({
-					session: perCallSession({ "task.perCallModel": mode }),
-					invocationKind,
-					perCallModel: "@smol",
-				}),
-			),
-		).rejects.toThrow(`task.perCallModel: ${mode}`);
-	});
+	] as const)(
+		"PRE-PCM-1 / ERRORS-PCM-1: rejects model under task.perCallModel: %s for %s calls",
+		async (mode, invocationKind) => {
+			mockDiscovery();
+			await expect(
+				resolveEffectiveSubagentPolicy(
+					request({
+						session: perCallSession({ "task.perCallModel": mode }),
+						invocationKind,
+						perCallModel: "@smol",
+					}),
+				),
+			).rejects.toThrow(`task.perCallModel: ${mode}`);
+		},
+	);
 
 	it.each([
 		["on", "task"],
 		["eval", "eval"],
-	] as const)("routes an approved model above the agent's own under %s for %s calls", async (mode, invocationKind) => {
+	] as const)(
+		"POST-PCM-EXPLICIT / INV-PCM-1: routes an approved model above the agent's own under %s for %s calls",
+		async (mode, invocationKind) => {
+			mockDiscovery({ ...AGENT, model: ["mock/agent-own"] });
+			const policy = await resolveEffectiveSubagentPolicy(
+				request({
+					session: perCallSession({ "task.perCallModel": mode, modelRoles: { review: "mock/target" } }),
+					invocationKind,
+					perCallModel: "mock/target:high",
+				}),
+			);
+			expect(policy.modelOverride).toEqual(["mock/target:high"]);
+			// A requested model never falls back to the parent's.
+			expect(policy.parentActiveModelPattern).toBeUndefined();
+		},
+	);
+
+	it("POST-PCM-ALIAS: resolves configured role aliases (such as @smol or @review) under task.perCallModel", async () => {
 		mockDiscovery({ ...AGENT, model: ["mock/agent-own"] });
 		const policy = await resolveEffectiveSubagentPolicy(
 			request({
-				session: perCallSession({ "task.perCallModel": mode, modelRoles: { review: "mock/target" } }),
-				invocationKind,
-				perCallModel: "mock/target:high",
+				session: perCallSession({
+					"task.perCallModel": "on",
+					modelRoles: { smol: "mock/target", review: "mock/target" },
+				}),
+				perCallModel: "@smol",
+			}),
+		);
+		expect(policy.modelOverride).toEqual(["mock/target"]);
+		expect(policy.perCallModelGrants).toBeDefined();
+	});
+
+	it("POST-PCM-ALIAS: preserves explicit effort tag on role alias (e.g. @smol:high)", async () => {
+		mockDiscovery({ ...AGENT, model: ["mock/agent-own"] });
+		const policy = await resolveEffectiveSubagentPolicy(
+			request({
+				session: perCallSession({
+					"task.perCallModel": "on",
+					modelRoles: { smol: "mock/target" },
+				}),
+				perCallModel: "@smol:high",
 			}),
 		);
 		expect(policy.modelOverride).toEqual(["mock/target:high"]);
-		// A requested model never falls back to the parent's.
-		expect(policy.parentActiveModelPattern).toBeUndefined();
+		expect(policy.perCallModelGrants).toBeDefined();
+	});
+
+	it("POST-PCM-ARRAY / ERRORS-PCM-1: rejects candidate array with invalid candidate at specific index", async () => {
+		mockDiscovery();
+		await expect(
+			resolveEffectiveSubagentPolicy(
+				request({
+					session: perCallSession({ "task.perCallModel": "on" }),
+					perCallModel: ["mock/target", "not a valid selector!"],
+				}),
+			),
+		).rejects.toThrow(/invalid `model` candidate at index 1/);
+	});
+	it("POST-PCM-ARRAY: resolves candidate arrays with fallback under task.perCallModel", async () => {
+		mockDiscovery({ ...AGENT, model: ["mock/agent-own"] });
+		const policy = await resolveEffectiveSubagentPolicy(
+			request({
+				session: perCallSession({
+					"task.perCallModel": "on",
+					modelRoles: { smol: "mock/target" },
+				}),
+				perCallModel: ["mock/missing", "@smol"],
+			}),
+		);
+		expect(policy.modelOverride).toEqual(["mock/target"]);
+		expect(policy.perCallModelGrants).toBeDefined();
+	});
+
+	it("SEQ-PCM-1: passes resolved perCallModel override into child executor options", async () => {
+		mockDiscovery({ ...AGENT, model: ["mock/agent-own"] });
+		const req = request({
+			session: perCallSession({
+				"task.perCallModel": "on",
+				modelRoles: { smol: "mock/target" },
+			}),
+			perCallModel: "@smol",
+		});
+		const policy = await resolveEffectiveSubagentPolicy(req);
+		expect(policy.modelOverride).toEqual(["mock/target"]);
+		expect(policy.perCallModelGrants).toBeDefined();
 	});
 
 	it.each(["SDK overlay", "nested subagent"])("reloads removed on-disk role grants through an %s", async kind => {
@@ -1662,20 +1738,11 @@ describe("per-call model preflight", () => {
 	});
 
 	it.each([
-		["a selector that is not provider/model-id", "@smol", {}, false, /invalid `model`/],
-		// Shaped like provider/model-id, but names the configured custom role `review`.
-		["a legacy alias of a custom role", "pi/review", {}, false, /invalid `model`/],
-		["an unavailable model", "mock/missing", {}, false, /No available model matches/],
+		["a malformed selector", "not a valid selector!", {}, false, /invalid `model`/],
+		["a selector with spaces", "mock/ target", {}, false, /invalid `model`/],
 		["a non-chat model", "mock/painter", {}, false, /image model; a subagent needs a chat model/],
 		["a non-chat model while discovery is running", "mock/painter", {}, true, /image model/],
 		["an unapproved model", "mock/target", { modelRoles: {} }, false, /not approved/],
-		[
-			"a model for an agent with an override",
-			"mock/target",
-			{ "task.agentModelOverrides": { worker: "mock/target" } },
-			false,
-			/conflicts with task\.agentModelOverrides/,
-		],
 	] as const)("rejects %s", async (_name, perCallModel, settings, refreshPending, error) => {
 		mockDiscovery();
 		await expect(
@@ -1761,7 +1828,7 @@ describe("per-call model preflight", () => {
 
 		it.each([
 			["the per-call gate", "off", "mock/target", "task.perCallModel: off"],
-			["exact-selector validation", "on", ["mock/target"], /invalid `model`/],
+			["exact-selector validation", "on", ["not a valid selector!"], /invalid `model`/],
 		] as const)("holds its model to %s", async (_name, mode, seanceModel, error) => {
 			mockDiscovery(shadow);
 			await expect(

@@ -1,0 +1,59 @@
+name: "Provision the Python kernel environment"
+description: >
+   Installs the pinned uv release into a job-local dir (the archive must match
+   the pinned sha256 before it is unpacked; no installer script is piped into
+   a shell), the pinned CPython, the managed kernel venv at
+   ~/.omp/agent/kernel-venv, and the workbench loader at
+   ~/.agents/skills/repl-snapshots/restore.py. Tests that need a real kernel
+   interpreter with dill, or the loader, find them where a workstation has them.
+
+runs:
+   using: composite
+   steps:
+      - name: Install pinned uv (job-local, checksum-verified)
+        shell: bash
+        env:
+           UV_VERSION: "0.13.9"
+           UV_ARCHIVE: uv-x86_64-unknown-linux-gnu
+           UV_SHA256: a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5
+        run: |
+           set -euo pipefail
+           dest="$RUNNER_TEMP/uv-bin"
+           mkdir -p "$dest"
+           curl -fsSL --retry 3 -o "$RUNNER_TEMP/$UV_ARCHIVE.tar.gz" \
+             "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_ARCHIVE}.tar.gz"
+           echo "${UV_SHA256}  $RUNNER_TEMP/$UV_ARCHIVE.tar.gz" | sha256sum --check --strict -
+           tar -xzf "$RUNNER_TEMP/$UV_ARCHIVE.tar.gz" -C "$dest" --strip-components=1
+           echo "$dest" >> "$GITHUB_PATH"
+           got="$("$dest/uv" --version | awk '{print $2}')"
+           if [ "$got" != "$UV_VERSION" ]; then
+             echo "::error::expected uv $UV_VERSION, got $got"
+             exit 1
+           fi
+           echo "uv $got installed job-locally at $dest"
+      - name: Install pinned CPython and the kernel venv
+        shell: bash
+        env:
+           # Must equal PYTHON_VERSION in packages/rlm/src/bootstrap.ts.
+           KERNEL_PYTHON_VERSION: "3.14.10"
+        run: |
+           set -euo pipefail
+           uv="$RUNNER_TEMP/uv-bin/uv"
+           want="$(sed -n 's/^export const PYTHON_VERSION = "\([^"]*\)";$/\1/p' packages/rlm/src/bootstrap.ts)"
+           if [ "$want" != "$KERNEL_PYTHON_VERSION" ]; then
+             echo "::error::kernel-env pins CPython $KERNEL_PYTHON_VERSION but bootstrap.ts wants '$want'"
+             exit 1
+           fi
+           "$uv" python install "$KERNEL_PYTHON_VERSION"
+           venv="$HOME/.omp/agent/kernel-venv"
+           mkdir -p "$HOME/.omp/agent"
+           "$uv" venv "$venv" --python "$KERNEL_PYTHON_VERSION"
+           "$uv" pip install --python "$venv/bin/python" ipykernel dill ./packages/rlm/python/rlm-runtime
+           "$venv/bin/python" -c "import dill, ipykernel, rlm, sys; print('kernel venv', sys.version.split()[0], 'dill', dill.__version__)"
+      - name: Install the workbench loader
+        shell: bash
+        run: |
+           set -euo pipefail
+           dir="$HOME/.agents/skills/repl-snapshots"
+           mkdir -p "$dir"
+           install -m 0600 packages/rlm/tests/fixtures/restore.py "$dir/restore.py"
